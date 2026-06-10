@@ -1,0 +1,7 @@
+# NexFilm Agent Project Instructions
+
+## Git Management
+- Always perform git management for this project.
+- After successfully completing a phase or a requested step, automatically execute `git add`, `git commit` with conventional commit messages (e.g., `feat:`, `fix:`, `refactor:`).
+- Always `git push` to the remote repository `origin main` automatically.
+- Ensure the project always stays in a clean git state after significant modifications.
