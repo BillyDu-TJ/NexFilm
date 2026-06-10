@@ -2,8 +2,21 @@ use image::{ImageBuffer, Rgb};
 use serde::{Deserialize, Serialize};
 use std::sync::RwLock;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum FilmMode {
+    Color,
+    BW,
+}
+
+impl Default for FilmMode {
+    fn default() -> Self {
+        FilmMode::Color
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TuningParams {
+    pub film_mode: FilmMode,
     pub d_min: f32,
     pub d_max: f32,
     pub exposure: f32,
@@ -16,6 +29,7 @@ pub struct TuningParams {
 impl Default for TuningParams {
     fn default() -> Self {
         Self {
+            film_mode: FilmMode::Color,
             d_min: 0.1,
             d_max: 2.0,
             exposure: 0.0,
@@ -38,10 +52,27 @@ pub struct FilmItem {
     pub id: String,
     pub file_path: String,
     pub thumbnail_base64: String,
+    pub original_proxy: ImageBuffer<Rgb<u16>, Vec<u16>>,
     pub proxy_image: ImageBuffer<Rgb<u16>, Vec<u16>>,
     pub pristine_proxy: ImageBuffer<Rgb<f32>, Vec<f32>>,
     pub base_color: BaseColor,
     pub params: TuningParams,
+    pub rotation: i32,
+    pub crop_rect: CropRect,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CropRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl Default for CropRect {
+    fn default() -> Self {
+        CropRect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -3,6 +3,7 @@ pub mod pipeline;
 pub mod io_processor;
 pub mod app_state;
 pub mod commands;
+pub mod geometry;
 
 #[cfg(test)]
 mod tests {

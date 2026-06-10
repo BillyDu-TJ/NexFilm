@@ -4,9 +4,23 @@ const invoke = window.__TAURI__.core.invoke;
 const btnImport = document.getElementById('btn-import');
 const btnExportBatch = document.getElementById('btn-export-batch');
 const filmstripContainer = document.getElementById('filmstrip-container');
+const canvasWrapper = document.getElementById('canvas-wrapper');
 const previewCanvas = document.getElementById('preview-canvas');
 const ctx = previewCanvas.getContext('2d');
 const placeholder = document.getElementById('placeholder');
+
+const btnModeColor = document.getElementById('btn-mode-color');
+const btnModeBw = document.getElementById('btn-mode-bw');
+
+// Crop Elements
+const btnCropMode = document.getElementById('btn-crop-mode');
+const btnRotateLeft = document.getElementById('btn-rotate-left');
+const btnRotateRight = document.getElementById('btn-rotate-right');
+const cropOverlay = document.getElementById('crop-overlay');
+const cropMask = document.getElementById('crop-mask');
+const cropBox = document.getElementById('crop-box');
+const cropGrid = document.getElementById('crop-grid');
+const cropHandles = document.getElementById('crop-handles');
 
 const sliders = {
     dmin: { el: document.getElementById('dmin'), val: document.getElementById('val-dmin') },
@@ -15,10 +29,39 @@ const sliders = {
     gamma: { el: document.getElementById('gamma'), val: document.getElementById('val-gamma') },
     expr: { el: document.getElementById('expr'), val: document.getElementById('val-expr') },
     expg: { el: document.getElementById('expg'), val: document.getElementById('val-expg') },
-    expb: { el: document.getElementById('expb'), val: document.getElementById('val-expb') },
+    expb: { el: document.getElementById('expb'), val: document.getElementById('val-expb') }
 };
 
 let activeId = null;
+let current_crop_rect = { x: 0, y: 0, width: 1, height: 1 };
+let isCropMode = false;
+
+// Global Toast logic
+function showToast(message, type = "error") {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `px-4 py-3 rounded shadow-lg flex items-center gap-3 transform transition-all duration-300 translate-x-full ${type === 'error' ? 'bg-red-900/90 text-red-100 border border-red-700/50' : 'bg-zinc-800/90 text-zinc-100 border border-zinc-700/50'}`;
+    toast.innerHTML = `
+        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            ${type === 'error' ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />' : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />'}
+        </svg>
+        <span class="text-[13px] font-medium tracking-wide">${message}</span>
+    `;
+    container.appendChild(toast);
+    
+    // Animate in
+    requestAnimationFrame(() => {
+        toast.classList.remove('translate-x-full');
+    });
+
+    // Remove after 5 seconds
+    setTimeout(() => {
+        toast.classList.add('translate-x-full', 'opacity-0');
+        setTimeout(() => {
+            if (toast.parentNode) toast.parentNode.removeChild(toast);
+        }, 300);
+    }, 5000);
+}
 
 // CSS Variable updater for Track
 function updateSliderTrack(el) {
@@ -29,11 +72,57 @@ function updateSliderTrack(el) {
     el.style.setProperty('--val', `${percent}%`);
 }
 
+let thumbnailSyncTimeout = null;
+function requestThumbnailSync() {
+    if (thumbnailSyncTimeout) clearTimeout(thumbnailSyncTimeout);
+    thumbnailSyncTimeout = setTimeout(async () => {
+        if (!activeId) return;
+        try {
+            await invoke('sync_thumbnail_buffer', { id: activeId });
+            renderFilmstrip();
+        } catch(e) {
+            console.error(e);
+        }
+    }, 250);
+}
+
+// Custom throttle to replace lodash
+function throttleAsync(fn, wait) {
+    let isRunning = false;
+    let pending = false;
+    let lastArgs = [];
+
+    const run = async () => {
+        if (isRunning) return;
+        isRunning = true;
+        try {
+            await fn(...lastArgs);
+        } finally {
+            isRunning = false;
+            if (pending) {
+                pending = false;
+                setTimeout(run, wait);
+            }
+        }
+    };
+
+    return (...args) => {
+        lastArgs = args;
+        if (!isRunning) {
+            run();
+        } else {
+            pending = true;
+        }
+    };
+}
+
 // Throttled UI logic
-const applyTuning = _.throttle(async () => {
+const applyTuning = throttleAsync(async () => {
     if (!activeId) return;
     
+    const mode = btnModeColor.classList.contains('bg-zinc-700') ? 'Color' : 'BW';
     const params = {
+        film_mode: mode,
         d_min: parseFloat(sliders.dmin.el.value),
         d_max: parseFloat(sliders.dmax.el.value),
         exposure: parseFloat(sliders.exposure.el.value),
@@ -42,6 +131,9 @@ const applyTuning = _.throttle(async () => {
         exp_g: parseFloat(sliders.expg.el.value),
         exp_b: parseFloat(sliders.expb.el.value)
     };
+    
+    // Apply visual CSS transforms (handled differently now, or reset to 1)
+    previewCanvas.style.transform = `rotate(0deg) scale(1) translate(0%, 0%)`;
 
     try {
         const result = await invoke('apply_tuning_parameters', { params });
@@ -68,12 +160,34 @@ const applyTuning = _.throttle(async () => {
         if (previewCanvas.width !== width || previewCanvas.height !== height) {
             previewCanvas.width = width;
             previewCanvas.height = height;
+            canvasWrapper.style.aspectRatio = `${width} / ${height}`;
         }
         ctx.putImageData(imageData, 0, 0);
+        requestThumbnailSync();
     } catch (e) {
         console.error("Error applying tuning:", e);
     }
-}, 32, { leading: true, trailing: true });
+}, 32);
+
+function setMode(mode) {
+    if (mode === 'Color') {
+        btnModeColor.classList.add('bg-zinc-700', 'text-zinc-100', 'shadow-sm');
+        btnModeColor.classList.remove('text-zinc-500', 'hover:text-zinc-300');
+        btnModeBw.classList.add('text-zinc-500', 'hover:text-zinc-300');
+        btnModeBw.classList.remove('bg-zinc-700', 'text-zinc-100', 'shadow-sm');
+        sliders.expr.el.disabled = false;
+        sliders.expg.el.disabled = false;
+        sliders.expb.el.disabled = false;
+    } else {
+        btnModeBw.classList.add('bg-zinc-700', 'text-zinc-100', 'shadow-sm');
+        btnModeBw.classList.remove('text-zinc-500', 'hover:text-zinc-300');
+        btnModeColor.classList.add('text-zinc-500', 'hover:text-zinc-300');
+        btnModeColor.classList.remove('bg-zinc-700', 'text-zinc-100', 'shadow-sm');
+        sliders.expr.el.disabled = true;
+        sliders.expg.el.disabled = true;
+        sliders.expb.el.disabled = true;
+    }
+}
 
 function updateUIFromParams(params) {
     sliders.dmin.el.value = params.d_min;
@@ -86,9 +200,12 @@ function updateUIFromParams(params) {
     
     for (const key in sliders) {
         const s = sliders[key];
-        s.val.textContent = parseFloat(s.el.value).toFixed(3);
+        s.val.textContent = parseFloat(s.el.value).toFixed(2);
         updateSliderTrack(s.el);
     }
+
+    let modeStr = typeof params.film_mode === 'string' ? params.film_mode : (params.film_mode === 'BW' ? 'B&W' : 'Color');
+    setMode(modeStr);
 }
 
 for (const key in sliders) {
@@ -106,7 +223,12 @@ function enableUI() {
         updateSliderTrack(sliders[key].el);
     }
     btnExportBatch.disabled = false;
+    btnCropMode.disabled = false;
+    btnRotateLeft.disabled = false;
+    btnRotateRight.disabled = false;
     placeholder.style.display = 'none';
+    canvasWrapper.style.display = 'flex';
+    canvasWrapper.classList.remove('hidden');
     previewCanvas.style.display = 'block';
 }
 
@@ -135,7 +257,7 @@ async function renderFilmstrip() {
 
 async function selectImage(id) {
     try {
-        const params = await invoke('switch_active_image', { id });
+        const state = await invoke('switch_active_image', { id });
         activeId = id;
         
         // Quick UI update for filmstrip active state
@@ -143,12 +265,33 @@ async function selectImage(id) {
         renderFilmstrip();
         
         enableUI();
-        updateUIFromParams(params);
+        updateUIFromParams(state.params);
+        
+        // Restore crop overlay
+        current_crop_rect = state.crop_rect || { x: 0, y: 0, width: 1, height: 1 };
+        updateCropOverlay();
+        
         applyTuning(); // Trigger render for this image
     } catch(e) {
         console.error("Select image error:", e);
     }
 }
+
+btnModeColor.addEventListener('click', async () => {
+    if (!activeId) return;
+    setMode('Color');
+    await invoke('set_film_mode', { id: activeId, mode: 'Color' });
+    applyTuning();
+});
+
+btnModeBw.addEventListener('click', async () => {
+    if (!activeId) return;
+    setMode('B&W');
+    await invoke('set_film_mode', { id: activeId, mode: 'B&W' });
+    applyTuning();
+});
+
+
 
 btnImport.addEventListener('click', async () => {
     try {
@@ -169,7 +312,7 @@ btnImport.addEventListener('click', async () => {
             }
         }
     } catch (e) {
-        alert("Import failed: " + e);
+        showToast("Import failed: " + e, "error");
     } finally {
         btnImport.textContent = "Import Roll";
         btnImport.disabled = false;
@@ -189,9 +332,9 @@ btnExportBatch.addEventListener('click', async () => {
         }
 
         const count = await invoke('batch_export_images', { outputDir });
-        alert(`Successfully exported ${count} image(s) to:\n${outputDir}`);
+        showToast(`Successfully exported ${count} image(s) to:\n${outputDir}`, "success");
     } catch (e) {
-        alert("Batch export failed: " + e);
+        showToast("Batch export failed: " + e, "error");
     } finally {
         btnExportBatch.textContent = "Batch Export";
         btnExportBatch.disabled = false;
@@ -202,3 +345,171 @@ btnExportBatch.addEventListener('click', async () => {
 for (const key in sliders) {
     updateSliderTrack(sliders[key].el);
 }
+
+// ==========================================
+// CROP MODE INTERACTION
+// ==========================================
+btnCropMode.addEventListener('click', () => {
+    isCropMode = !isCropMode;
+    if (isCropMode) {
+        btnCropMode.classList.add('bg-zinc-800', 'text-zinc-100');
+        cropOverlay.classList.remove('hidden');
+        updateCropOverlay();
+    } else {
+        btnCropMode.classList.remove('bg-zinc-800', 'text-zinc-100');
+        cropOverlay.classList.add('hidden');
+    }
+});
+
+btnRotateLeft.addEventListener('click', async () => {
+    if (!activeId) return;
+    // Let's assume geometry_rotate left is equivalent to -90, or just use rotate_90 for right. The backend has geometry_rotate.
+    // The instructions say add the buttons. We'll call geometry_rotate and update.
+    // Since backend has `geometry_rotate` (which is rotate_90 right), let's call it 3 times for left or change backend.
+    // For now, let's call it.
+    await invoke('geometry_rotate', { id: activeId, direction: 'left' });
+    applyTuning();
+    requestThumbnailSync();
+});
+
+btnRotateRight.addEventListener('click', async () => {
+    if (!activeId) return;
+    await invoke('geometry_rotate', { id: activeId, direction: 'right' });
+    applyTuning();
+    requestThumbnailSync();
+});
+
+function updateCropOverlay() {
+    const w = current_crop_rect.width * 100;
+    const h = current_crop_rect.height * 100;
+    const x = current_crop_rect.x * 100;
+    const y = current_crop_rect.y * 100;
+
+    cropBox.setAttribute('x', `${x}%`);
+    cropBox.setAttribute('y', `${y}%`);
+    cropBox.setAttribute('width', `${w}%`);
+    cropBox.setAttribute('height', `${h}%`);
+
+    // Mask path: outer rect - inner rect
+    const maskPath = `M0,0 H100% V100% H0 Z M${x}%,${y}% V${y + h}% H${x + w}% V${y}% Z`;
+    cropMask.setAttribute('d', maskPath);
+
+    // Grid lines
+    document.getElementById('grid-v1').setAttribute('x1', `${x + w/3}%`);
+    document.getElementById('grid-v1').setAttribute('x2', `${x + w/3}%`);
+    document.getElementById('grid-v1').setAttribute('y1', `${y}%`);
+    document.getElementById('grid-v1').setAttribute('y2', `${y + h}%`);
+    
+    document.getElementById('grid-v2').setAttribute('x1', `${x + w*2/3}%`);
+    document.getElementById('grid-v2').setAttribute('x2', `${x + w*2/3}%`);
+    document.getElementById('grid-v2').setAttribute('y1', `${y}%`);
+    document.getElementById('grid-v2').setAttribute('y2', `${y + h}%`);
+
+    document.getElementById('grid-h1').setAttribute('y1', `${y + h/3}%`);
+    document.getElementById('grid-h1').setAttribute('y2', `${y + h/3}%`);
+    document.getElementById('grid-h1').setAttribute('x1', `${x}%`);
+    document.getElementById('grid-h1').setAttribute('x2', `${x + w}%`);
+
+    document.getElementById('grid-h2').setAttribute('y1', `${y + h*2/3}%`);
+    document.getElementById('grid-h2').setAttribute('y2', `${y + h*2/3}%`);
+    document.getElementById('grid-h2').setAttribute('x1', `${x}%`);
+    document.getElementById('grid-h2').setAttribute('x2', `${x + w}%`);
+
+    // Position handles
+    const setHandle = (pos, hx, hy) => {
+        const handle = cropHandles.querySelector(`[data-pos="${pos}"]`);
+        if (handle) {
+            handle.setAttribute('x', `${hx}%`);
+            handle.setAttribute('y', `${hy}%`);
+        }
+    };
+
+    setHandle('nw', x, y);
+    setHandle('n', x + w/2, y);
+    setHandle('ne', x + w, y);
+    setHandle('w', x, y + h/2);
+    setHandle('e', x + w, y + h/2);
+    setHandle('sw', x, y + h);
+    setHandle('s', x + w/2, y + h);
+    setHandle('se', x + w, y + h);
+}
+
+let isDraggingCrop = false;
+let dragType = null; // 'box' or handle pos
+let dragStartPos = { x: 0, y: 0 };
+let dragStartRect = { ...current_crop_rect };
+
+cropOverlay.addEventListener('mousedown', (e) => {
+    if (!isCropMode) return;
+    
+    const target = e.target;
+    if (target === cropBox) {
+        dragType = 'box';
+    } else if (target.classList.contains('crop-handle')) {
+        dragType = target.getAttribute('data-pos');
+    } else {
+        return;
+    }
+
+    isDraggingCrop = true;
+    dragStartPos = { x: e.clientX, y: e.clientY };
+    dragStartRect = { ...current_crop_rect };
+    cropGrid.style.opacity = '1'; // Show rule of thirds grid
+});
+
+window.addEventListener('mousemove', (e) => {
+    if (!isDraggingCrop) return;
+    
+    const svgRect = cropOverlay.getBoundingClientRect();
+    const dx = (e.clientX - dragStartPos.x) / svgRect.width;
+    const dy = (e.clientY - dragStartPos.y) / svgRect.height;
+    
+    let newRect = { ...dragStartRect };
+
+    if (dragType === 'box') {
+        newRect.x = Math.max(0, Math.min(1 - newRect.width, newRect.x + dx));
+        newRect.y = Math.max(0, Math.min(1 - newRect.height, newRect.y + dy));
+    } else {
+        if (dragType.includes('w')) {
+            const maxW = newRect.x + newRect.width;
+            newRect.x = Math.max(0, Math.min(maxW - 0.05, newRect.x + dx));
+            newRect.width = maxW - newRect.x;
+        }
+        if (dragType.includes('e')) {
+            newRect.width = Math.max(0.05, Math.min(1 - newRect.x, newRect.width + dx));
+        }
+        if (dragType.includes('n')) {
+            const maxH = newRect.y + newRect.height;
+            newRect.y = Math.max(0, Math.min(maxH - 0.05, newRect.y + dy));
+            newRect.height = maxH - newRect.y;
+        }
+        if (dragType.includes('s')) {
+            newRect.height = Math.max(0.05, Math.min(1 - newRect.y, newRect.height + dy));
+        }
+    }
+
+    current_crop_rect = newRect;
+    updateCropOverlay();
+});
+
+window.addEventListener('mouseup', async () => {
+    if (isDraggingCrop) {
+        isDraggingCrop = false;
+        cropGrid.style.opacity = '0'; // Hide grid
+        
+        if (activeId) {
+            try {
+                // Determine pixel coordinates based on actual image dimensions
+                // Since frontend only knows normalized rect, let backend do the multiplication
+                await invoke('geometry_crop_normalized', { 
+                    id: activeId, 
+                    rect: current_crop_rect 
+                });
+                applyTuning();
+                requestThumbnailSync();
+            } catch (err) {
+                showToast("Crop failed: " + err, "error");
+            }
+        }
+    }
+});

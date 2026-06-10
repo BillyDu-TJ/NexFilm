@@ -5,11 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NEXFILM DESIGNER</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
     <link rel="stylesheet" href="style.css">
 </head>
 <body class="text-zinc-300 h-screen w-screen overflow-hidden font-sans selection:bg-zinc-700 flex flex-col" style="background-color: #121214;">
     
+    <!-- Toast Container -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+
     <!-- Header -->
     <header class="h-[50px] shrink-0 border-b border-zinc-800 flex items-center justify-between px-6 shadow-md z-20" style="background-color: #1a1a1e;">
         <div class="flex items-center gap-4">
@@ -24,10 +26,47 @@
         
         <!-- Left Workspace -->
         <div id="workspace" class="flex-1 flex flex-col h-full overflow-hidden">
+            
+            <!-- Transform Tool Bar -->
+            <div class="h-[40px] border-b border-zinc-800/50 flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm" style="background-color: #1a1a1e;">
+                <button id="btn-crop-mode" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>CROP MODE</button>
+                <div class="w-px h-4 bg-zinc-700"></div>
+                <button id="btn-rotate-left" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>ROTATE LEFT 90°</button>
+                <button id="btn-rotate-right" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>ROTATE RIGHT 90°</button>
+            </div>
+
             <!-- Main Preview -->
-            <div id="image-container" class="flex-1 w-full h-full p-8 flex items-center justify-center overflow-hidden bg-black shadow-inner">
+            <div id="image-container" class="flex-1 w-full h-full p-8 flex items-center justify-center overflow-hidden bg-black shadow-inner relative">
                 <div id="placeholder" class="text-zinc-600 font-medium tracking-widest text-sm uppercase">No Roll Loaded</div>
-                <canvas id="preview-canvas" class="w-full h-full object-contain hidden drop-shadow-2xl rounded"></canvas>
+                
+                <!-- Canvas Wrapper sizes itself to the canvas aspect ratio via JS -->
+                <div id="canvas-wrapper" class="relative hidden" style="max-width: 100%; max-height: 100%; display: none;">
+                    <canvas id="preview-canvas" class="block w-full h-full drop-shadow-2xl rounded" style="object-fit: contain;"></canvas>
+                    
+                    <!-- SVG Crop Overlay -->
+                    <svg id="crop-overlay" class="absolute top-0 left-0 w-full h-full pointer-events-none hidden z-10" style="overflow: visible;">
+                        <path id="crop-mask" fill="rgba(0,0,0,0.6)" fill-rule="evenodd" d=""></path>
+                        <rect id="crop-box" x="0" y="0" width="100%" height="100%" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="1.5" stroke-dasharray="4 4" class="pointer-events-auto cursor-move"></rect>
+                        
+                        <g id="crop-grid" opacity="0" class="transition-opacity duration-200 pointer-events-none">
+                            <line id="grid-v1" x1="33.33%" y1="0" x2="33.33%" y2="100%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+                            <line id="grid-v2" x1="66.66%" y1="0" x2="66.66%" y2="100%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+                            <line id="grid-h1" x1="0" y1="33.33%" x2="100%" y2="33.33%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+                            <line id="grid-h2" x1="0" y1="66.66%" x2="100%" y2="66.66%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+                        </g>
+
+                        <g id="crop-handles" class="pointer-events-auto">
+                            <rect class="crop-handle" data-pos="nw" x="-4" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nwse-resize;"/>
+                            <rect class="crop-handle" data-pos="n" x="50%" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ns-resize;" transform="translate(-4, 0)"/>
+                            <rect class="crop-handle" data-pos="ne" x="100%" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nesw-resize;" transform="translate(-4, 0)"/>
+                            <rect class="crop-handle" data-pos="w" x="-4" y="50%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ew-resize;" transform="translate(0, -4)"/>
+                            <rect class="crop-handle" data-pos="e" x="100%" y="50%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ew-resize;" transform="translate(-4, -4)"/>
+                            <rect class="crop-handle" data-pos="sw" x="-4" y="100%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nesw-resize;" transform="translate(0, -4)"/>
+                            <rect class="crop-handle" data-pos="s" x="50%" y="100%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ns-resize;" transform="translate(-4, -4)"/>
+                            <rect class="crop-handle" data-pos="se" x="100%" y="100%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nwse-resize;" transform="translate(-4, -4)"/>
+                        </g>
+                    </svg>
+                </div>
             </div>
             
             <!-- Filmstrip Carousel -->
@@ -43,6 +82,16 @@
             </div>
             
             <div class="p-6 flex flex-col gap-8">
+                <!-- Mode Toggle -->
+                <div class="control-group">
+                    <div class="flex items-center justify-between bg-zinc-800/50 p-1 rounded-lg border border-zinc-700/50">
+                        <button id="btn-mode-color" class="flex-1 text-[11px] font-bold tracking-widest uppercase py-1.5 rounded-md transition-all bg-zinc-700 text-zinc-100 shadow-sm disabled:opacity-50">COLOR</button>
+                        <button id="btn-mode-bw" class="flex-1 text-[11px] font-bold tracking-widest uppercase py-1.5 rounded-md transition-all text-zinc-500 hover:text-zinc-300 disabled:opacity-50">B&W</button>
+                    </div>
+                </div>
+
+                <!-- Geometry section removed -->
+
                 <!-- Base & Density Control -->
                 <div class="control-group">
                     <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-4">Density Targets</h3>
