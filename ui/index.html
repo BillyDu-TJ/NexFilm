@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEXFILM DESIGNER</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="text-zinc-300 h-screen w-screen overflow-hidden font-sans selection:bg-zinc-700 flex flex-col" style="background-color: #121214;">
+    
+    <!-- Header -->
+    <header class="h-[50px] shrink-0 border-b border-zinc-800 flex items-center justify-between px-6 shadow-md z-20" style="background-color: #1a1a1e;">
+        <div class="flex items-center gap-4">
+            <button id="btn-import" class="px-5 py-1.5 text-[13px] font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-md transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
+            <button id="btn-export-batch" class="px-5 py-1.5 text-[13px] font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-md transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>Batch Export</button>
+        </div>
+        <div class="text-[13px] font-bold tracking-[0.2em] text-zinc-400">NEXFILM ENGINE v1.0</div>
+        <div class="w-[200px]"></div> <!-- Spacer for balance -->
+    </header>
+
+    <div id="app" class="flex flex-1 overflow-hidden">
+        
+        <!-- Left Workspace -->
+        <div id="workspace" class="flex-1 flex flex-col h-full overflow-hidden">
+            <!-- Main Preview -->
+            <div id="image-container" class="flex-1 w-full h-full p-8 flex items-center justify-center overflow-hidden bg-black shadow-inner">
+                <div id="placeholder" class="text-zinc-600 font-medium tracking-widest text-sm uppercase">No Roll Loaded</div>
+                <canvas id="preview-canvas" class="w-full h-full object-contain hidden drop-shadow-2xl rounded"></canvas>
+            </div>
+            
+            <!-- Filmstrip Carousel -->
+            <div id="filmstrip-container" class="h-[140px] shrink-0 border-t border-zinc-800/50 flex items-center px-4 gap-4 overflow-x-auto custom-scrollbar" style="background-color: #1a1a1e;">
+                <!-- Dynamically populated by JS -->
+            </div>
+        </div>
+        
+        <!-- Right Sidebar -->
+        <div id="sidebar" class="w-[350px] h-full border-l border-zinc-800 shrink-0 flex flex-col shadow-2xl overflow-y-auto custom-scrollbar z-10" style="background-color: #1a1a1e;">
+            <div class="px-6 py-5 border-b border-zinc-800/50 sticky top-0 z-10" style="background-color: #1a1a1eb3; backdrop-filter: blur(8px);">
+                <h2 class="text-[11px] font-bold text-zinc-400 tracking-[0.25em] uppercase">NEXFILM CORE CONTROLS</h2>
+            </div>
+            
+            <div class="p-6 flex flex-col gap-8">
+                <!-- Base & Density Control -->
+                <div class="control-group">
+                    <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-4">Density Targets</h3>
+                    <div class="flex flex-col gap-5">
+                        <div class="slider-container">
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="text-[12px] font-medium text-zinc-300 tracking-wide">D-Min</label>
+                                <span id="val-dmin" class="text-[11px] font-mono text-zinc-400">0.100</span>
+                            </div>
+                            <input type="range" id="dmin" class="w-full custom-range silver-track" min="0.00" max="1.00" step="0.002" value="0.10" disabled>
+                        </div>
+                        <div class="slider-container">
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="text-[12px] font-medium text-zinc-300 tracking-wide">D-Max</label>
+                                <span id="val-dmax" class="text-[11px] font-mono text-zinc-400">2.000</span>
+                            </div>
+                            <input type="range" id="dmax" class="w-full custom-range silver-track" min="0.50" max="3.00" step="0.002" value="2.00" disabled>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Aesthetics -->
+                <div class="control-group">
+                    <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-4">Aesthetics</h3>
+                    <div class="flex flex-col gap-5">
+                        <div class="slider-container">
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="text-[12px] font-medium text-zinc-300 tracking-wide">Exposure</label>
+                                <span id="val-exposure" class="text-[11px] font-mono text-zinc-400">0.000</span>
+                            </div>
+                            <input type="range" id="exposure" class="w-full custom-range silver-track" min="-3.00" max="3.00" step="0.002" value="0.00" disabled>
+                        </div>
+                        <div class="slider-container">
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="text-[12px] font-medium text-zinc-300 tracking-wide">Gamma</label>
+                                <span id="val-gamma" class="text-[11px] font-mono text-zinc-400">1.000</span>
+                            </div>
+                            <input type="range" id="gamma" class="w-full custom-range silver-track" min="0.10" max="3.00" step="0.002" value="1.00" disabled>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Printer Lights -->
+                <div class="control-group">
+                    <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-4">Printer Lights (CMY)</h3>
+                    <div class="flex flex-col gap-5">
+                        <div class="slider-container">
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="text-[12px] font-medium text-red-400/80 tracking-wide">Red / Cyan</label>
+                                <span id="val-expr" class="text-[11px] font-mono text-zinc-400">0.000</span>
+                            </div>
+                            <input type="range" id="expr" class="w-full custom-range red-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
+                        </div>
+                        <div class="slider-container">
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="text-[12px] font-medium text-emerald-400/80 tracking-wide">Green / Magenta</label>
+                                <span id="val-expg" class="text-[11px] font-mono text-zinc-400">0.000</span>
+                            </div>
+                            <input type="range" id="expg" class="w-full custom-range green-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
+                        </div>
+                        <div class="slider-container">
+                            <div class="flex justify-between items-center mb-2">
+                                <label class="text-[12px] font-medium text-blue-400/80 tracking-wide">Blue / Yellow</label>
+                                <span id="val-expb" class="text-[11px] font-mono text-zinc-400">0.000</span>
+                            </div>
+                            <input type="range" id="expb" class="w-full custom-range blue-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+        </div>
+    </div>
+    <script src="main.js"></script>
+</body>
+</html>

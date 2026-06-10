@@ -1,0 +1,27 @@
+{
+  "productName": "NexFilm Engine",
+  "version": "0.1.0",
+  "identifier": "com.nexfilm.engine",
+  "build": {
+    "beforeDevCommand": "",
+    "beforeBuildCommand": "",
+    "frontendDist": "ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "NexFilm Engine",
+        "width": 1400,
+        "height": 900
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": []
+  }
+}

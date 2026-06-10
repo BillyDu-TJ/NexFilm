@@ -1,0 +1,85 @@
+/* Custom Scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+    background-color: #2d2d30;
+    border-radius: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background-color: #3f3f46;
+}
+
+/* Custom Range Slider */
+.custom-range {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    cursor: pointer;
+    outline: none;
+    height: 12px;
+    width: 100%;
+    /* Default value 50% if not set */
+    --val: 50%;
+}
+
+.silver-track { --track-fill: #a1a1aa; }
+.red-track { --track-fill: #f87171; }
+.green-track { --track-fill: #34d399; }
+.blue-track { --track-fill: #60a5fa; }
+
+.custom-range::-webkit-slider-runnable-track {
+    width: 100%;
+    height: 2px;
+    background: linear-gradient(to right, var(--track-fill, #a1a1aa) 0%, var(--track-fill, #a1a1aa) var(--val), #2d2d30 var(--val), #2d2d30 100%);
+    border-radius: 1px;
+}
+
+.custom-range:disabled::-webkit-slider-runnable-track {
+    background: #2d2d30;
+}
+
+.custom-range::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    margin-top: -4px; /* (2 - 10)/2 = -4 */
+    background-color: #ffffff;
+    height: 10px;
+    width: 10px;
+    border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.8), 0 0 0 1px rgba(255,255,255,0.1);
+    transition: transform 0.1s ease;
+}
+
+.custom-range:hover::-webkit-slider-thumb {
+    transform: scale(1.1);
+}
+
+.custom-range:active::-webkit-slider-thumb {
+    transform: scale(1.2);
+}
+
+.custom-range:disabled::-webkit-slider-thumb {
+    background-color: #52525b;
+    box-shadow: none;
+    cursor: not-allowed;
+    transform: none;
+}
+
+/* Filmstrip active item border */
+.film-item {
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: 2px solid transparent;
+}
+.film-item:hover {
+    border-color: #3f3f46;
+}
+.film-item.active {
+    border-color: #a1a1aa;
+    box-shadow: 0 0 10px rgba(161, 161, 170, 0.2);
+}
