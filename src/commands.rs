@@ -325,6 +325,7 @@ pub async fn get_filmstrip(state: State<'_, EngineState>) -> Result<Vec<Filmstri
 pub struct LutData {
     pub size: u32,
     pub data: Vec<u8>,
+    pub is_1d: bool,
 }
 
 #[tauri::command]
@@ -376,50 +377,35 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
     }
     
     let mut final_size = size_3d;
-    let mut final_floats = data_floats;
+    let mut is_1d = false;
 
-    // Convert 1D LUT to a 33x33x33 3D LUT on the fly
     if size_1d > 0 && size_3d == 0 {
-        final_size = 33;
-        let mut lut3d = Vec::with_capacity(final_size * final_size * final_size * 3);
-        let n_1d = size_1d as f32 - 1.0;
-        
-        let sample_1d = |val: f32, channel: usize| -> f32 {
-            let idx_f = val.clamp(0.0, 1.0) * n_1d;
-            let idx0 = idx_f.floor() as usize;
-            let idx1 = (idx0 + 1).min(size_1d - 1);
-            let fract = idx_f - idx0 as f32;
-            let v0 = final_floats[idx0 * 3 + channel];
-            let v1 = final_floats[idx1 * 3 + channel];
-            v0 + (v1 - v0) * fract
-        };
-
-        for b in 0..final_size {
-            for g in 0..final_size {
-                for r in 0..final_size {
-                    let r_norm = r as f32 / (final_size as f32 - 1.0);
-                    let g_norm = g as f32 / (final_size as f32 - 1.0);
-                    let b_norm = b as f32 / (final_size as f32 - 1.0);
-                    
-                    lut3d.push(sample_1d(r_norm, 0));
-                    lut3d.push(sample_1d(g_norm, 1));
-                    lut3d.push(sample_1d(b_norm, 2));
-                }
-            }
+        final_size = size_1d;
+        is_1d = true;
+    }
+    
+    // Force RGB data to RGBA (Alpha = 1.0)
+    let mut rgba_floats = Vec::with_capacity((data_floats.len() / 3) * 4);
+    for chunk in data_floats.chunks(3) {
+        if chunk.len() == 3 {
+            rgba_floats.push(chunk[0]);
+            rgba_floats.push(chunk[1]);
+            rgba_floats.push(chunk[2]);
+            rgba_floats.push(1.0);
         }
-        final_floats = lut3d;
     }
     
     let data_bytes = unsafe {
         std::slice::from_raw_parts(
-            final_floats.as_ptr() as *const u8,
-            final_floats.len() * std::mem::size_of::<f32>()
+            rgba_floats.as_ptr() as *const u8,
+            rgba_floats.len() * std::mem::size_of::<f32>()
         )
     }.to_vec();
     
     Ok(LutData {
         size: final_size as u32,
         data: data_bytes,
+        is_1d,
     })
 }
 

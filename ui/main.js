@@ -73,7 +73,13 @@ const sliders = {
     lutOpacity: { el: document.getElementById('lut-opacity'), val: document.getElementById('val-lut-opacity') }
 };
 
+const imageStates = new Map();
+let copiedSettings = null;
+let isEyedropperActive = false;
 let activeId = null;
+let proxyPixels = null;
+let proxyWidth = 0;
+let proxyHeight = 0;
 let current_geom = { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
 let isCropMode = false;
 let isRotateMode = false;
@@ -247,8 +253,8 @@ function requestThumbnailSync() {
     }, 250);
 }
 
-function updateBackendParams() {
-    if (!activeId) return;
+function saveCurrentState() {
+    if (!activeId) return null;
     const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 'Color' : 'BW';
     const params = {
         film_mode: mode,
@@ -262,7 +268,15 @@ function updateBackendParams() {
         highlights: parseFloat(sliders.highlights.el.value),
         shadows: parseFloat(sliders.shadows.el.value)
     };
-    invoke('update_tuning_parameters', { id: activeId, params }).catch(console.error);
+    imageStates.set(activeId, { params, geom: JSON.parse(JSON.stringify(current_geom)) });
+    return params;
+}
+
+function updateBackendParams() {
+    const params = saveCurrentState();
+    if (params && activeId) {
+        invoke('update_tuning_parameters', { id: activeId, params }).catch(console.error);
+    }
 }
 
 // ==========================================
@@ -334,8 +348,10 @@ function initWebGL() {
     uniform float u_shadows;
     
     uniform mediump sampler3D u_lut3d;
+    uniform mediump sampler2D u_lut1d;
     uniform float u_lut_opacity;
     uniform int u_has_lut;
+    uniform int u_lut_is_1d;
 
     const mat3 STATUS_M = mat3(
         1.0197, -0.0052, 0.0131,
@@ -384,10 +400,17 @@ function initWebGL() {
         // 进入 LUT 前，必须强制绝杀溢出
         norm = clamp(norm, 0.0, 1.0);
         
-        // 6. 应用 3D LUT
+        // 6. 应用 LUT
         vec3 final_rgb;
         if (u_has_lut == 1) {
-            vec3 lut_color = texture(u_lut3d, clamp(norm, 0.0, 1.0)).rgb;
+            vec3 lut_color;
+            if (u_lut_is_1d == 1) {
+                lut_color.r = texture(u_lut1d, vec2(clamp(norm.r, 0.0, 1.0), 0.5)).r;
+                lut_color.g = texture(u_lut1d, vec2(clamp(norm.g, 0.0, 1.0), 0.5)).g;
+                lut_color.b = texture(u_lut1d, vec2(clamp(norm.b, 0.0, 1.0), 0.5)).b;
+            } else {
+                lut_color = texture(u_lut3d, clamp(norm, 0.0, 1.0)).rgb;
+            }
             final_rgb = mix(vec3(pow(norm.r, 1.0 / u_gamma), pow(norm.g, 1.0 / u_gamma), pow(norm.b, 1.0 / u_gamma)), lut_color, u_lut_opacity);
         } else {
             // 7. 终端显示映射
@@ -426,8 +449,10 @@ function initWebGL() {
     u_highlights_loc = gl.getUniformLocation(shaderProgram, "u_highlights");
     u_shadows_loc = gl.getUniformLocation(shaderProgram, "u_shadows");
     u_lut3d_loc = gl.getUniformLocation(shaderProgram, "u_lut3d");
+    u_lut1d_loc = gl.getUniformLocation(shaderProgram, "u_lut1d");
     u_lut_opacity_loc = gl.getUniformLocation(shaderProgram, "u_lut_opacity");
     u_has_lut_loc = gl.getUniformLocation(shaderProgram, "u_has_lut");
+    u_lut_is_1d_loc = gl.getUniformLocation(shaderProgram, "u_lut_is_1d");
     u_image_loc = gl.getUniformLocation(shaderProgram, "u_image");
     u_aspect_loc = gl.getUniformLocation(shaderProgram, "u_aspect");
     
@@ -472,7 +497,9 @@ function initWebGL() {
 
 initWebGL();
 
+let tex = null;
 let hasLUT = false;
+let is1DLUT = false;
 let lutTex = null;
 
 const btnLoadDCP = document.getElementById('btn-load-dcp');
@@ -540,6 +567,36 @@ selectBuiltinDcp.addEventListener('change', async (e) => {
     }
 });
 
+async function applyLUT(lutData) {
+    const size = lutData.size;
+    is1DLUT = lutData.is_1d;
+    const data = new Float32Array(new Uint8Array(lutData.data).buffer);
+    
+    if (!lutTex) lutTex = gl.createTexture();
+    
+    if (is1DLUT) {
+        gl.bindTexture(gl.TEXTURE_2D, lutTex);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, size, 1, 0, gl.RGBA, gl.FLOAT, data);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    } else {
+        gl.bindTexture(gl.TEXTURE_3D, lutTex);
+        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA32F, size, size, size, 0, gl.RGBA, gl.FLOAT, data);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    }
+    
+    hasLUT = true;
+    sliders.lutOpacity.el.disabled = false;
+    showToast(is1DLUT ? "1D LUT loaded." : "3D LUT loaded.", "success");
+    requestRender();
+}
+
 selectBuiltinLut.addEventListener('change', async (e) => {
     if (!e.target.value) {
         hasLUT = false;
@@ -548,22 +605,7 @@ selectBuiltinLut.addEventListener('change', async (e) => {
     }
     try {
         const lutData = await invoke('load_3d_lut', { path: e.target.value });
-        const size = lutData.size;
-        const data = new Float32Array(new Uint8Array(lutData.data).buffer);
-        
-        if (!lutTex) lutTex = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_3D, lutTex);
-        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB32F, size, size, size, 0, gl.RGB, gl.FLOAT, data);
-        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-        
-        hasLUT = true;
-        sliders.lutOpacity.el.disabled = false;
-        showToast("Built-in 3D LUT loaded.", "success");
-        requestRender();
+        await applyLUT(lutData);
     } catch(err) {
         showToast("Failed to load built-in LUT", "error");
     }
@@ -575,22 +617,7 @@ btnLoadLUT.addEventListener('click', async () => {
         if (path) {
             selectBuiltinLut.value = "";
             const lutData = await invoke('load_3d_lut', { path });
-            const size = lutData.size;
-            const data = new Float32Array(new Uint8Array(lutData.data).buffer);
-            
-            if (!lutTex) lutTex = gl.createTexture();
-            gl.bindTexture(gl.TEXTURE_3D, lutTex);
-            gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB32F, size, size, size, 0, gl.RGB, gl.FLOAT, data);
-            gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-            gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-            gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-            gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-            
-            hasLUT = true;
-            sliders.lutOpacity.el.disabled = false;
-            showToast("3D LUT loaded.", "success");
-            requestRender();
+            await applyLUT(lutData);
         }
     } catch(e) {
         console.error(e);
@@ -727,7 +754,9 @@ function renderWebGL() {
     gl.uniform1f(u_shadows_loc, parseFloat(sliders.shadows.el.value));
     gl.uniform1f(u_lut_opacity_loc, parseFloat(sliders.lutOpacity.el.value));
     gl.uniform1i(u_has_lut_loc, hasLUT ? 1 : 0);
+    gl.uniform1i(u_lut_is_1d_loc, is1DLUT ? 1 : 0);
     gl.uniform1i(u_lut3d_loc, 1);
+    gl.uniform1i(u_lut1d_loc, 1);
     gl.uniform1i(u_image_loc, 0);
     gl.uniform1f(u_aspect_loc, gl.canvas.width / gl.canvas.height);
     
@@ -746,7 +775,11 @@ function renderWebGL() {
     gl.bindTexture(gl.TEXTURE_2D, tex);
     if (hasLUT) {
         gl.activeTexture(gl.TEXTURE1);
-        gl.bindTexture(gl.TEXTURE_3D, lutTex);
+        if (is1DLUT) {
+            gl.bindTexture(gl.TEXTURE_2D, lutTex);
+        } else {
+            gl.bindTexture(gl.TEXTURE_3D, lutTex);
+        }
     }
 
     // Render to FBO for Histogram
@@ -791,6 +824,9 @@ async function loadProxyImage() {
         currentBaseDensity[2] = dataView.getFloat32(16, true);
         
         const pixels = new Uint16Array(arrayBuffer, byteOffset + 20, width * height * 4);
+        proxyPixels = pixels;
+        proxyWidth = width;
+        proxyHeight = height;
         
         if (previewCanvas.width !== width || previewCanvas.height !== height) {
             previewCanvas.width = width;
@@ -886,6 +922,11 @@ function enableUI() {
     btnRotateRight.disabled = false;
     btnFlipH.disabled = false;
     btnFlipV.disabled = false;
+    
+    document.getElementById('btn-copy-settings').disabled = false;
+    if (copiedSettings) document.getElementById('btn-paste-settings').disabled = false;
+    document.getElementById('btn-wb-eyedropper').disabled = false;
+    
     canvasWrapper.style.display = 'block';
 }
 
@@ -978,16 +1019,26 @@ async function renderLibraryAndFilmstrip() {
 async function selectImage(id) {
     if (activeId === id) return;
     try {
-        const state = await invoke('switch_active_image', { id });
+        saveCurrentState(); // Save current state before switching
+
+        let state;
+        if (imageStates.has(id)) {
+            state = imageStates.get(id);
+            await invoke('switch_active_image', { id });
+        } else {
+            state = await invoke('switch_active_image', { id });
+            imageStates.set(id, { params: state.params, geom: state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 } });
+        }
+
         activeId = id;
-        
-        renderLibraryAndFilmstrip(); // update active class
+        renderLibraryAndFilmstrip();
         
         enableUI();
-        current_geom = state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
+        current_geom = JSON.parse(JSON.stringify(state.geom));
         updateUIFromParams(state.params, current_geom);
         updateCropOverlay();
         await loadProxyImage();
+        requestRender(); // Force uniform update
     } catch(e) { console.error(e); }
 }
 
@@ -1473,5 +1524,107 @@ window.addEventListener('mouseup', async () => {
                 requestThumbnailSync();
             } catch (err) { showToast("Crop failed: " + err, "error"); }
         }
+    }
+});
+
+const btnCopySettings = document.getElementById('btn-copy-settings');
+const btnPasteSettings = document.getElementById('btn-paste-settings');
+const btnWbEyedropper = document.getElementById('btn-wb-eyedropper');
+
+btnCopySettings.addEventListener('click', () => {
+    if (!activeId) return;
+    copiedSettings = saveCurrentState();
+    if (copiedSettings) {
+        btnPasteSettings.disabled = false;
+        showToast("Settings copied.", "success");
+    }
+});
+
+btnPasteSettings.addEventListener('click', () => {
+    if (!activeId || !copiedSettings) return;
+    pushUndoState();
+    updateUIFromParams(copiedSettings, current_geom);
+    updateBackendParams();
+    requestRender();
+    showToast("Settings pasted.", "success");
+});
+
+btnWbEyedropper.addEventListener('click', () => {
+    isEyedropperActive = !isEyedropperActive;
+    if (isEyedropperActive) {
+        btnWbEyedropper.classList.add('text-white');
+        previewCanvas.style.cursor = 'crosshair';
+        showToast("White Balance Eyedropper activated. Click on a neutral gray area.", "success");
+    } else {
+        btnWbEyedropper.classList.remove('text-white');
+        previewCanvas.style.cursor = 'default';
+    }
+});
+
+previewCanvas.addEventListener('click', (e) => {
+    if (!isEyedropperActive || !proxyPixels || !activeId) return;
+    
+    const rect = previewCanvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    // map click coordinate to proxy image space
+    const px = Math.floor((x / rect.width) * proxyWidth);
+    const py = Math.floor((y / rect.height) * proxyHeight);
+    
+    let sumR = 0, sumG = 0, sumB = 0;
+    let count = 0;
+    const radius = 2;
+    for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+            const nx = px + dx;
+            const ny = py + dy;
+            if (nx >= 0 && nx < proxyWidth && ny >= 0 && ny < proxyHeight) {
+                const idx = (ny * proxyWidth + nx) * 4;
+                sumR += proxyPixels[idx];
+                sumG += proxyPixels[idx + 1];
+                sumB += proxyPixels[idx + 2];
+                count++;
+            }
+        }
+    }
+    
+    if (count > 0) {
+        const avgR = sumR / count;
+        const avgG = sumG / count;
+        const avgB = sumB / count;
+        
+        const epsilon = 1e-6;
+        const tR = Math.max(avgR / 65535.0, epsilon);
+        const tG = Math.max(avgG / 65535.0, epsilon);
+        const tB = Math.max(avgB / 65535.0, epsilon);
+        
+        let dR = -Math.log10(tR) - currentBaseDensity[0];
+        let dG = -Math.log10(tG) - currentBaseDensity[1];
+        let dB = -Math.log10(tB) - currentBaseDensity[2];
+        
+        const currentExpG = parseFloat(sliders.expg.el.value);
+        
+        const targetExpR = (dG + currentExpG) - dR;
+        const targetExpB = (dG + currentExpG) - dB;
+        
+        pushUndoState();
+        
+        sliders.expr.el.value = targetExpR;
+        sliders.expb.el.value = targetExpB;
+        
+        sliders.expr.val.textContent = targetExpR.toFixed(3);
+        sliders.expb.val.textContent = targetExpB.toFixed(3);
+        
+        updateSliderTrack(sliders.expr.el);
+        updateSliderTrack(sliders.expb.el);
+        
+        updateBackendParams();
+        requestRender();
+        
+        isEyedropperActive = false;
+        btnWbEyedropper.classList.remove('text-white');
+        previewCanvas.style.cursor = 'default';
+        showToast("White Balance updated.", "success");
     }
 });
