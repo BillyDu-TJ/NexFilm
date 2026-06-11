@@ -47,6 +47,7 @@ const btnModeBw = document.getElementById('btn-mode-bw');
 const btnCropMode = document.getElementById('btn-crop-mode');
 const btnRotateMode = document.getElementById('btn-rotate-mode');
 const btnAutoCrop = document.getElementById('btn-auto-crop');
+const btnAutoColor = document.getElementById('btn-auto-color');
 const btnRotateLeft = document.getElementById('btn-rotate-left');
 const btnRotateRight = document.getElementById('btn-rotate-right');
 const btnFlipH = document.getElementById('btn-flip-h');
@@ -386,7 +387,7 @@ function initWebGL() {
         // 6. 应用 3D LUT
         vec3 final_rgb;
         if (u_has_lut == 1) {
-            vec3 lut_color = texture(u_lut3d, norm).rgb;
+            vec3 lut_color = texture(u_lut3d, clamp(norm, 0.0, 1.0)).rgb;
             final_rgb = mix(vec3(pow(norm.r, 1.0 / u_gamma), pow(norm.g, 1.0 / u_gamma), pow(norm.b, 1.0 / u_gamma)), lut_color, u_lut_opacity);
         } else {
             // 7. 终端显示映射
@@ -880,6 +881,7 @@ function enableUI() {
     btnCropMode.disabled = false;
     btnRotateMode.disabled = false;
     btnAutoCrop.disabled = false;
+    btnAutoColor.disabled = false;
     btnRotateLeft.disabled = false;
     btnRotateRight.disabled = false;
     btnFlipH.disabled = false;
@@ -1239,7 +1241,6 @@ async function doAutoColor() {
         let arrayBuffer = result.buffer instanceof ArrayBuffer ? result.buffer : (result instanceof ArrayBuffer ? result : new Uint8Array(result).buffer);
         let byteOffset = result.byteOffset || 0;
         
-        // Ensure we pass a clean ArrayBuffer to the worker
         let sendBuffer = arrayBuffer;
         if (byteOffset !== 0 || arrayBuffer.byteLength !== (result.byteLength || result.length)) {
             sendBuffer = arrayBuffer.slice(byteOffset, byteOffset + (result.byteLength || result.length));
@@ -1248,29 +1249,30 @@ async function doAutoColor() {
         const workerCode = `
         self.onmessage = function(e) {
             const arrayBuffer = e.data.buffer;
+            const baseDensity = e.data.baseDensity;
             const dataView = new DataView(arrayBuffer);
             const width = dataView.getUint32(0, true);
             const height = dataView.getUint32(4, true);
             const pixels = new Uint16Array(arrayBuffer, 20, width * height * 4);
             
             // 2. & 3. D-Min and D-Max from 16-bit linear data
-            let lums = new Float32Array(width * height);
+            let trans = new Float32Array(width * height);
             for (let i = 0; i < width * height; i++) {
                 let r = Math.max(1e-6, pixels[i * 4] / 65535.0);
                 let g = Math.max(1e-6, pixels[i * 4 + 1] / 65535.0);
                 let b = Math.max(1e-6, pixels[i * 4 + 2] / 65535.0);
-                lums[i] = r * 0.299 + g * 0.587 + b * 0.114;
+                trans[i] = Math.max(r, Math.max(g, b));
             }
-            lums.sort();
-            let lum_max = lums[Math.floor(lums.length * 0.999)];
-            let dmin_val = -Math.log10(Math.max(1e-6, lum_max));
-            let lum_min = lums[Math.floor(lums.length * 0.001)];
-            let dmax_val = -Math.log10(Math.max(1e-6, lum_min));
+            trans.sort();
+            let trans_max = trans[Math.floor(trans.length * 0.999)];
+            let dmin_val = -Math.log10(trans_max);
+            let trans_min = trans[Math.floor(trans.length * 0.001)];
+            let dmax_val = -Math.log10(trans_min);
             
             let final_dmin = Math.max(0, dmin_val);
             let final_dmax = Math.max(final_dmin + 0.1, Math.min(3.0, dmax_val));
             
-            // 5. Auto White Balance in Log Density
+            // 5. Auto White Balance in pure log density (Status M applied)
             let minX = Math.floor(width * 0.2);
             let maxX = Math.floor(width * 0.8);
             let minY = Math.floor(height * 0.2);
@@ -1287,9 +1289,26 @@ async function doAutoColor() {
                     let r = Math.max(1e-6, pixels[i * 4] / 65535.0);
                     let g = Math.max(1e-6, pixels[i * 4 + 1] / 65535.0);
                     let b = Math.max(1e-6, pixels[i * 4 + 2] / 65535.0);
-                    r_densities[idx] = -Math.log10(r);
-                    g_densities[idx] = -Math.log10(g);
-                    b_densities[idx] = -Math.log10(b);
+                    
+                    let dr = -Math.log10(r);
+                    let dg = -Math.log10(g);
+                    let db = -Math.log10(b);
+                    
+                    let d_r = dr - baseDensity[0];
+                    let d_g = dg - baseDensity[1];
+                    let d_b = db - baseDensity[2];
+                    
+                    let tr = 1.0197 * d_r - 0.0052 * d_g + 0.0131 * d_b;
+                    let tg = 0.0317 * d_r + 0.8933 * d_g - 0.0011 * d_b;
+                    let tb = 0.0091 * d_r + 0.0521 * d_g + 0.9712 * d_b;
+                    
+                    tr -= final_dmin;
+                    tg -= final_dmin;
+                    tb -= final_dmin;
+                    
+                    r_densities[idx] = tr;
+                    g_densities[idx] = tg;
+                    b_densities[idx] = tb;
                     idx++;
                 }
             }
@@ -1325,18 +1344,16 @@ async function doAutoColor() {
             document.getElementById('expb').value = delta_b;
             document.getElementById('val-expb').innerText = delta_b.toFixed(3);
             
-            // Dispatch input event to trigger UI update logic if needed
             document.getElementById('dmin').dispatchEvent(new Event('input'));
             document.getElementById('dmax').dispatchEvent(new Event('input'));
             document.getElementById('expr').dispatchEvent(new Event('input'));
             document.getElementById('expb').dispatchEvent(new Event('input'));
             
-            sendParams();
             requestRender();
             worker.terminate();
         };
         
-        worker.postMessage({ buffer: sendBuffer }, [sendBuffer]);
+        worker.postMessage({ buffer: sendBuffer, baseDensity: currentBaseDensity }, [sendBuffer]);
     } catch(e) { console.error("Auto Color failed", e); }
 }
 
@@ -1346,8 +1363,12 @@ btnAutoCrop.addEventListener('click', async () => {
         const result = await invoke('geometry_auto_align', { id: activeId });
         current_geom.crop_rect = result.crop_rect; current_geom.angle = result.angle;
         updateCropOverlay(); await loadProxyImage(); requestThumbnailSync();
-        await doAutoColor();
     } catch (err) { showToast("Auto failed: " + err, "error"); }
+});
+
+btnAutoColor.addEventListener('click', async () => {
+    pushUndoState();
+    await doAutoColor();
 });
 
 function getRenderRect() { return canvasWrapper.getBoundingClientRect(); }

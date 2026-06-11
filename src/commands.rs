@@ -362,6 +362,18 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
     if (size_3d == 0 && size_1d == 0) || data_floats.is_empty() {
         return Err("Invalid LUT file".into());
     }
+
+    let mut max_val: f32 = 0.0;
+    for &v in &data_floats {
+        if v > max_val {
+            max_val = v;
+        }
+    }
+    if max_val > 1.0 {
+        for v in &mut data_floats {
+            *v /= 1023.0;
+        }
+    }
     
     let mut final_size = size_3d;
     let mut final_floats = data_floats;
