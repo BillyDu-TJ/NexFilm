@@ -755,7 +755,7 @@ function renderWebGL() {
     gl.uniform1i(u_has_lut_loc, hasLUT ? 1 : 0);
     gl.uniform1i(u_lut_is_1d_loc, is1DLUT ? 1 : 0);
     gl.uniform1i(u_lut3d_loc, 1);
-    gl.uniform1i(u_lut1d_loc, 1);
+    gl.uniform1i(u_lut1d_loc, 2);
     gl.uniform1i(u_image_loc, 0);
     gl.uniform1f(u_aspect_loc, gl.canvas.width / gl.canvas.height);
     
@@ -773,10 +773,11 @@ function renderWebGL() {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, tex);
     if (hasLUT) {
-        gl.activeTexture(gl.TEXTURE1);
         if (is1DLUT) {
+            gl.activeTexture(gl.TEXTURE2);
             gl.bindTexture(gl.TEXTURE_2D, lutTex);
         } else {
+            gl.activeTexture(gl.TEXTURE1);
             gl.bindTexture(gl.TEXTURE_3D, lutTex);
         }
     }
