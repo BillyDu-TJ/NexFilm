@@ -3,177 +3,265 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NEXFILM DESIGNER</title>
+    <title>NexFilm Engine v2.0</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="style.css">
 </head>
-<body class="text-zinc-300 h-screen w-screen overflow-hidden font-sans selection:bg-zinc-700 flex flex-col" style="background-color: #121214;">
+<body class="text-zinc-300 h-screen w-screen overflow-hidden font-sans selection:bg-zinc-700 flex flex-col bg-[#121214]">
     
-    <!-- Toast Container -->
     <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
-    <!-- Header -->
-    <header class="h-[50px] shrink-0 border-b border-zinc-800 flex items-center justify-between px-6 shadow-md z-20" style="background-color: #1a1a1e;">
-        <div class="flex items-center gap-4">
-            <button id="btn-import" class="px-5 py-1.5 text-[13px] font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-md transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
-            <button id="btn-export-batch" class="px-5 py-1.5 text-[13px] font-medium bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded-md transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50 disabled:cursor-not-allowed" disabled>Batch Export</button>
+    <!-- Global Header -->
+    <header class="h-[56px] shrink-0 border-b border-[#28282c] flex items-center justify-between px-6 shadow-md z-20 bg-[#1C1C1E]">
+        <div class="flex items-center gap-6 h-full">
+            <div class="text-[14px] font-black tracking-[0.25em] text-zinc-200">NEXFILM <span class="text-zinc-500 font-normal">v2.0</span></div>
+            <div class="h-6 w-px bg-zinc-700"></div>
+            <nav class="flex h-full gap-2">
+                <button id="nav-library" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-100 border-zinc-100">LIBRARY</button>
+                <button id="nav-develop" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">DEVELOP</button>
+            </nav>
         </div>
-        <div class="text-[13px] font-bold tracking-[0.2em] text-zinc-400">NEXFILM ENGINE v1.0</div>
-        <div class="w-[200px]"></div> <!-- Spacer for balance -->
+        <div class="flex items-center gap-4">
+            <button id="btn-import" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
+            <button id="btn-export-dialog" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed" disabled>Export</button>
+        </div>
     </header>
 
-    <div id="app" class="flex flex-1 overflow-hidden">
+    <!-- VIEWS -->
+    <div id="views" class="flex-1 relative overflow-hidden bg-[#121214]">
         
-        <!-- Left Workspace -->
-        <div id="workspace" class="flex-1 flex flex-col h-full overflow-hidden">
-            
-            <!-- Transform Tool Bar -->
-            <div class="h-[40px] border-b border-zinc-800/50 flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm" style="background-color: #1a1a1e;">
-                <div class="flex space-x-2">
-                    <button id="btn-crop-mode" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>CROP</button>
-                    <button id="btn-rotate-mode" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>ROTATE</button>
+        <!-- ============================== -->
+        <!-- VIEW: LIBRARY                  -->
+        <!-- ============================== -->
+        <div id="view-library" class="absolute inset-0 flex flex-col z-20 transition-opacity duration-300">
+            <div class="h-[48px] border-b border-[#28282c] flex items-center justify-between px-8 bg-[#1C1C1E] shrink-0">
+                <div class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">GRID VIEW</div>
+                <div class="flex items-center gap-4">
+                    <span id="library-selection-count" class="text-[11px] text-zinc-400 font-medium">0 selected</span>
+                    <button id="btn-select-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors">Select All</button>
+                    <button id="btn-deselect-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors hidden">Deselect All</button>
                 </div>
-                <button id="btn-auto-crop" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>AUTO CROP</button>
-                <div class="w-px h-4 bg-zinc-700"></div>
-                <button id="btn-rotate-left" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>ROT L</button>
-                <button id="btn-rotate-right" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>ROT R</button>
-                <div class="w-px h-4 bg-zinc-700"></div>
-                <button id="btn-flip-h" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>FLIP H</button>
-                <button id="btn-flip-v" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>FLIP V</button>
             </div>
-
-            <!-- Main Preview -->
-            <div id="image-container" class="flex-1 w-full h-full p-8 flex items-center justify-center overflow-hidden bg-black shadow-inner relative">
-                <div id="placeholder" class="text-zinc-600 font-medium tracking-widest text-sm uppercase">No Roll Loaded</div>
-                
-                <div id="canvas-wrapper" class="relative hidden" style="max-width: 100%; max-height: 100%; display: none;">
-                    <!-- Dummy pusher keeps the wrapper sizing correct while preview-canvas is absolutely positioned -->
-                    <canvas id="dummy-pusher" class="block" style="max-width: 100%; max-height: 100%; object-fit: contain; visibility: hidden; pointer-events: none;"></canvas>
-                    <canvas id="preview-canvas" class="absolute top-0 left-0 drop-shadow-2xl rounded" style="object-fit: fill;"></canvas>
-                    
-                    <!-- SVG Crop Overlay -->
-                    <svg id="crop-overlay" class="absolute top-0 left-0 w-full h-full pointer-events-none hidden z-10" style="overflow: visible;">
-                        <path id="crop-mask" fill="rgba(0,0,0,0.6)" fill-rule="evenodd" d=""></path>
-                        <rect id="crop-box" x="0" y="0" width="100%" height="100%" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="1.5" stroke-dasharray="4 4" class="pointer-events-auto cursor-move"></rect>
-                        
-                        <g id="crop-grid" opacity="0" class="transition-opacity duration-200 pointer-events-none">
-                            <line id="grid-v1" x1="33.33%" y1="0" x2="33.33%" y2="100%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
-                            <line id="grid-v2" x1="66.66%" y1="0" x2="66.66%" y2="100%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
-                            <line id="grid-h1" x1="0" y1="33.33%" x2="100%" y2="33.33%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
-                            <line id="grid-h2" x1="0" y1="66.66%" x2="100%" y2="66.66%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
-                        </g>
-
-                        <g id="crop-handles" class="pointer-events-auto">
-                            <!-- Resize Handles -->
-                            <rect class="crop-handle" data-pos="nw" x="-4" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nwse-resize;"/>
-                            <rect class="crop-handle" data-pos="n" x="50%" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ns-resize;" transform="translate(-4, 0)"/>
-                            <rect class="crop-handle" data-pos="ne" x="100%" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nesw-resize;" transform="translate(-4, 0)"/>
-                            <rect class="crop-handle" data-pos="w" x="-4" y="50%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ew-resize;" transform="translate(0, -4)"/>
-                            <rect class="crop-handle" data-pos="e" x="100%" y="50%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ew-resize;" transform="translate(-4, -4)"/>
-                            <rect class="crop-handle" data-pos="sw" x="-4" y="100%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nesw-resize;" transform="translate(0, -4)"/>
-                            <rect class="crop-handle" data-pos="s" x="50%" y="100%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ns-resize;" transform="translate(-4, -4)"/>
-                            <rect class="crop-handle" data-pos="se" x="100%" y="100%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nwse-resize;" transform="translate(-4, -4)"/>
-                        </g>
+            <div class="flex-1 p-8 overflow-y-auto custom-scrollbar">
+                <div id="library-empty" class="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-4">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
+                    <div class="font-medium tracking-widest text-sm uppercase">No Images Loaded</div>
+                    <button class="btn-import-trigger px-6 py-2 mt-4 text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import From Disk</button>
                 </div>
-            </div>
-            
-            <!-- Filmstrip Carousel -->
-            <div id="filmstrip-container" class="h-[140px] shrink-0 border-t border-zinc-800/50 flex items-center px-4 gap-4 overflow-x-auto custom-scrollbar" style="background-color: #1a1a1e;">
-                <!-- Dynamically populated by JS -->
+                <div id="library-grid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 hidden">
+                    <!-- Library Items -->
+                </div>
             </div>
         </div>
-        
-        <!-- Right Sidebar -->
-        <div id="sidebar" class="w-[350px] h-full border-l border-zinc-800 shrink-0 flex flex-col shadow-2xl overflow-y-auto custom-scrollbar z-10" style="background-color: #1a1a1e;">
-            <div class="px-6 py-5 border-b border-zinc-800/50 sticky top-0 z-10" style="background-color: #1a1a1eb3; backdrop-filter: blur(8px);">
-                <h2 class="text-[11px] font-bold text-zinc-400 tracking-[0.25em] uppercase">NEXFILM CORE CONTROLS</h2>
-            </div>
+
+        <!-- ============================== -->
+        <!-- VIEW: DEVELOP                  -->
+        <!-- ============================== -->
+        <div id="view-develop" class="absolute inset-0 flex opacity-0 pointer-events-none transition-opacity duration-300 z-10">
             
-            <div class="p-6 flex flex-col gap-8">
-                <!-- Mode Toggle -->
-                <div class="control-group">
-                    <div class="flex items-center justify-between bg-zinc-800/50 p-1 rounded-lg border border-zinc-700/50">
-                        <button id="btn-mode-color" class="flex-1 text-[11px] font-bold tracking-widest uppercase py-1.5 rounded-md transition-all bg-zinc-700 text-zinc-100 shadow-sm disabled:opacity-50">COLOR</button>
-                        <button id="btn-mode-bw" class="flex-1 text-[11px] font-bold tracking-widest uppercase py-1.5 rounded-md transition-all text-zinc-500 hover:text-zinc-300 disabled:opacity-50">B&W</button>
+            <!-- Left Workspace -->
+            <div class="flex-1 flex flex-col h-full overflow-hidden">
+                <!-- Transform Tool Bar -->
+                <div class="h-[48px] border-b border-[#28282c] flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm bg-[#1C1C1E]">
+                    <div class="flex space-x-2">
+                        <button id="btn-crop-mode" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>CROP</button>
                     </div>
+                    <button id="btn-auto-crop" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>AUTO</button>
+                    <div class="w-px h-4 bg-zinc-700"></div>
+                    <button id="btn-rotate-left" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>ROT L</button>
+                    <button id="btn-rotate-right" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>ROT R</button>
+                    <div class="w-px h-4 bg-zinc-700"></div>
+                    <button id="btn-flip-h" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>FLIP H</button>
+                    <button id="btn-flip-v" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>FLIP V</button>
                 </div>
 
-                <!-- Geometry section removed -->
-
-                <!-- Base & Density Control -->
-                <div class="control-group">
-                    <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-4">Density Targets</h3>
-                    <div class="flex flex-col gap-5">
-                        <div class="slider-container">
-                            <div class="flex justify-between items-center mb-2">
-                                <label class="text-[12px] font-medium text-zinc-300 tracking-wide">D-Min</label>
-                                <span id="val-dmin" class="text-[11px] font-mono text-zinc-400">0.100</span>
-                            </div>
-                            <input type="range" id="dmin" class="w-full custom-range silver-track" min="0.00" max="1.00" step="0.002" value="0.10" disabled>
-                        </div>
-                        <div class="slider-container">
-                            <div class="flex justify-between items-center mb-2">
-                                <label class="text-[12px] font-medium text-zinc-300 tracking-wide">D-Max</label>
-                                <span id="val-dmax" class="text-[11px] font-mono text-zinc-400">2.000</span>
-                            </div>
-                            <input type="range" id="dmax" class="w-full custom-range silver-track" min="0.50" max="3.00" step="0.002" value="2.00" disabled>
-                        </div>
+                <!-- Main Preview -->
+                <div class="flex-1 w-full h-full p-8 flex items-center justify-center overflow-hidden bg-black relative">
+                    <div id="canvas-wrapper" class="relative" style="display: none; max-width: 100%; max-height: 100%;">
+                        <canvas id="dummy-pusher" class="block" style="max-width: 100%; max-height: 100%; object-fit: contain; visibility: hidden; pointer-events: none;"></canvas>
+                        <canvas id="preview-canvas" class="absolute top-0 left-0 w-full h-full" style="object-fit: fill;"></canvas>
+                        
+                        <!-- SVG Crop Overlay -->
+                        <svg id="crop-overlay" class="absolute top-0 left-0 w-full h-full pointer-events-none hidden z-10" style="overflow: visible;">
+                            <!-- Outer Rotation Handles (Large invisible paths surrounding the box) -->
+                            <rect id="rotate-handle-outer" x="-50%" y="-50%" width="200%" height="200%" fill="transparent" class="pointer-events-auto" style="cursor: grab;"></rect>
+                            <path id="crop-mask" fill="rgba(0,0,0,0.6)" fill-rule="evenodd" d=""></path>
+                            <rect id="crop-box" x="0" y="0" width="100%" height="100%" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="1.5" stroke-dasharray="4 4" class="pointer-events-auto cursor-move"></rect>
+                            <g id="crop-grid" opacity="0" class="transition-opacity duration-200 pointer-events-none">
+                                <line id="grid-v1" x1="33.33%" y1="0" x2="33.33%" y2="100%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+                                <line id="grid-v2" x1="66.66%" y1="0" x2="66.66%" y2="100%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+                                <line id="grid-h1" x1="0" y1="33.33%" x2="100%" y2="33.33%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+                                <line id="grid-h2" x1="0" y1="66.66%" x2="100%" y2="66.66%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+                            </g>
+                            <g id="crop-handles" class="pointer-events-auto">
+                                <rect class="crop-handle" data-pos="nw" x="-4" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nwse-resize;"/>
+                                <rect class="crop-handle" data-pos="n" x="50%" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ns-resize;" transform="translate(-4, 0)"/>
+                                <rect class="crop-handle" data-pos="ne" x="100%" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nesw-resize;" transform="translate(-4, 0)"/>
+                                <rect class="crop-handle" data-pos="w" x="-4" y="50%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ew-resize;" transform="translate(0, -4)"/>
+                                <rect class="crop-handle" data-pos="e" x="100%" y="50%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ew-resize;" transform="translate(-4, -4)"/>
+                                <rect class="crop-handle" data-pos="sw" x="-4" y="100%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nesw-resize;" transform="translate(0, -4)"/>
+                                <rect class="crop-handle" data-pos="s" x="50%" y="100%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ns-resize;" transform="translate(-4, -4)"/>
+                                <rect class="crop-handle" data-pos="se" x="100%" y="100%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nwse-resize;" transform="translate(-4, -4)"/>
+                            </g>
+                        </svg>
                     </div>
                 </div>
-
-                <!-- Aesthetics -->
-                <div class="control-group">
-                    <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-4">Aesthetics</h3>
-                    <div class="flex flex-col gap-5">
-                        <div class="slider-container">
-                            <div class="flex justify-between items-center mb-2">
-                                <label class="text-[12px] font-medium text-zinc-300 tracking-wide">Exposure</label>
-                                <span id="val-exposure" class="text-[11px] font-mono text-zinc-400">0.000</span>
-                            </div>
-                            <input type="range" id="exposure" class="w-full custom-range silver-track" min="-3.00" max="3.00" step="0.002" value="0.00" disabled>
-                        </div>
-                        <div class="slider-container">
-                            <div class="flex justify-between items-center mb-2">
-                                <label class="text-[12px] font-medium text-zinc-300 tracking-wide">Gamma</label>
-                                <span id="val-gamma" class="text-[11px] font-mono text-zinc-400">1.000</span>
-                            </div>
-                            <input type="range" id="gamma" class="w-full custom-range silver-track" min="0.10" max="3.00" step="0.002" value="1.00" disabled>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Printer Lights -->
-                <div class="control-group">
-                    <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-4">Printer Lights (CMY)</h3>
-                    <div class="flex flex-col gap-5">
-                        <div class="slider-container">
-                            <div class="flex justify-between items-center mb-2">
-                                <label class="text-[12px] font-medium text-red-400/80 tracking-wide">Red / Cyan</label>
-                                <span id="val-expr" class="text-[11px] font-mono text-zinc-400">0.000</span>
-                            </div>
-                            <input type="range" id="expr" class="w-full custom-range red-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
-                        </div>
-                        <div class="slider-container">
-                            <div class="flex justify-between items-center mb-2">
-                                <label class="text-[12px] font-medium text-emerald-400/80 tracking-wide">Green / Magenta</label>
-                                <span id="val-expg" class="text-[11px] font-mono text-zinc-400">0.000</span>
-                            </div>
-                            <input type="range" id="expg" class="w-full custom-range green-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
-                        </div>
-                        <div class="slider-container">
-                            <div class="flex justify-between items-center mb-2">
-                                <label class="text-[12px] font-medium text-blue-400/80 tracking-wide">Blue / Yellow</label>
-                                <span id="val-expb" class="text-[11px] font-mono text-zinc-400">0.000</span>
-                            </div>
-                            <input type="range" id="expb" class="w-full custom-range blue-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
-                        </div>
-                    </div>
+                
+                <!-- Filmstrip Carousel -->
+                <div id="filmstrip-container" class="h-[120px] shrink-0 border-t border-[#28282c] flex items-center px-6 gap-3 overflow-x-auto custom-scrollbar bg-[#1C1C1E]">
+                    <!-- Dynamically populated by JS -->
                 </div>
             </div>
             
+            <!-- Right Sidebar -->
+            <div class="w-[340px] h-full border-l border-[#28282c] shrink-0 flex flex-col shadow-2xl overflow-y-auto custom-scrollbar z-10 bg-[#1C1C1E]">
+                
+                <!-- Histogram / Waveform Area -->
+                <div class="px-6 py-5 border-b border-[#28282c] bg-[#1a1a1ef0] backdrop-blur sticky top-0 z-10 shadow-sm">
+                    <div class="flex justify-between items-center mb-3">
+                        <h2 class="text-[10px] font-bold text-zinc-500 tracking-[0.2em] uppercase" id="viz-title">Histogram</h2>
+                        <button id="btn-toggle-viz" class="text-[9px] font-bold text-zinc-400 hover:text-zinc-100 bg-[#28282c] hover:bg-zinc-700 px-2 py-1 rounded transition-colors uppercase tracking-wider">Waveform</button>
+                    </div>
+                    <div class="w-full h-[140px] bg-[#121214] rounded-md overflow-hidden relative shadow-inner border border-[#28282c]">
+                        <canvas id="histogram-canvas" class="w-full h-full absolute top-0 left-0"></canvas>
+                        <canvas id="waveform-canvas" class="w-full h-full absolute top-0 left-0 hidden"></canvas>
+                    </div>
+                </div>
+
+                <div class="p-6 flex flex-col gap-7">
+                    <!-- Mode Toggle -->
+                    <div class="control-group">
+                        <div class="flex items-center justify-between bg-[#121214] p-1 rounded-md border border-[#28282c]">
+                            <button id="btn-mode-color" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all bg-[#28282c] text-zinc-100 shadow-sm disabled:opacity-50">COLOR</button>
+                            <button id="btn-mode-bw" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all text-zinc-500 hover:text-zinc-300 disabled:opacity-50">B&W</button>
+                        </div>
+                    </div>
+
+                    <!-- Density Targets -->
+                    <div class="control-group border-t border-[#28282c] pt-6">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
+                            Density Limits
+                        </h3>
+                        <div class="flex flex-col gap-5">
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">D-Min</label>
+                                    <span id="val-dmin" class="text-[10px] font-mono text-zinc-400">0.100</span>
+                                </div>
+                                <input type="range" id="dmin" class="w-full custom-range silver-track" min="0.00" max="1.00" step="0.002" value="0.10" disabled>
+                            </div>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">D-Max</label>
+                                    <span id="val-dmax" class="text-[10px] font-mono text-zinc-400">2.000</span>
+                                </div>
+                                <input type="range" id="dmax" class="w-full custom-range silver-track" min="0.50" max="3.00" step="0.002" value="2.00" disabled>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Aesthetics -->
+                    <div class="control-group border-t border-[#28282c] pt-6">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                            Aesthetics
+                        </h3>
+                        <div class="flex flex-col gap-5">
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Exposure</label>
+                                    <span id="val-exposure" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                </div>
+                                <input type="range" id="exposure" class="w-full custom-range silver-track" min="-3.00" max="3.00" step="0.002" value="0.00" disabled>
+                            </div>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Gamma</label>
+                                    <span id="val-gamma" class="text-[10px] font-mono text-zinc-400">1.000</span>
+                                </div>
+                                <input type="range" id="gamma" class="w-full custom-range silver-track" min="0.10" max="3.00" step="0.002" value="1.00" disabled>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Printer Lights -->
+                    <div class="control-group border-t border-[#28282c] pt-6 pb-6">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"></path></svg>
+                            Printer Lights
+                        </h3>
+                        <div class="flex flex-col gap-5">
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-red-400 tracking-wide">Red / Cyan</label>
+                                    <span id="val-expr" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                </div>
+                                <input type="range" id="expr" class="w-full custom-range red-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
+                            </div>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-emerald-400 tracking-wide">Green / Magenta</label>
+                                    <span id="val-expg" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                </div>
+                                <input type="range" id="expg" class="w-full custom-range green-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
+                            </div>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-blue-400 tracking-wide">Blue / Yellow</label>
+                                    <span id="val-expb" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                </div>
+                                <input type="range" id="expb" class="w-full custom-range blue-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
+
+    <!-- Export Modal -->
+    <div id="export-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
+        <div class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[450px] flex flex-col transform scale-95 transition-transform duration-200" id="export-modal-content">
+            <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
+                <h2 class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Batch Export</h2>
+                <button id="btn-close-export" class="text-zinc-500 hover:text-zinc-200 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div class="p-6 flex flex-col gap-6">
+                <div class="text-[12px] text-zinc-400 leading-relaxed">
+                    You are about to export selected images in their highest resolution.
+                    This process bypasses proxy caching and relies on the asynchronous on-demand reading engine.
+                </div>
+                
+                <div class="flex flex-col gap-4 bg-[#121214] p-4 rounded-md border border-[#28282c]">
+                    <div class="flex items-center justify-between">
+                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Format</label>
+                        <select id="export-format" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
+                            <option value="tiff16">16-bit TIFF (Uncompressed)</option>
+                            <option value="jpeg">JPEG (High Quality)</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Color Space</label>
+                        <select id="export-colorspace" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
+                            <option value="srgb">sRGB IEC61966-2.1</option>
+                            <option value="adobergb">Adobe RGB (1998)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-3 pt-2">
+                    <button id="btn-cancel-export" class="px-5 py-2 text-[12px] font-bold uppercase tracking-wider text-zinc-400 hover:text-zinc-200 transition-colors">Cancel</button>
+                    <button id="btn-confirm-export" class="px-6 py-2 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm">Select Output Folder</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="main.js"></script>
 </body>
 </html>

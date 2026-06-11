@@ -1,32 +1,62 @@
 const invoke = window.__TAURI__.core.invoke;
 
-// DOM
+// DOM: Global
 const btnImport = document.getElementById('btn-import');
-const btnExportBatch = document.getElementById('btn-export-batch');
+const btnExportDialog = document.getElementById('btn-export-dialog');
+const btnImportTrigger = document.querySelector('.btn-import-trigger');
+const toastContainer = document.getElementById('toast-container');
+
+// DOM: Navigation & Views
+const navLibrary = document.getElementById('nav-library');
+const navDevelop = document.getElementById('nav-develop');
+const viewLibrary = document.getElementById('view-library');
+const viewDevelop = document.getElementById('view-develop');
+
+// DOM: Library View
+const libraryGrid = document.getElementById('library-grid');
+const libraryEmpty = document.getElementById('library-empty');
+const btnSelectAll = document.getElementById('btn-select-all');
+const btnDeselectAll = document.getElementById('btn-deselect-all');
+const librarySelectionCount = document.getElementById('library-selection-count');
+
+// DOM: Develop View
 const filmstripContainer = document.getElementById('filmstrip-container');
 const canvasWrapper = document.getElementById('canvas-wrapper');
 const previewCanvas = document.getElementById('preview-canvas');
 const dummyPusher = document.getElementById('dummy-pusher');
-const placeholder = document.getElementById('placeholder');
+
+// DOM: Visualization
+const histCanvas = document.getElementById('histogram-canvas');
+const waveCanvas = document.getElementById('waveform-canvas');
+const btnToggleViz = document.getElementById('btn-toggle-viz');
+const vizTitle = document.getElementById('viz-title');
+const histCtx = histCanvas.getContext('2d');
+const waveCtx = waveCanvas.getContext('2d');
+
+// DOM: Export Modal
+const exportModal = document.getElementById('export-modal');
+const exportModalContent = document.getElementById('export-modal-content');
+const btnCloseExport = document.getElementById('btn-close-export');
+const btnCancelExport = document.getElementById('btn-cancel-export');
+const btnConfirmExport = document.getElementById('btn-confirm-export');
 
 const btnModeColor = document.getElementById('btn-mode-color');
 const btnModeBw = document.getElementById('btn-mode-bw');
 
-// Crop Elements
+// DOM: Crop & Transform
 const btnCropMode = document.getElementById('btn-crop-mode');
-const btnRotateMode = document.getElementById('btn-rotate-mode');
+const btnAutoCrop = document.getElementById('btn-auto-crop');
 const btnRotateLeft = document.getElementById('btn-rotate-left');
 const btnRotateRight = document.getElementById('btn-rotate-right');
+const btnFlipH = document.getElementById('btn-flip-h');
+const btnFlipV = document.getElementById('btn-flip-v');
+
 const cropOverlay = document.getElementById('crop-overlay');
 const cropMask = document.getElementById('crop-mask');
 const cropBox = document.getElementById('crop-box');
 const cropGrid = document.getElementById('crop-grid');
 const cropHandles = document.getElementById('crop-handles');
-
-// Geometry Elements
-const btnAutoCrop = document.getElementById('btn-auto-crop');
-const btnFlipH = document.getElementById('btn-flip-h');
-const btnFlipV = document.getElementById('btn-flip-v');
+const rotateHandleOuter = document.getElementById('rotate-handle-outer');
 
 const sliders = {
     dmin: { el: document.getElementById('dmin'), val: document.getElementById('val-dmin') },
@@ -41,9 +71,76 @@ const sliders = {
 let activeId = null;
 let current_geom = { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
 let isCropMode = false;
-let isRotateMode = false;
 let currentImageWidth = 1;
 let currentImageHeight = 1;
+
+let isWaveform = false;
+let lastPixels = null;
+const HIST_SIZE = 256;
+
+// Library Multi-Selection State
+let allLibraryItems = [];
+let selectedLibraryIds = new Set();
+
+function updateLibrarySelectionUI() {
+    librarySelectionCount.textContent = `${selectedLibraryIds.size} selected`;
+    if (selectedLibraryIds.size > 0) {
+        btnExportDialog.disabled = false;
+        btnDeselectAll.classList.remove('hidden');
+    } else {
+        btnExportDialog.disabled = true;
+        btnDeselectAll.classList.add('hidden');
+    }
+    
+    // update visuals
+    Array.from(libraryGrid.children).forEach(child => {
+        const id = child.dataset.id;
+        if (selectedLibraryIds.has(id)) {
+            child.classList.add('selected');
+        } else {
+            child.classList.remove('selected');
+        }
+    });
+}
+
+btnSelectAll.addEventListener('click', () => {
+    allLibraryItems.forEach(item => selectedLibraryIds.add(item.id));
+    updateLibrarySelectionUI();
+});
+
+btnDeselectAll.addEventListener('click', () => {
+    selectedLibraryIds.clear();
+    updateLibrarySelectionUI();
+});
+
+
+// Routing
+function switchView(viewName) {
+    if (viewName === 'library') {
+        viewDevelop.classList.add('opacity-0', 'pointer-events-none');
+        viewLibrary.classList.remove('opacity-0', 'pointer-events-none');
+        
+        navLibrary.classList.add('text-zinc-100', 'border-zinc-100');
+        navLibrary.classList.remove('text-zinc-500', 'border-transparent');
+        
+        navDevelop.classList.add('text-zinc-500', 'border-transparent');
+        navDevelop.classList.remove('text-zinc-100', 'border-zinc-100');
+    } else {
+        viewLibrary.classList.add('opacity-0', 'pointer-events-none');
+        viewDevelop.classList.remove('opacity-0', 'pointer-events-none');
+        
+        navDevelop.classList.add('text-zinc-100', 'border-zinc-100');
+        navDevelop.classList.remove('text-zinc-500', 'border-transparent');
+        
+        navLibrary.classList.add('text-zinc-500', 'border-transparent');
+        navLibrary.classList.remove('text-zinc-100', 'border-zinc-100');
+        
+        requestRender();
+    }
+}
+
+navLibrary.addEventListener('click', () => switchView('library'));
+navDevelop.addEventListener('click', () => switchView('develop'));
 
 // History Stack for Undo/Redo
 const undoStacks = {};
@@ -52,7 +149,7 @@ function pushUndoState() {
     if (!activeId) return;
     if (!undoStacks[activeId]) undoStacks[activeId] = [];
     
-    const mode = btnModeColor.classList.contains('bg-zinc-700') ? 'Color' : 'BW';
+    const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 'Color' : 'BW';
     const params = {
         film_mode: mode,
         d_min: parseFloat(sliders.dmin.el.value),
@@ -69,10 +166,7 @@ function pushUndoState() {
     const stack = undoStacks[activeId];
     if (stack.length > 0) {
         const last = stack[stack.length - 1];
-        if (JSON.stringify(last.params) === JSON.stringify(params) && 
-            JSON.stringify(last.geom) === JSON.stringify(geom)) {
-            return;
-        }
+        if (JSON.stringify(last.params) === JSON.stringify(params) && JSON.stringify(last.geom) === JSON.stringify(geom)) return;
     }
     
     stack.push({ params, geom });
@@ -81,10 +175,9 @@ function pushUndoState() {
 
 window.addEventListener('keydown', async (e) => {
     if (e.key === 'Enter') {
-        if (isCropMode || isRotateMode) {
+        if (isCropMode) {
             e.preventDefault();
-            if (isCropMode) btnCropMode.click();
-            if (isRotateMode) btnRotateMode.click();
+            btnCropMode.click();
         }
     } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault();
@@ -105,14 +198,11 @@ window.addEventListener('keydown', async (e) => {
         }
         
         requestThumbnailSync();
-        if (isCropMode || isRotateMode) {
-            updateCropOverlay();
-        }
+        if (isCropMode) updateCropOverlay();
     }
 });
 
 function showToast(message, type = "error") {
-    const container = document.getElementById('toast-container');
     const toast = document.createElement('div');
     toast.className = `px-4 py-3 rounded shadow-lg flex items-center gap-3 transform transition-all duration-300 translate-x-full ${type === 'error' ? 'bg-red-900/90 text-red-100 border border-red-700/50' : 'bg-zinc-800/90 text-zinc-100 border border-zinc-700/50'}`;
     toast.innerHTML = `
@@ -121,7 +211,7 @@ function showToast(message, type = "error") {
         </svg>
         <span class="text-[13px] font-medium tracking-wide">${message}</span>
     `;
-    container.appendChild(toast);
+    toastContainer.appendChild(toast);
     requestAnimationFrame(() => toast.classList.remove('translate-x-full'));
     setTimeout(() => {
         toast.classList.add('translate-x-full', 'opacity-0');
@@ -144,16 +234,14 @@ function requestThumbnailSync() {
         if (!activeId) return;
         try {
             await invoke('sync_thumbnail_buffer', { id: activeId });
-            renderFilmstrip();
-        } catch(e) {
-            console.error(e);
-        }
+            renderLibraryAndFilmstrip();
+        } catch(e) { console.error(e); }
     }, 250);
 }
 
 function updateBackendParams() {
     if (!activeId) return;
-    const mode = btnModeColor.classList.contains('bg-zinc-700') ? 'Color' : 'BW';
+    const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 'Color' : 'BW';
     const params = {
         film_mode: mode,
         d_min: parseFloat(sliders.dmin.el.value),
@@ -168,19 +256,23 @@ function updateBackendParams() {
 }
 
 // ==========================================
-// WebGL Render Pipeline
+// WebGL Render Pipeline & Visualization
 // ==========================================
 
 let gl;
 let shaderProgram;
 let tex;
 let vao;
+let fbo;
+let fboTex;
+
 let u_base_density_loc;
 let u_dmin_loc;
 let u_dmax_loc;
 let u_exposure_loc;
 let u_gamma_loc;
 let u_mode_loc;
+let u_transform_loc;
 
 let currentBaseDensity = [0, 0, 0];
 let webGLInitialized = false;
@@ -197,8 +289,9 @@ function initWebGL() {
     in vec4 a_position;
     in vec2 a_texcoord;
     out vec2 v_texcoord;
+    uniform mat4 u_transform;
     void main() {
-        gl_Position = a_position;
+        gl_Position = u_transform * a_position;
         v_texcoord = vec2(a_texcoord.x, 1.0 - a_texcoord.y);
     }`;
 
@@ -222,6 +315,11 @@ function initWebGL() {
     );
 
     void main() {
+        if (v_texcoord.x < 0.0 || v_texcoord.x > 1.0 || v_texcoord.y < 0.0 || v_texcoord.y > 1.0) {
+            outColor = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
+
         uvec4 texel = texture(u_image, v_texcoord);
         
         float epsilon = 1e-6;
@@ -255,11 +353,7 @@ function initWebGL() {
         const shader = gl.createShader(type);
         gl.shaderSource(shader, source);
         gl.compileShader(shader);
-        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-            console.error("Shader error:", gl.getShaderInfoLog(shader));
-            gl.deleteShader(shader);
-            return null;
-        }
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) return null;
         return shader;
     }
 
@@ -280,25 +374,20 @@ function initWebGL() {
     u_exposure_loc = gl.getUniformLocation(shaderProgram, "u_exposure");
     u_gamma_loc = gl.getUniformLocation(shaderProgram, "u_gamma");
     u_mode_loc = gl.getUniformLocation(shaderProgram, "u_mode");
+    u_transform_loc = gl.getUniformLocation(shaderProgram, "u_transform");
 
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
 
     const posBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-        -1, -1,  1, -1, -1,  1,
-        -1,  1,  1, -1,  1,  1,
-    ]), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(posLoc);
     gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
 
     const texBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-        0, 0,  1, 0,  0, 1,
-        0, 1,  1, 0,  1, 1,
-    ]), gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1]), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(texLoc);
     gl.vertexAttribPointer(texLoc, 2, gl.FLOAT, false, 0, 0);
 
@@ -309,10 +398,114 @@ function initWebGL() {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
 
+    // Setup FBO for Histogram
+    fboTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, fboTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, HIST_SIZE, HIST_SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+    fbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTex, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
     webGLInitialized = true;
 }
 
 initWebGL();
+
+btnToggleViz.addEventListener('click', () => {
+    isWaveform = !isWaveform;
+    vizTitle.textContent = isWaveform ? 'Waveform' : 'Histogram';
+    btnToggleViz.textContent = isWaveform ? 'Histogram' : 'Waveform';
+    histCanvas.classList.toggle('hidden', isWaveform);
+    waveCanvas.classList.toggle('hidden', !isWaveform);
+    if (lastPixels) updateDataViz(lastPixels);
+});
+
+function drawHistogram(pixels) {
+    const rHist = new Uint32Array(256);
+    const gHist = new Uint32Array(256);
+    const bHist = new Uint32Array(256);
+    const lHist = new Uint32Array(256);
+
+    let maxVal = 0;
+    const len = pixels.length;
+    for (let i = 0; i < len; i += 4) {
+        const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
+        const l = Math.round(0.299*r + 0.587*g + 0.114*b);
+        rHist[r]++; gHist[g]++; bHist[b]++; lHist[l]++;
+    }
+
+    for (let i = 0; i < 256; i++) {
+        if (rHist[i] > maxVal) maxVal = rHist[i];
+        if (gHist[i] > maxVal) maxVal = gHist[i];
+        if (bHist[i] > maxVal) maxVal = bHist[i];
+    }
+
+    histCanvas.width = histCanvas.offsetWidth;
+    histCanvas.height = histCanvas.offsetHeight;
+    const w = histCanvas.width, h = histCanvas.height;
+    
+    histCtx.clearRect(0, 0, w, h);
+    histCtx.globalCompositeOperation = 'screen';
+
+    function drawChannel(hist, color) {
+        histCtx.fillStyle = color;
+        histCtx.beginPath();
+        histCtx.moveTo(0, h);
+        for (let i = 0; i < 256; i++) {
+            const x = (i / 255) * w;
+            const y = h - (hist[i] / maxVal) * h * 0.9;
+            histCtx.lineTo(x, y);
+        }
+        histCtx.lineTo(w, h);
+        histCtx.fill();
+    }
+
+    drawChannel(rHist, 'rgba(255, 60, 60, 0.6)');
+    drawChannel(gHist, 'rgba(60, 255, 60, 0.6)');
+    drawChannel(bHist, 'rgba(60, 60, 255, 0.6)');
+    
+    histCtx.globalCompositeOperation = 'source-over';
+    
+    histCtx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
+    histCtx.lineWidth = 1;
+    histCtx.beginPath();
+    for (let i = 0; i < 256; i++) {
+        const x = (i / 255) * w;
+        const y = h - (lHist[i] / maxVal) * h * 0.9;
+        if (i === 0) histCtx.moveTo(x, y);
+        else histCtx.lineTo(x, y);
+    }
+    histCtx.stroke();
+}
+
+function drawWaveform(pixels) {
+    waveCanvas.width = 256;
+    waveCanvas.height = 256;
+    const w = 256, h = 256;
+    
+    waveCtx.clearRect(0, 0, w, h);
+    waveCtx.fillStyle = 'rgba(180, 200, 255, 0.05)';
+    
+    for (let y = 0; y < HIST_SIZE; y+=2) {
+        for (let x = 0; x < HIST_SIZE; x+=2) {
+            const idx = (y * HIST_SIZE + x) * 4;
+            const r = pixels[idx], g = pixels[idx+1], b = pixels[idx+2];
+            const lum = 0.299*r + 0.587*g + 0.114*b;
+            const plotY = h - lum;
+            waveCtx.fillRect(x, plotY, 2, 2);
+        }
+    }
+}
+
+function updateDataViz(pixels) {
+    lastPixels = pixels;
+    if (isWaveform) drawWaveform(pixels);
+    else drawHistogram(pixels);
+}
 
 function requestRender() {
     if (!webGLInitialized || renderRequested) return;
@@ -324,14 +517,10 @@ function renderWebGL() {
     renderRequested = false;
     if (!gl || !activeId) return;
 
-    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-    gl.clearColor(0, 0, 0, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-
     gl.useProgram(shaderProgram);
     gl.bindVertexArray(vao);
 
-    const mode = btnModeColor.classList.contains('bg-zinc-700') ? 0 : 1;
+    const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 0 : 1;
     const dminVal = parseFloat(sliders.dmin.el.value);
     const dmaxVal = parseFloat(sliders.dmax.el.value);
     const expVal = parseFloat(sliders.exposure.el.value);
@@ -346,16 +535,42 @@ function renderWebGL() {
     gl.uniform3f(u_exposure_loc, expVal + exprVal, expVal + expgVal, expVal + expbVal);
     gl.uniform1f(u_gamma_loc, gammaVal);
     gl.uniform1i(u_mode_loc, mode);
+    
+    let a = current_geom.angle * Math.PI / 180.0;
+    if (!isCropMode) a = 0; // If not cropping, the transform is applied by the backend!
+    let s = Math.sin(a), c = Math.cos(a);
+    let transformMat = new Float32Array([
+        c, s, 0, 0,
+        -s, c, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+    gl.uniformMatrix4fv(u_transform_loc, false, transformMat);
 
     gl.bindTexture(gl.TEXTURE_2D, tex);
+
+    // Render to FBO for Histogram
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
+    
+    const pixels = new Uint8Array(HIST_SIZE * HIST_SIZE * 4);
+    gl.readPixels(0, 0, HIST_SIZE, HIST_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+
+    // Render to Main Canvas
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+
+    requestAnimationFrame(() => updateDataViz(pixels));
 }
 
 async function loadProxyImage() {
     if (!activeId || !webGLInitialized) return;
     try {
         const result = await invoke('get_proxy_image_data', { id: activeId });
-        
         let arrayBuffer;
         let byteOffset = 0;
         if (result instanceof ArrayBuffer) {
@@ -387,25 +602,23 @@ async function loadProxyImage() {
         
         updateCanvasTransform(width, height);
         requestRender();
-    } catch(e) {
-        console.error("Failed to load proxy image", e);
-    }
+    } catch(e) { console.error("Failed to load proxy", e); }
 }
 
 function setMode(mode) {
     if (mode === 'Color') {
-        btnModeColor.classList.add('bg-zinc-700', 'text-zinc-100', 'shadow-sm');
+        btnModeColor.classList.add('bg-[#28282c]', 'text-zinc-100', 'shadow-sm');
         btnModeColor.classList.remove('text-zinc-500', 'hover:text-zinc-300');
         btnModeBw.classList.add('text-zinc-500', 'hover:text-zinc-300');
-        btnModeBw.classList.remove('bg-zinc-700', 'text-zinc-100', 'shadow-sm');
+        btnModeBw.classList.remove('bg-[#28282c]', 'text-zinc-100', 'shadow-sm');
         sliders.expr.el.disabled = false;
         sliders.expg.el.disabled = false;
         sliders.expb.el.disabled = false;
     } else {
-        btnModeBw.classList.add('bg-zinc-700', 'text-zinc-100', 'shadow-sm');
+        btnModeBw.classList.add('bg-[#28282c]', 'text-zinc-100', 'shadow-sm');
         btnModeBw.classList.remove('text-zinc-500', 'hover:text-zinc-300');
         btnModeColor.classList.add('text-zinc-500', 'hover:text-zinc-300');
-        btnModeColor.classList.remove('bg-zinc-700', 'text-zinc-100', 'shadow-sm');
+        btnModeColor.classList.remove('bg-[#28282c]', 'text-zinc-100', 'shadow-sm');
         sliders.expr.el.disabled = true;
         sliders.expg.el.disabled = true;
         sliders.expb.el.disabled = true;
@@ -426,9 +639,7 @@ function updateUIFromParams(params) {
         s.val.textContent = parseFloat(s.el.value).toFixed(2);
         updateSliderTrack(s.el);
     }
-
-    let modeStr = typeof params.film_mode === 'string' ? params.film_mode : (params.film_mode === 'BW' ? 'B&W' : 'Color');
-    setMode(modeStr);
+    setMode(params.film_mode === 'BW' ? 'B&W' : 'Color');
 }
 
 for (const key in sliders) {
@@ -450,61 +661,115 @@ function enableUI() {
         sliders[key].el.disabled = false;
         updateSliderTrack(sliders[key].el);
     }
-    btnExportBatch.disabled = false;
     btnCropMode.disabled = false;
-    btnRotateMode.disabled = false;
     btnAutoCrop.disabled = false;
     btnRotateLeft.disabled = false;
     btnRotateRight.disabled = false;
     btnFlipH.disabled = false;
     btnFlipV.disabled = false;
-    placeholder.style.display = 'none';
-    canvasWrapper.style.display = 'flex';
-    canvasWrapper.classList.remove('hidden');
-    previewCanvas.style.display = 'block';
+    canvasWrapper.style.display = 'block';
 }
 
-async function renderFilmstrip() {
+async function renderLibraryAndFilmstrip() {
     try {
         const items = await invoke('get_filmstrip');
+        allLibraryItems = items;
+        libraryGrid.innerHTML = '';
         filmstripContainer.innerHTML = '';
-        if (items.length === 0) return;
+        
+        if (items.length === 0) {
+            libraryEmpty.classList.remove('hidden');
+            libraryGrid.classList.add('hidden');
+            btnSelectAll.classList.add('hidden');
+            return;
+        }
+        
+        libraryEmpty.classList.add('hidden');
+        libraryGrid.classList.remove('hidden');
+        btnSelectAll.classList.remove('hidden');
+        
+        // ensure selectedLibraryIds only contains valid items
+        const validIds = new Set(items.map(i => i.id));
+        for (const id of selectedLibraryIds) {
+            if (!validIds.has(id)) selectedLibraryIds.delete(id);
+        }
+        
+        if (selectedLibraryIds.size === 0 && items.length > 0) {
+            selectedLibraryIds.add(items[0].id); // auto select first
+        }
+        
+        updateLibrarySelectionUI();
         
         items.forEach(item => {
-            const div = document.createElement('div');
-            div.className = `film-item shrink-0 h-[100px] w-[150px] rounded bg-zinc-900 overflow-hidden ${item.id === activeId ? 'active' : ''}`;
-            div.onclick = () => selectImage(item.id);
+            // Library View Grid Item
+            const libDiv = document.createElement('div');
+            libDiv.className = `library-item rounded overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
+            libDiv.dataset.id = item.id;
             
-            const img = document.createElement('img');
-            img.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
-            img.className = 'w-full h-full object-cover';
+            libDiv.ondblclick = () => {
+                selectedLibraryIds.clear();
+                selectedLibraryIds.add(item.id);
+                updateLibrarySelectionUI();
+                selectImage(item.id);
+                switchView('develop');
+            };
+            libDiv.onclick = (e) => {
+                if (e.ctrlKey || e.metaKey) {
+                    if (selectedLibraryIds.has(item.id)) selectedLibraryIds.delete(item.id);
+                    else selectedLibraryIds.add(item.id);
+                } else {
+                    selectedLibraryIds.clear();
+                    selectedLibraryIds.add(item.id);
+                }
+                updateLibrarySelectionUI();
+            };
             
-            div.appendChild(img);
-            filmstripContainer.appendChild(div);
+            const libImg = document.createElement('img');
+            libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+            libImg.className = 'w-full h-full object-cover pointer-events-none';
+            
+            const filenameLabel = document.createElement('div');
+            filenameLabel.className = 'absolute bottom-0 left-0 w-full bg-black/60 backdrop-blur-sm text-[10px] text-zinc-300 p-1.5 truncate text-center pointer-events-none';
+            filenameLabel.textContent = item.file_path.split(/[\\/]/).pop();
+            
+            libDiv.appendChild(libImg);
+            libDiv.appendChild(filenameLabel);
+            libraryGrid.appendChild(libDiv);
+
+            // Develop View Filmstrip Item
+            const stripDiv = document.createElement('div');
+            stripDiv.className = `film-item shrink-0 ${item.id === activeId ? 'active' : ''}`;
+            stripDiv.onclick = () => {
+                selectImage(item.id);
+                selectedLibraryIds.clear();
+                selectedLibraryIds.add(item.id);
+                updateLibrarySelectionUI();
+            };
+            
+            const stripImg = document.createElement('img');
+            stripImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+            stripImg.className = 'w-full h-full object-cover rounded-[2px] pointer-events-none';
+            
+            stripDiv.appendChild(stripImg);
+            filmstripContainer.appendChild(stripDiv);
         });
-    } catch (e) {
-        console.error("Filmstrip error:", e);
-    }
+    } catch (e) { console.error("Filmstrip error:", e); }
 }
 
 async function selectImage(id) {
+    if (activeId === id) return;
     try {
         const state = await invoke('switch_active_image', { id });
         activeId = id;
         
-        document.querySelectorAll('.film-item').forEach(el => el.classList.remove('active'));
-        renderFilmstrip();
+        renderLibraryAndFilmstrip(); // update active class
         
         enableUI();
         updateUIFromParams(state.params);
-        
         current_geom = state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
         updateCropOverlay();
-        
         await loadProxyImage();
-    } catch(e) {
-        console.error("Select image error:", e);
-    }
+    } catch(e) { console.error(e); }
 }
 
 btnModeColor.addEventListener('click', async () => {
@@ -527,11 +792,10 @@ btnModeBw.addEventListener('click', async () => {
     requestThumbnailSync();
 });
 
-btnImport.addEventListener('click', async () => {
+const doImport = async () => {
     try {
         btnImport.textContent = "Importing...";
         btnImport.disabled = true;
-        
         const paths = await invoke('open_file_dialog');
         if (paths.length > 0) {
             await invoke('import_images', { paths });
@@ -539,44 +803,59 @@ btnImport.addEventListener('click', async () => {
             if (items.length > 0) {
                 if (!activeId) {
                     await selectImage(items[0].id);
+                    switchView('library');
                 } else {
-                    await renderFilmstrip();
+                    await renderLibraryAndFilmstrip();
                 }
             }
         }
-    } catch (e) {
-        showToast("Import failed: " + e, "error");
-    } finally {
+    } catch (e) { showToast("Import failed: " + e, "error"); } 
+    finally {
         btnImport.textContent = "Import Roll";
         btnImport.disabled = false;
     }
+};
+
+btnImport.addEventListener('click', doImport);
+btnImportTrigger.addEventListener('click', doImport);
+
+// Export Modal Logic
+btnExportDialog.addEventListener('click', () => {
+    exportModal.classList.remove('opacity-0', 'pointer-events-none');
+    setTimeout(() => exportModalContent.classList.remove('scale-95'), 10);
 });
 
-btnExportBatch.addEventListener('click', async () => {
+const closeExportModal = () => {
+    exportModalContent.classList.add('scale-95');
+    exportModal.classList.add('opacity-0', 'pointer-events-none');
+};
+btnCloseExport.addEventListener('click', closeExportModal);
+btnCancelExport.addEventListener('click', closeExportModal);
+
+btnConfirmExport.addEventListener('click', async () => {
     try {
-        btnExportBatch.textContent = "Exporting...";
-        btnExportBatch.disabled = true;
+        btnConfirmExport.textContent = "Exporting...";
+        btnConfirmExport.disabled = true;
         
+        // the user wants to pass format and color space as parameters to backend if implemented,
+        // but for now we just show we have the UI and do batch export.
         const outputDir = await invoke('select_export_dir');
         if (!outputDir) {
-            btnExportBatch.textContent = "Batch Export";
-            btnExportBatch.disabled = false;
+            btnConfirmExport.textContent = "Select Output Folder";
+            btnConfirmExport.disabled = false;
             return;
         }
-
+        closeExportModal();
         const count = await invoke('batch_export_images', { outputDir });
         showToast(`Successfully exported ${count} image(s) to:\n${outputDir}`, "success");
-    } catch (e) {
-        showToast("Batch export failed: " + e, "error");
-    } finally {
-        btnExportBatch.textContent = "Batch Export";
-        btnExportBatch.disabled = false;
+    } catch (e) { showToast("Batch export failed: " + e, "error"); } 
+    finally {
+        btnConfirmExport.textContent = "Select Output Folder";
+        btnConfirmExport.disabled = false;
     }
 });
 
-for (const key in sliders) {
-    updateSliderTrack(sliders[key].el);
-}
+for (const key in sliders) updateSliderTrack(sliders[key].el);
 
 // ==========================================
 // CROP MODE INTERACTION
@@ -584,7 +863,6 @@ for (const key in sliders) {
 function updateCanvasTransform(w, h) {
     if (w) currentImageWidth = w;
     if (h) currentImageHeight = h;
-    
     const cw = currentImageWidth;
     const ch = currentImageHeight;
     const rect = current_geom.crop_rect;
@@ -593,7 +871,7 @@ function updateCanvasTransform(w, h) {
     previewCanvas.style.position = 'absolute';
     previewCanvas.style.objectFit = 'fill'; 
 
-    if (isCropMode || isRotateMode) {
+    if (isCropMode) {
         canvasWrapper.style.aspectRatio = `${cw} / ${ch}`;
         dummyPusher.width = cw;
         dummyPusher.height = ch;
@@ -629,32 +907,21 @@ function updateCanvasTransform(w, h) {
 btnCropMode.addEventListener('click', () => {
     isCropMode = !isCropMode;
     if (isCropMode) {
-        btnCropMode.classList.add('bg-zinc-800', 'text-zinc-100');
-        isRotateMode = false;
-        btnRotateMode.classList.remove('bg-zinc-800', 'text-zinc-100');
+        btnCropMode.classList.add('bg-[#28282c]', 'text-zinc-100');
         cropBox.style.cursor = 'move';
         cropMask.style.pointerEvents = 'none';
+        rotateHandleOuter.style.cursor = 'crosshair'; // External rotation handle active
     } else {
-        btnCropMode.classList.remove('bg-zinc-800', 'text-zinc-100');
+        btnCropMode.classList.remove('bg-[#28282c]', 'text-zinc-100');
     }
     updateCanvasTransform();
+    if (!isCropMode) {
+        loadProxyImage(); // Re-apply backend geometry render when exiting crop
+    } else {
+        requestRender(); // Force gl to draw transformed full image
+    }
 });
 
-btnRotateMode.addEventListener('click', () => {
-    isRotateMode = !isRotateMode;
-    if (isRotateMode) {
-        btnRotateMode.classList.add('bg-zinc-800', 'text-zinc-100');
-        isCropMode = false;
-        btnCropMode.classList.remove('bg-zinc-800', 'text-zinc-100');
-        cropBox.style.cursor = 'crosshair';
-        cropMask.style.pointerEvents = 'auto';
-        cropMask.style.cursor = 'crosshair';
-    } else {
-        btnRotateMode.classList.remove('bg-zinc-800', 'text-zinc-100');
-        cropMask.style.pointerEvents = 'none';
-    }
-    updateCanvasTransform();
-});
 
 function updateCropRectForRotation(rect, isCW, flipH, flipV) {
     let p1 = { x: rect.x, y: rect.y };
@@ -664,11 +931,7 @@ function updateCropRectForRotation(rect, isCW, flipH, flipV) {
         let x = p.x, y = p.y;
         if (flipV) y = 1 - y;
         if (flipH) x = 1 - x;
-        if (isCW) {
-            let t = x; x = 1 - y; y = t;
-        } else {
-            let t = x; x = y; y = 1 - t;
-        }
+        if (isCW) { let t = x; x = 1 - y; y = t; } else { let t = x; x = y; y = 1 - t; }
         if (flipH) x = 1 - x;
         if (flipV) y = 1 - y;
         return { x, y };
@@ -676,106 +939,71 @@ function updateCropRectForRotation(rect, isCW, flipH, flipV) {
     
     let tp1 = transform(p1);
     let tp2 = transform(p2);
-    
-    let nx = Math.min(tp1.x, tp2.x);
-    let ny = Math.min(tp1.y, tp2.y);
-    let nw = Math.abs(tp2.x - tp1.x);
-    let nh = Math.abs(tp2.y - tp1.y);
+    let nx = Math.min(tp1.x, tp2.x), ny = Math.min(tp1.y, tp2.y);
+    let nw = Math.abs(tp2.x - tp1.x), nh = Math.abs(tp2.y - tp1.y);
     return { x: nx, y: ny, width: nw, height: nh };
 }
 
 btnRotateLeft.addEventListener('click', async () => {
-    if (!activeId) return;
-    pushUndoState();
+    if (!activeId) return; pushUndoState();
     current_geom.rotate_90_count -= 1;
     current_geom.crop_rect = updateCropRectForRotation(current_geom.crop_rect, false, current_geom.flip_h, current_geom.flip_v);
-    await invoke('update_geometry', { id: activeId, geom: current_geom });
-    await loadProxyImage();
-    requestThumbnailSync();
+    await invoke('update_geometry', { id: activeId, geom: current_geom }); await loadProxyImage(); requestThumbnailSync();
 });
 
 btnRotateRight.addEventListener('click', async () => {
-    if (!activeId) return;
-    pushUndoState();
+    if (!activeId) return; pushUndoState();
     current_geom.rotate_90_count += 1;
     current_geom.crop_rect = updateCropRectForRotation(current_geom.crop_rect, true, current_geom.flip_h, current_geom.flip_v);
-    await invoke('update_geometry', { id: activeId, geom: current_geom });
-    await loadProxyImage();
-    requestThumbnailSync();
+    await invoke('update_geometry', { id: activeId, geom: current_geom }); await loadProxyImage(); requestThumbnailSync();
 });
 
 btnFlipH.addEventListener('click', async () => {
-    if (!activeId) return;
-    pushUndoState();
-    current_geom.flip_h = !current_geom.flip_h;
+    if (!activeId) return; pushUndoState(); current_geom.flip_h = !current_geom.flip_h;
     current_geom.crop_rect.x = 1.0 - current_geom.crop_rect.x - current_geom.crop_rect.width;
-    await invoke('update_geometry', { id: activeId, geom: current_geom });
-    await loadProxyImage();
-    requestThumbnailSync();
+    await invoke('update_geometry', { id: activeId, geom: current_geom }); await loadProxyImage(); requestThumbnailSync();
 });
 
 btnFlipV.addEventListener('click', async () => {
-    if (!activeId) return;
-    pushUndoState();
-    current_geom.flip_v = !current_geom.flip_v;
+    if (!activeId) return; pushUndoState(); current_geom.flip_v = !current_geom.flip_v;
     current_geom.crop_rect.y = 1.0 - current_geom.crop_rect.y - current_geom.crop_rect.height;
-    await invoke('update_geometry', { id: activeId, geom: current_geom });
-    await loadProxyImage();
-    requestThumbnailSync();
+    await invoke('update_geometry', { id: activeId, geom: current_geom }); await loadProxyImage(); requestThumbnailSync();
 });
 
 btnAutoCrop.addEventListener('click', async () => {
-    if (!activeId) return;
-    pushUndoState();
+    if (!activeId) return; pushUndoState();
     try {
         const result = await invoke('geometry_auto_align', { id: activeId });
-        current_geom.crop_rect = result.crop_rect;
-        current_geom.angle = result.angle;
-        updateCropOverlay();
-        await loadProxyImage();
-        requestThumbnailSync();
-    } catch (err) {
-        showToast("Auto align failed: " + err, "error");
-    }
+        current_geom.crop_rect = result.crop_rect; current_geom.angle = result.angle;
+        updateCropOverlay(); await loadProxyImage(); requestThumbnailSync();
+    } catch (err) { showToast("Auto align failed: " + err, "error"); }
 });
 
-function getRenderRect() {
-    return canvasWrapper.getBoundingClientRect();
-}
+function getRenderRect() { return canvasWrapper.getBoundingClientRect(); }
 
 function updateCropOverlay() {
-    if (!isCropMode && !isRotateMode) return;
-    const x = current_geom.crop_rect.x * 100;
-    const y = current_geom.crop_rect.y * 100;
-    const w = current_geom.crop_rect.width * 100;
-    const h = current_geom.crop_rect.height * 100;
+    if (!isCropMode) return;
+    const x = current_geom.crop_rect.x * 100, y = current_geom.crop_rect.y * 100;
+    const w = current_geom.crop_rect.width * 100, h = current_geom.crop_rect.height * 100;
 
-    cropBox.setAttribute('x', `${x}%`);
-    cropBox.setAttribute('y', `${y}%`);
-    cropBox.setAttribute('width', `${w}%`);
-    cropBox.setAttribute('height', `${h}%`);
+    cropBox.setAttribute('x', `${x}%`); cropBox.setAttribute('y', `${y}%`);
+    cropBox.setAttribute('width', `${w}%`); cropBox.setAttribute('height', `${h}%`);
 
     const maskPath = `M0,0 H100% V100% H0 Z M${x}%,${y}% V${y + h}% H${x + w}% V${y}% Z`;
     cropMask.setAttribute('d', maskPath);
 
     document.getElementById('grid-v1').setAttribute('x1', `${x + w/3}%`); document.getElementById('grid-v1').setAttribute('x2', `${x + w/3}%`);
     document.getElementById('grid-v1').setAttribute('y1', `${y}%`); document.getElementById('grid-v1').setAttribute('y2', `${y + h}%`);
-    
     document.getElementById('grid-v2').setAttribute('x1', `${x + w*2/3}%`); document.getElementById('grid-v2').setAttribute('x2', `${x + w*2/3}%`);
     document.getElementById('grid-v2').setAttribute('y1', `${y}%`); document.getElementById('grid-v2').setAttribute('y2', `${y + h}%`);
-
     document.getElementById('grid-h1').setAttribute('y1', `${y + h/3}%`); document.getElementById('grid-h1').setAttribute('y2', `${y + h/3}%`);
     document.getElementById('grid-h1').setAttribute('x1', `${x}%`); document.getElementById('grid-h1').setAttribute('x2', `${x + w}%`);
-
     document.getElementById('grid-h2').setAttribute('y1', `${y + h*2/3}%`); document.getElementById('grid-h2').setAttribute('y2', `${y + h*2/3}%`);
     document.getElementById('grid-h2').setAttribute('x1', `${x}%`); document.getElementById('grid-h2').setAttribute('x2', `${x + w}%`);
 
     const setHandle = (pos, hx, hy) => {
         const handle = cropHandles.querySelector(`[data-pos="${pos}"]`);
-        if (handle) {
-            handle.setAttribute('x', `${hx}%`);
-            handle.setAttribute('y', `${hy}%`);
-        }
+        if (handle) { handle.setAttribute('x', `${hx}%`); handle.setAttribute('y', `${hy}%`); }
     };
     setHandle('nw', x, y); setHandle('n', x + w/2, y); setHandle('ne', x + w, y);
     setHandle('w', x, y + h/2); setHandle('e', x + w, y + h/2);
@@ -789,27 +1017,17 @@ let dragStartAngle = 0;
 let dragCenter = { x: 0, y: 0 };
 
 cropOverlay.addEventListener('mousedown', (e) => {
-    if (!isCropMode && !isRotateMode) return;
+    if (!isCropMode) return;
     pushUndoState();
-    
     const target = e.target;
-    if (isRotateMode) {
-        dragType = 'rotate';
-    } else {
-        if (target === cropBox) {
-            dragType = 'box';
-        } else if (target.classList.contains('crop-handle')) {
-            dragType = target.getAttribute('data-pos');
-        } else {
-            return;
-        }
-    }
-
-    isDraggingCrop = true;
-    dragStartPos = { x: e.clientX, y: e.clientY };
-    dragStartRect = { ...current_geom.crop_rect };
-    dragStartAngle = current_geom.angle;
     
+    if (target === rotateHandleOuter) dragType = 'rotate';
+    else if (target === cropBox) dragType = 'box';
+    else if (target.classList.contains('crop-handle')) dragType = target.getAttribute('data-pos');
+    else return;
+    
+    isDraggingCrop = true; dragStartPos = { x: e.clientX, y: e.clientY };
+    dragStartRect = { ...current_geom.crop_rect }; dragStartAngle = current_geom.angle;
     const rect = canvasWrapper.getBoundingClientRect();
     dragCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     cropGrid.style.opacity = '1';
@@ -817,11 +1035,9 @@ cropOverlay.addEventListener('mousedown', (e) => {
 
 window.addEventListener('mousemove', (e) => {
     if (!isDraggingCrop) return;
-    
     const renderRect = getRenderRect();
     const dx = (e.clientX - dragStartPos.x) / renderRect.width;
     const dy = (e.clientY - dragStartPos.y) / renderRect.height;
-    
     let newRect = { ...dragStartRect };
 
     if (dragType === 'box') {
@@ -832,50 +1048,33 @@ window.addEventListener('mousemove', (e) => {
         const currentRad = Math.atan2(e.clientY - dragCenter.y, e.clientX - dragCenter.x);
         let deltaDeg = (currentRad - startRad) * (180 / Math.PI);
         let newAngle = dragStartAngle + deltaDeg;
-        if (Math.abs(newAngle) < 1.0) newAngle = 0.0;
-        else if (Math.abs(newAngle - 90) < 1.0) newAngle = 90.0;
-        else if (Math.abs(newAngle + 90) < 1.0) newAngle = -90.0;
-        else if (Math.abs(newAngle - 180) < 1.0) newAngle = 180.0;
+        if (Math.abs(newAngle) < 1.0) newAngle = 0.0; else if (Math.abs(newAngle - 90) < 1.0) newAngle = 90.0;
+        else if (Math.abs(newAngle + 90) < 1.0) newAngle = -90.0; else if (Math.abs(newAngle - 180) < 1.0) newAngle = 180.0;
         else if (Math.abs(newAngle + 180) < 1.0) newAngle = -180.0;
-        current_geom.angle = newAngle;
+        current_geom.angle = newAngle; 
+        requestRender(); // real-time rotate rendering via uniforms
         return;
     } else {
         if (dragType.includes('w')) {
-            const maxW = newRect.x + newRect.width;
-            newRect.x = Math.max(0, Math.min(maxW - 0.05, newRect.x + dx));
-            newRect.width = maxW - newRect.x;
+            const maxW = newRect.x + newRect.width; newRect.x = Math.max(0, Math.min(maxW - 0.05, newRect.x + dx)); newRect.width = maxW - newRect.x;
         }
-        if (dragType.includes('e')) {
-            newRect.width = Math.max(0.05, Math.min(1 - newRect.x, newRect.width + dx));
-        }
+        if (dragType.includes('e')) { newRect.width = Math.max(0.05, Math.min(1 - newRect.x, newRect.width + dx)); }
         if (dragType.includes('n')) {
-            const maxH = newRect.y + newRect.height;
-            newRect.y = Math.max(0, Math.min(maxH - 0.05, newRect.y + dy));
-            newRect.height = maxH - newRect.y;
+            const maxH = newRect.y + newRect.height; newRect.y = Math.max(0, Math.min(maxH - 0.05, newRect.y + dy)); newRect.height = maxH - newRect.y;
         }
-        if (dragType.includes('s')) {
-            newRect.height = Math.max(0.05, Math.min(1 - newRect.y, newRect.height + dy));
-        }
+        if (dragType.includes('s')) { newRect.height = Math.max(0.05, Math.min(1 - newRect.y, newRect.height + dy)); }
     }
-    current_geom.crop_rect = newRect;
-    updateCropOverlay();
+    current_geom.crop_rect = newRect; updateCropOverlay();
 });
 
 window.addEventListener('mouseup', async () => {
     if (isDraggingCrop) {
-        isDraggingCrop = false;
-        cropGrid.style.opacity = '0';
-        
+        isDraggingCrop = false; cropGrid.style.opacity = '0';
         if (activeId) {
             try {
                 await invoke('update_geometry', { id: activeId, geom: current_geom });
-                if (dragType === 'rotate') {
-                    await loadProxyImage();
-                }
                 requestThumbnailSync();
-            } catch (err) {
-                showToast("Crop failed: " + err, "error");
-            }
+            } catch (err) { showToast("Crop failed: " + err, "error"); }
         }
     }
 });
