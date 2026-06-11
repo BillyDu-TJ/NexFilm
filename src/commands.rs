@@ -1,4 +1,5 @@
 use crate::app_state::{BaseColor, EngineState, FilmItem, FilmstripItem, TuningParams, FilmMode};
+use serde::{Serialize, Deserialize};
 use crate::pipeline::FilmPipeline;
 use crate::geometry;
 use base64::{engine::general_purpose, Engine as _};
@@ -97,7 +98,7 @@ pub async fn select_export_dir() -> Result<Option<String>, String> {
     Ok(dir_path.map(|p| p.to_string_lossy().to_string()))
 }
 
-pub fn load_image_buffer(path: &str, use_half_size: bool) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+pub fn load_image_buffer(path: &str, use_half_size: bool, dcp_profile: Option<&str>, colorspace: &str) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
     if path.to_lowercase().ends_with(".tif") || path.to_lowercase().ends_with(".tiff") {
         let img = image::open(path).map(|i| i.into_rgb16()).map_err(|e| format!("TIFF读取失败: {:?}", e))?;
         if use_half_size {
@@ -116,9 +117,17 @@ pub fn load_image_buffer(path: &str, use_half_size: bool) -> Result<ImageBuffer<
 
             (*data).params.use_camera_wb = 1;
             (*data).params.use_camera_matrix = 1;
-            (*data).params.output_color = 1; // sRGB
+            (*data).params.output_color = if colorspace == "aces" { 6 } else { 1 }; // sRGB
             (*data).params.gamm[0] = 1.0;
             (*data).params.gamm[1] = 1.0;
+            
+            let mut _c_dcp: Option<std::ffi::CString> = None;
+            if let Some(dcp) = dcp_profile {
+                if let Ok(c_str) = std::ffi::CString::new(dcp) {
+                    (*data).params.camera_profile = c_str.as_ptr() as *mut std::os::raw::c_char;
+                    _c_dcp = Some(c_str);
+                }
+            }
             
             if use_half_size {
                 (*data).params.half_size = 1;
@@ -176,8 +185,11 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
         return Ok(());
     }
 
+    let dcp_profile = state.dcp_profile.read().unwrap().clone();
+    let colorspace = state.working_colorspace.read().unwrap().clone();
+
     let new_items_result: Result<Vec<FilmItem>, String> = paths.into_par_iter().map(|path| {
-        let img_buffer = load_image_buffer(&path, true)?;
+        let img_buffer = load_image_buffer(&path, true, dcp_profile.as_deref(), &colorspace)?;
 
         let (width, height) = img_buffer.dimensions();
         
@@ -252,6 +264,107 @@ pub async fn get_filmstrip(state: State<'_, EngineState>) -> Result<Vec<Filmstri
         }
     }
     Ok(strip)
+}
+
+#[derive(Serialize)]
+pub struct LutData {
+    pub size: u32,
+    pub data: Vec<u8>,
+}
+
+#[tauri::command]
+pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
+    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let mut size = 0;
+    let mut data_floats: Vec<f32> = Vec::new();
+    
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if line.starts_with("LUT_3D_SIZE") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() == 2 {
+                size = parts[1].parse().unwrap_or(0);
+            }
+        } else if line.starts_with("DOMAIN_MIN") || line.starts_with("DOMAIN_MAX") || line.starts_with("TITLE") {
+            continue;
+        } else {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() == 3 {
+                if let (Ok(r), Ok(g), Ok(b)) = (parts[0].parse::<f32>(), parts[1].parse::<f32>(), parts[2].parse::<f32>()) {
+                    data_floats.push(r);
+                    data_floats.push(g);
+                    data_floats.push(b);
+                }
+            }
+        }
+    }
+    
+    if size == 0 || data_floats.is_empty() {
+        return Err("Invalid LUT file".into());
+    }
+    
+    let data_bytes = unsafe {
+        std::slice::from_raw_parts(
+            data_floats.as_ptr() as *const u8,
+            data_floats.len() * std::mem::size_of::<f32>()
+        )
+    }.to_vec();
+    
+    Ok(LutData {
+        size,
+        data: data_bytes,
+    })
+}
+
+#[tauri::command]
+pub async fn load_dcp_profile(path: String, state: State<'_, EngineState>) -> Result<(), String> {
+    *state.dcp_profile.write().unwrap() = Some(path.clone());
+    if let Some(active_id) = state.active_id.read().unwrap().clone() {
+        if let Some(item_arc) = state.items.get(&active_id) {
+            let mut item = item_arc.write().unwrap();
+            let colorspace = state.working_colorspace.read().unwrap().clone();
+            if let Ok(img_buffer) = load_image_buffer(&item.file_path, true, Some(&path), &colorspace) {
+                let (width, height) = img_buffer.dimensions();
+                let ratio_proxy = 800.0 / (width.max(height) as f32);
+                let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
+                let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
+                let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
+                
+                item.base_color = compute_auto_base(&proxy);
+                item.pristine_proxy = compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone());
+                item.original_proxy = proxy.clone();
+                item.proxy_image = proxy;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_working_colorspace(colorspace: String, state: State<'_, EngineState>) -> Result<(), String> {
+    *state.working_colorspace.write().unwrap() = colorspace.clone();
+    if let Some(active_id) = state.active_id.read().unwrap().clone() {
+        if let Some(item_arc) = state.items.get(&active_id) {
+            let mut item = item_arc.write().unwrap();
+            let dcp = state.dcp_profile.read().unwrap().clone();
+            if let Ok(img_buffer) = load_image_buffer(&item.file_path, true, dcp.as_deref(), &colorspace) {
+                let (width, height) = img_buffer.dimensions();
+                let ratio_proxy = 800.0 / (width.max(height) as f32);
+                let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
+                let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
+                let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
+                
+                item.base_color = compute_auto_base(&proxy);
+                item.pristine_proxy = compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone());
+                item.original_proxy = proxy.clone();
+                item.proxy_image = proxy;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -525,10 +638,13 @@ pub async fn batch_export_images(
 
     let success_count = std::sync::atomic::AtomicUsize::new(0);
 
+    let dcp_profile = state.dcp_profile.read().unwrap().clone();
+    let working_colorspace = state.working_colorspace.read().unwrap().clone();
+
     item_order.par_iter().for_each(|id| {
         if let Some(item_arc) = state.items.get(id) {
             let item = item_arc.read().unwrap();
-            if let Ok(original) = load_image_buffer(&item.file_path, false) {
+            if let Ok(original) = load_image_buffer(&item.file_path, false, dcp_profile.as_deref(), &working_colorspace) {
                 let params = &item.params;
                 let base_color = &item.base_color;
 

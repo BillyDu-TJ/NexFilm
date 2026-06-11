@@ -24,6 +24,8 @@ pub struct TuningParams {
     pub exp_r: f32,
     pub exp_g: f32,
     pub exp_b: f32,
+    pub highlights: f32,
+    pub shadows: f32,
 }
 
 impl Default for TuningParams {
@@ -37,6 +39,8 @@ impl Default for TuningParams {
             exp_r: 0.0,
             exp_g: 0.0,
             exp_b: 0.0,
+            highlights: 0.0,
+            shadows: 0.0,
         }
     }
 }
@@ -112,6 +116,8 @@ pub struct EngineState {
     pub items: dashmap::DashMap<String, std::sync::Arc<std::sync::RwLock<FilmItem>>>,
     pub item_order: RwLock<Vec<String>>,
     pub active_id: RwLock<Option<String>>,
+    pub dcp_profile: RwLock<Option<String>>,
+    pub working_colorspace: RwLock<String>,
 }
 
 impl EngineState {
@@ -120,6 +126,8 @@ impl EngineState {
             items: dashmap::DashMap::new(),
             item_order: RwLock::new(Vec::new()),
             active_id: RwLock::new(None),
+            dcp_profile: RwLock::new(None),
+            working_colorspace: RwLock::new("rec2020".to_string()),
         }
     }
 }

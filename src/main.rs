@@ -18,7 +18,10 @@ fn main() {
             nexfilm_engine::commands::set_film_mode,
             nexfilm_engine::commands::sync_thumbnail_buffer,
             nexfilm_engine::commands::update_geometry,
-            nexfilm_engine::commands::geometry_auto_align
+            nexfilm_engine::commands::geometry_auto_align,
+            nexfilm_engine::commands::load_3d_lut,
+            nexfilm_engine::commands::load_dcp_profile,
+            nexfilm_engine::commands::set_working_colorspace
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

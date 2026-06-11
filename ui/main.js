@@ -66,7 +66,10 @@ const sliders = {
     expr: { el: document.getElementById('expr'), val: document.getElementById('val-expr') },
     expg: { el: document.getElementById('expg'), val: document.getElementById('val-expg') },
     expb: { el: document.getElementById('expb'), val: document.getElementById('val-expb') },
-    angle: { el: document.getElementById('angle'), val: document.getElementById('val-angle') }
+    angle: { el: document.getElementById('angle'), val: document.getElementById('val-angle') },
+    highlights: { el: document.getElementById('highlights'), val: document.getElementById('val-highlights') },
+    shadows: { el: document.getElementById('shadows'), val: document.getElementById('val-shadows') },
+    lutOpacity: { el: document.getElementById('lut-opacity'), val: document.getElementById('val-lut-opacity') }
 };
 
 let activeId = null;
@@ -159,7 +162,9 @@ function pushUndoState() {
         gamma: parseFloat(sliders.gamma.el.value),
         exp_r: parseFloat(sliders.expr.el.value),
         exp_g: parseFloat(sliders.expg.el.value),
-        exp_b: parseFloat(sliders.expb.el.value)
+        exp_b: parseFloat(sliders.expb.el.value),
+        highlights: parseFloat(sliders.highlights.el.value),
+        shadows: parseFloat(sliders.shadows.el.value)
     };
     
     const geom = JSON.parse(JSON.stringify(current_geom));
@@ -251,7 +256,9 @@ function updateBackendParams() {
         gamma: parseFloat(sliders.gamma.el.value),
         exp_r: parseFloat(sliders.expr.el.value),
         exp_g: parseFloat(sliders.expg.el.value),
-        exp_b: parseFloat(sliders.expb.el.value)
+        exp_b: parseFloat(sliders.expb.el.value),
+        highlights: parseFloat(sliders.highlights.el.value),
+        shadows: parseFloat(sliders.shadows.el.value)
     };
     invoke('update_tuning_parameters', { id: activeId, params }).catch(console.error);
 }
@@ -274,6 +281,12 @@ let u_exposure_loc;
 let u_gamma_loc;
 let u_mode_loc;
 let u_transform_loc;
+let u_highlights_loc;
+let u_shadows_loc;
+let u_lut3d_loc;
+let u_lut_opacity_loc;
+let u_has_lut_loc;
+let u_image_loc;
 
 let currentBaseDensity = [0, 0, 0];
 let webGLInitialized = false;
@@ -308,6 +321,13 @@ function initWebGL() {
     uniform vec3 u_exposure;
     uniform float u_gamma;
     uniform int u_mode;
+    
+    uniform float u_highlights;
+    uniform float u_shadows;
+    
+    uniform mediump sampler3D u_lut3d;
+    uniform float u_lut_opacity;
+    uniform int u_has_lut;
 
     const mat3 STATUS_M = mat3(
         1.0197, -0.0052, 0.0131,
@@ -347,7 +367,19 @@ function initWebGL() {
         }
         
         vec3 norm = clamp((density - u_dmin) / (u_dmax - u_dmin), 0.0, 1.0);
-        outColor = vec4(pow(norm.r, 1.0 / u_gamma), pow(norm.g, 1.0 / u_gamma), pow(norm.b, 1.0 / u_gamma), 1.0);
+        
+        // Highlights & Shadows
+        norm = norm + u_shadows * pow(1.0 - norm, vec3(2.0)) * norm + u_highlights * pow(norm, vec3(2.0)) * (1.0 - norm);
+        norm = clamp(norm, 0.0, 1.0);
+        
+        vec3 final_rgb = vec3(pow(norm.r, 1.0 / u_gamma), pow(norm.g, 1.0 / u_gamma), pow(norm.b, 1.0 / u_gamma));
+        
+        if (u_has_lut == 1) {
+            vec3 lut_color = texture(u_lut3d, final_rgb).rgb;
+            final_rgb = mix(final_rgb, lut_color, u_lut_opacity);
+        }
+        
+        outColor = vec4(final_rgb, 1.0);
     }`;
 
     function createShader(gl, type, source) {
@@ -376,6 +408,14 @@ function initWebGL() {
     u_gamma_loc = gl.getUniformLocation(shaderProgram, "u_gamma");
     u_mode_loc = gl.getUniformLocation(shaderProgram, "u_mode");
     u_transform_loc = gl.getUniformLocation(shaderProgram, "u_transform");
+    u_highlights_loc = gl.getUniformLocation(shaderProgram, "u_highlights");
+    u_shadows_loc = gl.getUniformLocation(shaderProgram, "u_shadows");
+    u_lut3d_loc = gl.getUniformLocation(shaderProgram, "u_lut3d");
+    u_lut_opacity_loc = gl.getUniformLocation(shaderProgram, "u_lut_opacity");
+    u_has_lut_loc = gl.getUniformLocation(shaderProgram, "u_has_lut");
+    u_image_loc = gl.getUniformLocation(shaderProgram, "u_image");
+    
+    gl.getExtension("OES_texture_float_linear");
 
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -415,6 +455,65 @@ function initWebGL() {
 }
 
 initWebGL();
+
+let hasLUT = false;
+let lutTex = null;
+
+const btnLoadDCP = document.getElementById('btn-load-dcp');
+const selectColorspace = document.getElementById('select-colorspace');
+const btnLoadLUT = document.getElementById('btn-load-lut');
+
+btnLoadDCP.addEventListener('click', async () => {
+    try {
+        const path = await window.__TAURI__.dialog.open({
+            filters: [{ name: 'DCP Profile', extensions: ['dcp'] }]
+        });
+        if (path) {
+            await invoke('load_dcp_profile', { path });
+            showToast("DCP Profile loaded.", "success");
+            if (activeId) await loadProxyImage();
+        }
+    } catch(e) {
+        showToast("Failed to load DCP", "error");
+    }
+});
+
+selectColorspace.addEventListener('change', async (e) => {
+    try {
+        await invoke('set_working_colorspace', { colorspace: e.target.value });
+        if (activeId) await loadProxyImage();
+    } catch(e) { console.error(e); }
+});
+
+btnLoadLUT.addEventListener('click', async () => {
+    try {
+        const path = await window.__TAURI__.dialog.open({
+            filters: [{ name: '3D LUT', extensions: ['cube'] }]
+        });
+        if (path) {
+            const lutData = await invoke('load_3d_lut', { path });
+            const size = lutData.size;
+            const data = new Float32Array(new Uint8Array(lutData.data).buffer);
+            
+            if (!lutTex) lutTex = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_3D, lutTex);
+            gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB32F, size, size, size, 0, gl.RGB, gl.FLOAT, data);
+            gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+            
+            hasLUT = true;
+            sliders.lutOpacity.el.disabled = false;
+            showToast("3D LUT loaded.", "success");
+            requestRender();
+        }
+    } catch(e) {
+        console.error(e);
+        showToast("Failed to load LUT", "error");
+    }
+});
 
 btnToggleViz.addEventListener('click', () => {
     isWaveform = !isWaveform;
@@ -541,6 +640,13 @@ function renderWebGL() {
     gl.uniform1f(u_gamma_loc, gammaVal);
     gl.uniform1i(u_mode_loc, mode);
     
+    gl.uniform1f(u_highlights_loc, parseFloat(sliders.highlights.el.value));
+    gl.uniform1f(u_shadows_loc, parseFloat(sliders.shadows.el.value));
+    gl.uniform1f(u_lut_opacity_loc, parseFloat(sliders.lutOpacity.el.value));
+    gl.uniform1i(u_has_lut_loc, hasLUT ? 1 : 0);
+    gl.uniform1i(u_lut3d_loc, 1);
+    gl.uniform1i(u_image_loc, 0);
+    
     let a = current_geom.angle * Math.PI / 180.0;
     if (!isCropMode) a = 0; // If not cropping, the transform is applied by the backend!
     let s = Math.sin(a), c = Math.cos(a);
@@ -552,7 +658,12 @@ function renderWebGL() {
     ]);
     gl.uniformMatrix4fv(u_transform_loc, false, transformMat);
 
+    gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, tex);
+    if (hasLUT) {
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_3D, lutTex);
+    }
 
     // Render to FBO for Histogram
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
@@ -638,6 +749,8 @@ function updateUIFromParams(params, geom) {
     sliders.expr.el.value = params.exp_r;
     sliders.expg.el.value = params.exp_g;
     sliders.expb.el.value = params.exp_b;
+    if (params.highlights !== undefined) sliders.highlights.el.value = params.highlights;
+    if (params.shadows !== undefined) sliders.shadows.el.value = params.shadows;
     
     if (geom) {
         sliders.angle.el.value = geom.angle;
@@ -651,6 +764,20 @@ function updateUIFromParams(params, geom) {
     setMode(params.film_mode === 'BW' ? 'B&W' : 'Color');
 }
 
+let backendSyncTimeout = null;
+function scheduleBackendSync(key) {
+    if (backendSyncTimeout) clearTimeout(backendSyncTimeout);
+    backendSyncTimeout = setTimeout(async () => {
+        if (key === 'angle' && activeId) {
+            await invoke('update_geometry', { id: activeId, geom: current_geom });
+            await loadProxyImage();
+        } else {
+            updateBackendParams();
+        }
+        requestThumbnailSync();
+    }, 100);
+}
+
 for (const key in sliders) {
     const s = sliders[key];
     s.el.addEventListener('mousedown', () => pushUndoState());
@@ -661,15 +788,7 @@ for (const key in sliders) {
         }
         updateSliderTrack(e.target);
         requestRender(); // Zero latency UI!
-    });
-    s.el.addEventListener('change', async () => {
-        if (key === 'angle' && activeId) {
-            await invoke('update_geometry', { id: activeId, geom: current_geom });
-            await loadProxyImage();
-        } else {
-            updateBackendParams();
-        }
-        requestThumbnailSync();
+        scheduleBackendSync(key);
     });
 }
 
@@ -924,12 +1043,12 @@ function updateCanvasTransform(w, h) {
 btnCropMode.addEventListener('click', () => {
     isCropMode = !isCropMode;
     if (isCropMode) {
-        btnCropMode.classList.add('bg-[#28282c]', 'text-zinc-100');
+        btnCropMode.classList.add('active');
         cropBox.style.cursor = 'move';
         cropMask.style.pointerEvents = 'none';
         rotateHandleOuter.style.cursor = 'crosshair'; // External rotation handle active
     } else {
-        btnCropMode.classList.remove('bg-[#28282c]', 'text-zinc-100');
+        btnCropMode.classList.remove('active');
     }
     updateCanvasTransform();
     if (!isCropMode) {
@@ -1065,10 +1184,20 @@ window.addEventListener('mousemove', (e) => {
         const currentRad = Math.atan2(e.clientY - dragCenter.y, e.clientX - dragCenter.x);
         let deltaDeg = (currentRad - startRad) * (180 / Math.PI);
         let newAngle = dragStartAngle + deltaDeg;
-        if (Math.abs(newAngle) < 1.0) newAngle = 0.0; else if (Math.abs(newAngle - 90) < 1.0) newAngle = 90.0;
-        else if (Math.abs(newAngle + 90) < 1.0) newAngle = -90.0; else if (Math.abs(newAngle - 180) < 1.0) newAngle = 180.0;
+        if (Math.abs(newAngle) < 1.0) newAngle = 0.0;
+        else if (Math.abs(newAngle - 90) < 1.0) newAngle = 90.0;
+        else if (Math.abs(newAngle + 90) < 1.0) newAngle = -90.0;
+        else if (Math.abs(newAngle - 180) < 1.0) newAngle = 180.0;
         else if (Math.abs(newAngle + 180) < 1.0) newAngle = -180.0;
-        current_geom.angle = newAngle; 
+        
+        // Clamp to slider limits if within normal workflow, or just allow it but clamp for slider
+        current_geom.angle = newAngle;
+        
+        const clampedAngle = Math.max(-45, Math.min(45, newAngle));
+        sliders.angle.el.value = clampedAngle;
+        sliders.angle.val.textContent = clampedAngle.toFixed(1);
+        updateSliderTrack(sliders.angle.el);
+        
         requestRender(); // real-time rotate rendering via uniforms
         return;
     } else {

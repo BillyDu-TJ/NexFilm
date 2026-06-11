@@ -190,6 +190,20 @@
                                 </div>
                                 <input type="range" id="gamma" class="w-full custom-range silver-track" min="0.10" max="3.00" step="0.002" value="1.00" disabled>
                             </div>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Highlights</label>
+                                    <span id="val-highlights" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                </div>
+                                <input type="range" id="highlights" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
+                            </div>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Shadows</label>
+                                    <span id="val-shadows" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                </div>
+                                <input type="range" id="shadows" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
+                            </div>
                         </div>
                     </div>
 
@@ -220,6 +234,40 @@
                                     <span id="val-expb" class="text-[10px] font-mono text-zinc-400">0.000</span>
                                 </div>
                                 <input type="range" id="expb" class="w-full custom-range blue-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Input Color Science -->
+                    <div class="control-group border-t border-[#28282c] pt-6 pb-6">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2 cursor-pointer">
+                            Input Color Science
+                        </h3>
+                        <div class="flex flex-col gap-5">
+                            <button id="btn-load-dcp" class="w-full px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Load DCP Profile</button>
+                            <div class="flex items-center justify-between">
+                                <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Working Space</label>
+                                <select id="select-colorspace" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
+                                    <option value="rec2020">Rec.2020</option>
+                                    <option value="aces">ACES-AP1</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Print Film Emulation -->
+                    <div class="control-group border-t border-[#28282c] pt-6 pb-6">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2 cursor-pointer">
+                            Print Film Emulation
+                        </h3>
+                        <div class="flex flex-col gap-5">
+                            <button id="btn-load-lut" class="w-full px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Load 3D LUT (.cube)</button>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">LUT Opacity</label>
+                                    <span id="val-lut-opacity" class="text-[10px] font-mono text-zinc-400">1.000</span>
+                                </div>
+                                <input type="range" id="lut-opacity" class="w-full custom-range silver-track" min="0.00" max="1.00" step="0.01" value="1.00" disabled>
                             </div>
                         </div>
                     </div>
