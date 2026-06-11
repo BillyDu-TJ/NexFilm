@@ -45,6 +45,7 @@ const btnModeBw = document.getElementById('btn-mode-bw');
 
 // DOM: Crop & Transform
 const btnCropMode = document.getElementById('btn-crop-mode');
+const btnRotateMode = document.getElementById('btn-rotate-mode');
 const btnAutoCrop = document.getElementById('btn-auto-crop');
 const btnRotateLeft = document.getElementById('btn-rotate-left');
 const btnRotateRight = document.getElementById('btn-rotate-right');
@@ -66,7 +67,6 @@ const sliders = {
     expr: { el: document.getElementById('expr'), val: document.getElementById('val-expr') },
     expg: { el: document.getElementById('expg'), val: document.getElementById('val-expg') },
     expb: { el: document.getElementById('expb'), val: document.getElementById('val-expb') },
-    angle: { el: document.getElementById('angle'), val: document.getElementById('val-angle') },
     highlights: { el: document.getElementById('highlights'), val: document.getElementById('val-highlights') },
     shadows: { el: document.getElementById('shadows'), val: document.getElementById('val-shadows') },
     lutOpacity: { el: document.getElementById('lut-opacity'), val: document.getElementById('val-lut-opacity') }
@@ -75,6 +75,7 @@ const sliders = {
 let activeId = null;
 let current_geom = { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
 let isCropMode = false;
+let isRotateMode = false;
 let currentImageWidth = 1;
 let currentImageHeight = 1;
 
@@ -287,6 +288,7 @@ let u_lut3d_loc;
 let u_lut_opacity_loc;
 let u_has_lut_loc;
 let u_image_loc;
+let u_aspect_loc;
 
 let currentBaseDensity = [0, 0, 0];
 let webGLInitialized = false;
@@ -304,8 +306,13 @@ function initWebGL() {
     in vec2 a_texcoord;
     out vec2 v_texcoord;
     uniform mat4 u_transform;
+    uniform float u_aspect;
     void main() {
-        gl_Position = u_transform * a_position;
+        vec4 pos = a_position;
+        pos.x *= u_aspect;
+        pos = u_transform * pos;
+        pos.x /= u_aspect;
+        gl_Position = pos;
         v_texcoord = vec2(a_texcoord.x, 1.0 - a_texcoord.y);
     }`;
 
@@ -414,6 +421,7 @@ function initWebGL() {
     u_lut_opacity_loc = gl.getUniformLocation(shaderProgram, "u_lut_opacity");
     u_has_lut_loc = gl.getUniformLocation(shaderProgram, "u_has_lut");
     u_image_loc = gl.getUniformLocation(shaderProgram, "u_image");
+    u_aspect_loc = gl.getUniformLocation(shaderProgram, "u_aspect");
     
     gl.getExtension("OES_texture_float_linear");
 
@@ -465,9 +473,7 @@ const btnLoadLUT = document.getElementById('btn-load-lut');
 
 btnLoadDCP.addEventListener('click', async () => {
     try {
-        const path = await window.__TAURI__.dialog.open({
-            filters: [{ name: 'DCP Profile', extensions: ['dcp'] }]
-        });
+        const path = await invoke('open_dcp_dialog');
         if (path) {
             await invoke('load_dcp_profile', { path });
             showToast("DCP Profile loaded.", "success");
@@ -485,12 +491,81 @@ selectColorspace.addEventListener('change', async (e) => {
     } catch(e) { console.error(e); }
 });
 
+const selectBuiltinDcp = document.getElementById('select-builtin-dcp');
+const selectBuiltinLut = document.getElementById('select-builtin-lut');
+
+async function initBuiltins() {
+    try {
+        const dcps = await invoke('get_builtin_dcps');
+        if (dcps && dcps.length > 0) {
+            dcps.forEach(p => {
+                const name = p.split('\\').pop().split('/').pop();
+                const opt = document.createElement('option');
+                opt.value = p; opt.textContent = name;
+                selectBuiltinDcp.appendChild(opt);
+            });
+        }
+        
+        const luts = await invoke('get_builtin_luts');
+        if (luts && luts.length > 0) {
+            luts.forEach(p => {
+                const name = p.split('\\').pop().split('/').pop();
+                const opt = document.createElement('option');
+                opt.value = p; opt.textContent = name;
+                selectBuiltinLut.appendChild(opt);
+            });
+        }
+    } catch (e) {
+        console.error("Failed to load builtins", e);
+    }
+}
+initBuiltins();
+
+selectBuiltinDcp.addEventListener('change', async (e) => {
+    if (!e.target.value) return;
+    try {
+        await invoke('load_dcp_profile', { path: e.target.value });
+        showToast("Built-in DCP Profile loaded.", "success");
+        if (activeId) await loadProxyImage();
+    } catch(err) {
+        showToast("Failed to load DCP", "error");
+    }
+});
+
+selectBuiltinLut.addEventListener('change', async (e) => {
+    if (!e.target.value) {
+        hasLUT = false;
+        requestRender();
+        return;
+    }
+    try {
+        const lutData = await invoke('load_3d_lut', { path: e.target.value });
+        const size = lutData.size;
+        const data = new Float32Array(new Uint8Array(lutData.data).buffer);
+        
+        if (!lutTex) lutTex = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_3D, lutTex);
+        gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB32F, size, size, size, 0, gl.RGB, gl.FLOAT, data);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+        
+        hasLUT = true;
+        sliders.lutOpacity.el.disabled = false;
+        showToast("Built-in 3D LUT loaded.", "success");
+        requestRender();
+    } catch(err) {
+        showToast("Failed to load built-in LUT", "error");
+    }
+});
+
 btnLoadLUT.addEventListener('click', async () => {
     try {
-        const path = await window.__TAURI__.dialog.open({
-            filters: [{ name: '3D LUT', extensions: ['cube'] }]
-        });
+        const path = await invoke('open_lut_dialog');
         if (path) {
+            selectBuiltinLut.value = "";
             const lutData = await invoke('load_3d_lut', { path });
             const size = lutData.size;
             const data = new Float32Array(new Uint8Array(lutData.data).buffer);
@@ -646,9 +721,10 @@ function renderWebGL() {
     gl.uniform1i(u_has_lut_loc, hasLUT ? 1 : 0);
     gl.uniform1i(u_lut3d_loc, 1);
     gl.uniform1i(u_image_loc, 0);
+    gl.uniform1f(u_aspect_loc, gl.canvas.width / gl.canvas.height);
     
     let a = current_geom.angle * Math.PI / 180.0;
-    if (!isCropMode) a = 0; // If not cropping, the transform is applied by the backend!
+    if (!isCropMode && !isRotateMode) a = 0;
     let s = Math.sin(a), c = Math.cos(a);
     let transformMat = new Float32Array([
         c, s, 0, 0,
@@ -752,10 +828,6 @@ function updateUIFromParams(params, geom) {
     if (params.highlights !== undefined) sliders.highlights.el.value = params.highlights;
     if (params.shadows !== undefined) sliders.shadows.el.value = params.shadows;
     
-    if (geom) {
-        sliders.angle.el.value = geom.angle;
-    }
-    
     for (const key in sliders) {
         const s = sliders[key];
         s.val.textContent = parseFloat(s.el.value).toFixed(2);
@@ -797,7 +869,9 @@ function enableUI() {
         sliders[key].el.disabled = false;
         updateSliderTrack(sliders[key].el);
     }
+    sliders.lutOpacity.el.disabled = false;
     btnCropMode.disabled = false;
+    btnRotateMode.disabled = false;
     btnAutoCrop.disabled = false;
     btnRotateLeft.disabled = false;
     btnRotateRight.disabled = false;
@@ -932,8 +1006,16 @@ const doImport = async () => {
     try {
         btnImport.textContent = "Importing...";
         btnImport.disabled = true;
+        if (btnImportTrigger) {
+            btnImportTrigger.textContent = "Importing...";
+            btnImportTrigger.disabled = true;
+        }
+        
+        console.log("Calling open_file_dialog...");
         const paths = await invoke('open_file_dialog');
-        if (paths.length > 0) {
+        console.log("open_file_dialog returned:", paths);
+        
+        if (paths && paths.length > 0) {
             await invoke('import_images', { paths });
             const items = await invoke('get_filmstrip');
             if (items.length > 0) {
@@ -945,10 +1027,17 @@ const doImport = async () => {
                 }
             }
         }
-    } catch (e) { showToast("Import failed: " + e, "error"); } 
+    } catch (e) { 
+        console.error("Import error:", e);
+        showToast("Import failed: " + e, "error"); 
+    } 
     finally {
         btnImport.textContent = "Import Roll";
         btnImport.disabled = false;
+        if (btnImportTrigger) {
+            btnImportTrigger.textContent = "Import From Disk";
+            btnImportTrigger.disabled = false;
+        }
     }
 };
 
@@ -1007,7 +1096,7 @@ function updateCanvasTransform(w, h) {
     previewCanvas.style.position = 'absolute';
     previewCanvas.style.objectFit = 'fill'; 
 
-    if (isCropMode) {
+    if (isCropMode || isRotateMode) {
         canvasWrapper.style.aspectRatio = `${cw} / ${ch}`;
         dummyPusher.width = cw;
         dummyPusher.height = ch;
@@ -1018,7 +1107,9 @@ function updateCanvasTransform(w, h) {
         previewCanvas.style.top = '0';
         
         cropOverlay.classList.remove('hidden');
-        updateCropOverlay();
+        if (isCropMode) {
+            updateCropOverlay();
+        }
     } else {
         const cropW = cw * rect.width;
         const cropH = ch * rect.height;
@@ -1043,18 +1134,46 @@ function updateCanvasTransform(w, h) {
 btnCropMode.addEventListener('click', () => {
     isCropMode = !isCropMode;
     if (isCropMode) {
+        isRotateMode = false;
+        btnRotateMode.classList.remove('active');
         btnCropMode.classList.add('active');
-        cropBox.style.cursor = 'move';
-        cropMask.style.pointerEvents = 'none';
-        rotateHandleOuter.style.cursor = 'crosshair'; // External rotation handle active
+        cropOverlay.classList.remove('hidden');
+        cropBox.classList.remove('hidden');
+        cropMask.classList.remove('hidden');
+        cropHandles.classList.remove('hidden');
+        updateCropOverlay();
     } else {
         btnCropMode.classList.remove('active');
+        cropOverlay.classList.add('hidden');
     }
     updateCanvasTransform();
     if (!isCropMode) {
-        loadProxyImage(); // Re-apply backend geometry render when exiting crop
+        loadProxyImage();
     } else {
-        requestRender(); // Force gl to draw transformed full image
+        requestRender();
+    }
+});
+
+btnRotateMode.addEventListener('click', () => {
+    isRotateMode = !isRotateMode;
+    if (isRotateMode) {
+        isCropMode = false;
+        btnCropMode.classList.remove('active');
+        btnRotateMode.classList.add('active');
+        cropOverlay.classList.remove('hidden');
+        cropBox.classList.add('hidden');
+        cropMask.classList.add('hidden');
+        cropHandles.classList.add('hidden');
+        updateCropOverlay();
+    } else {
+        btnRotateMode.classList.remove('active');
+        cropOverlay.classList.add('hidden');
+    }
+    updateCanvasTransform();
+    if (!isRotateMode) {
+        loadProxyImage();
+    } else {
+        requestRender();
     }
 });
 
@@ -1153,13 +1272,13 @@ let dragStartAngle = 0;
 let dragCenter = { x: 0, y: 0 };
 
 cropOverlay.addEventListener('mousedown', (e) => {
-    if (!isCropMode) return;
+    if (!isCropMode && !isRotateMode) return;
     pushUndoState();
     const target = e.target;
     
-    if (target === rotateHandleOuter) dragType = 'rotate';
-    else if (target === cropBox) dragType = 'box';
-    else if (target.classList.contains('crop-handle')) dragType = target.getAttribute('data-pos');
+    if (target === rotateHandleOuter || isRotateMode) dragType = 'rotate';
+    else if (target === cropBox && isCropMode) dragType = 'box';
+    else if (target.classList.contains('crop-handle') && isCropMode) dragType = target.getAttribute('data-pos');
     else return;
     
     isDraggingCrop = true; dragStartPos = { x: e.clientX, y: e.clientY };
@@ -1190,13 +1309,8 @@ window.addEventListener('mousemove', (e) => {
         else if (Math.abs(newAngle - 180) < 1.0) newAngle = 180.0;
         else if (Math.abs(newAngle + 180) < 1.0) newAngle = -180.0;
         
-        // Clamp to slider limits if within normal workflow, or just allow it but clamp for slider
+        // Allow continuous rotation without clamping for slider
         current_geom.angle = newAngle;
-        
-        const clampedAngle = Math.max(-45, Math.min(45, newAngle));
-        sliders.angle.el.value = clampedAngle;
-        sliders.angle.val.textContent = clampedAngle.toFixed(1);
-        updateSliderTrack(sliders.angle.el);
         
         requestRender(); // real-time rotate rendering via uniforms
         return;

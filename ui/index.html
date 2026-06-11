@@ -6,6 +6,20 @@
     <title>NexFilm Engine v2.0</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="style.css">
+    <script>
+        window.addEventListener('error', function(event) {
+            const err = document.createElement('div');
+            err.style.cssText = 'position:fixed;top:10px;left:10px;z-index:9999;background:red;color:white;padding:10px;font-size:14px;';
+            err.textContent = "JS Error: " + event.message + " at line " + event.lineno;
+            document.body.appendChild(err);
+        });
+        window.addEventListener('unhandledrejection', function(event) {
+            const err = document.createElement('div');
+            err.style.cssText = 'position:fixed;top:60px;left:10px;z-index:9999;background:orange;color:white;padding:10px;font-size:14px;';
+            err.textContent = "Promise Error: " + event.reason;
+            document.body.appendChild(err);
+        });
+    </script>
 </head>
 <body class="text-zinc-300 h-screen w-screen overflow-hidden font-sans selection:bg-zinc-700 flex flex-col bg-[#121214]">
     
@@ -67,12 +81,7 @@
                 <div class="h-[48px] border-b border-[#28282c] flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm bg-[#1C1C1E]">
                     <div class="flex space-x-2">
                         <button id="btn-crop-mode" class="toolbar-btn" disabled>CROP</button>
-                    </div>
-                    <div class="w-px h-4 bg-zinc-700"></div>
-                    <div class="flex items-center gap-2">
-                        <label class="text-[10px] font-bold text-zinc-500 tracking-widest uppercase">Angle</label>
-                        <input type="range" id="angle" class="w-24 custom-range silver-track" min="-45.0" max="45.0" step="0.1" value="0.0" disabled>
-                        <span id="val-angle" class="text-[10px] font-mono text-zinc-400 w-8 text-right">0.0</span>
+                        <button id="btn-rotate-mode" class="toolbar-btn" disabled>ROTATE</button>
                     </div>
                     <div class="w-px h-4 bg-zinc-700"></div>
                     <button id="btn-auto-crop" class="toolbar-btn" disabled>AUTO</button>
@@ -244,7 +253,12 @@
                             Input Color Science
                         </h3>
                         <div class="flex flex-col gap-5">
-                            <button id="btn-load-dcp" class="w-full px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Load DCP Profile</button>
+                            <div class="flex flex-col gap-2">
+                                <select id="select-builtin-dcp" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
+                                    <option value="">No Built-in DCP</option>
+                                </select>
+                                <button id="btn-load-dcp" class="w-full px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Load Custom DCP</button>
+                            </div>
                             <div class="flex items-center justify-between">
                                 <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Working Space</label>
                                 <select id="select-colorspace" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
@@ -261,7 +275,12 @@
                             Print Film Emulation
                         </h3>
                         <div class="flex flex-col gap-5">
-                            <button id="btn-load-lut" class="w-full px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Load 3D LUT (.cube)</button>
+                            <div class="flex flex-col gap-2">
+                                <select id="select-builtin-lut" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
+                                    <option value="">No Built-in LUT</option>
+                                </select>
+                                <button id="btn-load-lut" class="w-full px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Load Custom LUT</button>
+                            </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">LUT Opacity</label>

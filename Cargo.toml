@@ -19,6 +19,7 @@ imageproc = "0.23"
 libraw-rs = "0.0.4"
 libraw-rs-sys = "0.0.4"
 dashmap = "6.2.1"
+tauri-plugin-dialog = "2.7.1"
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }

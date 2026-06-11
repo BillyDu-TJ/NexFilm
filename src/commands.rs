@@ -69,15 +69,11 @@ fn compute_pristine_proxy(
 
 #[tauri::command]
 pub async fn open_file_dialog() -> Result<Vec<String>, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let file_paths = FileDialog::new()
+    let file_paths = tauri::async_runtime::spawn_blocking(|| {
+        FileDialog::new()
             .add_filter("RAW Images", &["dng", "nef", "cr2", "cr3", "arw", "raf", "tiff", "tif"])
-            .pick_files();
-        let _ = tx.send(file_paths);
-    });
-    
-    let file_paths = rx.recv().unwrap_or(None);
+            .pick_files()
+    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
     
     if let Some(paths) = file_paths {
         Ok(paths.into_iter().map(|p| p.to_string_lossy().to_string()).collect())
@@ -88,14 +84,73 @@ pub async fn open_file_dialog() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub async fn select_export_dir() -> Result<Option<String>, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let dir_path = FileDialog::new().pick_folder();
-        let _ = tx.send(dir_path);
-    });
+    let dir_path = tauri::async_runtime::spawn_blocking(|| {
+        FileDialog::new().pick_folder()
+    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
     
-    let dir_path = rx.recv().unwrap_or(None);
     Ok(dir_path.map(|p| p.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub async fn open_dcp_dialog() -> Result<Option<String>, String> {
+    let file_path = tauri::async_runtime::spawn_blocking(|| {
+        FileDialog::new()
+            .add_filter("DCP Profile / JSON Config", &["dcp", "json"])
+            .pick_file()
+    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
+    
+    Ok(file_path.map(|p| p.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub async fn open_lut_dialog() -> Result<Option<String>, String> {
+    let file_path = tauri::async_runtime::spawn_blocking(|| {
+        FileDialog::new()
+            .add_filter("3D LUT / JSON Config", &["cube", "json", "3dl"])
+            .pick_file()
+    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
+    
+    Ok(file_path.map(|p| p.to_string_lossy().to_string()))
+}
+
+#[tauri::command]
+pub async fn get_builtin_luts() -> Result<Vec<String>, String> {
+    let mut luts = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("assets/luts") {
+        for entry in entries.filter_map(Result::ok) {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_file() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("cube") {
+                        if let Some(path_str) = path.to_str() {
+                            luts.push(path_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(luts)
+}
+
+#[tauri::command]
+pub async fn get_builtin_dcps() -> Result<Vec<String>, String> {
+    let mut dcps = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("assets/dcps") {
+        for entry in entries.filter_map(Result::ok) {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_file() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str()) == Some("dcp") {
+                        if let Some(path_str) = path.to_str() {
+                            dcps.push(path_str.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(dcps)
 }
 
 pub fn load_image_buffer(path: &str, use_half_size: bool, dcp_profile: Option<&str>, colorspace: &str) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
@@ -275,7 +330,8 @@ pub struct LutData {
 #[tauri::command]
 pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
     let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let mut size = 0;
+    let mut size_3d = 0;
+    let mut size_1d = 0;
     let mut data_floats: Vec<f32> = Vec::new();
     
     for line in content.lines() {
@@ -285,9 +341,10 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
         }
         if line.starts_with("LUT_3D_SIZE") {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() == 2 {
-                size = parts[1].parse().unwrap_or(0);
-            }
+            if parts.len() == 2 { size_3d = parts[1].parse().unwrap_or(0); }
+        } else if line.starts_with("LUT_1D_SIZE") {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() == 2 { size_1d = parts[1].parse().unwrap_or(0); }
         } else if line.starts_with("DOMAIN_MIN") || line.starts_with("DOMAIN_MAX") || line.starts_with("TITLE") {
             continue;
         } else {
@@ -302,19 +359,54 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
         }
     }
     
-    if size == 0 || data_floats.is_empty() {
+    if (size_3d == 0 && size_1d == 0) || data_floats.is_empty() {
         return Err("Invalid LUT file".into());
+    }
+    
+    let mut final_size = size_3d;
+    let mut final_floats = data_floats;
+
+    // Convert 1D LUT to a 33x33x33 3D LUT on the fly
+    if size_1d > 0 && size_3d == 0 {
+        final_size = 33;
+        let mut lut3d = Vec::with_capacity(final_size * final_size * final_size * 3);
+        let n_1d = size_1d as f32 - 1.0;
+        
+        let sample_1d = |val: f32, channel: usize| -> f32 {
+            let idx_f = val.clamp(0.0, 1.0) * n_1d;
+            let idx0 = idx_f.floor() as usize;
+            let idx1 = (idx0 + 1).min(size_1d - 1);
+            let fract = idx_f - idx0 as f32;
+            let v0 = final_floats[idx0 * 3 + channel];
+            let v1 = final_floats[idx1 * 3 + channel];
+            v0 + (v1 - v0) * fract
+        };
+
+        for b in 0..final_size {
+            for g in 0..final_size {
+                for r in 0..final_size {
+                    let r_norm = r as f32 / (final_size as f32 - 1.0);
+                    let g_norm = g as f32 / (final_size as f32 - 1.0);
+                    let b_norm = b as f32 / (final_size as f32 - 1.0);
+                    
+                    lut3d.push(sample_1d(r_norm, 0));
+                    lut3d.push(sample_1d(g_norm, 1));
+                    lut3d.push(sample_1d(b_norm, 2));
+                }
+            }
+        }
+        final_floats = lut3d;
     }
     
     let data_bytes = unsafe {
         std::slice::from_raw_parts(
-            data_floats.as_ptr() as *const u8,
-            data_floats.len() * std::mem::size_of::<f32>()
+            final_floats.as_ptr() as *const u8,
+            final_floats.len() * std::mem::size_of::<f32>()
         )
     }.to_vec();
     
     Ok(LutData {
-        size,
+        size: final_size as u32,
         data: data_bytes,
     })
 }
@@ -517,17 +609,22 @@ fn reapply_geometry(item: &mut FilmItem) {
         let new_w = (w as f32 * cos_a.abs() + h as f32 * sin_a.abs()).ceil() as u32;
         let new_h = (w as f32 * sin_a.abs() + h as f32 * cos_a.abs()).ceil() as u32;
         
-        let mut expanded = ImageBuffer::from_pixel(new_w, new_h, image::Rgb([0, 0, 0]));
-        let offset_x = (new_w - w) / 2;
-        let offset_y = (new_h - h) / 2;
-        image::imageops::overlay(&mut expanded, &current, offset_x as i64, offset_y as i64);
+        let diag = ((w as f32).hypot(h as f32)).ceil() as u32;
+        let mut expanded = ImageBuffer::from_pixel(diag, diag, image::Rgb([0, 0, 0]));
+        let offset_x = (diag as i64 - w as i64) / 2;
+        let offset_y = (diag as i64 - h as i64) / 2;
+        image::imageops::overlay(&mut expanded, &current, offset_x, offset_y);
         
-        current = imageproc::geometric_transformations::rotate_about_center(
+        let rotated = imageproc::geometric_transformations::rotate_about_center(
             &expanded,
             angle_rad,
             imageproc::geometric_transformations::Interpolation::Bicubic,
             image::Rgb([0, 0, 0]),
         );
+        
+        let crop_x = (diag.saturating_sub(new_w)) / 2;
+        let crop_y = (diag.saturating_sub(new_h)) / 2;
+        current = image::imageops::crop_imm(&rotated, crop_x, crop_y, new_w, new_h).to_image();
     }
     
     match item.geom.rotate_90_count.rem_euclid(4) {
@@ -670,17 +767,22 @@ pub async fn batch_export_images(
                     let new_w = (w as f32 * cos_a.abs() + h as f32 * sin_a.abs()).ceil() as u32;
                     let new_h = (w as f32 * sin_a.abs() + h as f32 * cos_a.abs()).ceil() as u32;
                     
-                    let mut expanded = ImageBuffer::from_pixel(new_w, new_h, image::Rgb([0, 0, 0]));
-                    let offset_x = (new_w - w) / 2;
-                    let offset_y = (new_h - h) / 2;
-                    image::imageops::overlay(&mut expanded, &transformed, offset_x as i64, offset_y as i64);
+                    let diag = ((w as f32).hypot(h as f32)).ceil() as u32;
+                    let mut expanded = ImageBuffer::from_pixel(diag, diag, image::Rgb([0, 0, 0]));
+                    let offset_x = (diag as i64 - w as i64) / 2;
+                    let offset_y = (diag as i64 - h as i64) / 2;
+                    image::imageops::overlay(&mut expanded, &transformed, offset_x, offset_y);
                     
-                    transformed = imageproc::geometric_transformations::rotate_about_center(
+                    let rotated = imageproc::geometric_transformations::rotate_about_center(
                         &expanded,
                         angle_rad,
                         imageproc::geometric_transformations::Interpolation::Bicubic,
                         image::Rgb([0, 0, 0]),
                     );
+                    
+                    let crop_x = (diag.saturating_sub(new_w)) / 2;
+                    let crop_y = (diag.saturating_sub(new_h)) / 2;
+                    transformed = image::imageops::crop_imm(&rotated, crop_x, crop_y, new_w, new_h).to_image();
                 }
 
                 match item.geom.rotate_90_count.rem_euclid(4) {

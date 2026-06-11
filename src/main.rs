@@ -21,8 +21,13 @@ fn main() {
             nexfilm_engine::commands::geometry_auto_align,
             nexfilm_engine::commands::load_3d_lut,
             nexfilm_engine::commands::load_dcp_profile,
-            nexfilm_engine::commands::set_working_colorspace
+            nexfilm_engine::commands::set_working_colorspace,
+            nexfilm_engine::commands::open_lut_dialog,
+            nexfilm_engine::commands::open_dcp_dialog,
+            nexfilm_engine::commands::get_builtin_luts,
+            nexfilm_engine::commands::get_builtin_dcps
         ])
+        .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
