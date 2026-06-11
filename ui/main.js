@@ -355,35 +355,42 @@ function initWebGL() {
         float t_g = max(float(texel.g) / 65535.0, epsilon);
         float t_b = max(float(texel.b) / 65535.0, epsilon);
         
-        vec3 d_raw = vec3(-log(t_r) / log(10.0), -log(t_g) / log(10.0), -log(t_b) / log(10.0));
-        vec3 delta_d = max(d_raw - u_base_density, vec3(0.0));
+        // 1. 获取 Log 数据
+        vec3 density = vec3(-log(t_r) / log(10.0), -log(t_g) / log(10.0), -log(t_b) / log(10.0));
         
-        vec3 true_density;
+        // 2. 片基与串扰
         if (u_mode == 0) {
-            true_density = STATUS_M * delta_d;
+            density = STATUS_M * (density - u_base_density);
         } else {
-            float gray = (delta_d.r + delta_d.g + delta_d.b) / 3.0;
-            true_density = vec3(gray);
+            density = density - u_base_density;
+            float gray = (density.r + density.g + density.b) / 3.0;
+            density = vec3(gray);
         }
         
-        vec3 density;
+        // 3. 曝光与色彩对齐
         if (u_mode == 0) {
-            density = max(true_density + u_exposure, vec3(0.0));
+            density += u_exposure;
         } else {
-            density = max(true_density + vec3(u_exposure.r), vec3(0.0));
+            density += vec3(u_exposure.r);
         }
         
-        vec3 norm = clamp((density - u_dmin) / (u_dmax - u_dmin), 0.0, 1.0);
+        // 4. 对数域高光/阴影 (Log Tone Control) & 5. 归一化与数学截断
+        vec3 norm = (density - u_dmin) / (u_dmax - u_dmin);
         
-        // Highlights & Shadows
-        norm = norm + u_shadows * pow(1.0 - norm, vec3(2.0)) * norm + u_highlights * pow(norm, vec3(2.0)) * (1.0 - norm);
+        vec3 clamped_norm = clamp(norm, 0.0, 1.0);
+        norm = norm + u_shadows * pow(1.0 - clamped_norm, vec3(2.0)) * norm + u_highlights * pow(clamped_norm, vec3(2.0)) * (1.0 - norm);
+        
+        // 进入 LUT 前，必须强制绝杀溢出
         norm = clamp(norm, 0.0, 1.0);
         
-        vec3 final_rgb = vec3(pow(norm.r, 1.0 / u_gamma), pow(norm.g, 1.0 / u_gamma), pow(norm.b, 1.0 / u_gamma));
-        
+        // 6. 应用 3D LUT
+        vec3 final_rgb;
         if (u_has_lut == 1) {
-            vec3 lut_color = texture(u_lut3d, final_rgb).rgb;
-            final_rgb = mix(final_rgb, lut_color, u_lut_opacity);
+            vec3 lut_color = texture(u_lut3d, norm).rgb;
+            final_rgb = mix(vec3(pow(norm.r, 1.0 / u_gamma), pow(norm.g, 1.0 / u_gamma), pow(norm.b, 1.0 / u_gamma)), lut_color, u_lut_opacity);
+        } else {
+            // 7. 终端显示映射
+            final_rgb = vec3(pow(norm.r, 1.0 / u_gamma), pow(norm.g, 1.0 / u_gamma), pow(norm.b, 1.0 / u_gamma));
         }
         
         outColor = vec4(final_rgb, 1.0);
@@ -1225,13 +1232,122 @@ btnFlipV.addEventListener('click', async () => {
     await invoke('update_geometry', { id: activeId, geom: current_geom }); await loadProxyImage(); requestThumbnailSync();
 });
 
+async function doAutoColor() {
+    if (!activeId) return;
+    try {
+        const result = await invoke('get_proxy_image_data', { id: activeId });
+        let arrayBuffer = result.buffer instanceof ArrayBuffer ? result.buffer : (result instanceof ArrayBuffer ? result : new Uint8Array(result).buffer);
+        let byteOffset = result.byteOffset || 0;
+        
+        // Ensure we pass a clean ArrayBuffer to the worker
+        let sendBuffer = arrayBuffer;
+        if (byteOffset !== 0 || arrayBuffer.byteLength !== (result.byteLength || result.length)) {
+            sendBuffer = arrayBuffer.slice(byteOffset, byteOffset + (result.byteLength || result.length));
+        }
+
+        const workerCode = `
+        self.onmessage = function(e) {
+            const arrayBuffer = e.data.buffer;
+            const dataView = new DataView(arrayBuffer);
+            const width = dataView.getUint32(0, true);
+            const height = dataView.getUint32(4, true);
+            const pixels = new Uint16Array(arrayBuffer, 20, width * height * 4);
+            
+            // 2. & 3. D-Min and D-Max from 16-bit linear data
+            let lums = new Float32Array(width * height);
+            for (let i = 0; i < width * height; i++) {
+                let r = Math.max(1e-6, pixels[i * 4] / 65535.0);
+                let g = Math.max(1e-6, pixels[i * 4 + 1] / 65535.0);
+                let b = Math.max(1e-6, pixels[i * 4 + 2] / 65535.0);
+                lums[i] = r * 0.299 + g * 0.587 + b * 0.114;
+            }
+            lums.sort();
+            let lum_max = lums[Math.floor(lums.length * 0.999)];
+            let dmin_val = -Math.log10(Math.max(1e-6, lum_max));
+            let lum_min = lums[Math.floor(lums.length * 0.001)];
+            let dmax_val = -Math.log10(Math.max(1e-6, lum_min));
+            
+            let final_dmin = Math.max(0, dmin_val);
+            let final_dmax = Math.max(final_dmin + 0.1, Math.min(3.0, dmax_val));
+            
+            // 5. Auto White Balance in Log Density
+            let minX = Math.floor(width * 0.2);
+            let maxX = Math.floor(width * 0.8);
+            let minY = Math.floor(height * 0.2);
+            let maxY = Math.floor(height * 0.8);
+            let centerCount = (maxX - minX) * (maxY - minY);
+            let r_densities = new Float32Array(centerCount);
+            let g_densities = new Float32Array(centerCount);
+            let b_densities = new Float32Array(centerCount);
+            
+            let idx = 0;
+            for (let y = minY; y < maxY; y++) {
+                for (let x = minX; x < maxX; x++) {
+                    let i = y * width + x;
+                    let r = Math.max(1e-6, pixels[i * 4] / 65535.0);
+                    let g = Math.max(1e-6, pixels[i * 4 + 1] / 65535.0);
+                    let b = Math.max(1e-6, pixels[i * 4 + 2] / 65535.0);
+                    r_densities[idx] = -Math.log10(r);
+                    g_densities[idx] = -Math.log10(g);
+                    b_densities[idx] = -Math.log10(b);
+                    idx++;
+                }
+            }
+            r_densities.sort();
+            g_densities.sort();
+            b_densities.sort();
+            
+            let mid = Math.floor(centerCount / 2);
+            let delta_r = g_densities[mid] - r_densities[mid];
+            let delta_b = g_densities[mid] - b_densities[mid];
+            
+            self.postMessage({
+                dmin: final_dmin,
+                dmax: final_dmax,
+                delta_r: delta_r,
+                delta_b: delta_b
+            });
+        };
+        `;
+        
+        const blob = new Blob([workerCode], {type: 'application/javascript'});
+        const worker = new Worker(URL.createObjectURL(blob));
+        
+        worker.onmessage = function(e) {
+            const { dmin, dmax, delta_r, delta_b } = e.data;
+            
+            document.getElementById('dmin').value = dmin;
+            document.getElementById('val-dmin').innerText = dmin.toFixed(3);
+            document.getElementById('dmax').value = dmax;
+            document.getElementById('val-dmax').innerText = dmax.toFixed(3);
+            document.getElementById('expr').value = delta_r;
+            document.getElementById('val-expr').innerText = delta_r.toFixed(3);
+            document.getElementById('expb').value = delta_b;
+            document.getElementById('val-expb').innerText = delta_b.toFixed(3);
+            
+            // Dispatch input event to trigger UI update logic if needed
+            document.getElementById('dmin').dispatchEvent(new Event('input'));
+            document.getElementById('dmax').dispatchEvent(new Event('input'));
+            document.getElementById('expr').dispatchEvent(new Event('input'));
+            document.getElementById('expb').dispatchEvent(new Event('input'));
+            
+            sendParams();
+            requestRender();
+            worker.terminate();
+        };
+        
+        worker.postMessage({ buffer: sendBuffer }, [sendBuffer]);
+    } catch(e) { console.error("Auto Color failed", e); }
+}
+
 btnAutoCrop.addEventListener('click', async () => {
     if (!activeId) return; pushUndoState();
     try {
         const result = await invoke('geometry_auto_align', { id: activeId });
         current_geom.crop_rect = result.crop_rect; current_geom.angle = result.angle;
         updateCropOverlay(); await loadProxyImage(); requestThumbnailSync();
-    } catch (err) { showToast("Auto align failed: " + err, "error"); }
+        await doAutoColor();
+    } catch (err) { showToast("Auto failed: " + err, "error"); }
 });
 
 function getRenderRect() { return canvasWrapper.getBoundingClientRect(); }
