@@ -8,6 +8,7 @@ use rfd::FileDialog;
 use std::io::Cursor;
 use tauri::State;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
@@ -113,14 +114,12 @@ pub fn load_image_buffer(path: &str, use_half_size: bool) -> Result<ImageBuffer<
                 return Err("Failed to init libraw".to_string());
             }
 
-            // Set Linear Color Mapping
             (*data).params.use_camera_wb = 1;
             (*data).params.use_camera_matrix = 1;
             (*data).params.output_color = 1; // sRGB
             (*data).params.gamm[0] = 1.0;
             (*data).params.gamm[1] = 1.0;
             
-            // Set half_size for preview
             if use_half_size {
                 (*data).params.half_size = 1;
             }
@@ -220,27 +219,38 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
         })
     }).collect();
 
-    let mut new_items = new_items_result?;
-    let mut items = state.items.write().map_err(|e| e.to_string())?;
-
-    // If no active item, set the first new one
-    if state.active_id.read().map_err(|e| e.to_string())?.is_none() && !new_items.is_empty() {
-        *state.active_id.write().map_err(|e| e.to_string())? = Some(new_items[0].id.clone());
-    }
+    let new_items = new_items_result?;
     
-    items.append(&mut new_items);
+    let mut order_guard = state.item_order.write().map_err(|e| e.to_string())?;
+    for item in new_items {
+        let id = item.id.clone();
+        state.items.insert(id.clone(), Arc::new(RwLock::new(item)));
+        order_guard.push(id);
+    }
+
+    if state.active_id.read().map_err(|e| e.to_string())?.is_none() {
+        if let Some(first_id) = order_guard.first() {
+            *state.active_id.write().map_err(|e| e.to_string())? = Some(first_id.clone());
+        }
+    }
 
     Ok(())
 }
 
 #[tauri::command]
 pub async fn get_filmstrip(state: State<'_, EngineState>) -> Result<Vec<FilmstripItem>, String> {
-    let items = state.items.read().map_err(|e| e.to_string())?;
-    let strip = items.iter().map(|item| FilmstripItem {
-        id: item.id.clone(),
-        file_path: item.file_path.clone(),
-        thumbnail_base64: item.thumbnail_base64.clone(),
-    }).collect();
+    let item_order = state.item_order.read().map_err(|e| e.to_string())?;
+    let mut strip = Vec::with_capacity(item_order.len());
+    for id in item_order.iter() {
+        if let Some(item_arc) = state.items.get(id) {
+            let item = item_arc.read().map_err(|e| e.to_string())?;
+            strip.push(FilmstripItem {
+                id: item.id.clone(),
+                file_path: item.file_path.clone(),
+                thumbnail_base64: item.thumbnail_base64.clone(),
+            });
+        }
+    }
     Ok(strip)
 }
 
@@ -252,9 +262,9 @@ pub struct ActiveImageState {
 
 #[tauri::command]
 pub async fn switch_active_image(id: String, state: State<'_, EngineState>) -> Result<ActiveImageState, String> {
-    let items = state.items.read().map_err(|e| e.to_string())?;
-    if let Some(item) = items.iter().find(|i| i.id == id) {
-        *state.active_id.write().map_err(|e| e.to_string())? = Some(id);
+    if let Some(item_arc) = state.items.get(&id) {
+        *state.active_id.write().map_err(|e| e.to_string())? = Some(id.clone());
+        let item = item_arc.read().map_err(|e| e.to_string())?;
         Ok(ActiveImageState {
             params: item.params.clone(),
             geom: item.geom.clone(),
@@ -266,12 +276,11 @@ pub async fn switch_active_image(id: String, state: State<'_, EngineState>) -> R
 
 #[tauri::command]
 pub async fn set_film_mode(id: String, mode: String, state: State<'_, EngineState>) -> Result<(), String> {
-    let mut items = state.items.write().map_err(|e| e.to_string())?;
-    if let Some(item) = items.iter_mut().find(|i| i.id == id) {
+    if let Some(item_arc) = state.items.get(&id) {
+        let mut item = item_arc.write().map_err(|e| e.to_string())?;
         let new_mode = if mode == "B&W" { FilmMode::BW } else { FilmMode::Color };
         if item.params.film_mode != new_mode {
             item.params.film_mode = new_mode.clone();
-            // Recompute pristine proxy because true density differs between Color and B&W
             let pipeline = FilmPipeline::new(
                 [item.base_color.base_r, item.base_color.base_g, item.base_color.base_b],
                 [0.0, 0.0, 0.0],
@@ -305,9 +314,9 @@ pub async fn set_film_mode(id: String, mode: String, state: State<'_, EngineStat
 #[tauri::command]
 pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) -> Result<(), String> {
     let mut new_thumbnail = String::new();
-    {
-        let items = state.items.read().map_err(|e| e.to_string())?;
-        if let Some(item) = items.iter().find(|i| i.id == id) {
+    if let Some(item_arc) = state.items.get(&id) {
+        {
+            let item = item_arc.read().map_err(|e| e.to_string())?;
             let params = &item.params;
             let base_color = &item.base_color;
             let pipeline = FilmPipeline::new(
@@ -364,11 +373,8 @@ pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) ->
             thumb.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).map_err(|e| e.to_string())?;
             new_thumbnail = general_purpose::STANDARD.encode(cursor.into_inner());
         }
-    }
-    
-    if !new_thumbnail.is_empty() {
-        let mut items = state.items.write().map_err(|e| e.to_string())?;
-        if let Some(item) = items.iter_mut().find(|i| i.id == id) {
+        if !new_thumbnail.is_empty() {
+            let mut item = item_arc.write().map_err(|e| e.to_string())?;
             item.thumbnail_base64 = new_thumbnail;
         }
     }
@@ -377,10 +383,10 @@ pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) ->
 
 #[tauri::command]
 pub async fn update_geometry(id: String, geom: crate::app_state::GeometryState, state: State<'_, EngineState>) -> Result<(), String> {
-    let mut items = state.items.write().map_err(|e| e.to_string())?;
-    if let Some(item) = items.iter_mut().find(|i| i.id == id) {
+    if let Some(item_arc) = state.items.get(&id) {
+        let mut item = item_arc.write().map_err(|e| e.to_string())?;
         item.geom = geom;
-        reapply_geometry(item);
+        reapply_geometry(&mut item);
     }
     Ok(())
 }
@@ -388,9 +394,7 @@ pub async fn update_geometry(id: String, geom: crate::app_state::GeometryState, 
 fn reapply_geometry(item: &mut FilmItem) {
     let mut current = item.original_proxy.clone();
     
-    // 1. Arbitrary angle interpolation rotation with black background padding
     if item.geom.angle.abs() > 0.01 {
-        // Find bounding box for rotation
         let angle_rad = item.geom.angle.to_radians();
         let (w, h) = current.dimensions();
         
@@ -400,7 +404,6 @@ fn reapply_geometry(item: &mut FilmItem) {
         let new_w = (w as f32 * cos_a.abs() + h as f32 * sin_a.abs()).ceil() as u32;
         let new_h = (w as f32 * sin_a.abs() + h as f32 * cos_a.abs()).ceil() as u32;
         
-        // Create an expanded image filled with black
         let mut expanded = ImageBuffer::from_pixel(new_w, new_h, image::Rgb([0, 0, 0]));
         let offset_x = (new_w - w) / 2;
         let offset_y = (new_h - h) / 2;
@@ -414,7 +417,6 @@ fn reapply_geometry(item: &mut FilmItem) {
         );
     }
     
-    // 2. 90-degree step rotation
     match item.geom.rotate_90_count.rem_euclid(4) {
         1 => current = image::imageops::rotate90(&current),
         2 => current = image::imageops::rotate180(&current),
@@ -422,7 +424,6 @@ fn reapply_geometry(item: &mut FilmItem) {
         _ => {}
     }
     
-    // 3. Mirror
     if item.geom.flip_h {
         current = image::imageops::flip_horizontal(&current);
     }
@@ -430,25 +431,19 @@ fn reapply_geometry(item: &mut FilmItem) {
         current = image::imageops::flip_vertical(&current);
     }
     
-    // 4. Crop is DEFERRED to export and thumbnail generation only.
-    // The frontend UI needs the full uncropped image to allow the user to adjust the crop box visually.
-    
     item.proxy_image = current;
     item.pristine_proxy = compute_pristine_proxy(&item.proxy_image, &item.base_color, item.params.film_mode.clone());
 }
 
 #[tauri::command]
 pub async fn geometry_auto_align(id: String, state: State<'_, EngineState>) -> Result<crate::app_state::AutoAlignResult, String> {
-    let mut items = state.items.write().map_err(|e| e.to_string())?;
-    if let Some(item) = items.iter_mut().find(|i| i.id == id) {
-        // Pass 1: Find the absolute leveling angle on the original unrotated image
+    if let Some(item_arc) = state.items.get(&id) {
+        let mut item = item_arc.write().map_err(|e| e.to_string())?;
         let first_result = geometry::auto_crop_rect(&item.original_proxy)?;
         item.geom.angle = first_result.angle;
         
-        // Apply this angle (along with any user step-rotations and flips) to generate a leveled canvas
-        reapply_geometry(item);
+        reapply_geometry(&mut item);
         
-        // Pass 2: Find the precise bounding box of the film frame within the final transformed canvas
         let second_result = geometry::auto_crop_rect(&item.proxy_image)?;
         item.geom.crop_rect = second_result.crop_rect.clone();
         
@@ -461,58 +456,58 @@ pub async fn geometry_auto_align(id: String, state: State<'_, EngineState>) -> R
 }
 
 #[tauri::command]
-pub async fn apply_tuning_parameters(
-    params: TuningParams,
+pub async fn get_proxy_image_data(
+    id: String,
     state: State<'_, EngineState>,
 ) -> Result<tauri::ipc::Response, String> {
-    let active_id = {
-        let id_guard = state.active_id.read().map_err(|e| e.to_string())?;
-        id_guard.clone().ok_or("No active image")?
-    };
-
-    let mut items = state.items.write().map_err(|e| e.to_string())?;
-    let item = items.iter_mut().find(|i| i.id == active_id).ok_or("Active image not found")?;
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
+    let item = item_arc.read().map_err(|e| e.to_string())?;
     
-    item.params = params.clone();
-    let pristine = &item.pristine_proxy;
+    let proxy = &item.proxy_image;
+    let (width, height) = proxy.dimensions();
+    let base_color = &item.base_color;
+    
+    // Calculate base_density
+    let epsilon = 1e-6_f32;
+    let t_r = (base_color.base_r as f32 / 65535.0).max(epsilon);
+    let t_g = (base_color.base_g as f32 / 65535.0).max(epsilon);
+    let t_b = (base_color.base_b as f32 / 65535.0).max(epsilon);
+    let bd_r: f32 = -t_r.log10();
+    let bd_g: f32 = -t_g.log10();
+    let bd_b: f32 = -t_b.log10();
 
-    let pipeline = FilmPipeline::new(
-        [65535, 65535, 65535], // dummy for base
-        [
-            params.exposure + params.exp_r,
-            params.exposure + params.exp_g,
-            params.exposure + params.exp_b,
-        ],
-        params.film_mode.clone(),
-    );
-
-    let (width, height) = pristine.dimensions();
-    let mut out_buffer = vec![0u8; (width * height * 4) as usize + 8];
+    // Header: width(u32), height(u32), bd_r(f32), bd_g(f32), bd_b(f32) => 20 bytes
+    let mut out_buffer = vec![0u8; (width * height * 8) as usize + 20];
     out_buffer[0..4].copy_from_slice(&width.to_le_bytes());
     out_buffer[4..8].copy_from_slice(&height.to_le_bytes());
-
-    let pristine_pixels: &[f32] = pristine.as_raw().as_slice();
-    let out_pixels: &mut [u8] = &mut out_buffer[8..];
-
-    let d_min = params.d_min;
-    let d_max = params.d_max;
-    let gamma = params.gamma;
-
-    pristine_pixels.par_chunks(3).zip(out_pixels.par_chunks_mut(4)).for_each(|(in_px, out_px)| {
-        let true_density = [in_px[0], in_px[1], in_px[2]];
-        let density = pipeline.apply_exposure(&true_density);
-
-        let norm_r = ((density[0] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-        let norm_g = ((density[1] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-        let norm_b = ((density[2] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-
-        out_px[0] = (norm_r.powf(1.0 / gamma) * 255.0) as u8;
-        out_px[1] = (norm_g.powf(1.0 / gamma) * 255.0) as u8;
-        out_px[2] = (norm_b.powf(1.0 / gamma) * 255.0) as u8;
-        out_px[3] = 255;
+    out_buffer[8..12].copy_from_slice(&bd_r.to_le_bytes());
+    out_buffer[12..16].copy_from_slice(&bd_g.to_le_bytes());
+    out_buffer[16..20].copy_from_slice(&bd_b.to_le_bytes());
+    
+    let raw_pixels: &[u16] = proxy.as_raw().as_slice();
+    let out_slice = &mut out_buffer[20..];
+    
+    raw_pixels.par_chunks(3).zip(out_slice.par_chunks_mut(8)).for_each(|(chunk, out_chunk)| {
+        out_chunk[0..2].copy_from_slice(&chunk[0].to_le_bytes());
+        out_chunk[2..4].copy_from_slice(&chunk[1].to_le_bytes());
+        out_chunk[4..6].copy_from_slice(&chunk[2].to_le_bytes());
+        out_chunk[6..8].copy_from_slice(&65535u16.to_le_bytes()); // Alpha
     });
 
     Ok(tauri::ipc::Response::new(out_buffer))
+}
+
+#[tauri::command]
+pub async fn update_tuning_parameters(
+    id: String,
+    params: TuningParams,
+    state: State<'_, EngineState>,
+) -> Result<(), String> {
+    if let Some(item_arc) = state.items.get(&id) {
+        let mut item = item_arc.write().map_err(|e| e.to_string())?;
+        item.params = params;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -520,119 +515,117 @@ pub async fn batch_export_images(
     output_dir: String,
     state: State<'_, EngineState>,
 ) -> Result<usize, String> {
-    let items = state.items.read().map_err(|e| e.to_string())?;
-    let count = items.len();
+    let item_order = state.item_order.read().map_err(|e| e.to_string())?;
+    let count = item_order.len();
     if count == 0 {
         return Ok(0);
     }
 
     let success_count = std::sync::atomic::AtomicUsize::new(0);
 
-    items.par_iter().for_each(|item| {
-        if let Ok(original) = load_image_buffer(&item.file_path, false) {
-            let params = &item.params;
-            let base_color = &item.base_color;
+    item_order.par_iter().for_each(|id| {
+        if let Some(item_arc) = state.items.get(id) {
+            let item = item_arc.read().unwrap();
+            if let Ok(original) = load_image_buffer(&item.file_path, false) {
+                let params = &item.params;
+                let base_color = &item.base_color;
 
-            let pipeline = FilmPipeline::new(
-                [base_color.base_r, base_color.base_g, base_color.base_b],
-                [
-                    params.exposure + params.exp_r,
-                    params.exposure + params.exp_g,
-                    params.exposure + params.exp_b,
-                ],
-                params.film_mode.clone(),
-            );
-
-            let mut transformed = original;
-            
-            // 1. Arbitrary angle rotation
-            if item.geom.angle.abs() > 0.01 {
-                let angle_rad = item.geom.angle.to_radians();
-                let (w, h) = transformed.dimensions();
-                
-                let cos_a = angle_rad.cos();
-                let sin_a = angle_rad.sin();
-                
-                let new_w = (w as f32 * cos_a.abs() + h as f32 * sin_a.abs()).ceil() as u32;
-                let new_h = (w as f32 * sin_a.abs() + h as f32 * cos_a.abs()).ceil() as u32;
-                
-                let mut expanded = ImageBuffer::from_pixel(new_w, new_h, image::Rgb([0, 0, 0]));
-                let offset_x = (new_w - w) / 2;
-                let offset_y = (new_h - h) / 2;
-                image::imageops::overlay(&mut expanded, &transformed, offset_x as i64, offset_y as i64);
-                
-                transformed = imageproc::geometric_transformations::rotate_about_center(
-                    &expanded,
-                    angle_rad,
-                    imageproc::geometric_transformations::Interpolation::Bicubic,
-                    image::Rgb([0, 0, 0]),
+                let pipeline = FilmPipeline::new(
+                    [base_color.base_r, base_color.base_g, base_color.base_b],
+                    [
+                        params.exposure + params.exp_r,
+                        params.exposure + params.exp_g,
+                        params.exposure + params.exp_b,
+                    ],
+                    params.film_mode.clone(),
                 );
-            }
 
-            // 2. 90-degree step rotation
-            match item.geom.rotate_90_count.rem_euclid(4) {
-                1 => transformed = image::imageops::rotate90(&transformed),
-                2 => transformed = image::imageops::rotate180(&transformed),
-                3 => transformed = image::imageops::rotate270(&transformed),
-                _ => {}
-            }
-            
-            // 3. Mirror
-            if item.geom.flip_h {
-                transformed = image::imageops::flip_horizontal(&transformed);
-            }
-            if item.geom.flip_v {
-                transformed = image::imageops::flip_vertical(&transformed);
-            }
+                let mut transformed = original;
+                
+                if item.geom.angle.abs() > 0.01 {
+                    let angle_rad = item.geom.angle.to_radians();
+                    let (w, h) = transformed.dimensions();
+                    
+                    let cos_a = angle_rad.cos();
+                    let sin_a = angle_rad.sin();
+                    
+                    let new_w = (w as f32 * cos_a.abs() + h as f32 * sin_a.abs()).ceil() as u32;
+                    let new_h = (w as f32 * sin_a.abs() + h as f32 * cos_a.abs()).ceil() as u32;
+                    
+                    let mut expanded = ImageBuffer::from_pixel(new_w, new_h, image::Rgb([0, 0, 0]));
+                    let offset_x = (new_w - w) / 2;
+                    let offset_y = (new_h - h) / 2;
+                    image::imageops::overlay(&mut expanded, &transformed, offset_x as i64, offset_y as i64);
+                    
+                    transformed = imageproc::geometric_transformations::rotate_about_center(
+                        &expanded,
+                        angle_rad,
+                        imageproc::geometric_transformations::Interpolation::Bicubic,
+                        image::Rgb([0, 0, 0]),
+                    );
+                }
 
-            // 4. Crop
-            let (orig_width, orig_height) = transformed.dimensions();
-            let cx = (item.geom.crop_rect.x * orig_width as f32).max(0.0).min(orig_width as f32) as u32;
-            let cy = (item.geom.crop_rect.y * orig_height as f32).max(0.0).min(orig_height as f32) as u32;
-            let cw = (item.geom.crop_rect.width * orig_width as f32).max(1.0).min((orig_width - cx) as f32) as u32;
-            let ch = (item.geom.crop_rect.height * orig_height as f32).max(1.0).min((orig_height - cy) as f32) as u32;
-            
-            if cw < orig_width || ch < orig_height {
-                transformed = image::imageops::crop(&mut transformed, cx, cy, cw, ch).to_image();
-            }
+                match item.geom.rotate_90_count.rem_euclid(4) {
+                    1 => transformed = image::imageops::rotate90(&transformed),
+                    2 => transformed = image::imageops::rotate180(&transformed),
+                    3 => transformed = image::imageops::rotate270(&transformed),
+                    _ => {}
+                }
+                
+                if item.geom.flip_h {
+                    transformed = image::imageops::flip_horizontal(&transformed);
+                }
+                if item.geom.flip_v {
+                    transformed = image::imageops::flip_vertical(&transformed);
+                }
 
-            let (width, height) = transformed.dimensions();
-            let mut out_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
+                let (orig_width, orig_height) = transformed.dimensions();
+                let cx = (item.geom.crop_rect.x * orig_width as f32).max(0.0).min(orig_width as f32) as u32;
+                let cy = (item.geom.crop_rect.y * orig_height as f32).max(0.0).min(orig_height as f32) as u32;
+                let cw = (item.geom.crop_rect.width * orig_width as f32).max(1.0).min((orig_width - cx) as f32) as u32;
+                let ch = (item.geom.crop_rect.height * orig_height as f32).max(1.0).min((orig_height - cy) as f32) as u32;
+                
+                if cw < orig_width || ch < orig_height {
+                    transformed = image::imageops::crop(&mut transformed, cx, cy, cw, ch).to_image();
+                }
 
-            let raw_pixels: &[u16] = transformed.as_raw().as_slice();
-            let out_pixels: &mut [u16] = out_buffer.as_mut();
+                let (width, height) = transformed.dimensions();
+                let mut out_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
 
-            let d_min = params.d_min;
-            let d_max = params.d_max;
-            let gamma = params.gamma;
+                let raw_pixels: &[u16] = transformed.as_raw().as_slice();
+                let out_pixels: &mut [u16] = out_buffer.as_mut();
 
-            raw_pixels.par_chunks(3).zip(out_pixels.par_chunks_mut(3)).for_each(|(in_px, out_px)| {
-                let linear_rgb = [
-                    (in_px[0] as f32) / 65535.0,
-                    (in_px[1] as f32) / 65535.0,
-                    (in_px[2] as f32) / 65535.0,
-                ];
+                let d_min = params.d_min;
+                let d_max = params.d_max;
+                let gamma = params.gamma;
 
-                let density = pipeline.process_pixel(&linear_rgb);
+                raw_pixels.par_chunks(3).zip(out_pixels.par_chunks_mut(3)).for_each(|(in_px, out_px)| {
+                    let linear_rgb = [
+                        (in_px[0] as f32) / 65535.0,
+                        (in_px[1] as f32) / 65535.0,
+                        (in_px[2] as f32) / 65535.0,
+                    ];
 
-                let norm_r = ((density[0] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-                let norm_g = ((density[1] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-                let norm_b = ((density[2] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
+                    let density = pipeline.process_pixel(&linear_rgb);
 
-                out_px[0] = (norm_r.powf(1.0 / gamma) * 65535.0) as u16;
-                out_px[1] = (norm_g.powf(1.0 / gamma) * 65535.0) as u16;
-                out_px[2] = (norm_b.powf(1.0 / gamma) * 65535.0) as u16;
-            });
+                    let norm_r = ((density[0] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
+                    let norm_g = ((density[1] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
+                    let norm_b = ((density[2] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
 
-            // Force TIFF extension for 16-bit export
-            let file_stem = std::path::Path::new(&item.file_path)
-                .file_stem()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string();
-            let out_path = std::path::Path::new(&output_dir).join(format!("nexfilm_{}.tiff", file_stem));
-            if out_buffer.save(out_path).is_ok() {
-                success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    out_px[0] = (norm_r.powf(1.0 / gamma) * 65535.0) as u16;
+                    out_px[1] = (norm_g.powf(1.0 / gamma) * 65535.0) as u16;
+                    out_px[2] = (norm_b.powf(1.0 / gamma) * 65535.0) as u16;
+                });
+
+                let file_stem = std::path::Path::new(&item.file_path)
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let out_path = std::path::Path::new(&output_dir).join(format!("nexfilm_{}.tiff", file_stem));
+                if out_buffer.save(out_path).is_ok() {
+                    success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
             }
         }
     });

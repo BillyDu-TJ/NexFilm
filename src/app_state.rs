@@ -109,14 +109,16 @@ pub struct FilmstripItem {
 }
 
 pub struct EngineState {
-    pub items: RwLock<Vec<FilmItem>>,
+    pub items: dashmap::DashMap<String, std::sync::Arc<std::sync::RwLock<FilmItem>>>,
+    pub item_order: RwLock<Vec<String>>,
     pub active_id: RwLock<Option<String>>,
 }
 
 impl EngineState {
     pub fn new() -> Self {
         EngineState {
-            items: RwLock::new(Vec::new()),
+            items: dashmap::DashMap::new(),
+            item_order: RwLock::new(Vec::new()),
             active_id: RwLock::new(None),
         }
     }
