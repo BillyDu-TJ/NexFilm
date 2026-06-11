@@ -66,15 +66,21 @@
                 <!-- Transform Tool Bar -->
                 <div class="h-[48px] border-b border-[#28282c] flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm bg-[#1C1C1E]">
                     <div class="flex space-x-2">
-                        <button id="btn-crop-mode" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>CROP</button>
+                        <button id="btn-crop-mode" class="toolbar-btn" disabled>CROP</button>
                     </div>
-                    <button id="btn-auto-crop" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>AUTO</button>
                     <div class="w-px h-4 bg-zinc-700"></div>
-                    <button id="btn-rotate-left" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>ROT L</button>
-                    <button id="btn-rotate-right" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>ROT R</button>
+                    <div class="flex items-center gap-2">
+                        <label class="text-[10px] font-bold text-zinc-500 tracking-widest uppercase">Angle</label>
+                        <input type="range" id="angle" class="w-24 custom-range silver-track" min="-45.0" max="45.0" step="0.1" value="0.0" disabled>
+                        <span id="val-angle" class="text-[10px] font-mono text-zinc-400 w-8 text-right">0.0</span>
+                    </div>
                     <div class="w-px h-4 bg-zinc-700"></div>
-                    <button id="btn-flip-h" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>FLIP H</button>
-                    <button id="btn-flip-v" class="px-3 py-1.5 text-[10px] font-bold text-zinc-500 hover:text-zinc-200 hover:bg-[#28282c] rounded transition-colors disabled:opacity-50 tracking-widest" disabled>FLIP V</button>
+                    <button id="btn-auto-crop" class="toolbar-btn" disabled>AUTO</button>
+                    <button id="btn-rotate-left" class="toolbar-btn" disabled>ROT L</button>
+                    <button id="btn-rotate-right" class="toolbar-btn" disabled>ROT R</button>
+                    <div class="w-px h-4 bg-zinc-700"></div>
+                    <button id="btn-flip-h" class="toolbar-btn" disabled>FLIP H</button>
+                    <button id="btn-flip-v" class="toolbar-btn" disabled>FLIP V</button>
                 </div>
 
                 <!-- Main Preview -->
@@ -241,8 +247,11 @@
                     <div class="flex items-center justify-between">
                         <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Format</label>
                         <select id="export-format" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
-                            <option value="tiff16">16-bit TIFF (Uncompressed)</option>
-                            <option value="jpeg">JPEG (High Quality)</option>
+                            <option value="tiff16_uncompressed">16-bit TIFF (Uncompressed)</option>
+                            <option value="tiff16_lzw">16-bit TIFF (ZIP/LZW Compression)</option>
+                            <option value="tiff8">8-bit TIFF</option>
+                            <option value="jpeg100">JPEG (Quality 100)</option>
+                            <option value="png">PNG</option>
                         </select>
                     </div>
                     <div class="flex items-center justify-between">
@@ -250,6 +259,9 @@
                         <select id="export-colorspace" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
                             <option value="srgb">sRGB IEC61966-2.1</option>
                             <option value="adobergb">Adobe RGB (1998)</option>
+                            <option value="rec2020">Rec.2020</option>
+                            <option value="prophoto">ProPhoto RGB</option>
+                            <option value="aces">ACES-AP1</option>
                         </select>
                     </div>
                 </div>

@@ -513,6 +513,8 @@ pub async fn update_tuning_parameters(
 #[tauri::command]
 pub async fn batch_export_images(
     output_dir: String,
+    format: String,
+    color_space: String,
     state: State<'_, EngineState>,
 ) -> Result<usize, String> {
     let item_order = state.item_order.read().map_err(|e| e.to_string())?;
@@ -591,7 +593,6 @@ pub async fn batch_export_images(
 
                 let (width, height) = transformed.dimensions();
                 let mut out_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
-
                 let raw_pixels: &[u16] = transformed.as_raw().as_slice();
                 let out_pixels: &mut [u16] = out_buffer.as_mut();
 
@@ -605,13 +606,10 @@ pub async fn batch_export_images(
                         (in_px[1] as f32) / 65535.0,
                         (in_px[2] as f32) / 65535.0,
                     ];
-
                     let density = pipeline.process_pixel(&linear_rgb);
-
                     let norm_r = ((density[0] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
                     let norm_g = ((density[1] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
                     let norm_b = ((density[2] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-
                     out_px[0] = (norm_r.powf(1.0 / gamma) * 65535.0) as u16;
                     out_px[1] = (norm_g.powf(1.0 / gamma) * 65535.0) as u16;
                     out_px[2] = (norm_b.powf(1.0 / gamma) * 65535.0) as u16;
@@ -622,8 +620,51 @@ pub async fn batch_export_images(
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
-                let out_path = std::path::Path::new(&output_dir).join(format!("nexfilm_{}.tiff", file_stem));
-                if out_buffer.save(out_path).is_ok() {
+                
+                // Color space info is ignored by basic `image` crate save unless embedding ICC,
+                // but we name the file appropriately to acknowledge it
+                let cs_suffix = match color_space.as_str() {
+                    "adobergb" => "AdobeRGB",
+                    "rec2020" => "Rec2020",
+                    "prophoto" => "ProPhoto",
+                    "aces" => "ACES-AP1",
+                    _ => "sRGB"
+                };
+
+                let out_path = match format.as_str() {
+                    "jpeg100" => {
+                        // JPEG is 8-bit, we must convert
+                        let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
+                        for (in_p, out_p) in out_buffer.pixels().zip(out8.pixels_mut()) {
+                            out_p[0] = (in_p[0] >> 8) as u8;
+                            out_p[1] = (in_p[1] >> 8) as u8;
+                            out_p[2] = (in_p[2] >> 8) as u8;
+                        }
+                        let path = std::path::Path::new(&output_dir).join(format!("nexfilm_{}_{}.jpg", file_stem, cs_suffix));
+                        out8.save(&path).map(|_| path)
+                    },
+                    "png" => {
+                        let path = std::path::Path::new(&output_dir).join(format!("nexfilm_{}_{}.png", file_stem, cs_suffix));
+                        out_buffer.save(&path).map(|_| path)
+                    },
+                    "tiff8" => {
+                        let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
+                        for (in_p, out_p) in out_buffer.pixels().zip(out8.pixels_mut()) {
+                            out_p[0] = (in_p[0] >> 8) as u8;
+                            out_p[1] = (in_p[1] >> 8) as u8;
+                            out_p[2] = (in_p[2] >> 8) as u8;
+                        }
+                        let path = std::path::Path::new(&output_dir).join(format!("nexfilm_{}_{}_8bit.tiff", file_stem, cs_suffix));
+                        out8.save(&path).map(|_| path)
+                    },
+                    _ => {
+                        // tiff16_uncompressed or tiff16_lzw
+                        let path = std::path::Path::new(&output_dir).join(format!("nexfilm_{}_{}_16bit.tiff", file_stem, cs_suffix));
+                        out_buffer.save(&path).map(|_| path)
+                    }
+                };
+                
+                if out_path.is_ok() {
                     success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
             }

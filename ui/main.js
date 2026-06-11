@@ -65,7 +65,8 @@ const sliders = {
     gamma: { el: document.getElementById('gamma'), val: document.getElementById('val-gamma') },
     expr: { el: document.getElementById('expr'), val: document.getElementById('val-expr') },
     expg: { el: document.getElementById('expg'), val: document.getElementById('val-expg') },
-    expb: { el: document.getElementById('expb'), val: document.getElementById('val-expb') }
+    expb: { el: document.getElementById('expb'), val: document.getElementById('val-expb') },
+    angle: { el: document.getElementById('angle'), val: document.getElementById('val-angle') }
 };
 
 let activeId = null;
@@ -184,7 +185,7 @@ window.addEventListener('keydown', async (e) => {
         if (!activeId || !undoStacks[activeId] || undoStacks[activeId].length === 0) return;
         
         const prevState = undoStacks[activeId].pop();
-        updateUIFromParams(prevState.params);
+        updateUIFromParams(prevState.params, prevState.geom);
         const oldGeomAngle = current_geom.angle;
         current_geom = JSON.parse(JSON.stringify(prevState.geom));
         
@@ -438,11 +439,13 @@ function drawHistogram(pixels) {
         rHist[r]++; gHist[g]++; bHist[b]++; lHist[l]++;
     }
 
-    for (let i = 0; i < 256; i++) {
+    // Ignore extreme shadows (0) and highlights (255) for dynamic scaling
+    for (let i = 1; i < 255; i++) {
         if (rHist[i] > maxVal) maxVal = rHist[i];
         if (gHist[i] > maxVal) maxVal = gHist[i];
         if (bHist[i] > maxVal) maxVal = bHist[i];
     }
+    if (maxVal === 0) maxVal = 1;
 
     histCanvas.width = histCanvas.offsetWidth;
     histCanvas.height = histCanvas.offsetHeight;
@@ -483,11 +486,12 @@ function drawHistogram(pixels) {
 }
 
 function drawWaveform(pixels) {
-    waveCanvas.width = 256;
-    waveCanvas.height = 256;
-    const w = 256, h = 256;
+    waveCanvas.width = waveCanvas.offsetWidth;
+    waveCanvas.height = waveCanvas.offsetHeight;
+    const w = waveCanvas.width, h = waveCanvas.height;
     
     waveCtx.clearRect(0, 0, w, h);
+    waveCtx.globalCompositeOperation = 'lighter';
     waveCtx.fillStyle = 'rgba(180, 200, 255, 0.05)';
     
     for (let y = 0; y < HIST_SIZE; y+=2) {
@@ -495,8 +499,9 @@ function drawWaveform(pixels) {
             const idx = (y * HIST_SIZE + x) * 4;
             const r = pixels[idx], g = pixels[idx+1], b = pixels[idx+2];
             const lum = 0.299*r + 0.587*g + 0.114*b;
-            const plotY = h - lum;
-            waveCtx.fillRect(x, plotY, 2, 2);
+            const plotX = (x / HIST_SIZE) * w;
+            const plotY = h - (lum / 255.0) * h;
+            waveCtx.fillRect(plotX, plotY, 2, 2);
         }
     }
 }
@@ -625,7 +630,7 @@ function setMode(mode) {
     }
 }
 
-function updateUIFromParams(params) {
+function updateUIFromParams(params, geom) {
     sliders.dmin.el.value = params.d_min;
     sliders.dmax.el.value = params.d_max;
     sliders.exposure.el.value = params.exposure;
@@ -633,6 +638,10 @@ function updateUIFromParams(params) {
     sliders.expr.el.value = params.exp_r;
     sliders.expg.el.value = params.exp_g;
     sliders.expb.el.value = params.exp_b;
+    
+    if (geom) {
+        sliders.angle.el.value = geom.angle;
+    }
     
     for (const key in sliders) {
         const s = sliders[key];
@@ -646,12 +655,20 @@ for (const key in sliders) {
     const s = sliders[key];
     s.el.addEventListener('mousedown', () => pushUndoState());
     s.el.addEventListener('input', (e) => {
-        s.val.textContent = parseFloat(e.target.value).toFixed(3);
+        s.val.textContent = parseFloat(e.target.value).toFixed(key === 'angle' ? 1 : 3);
+        if (key === 'angle') {
+            current_geom.angle = parseFloat(e.target.value);
+        }
         updateSliderTrack(e.target);
         requestRender(); // Zero latency UI!
     });
-    s.el.addEventListener('change', () => {
-        updateBackendParams();
+    s.el.addEventListener('change', async () => {
+        if (key === 'angle' && activeId) {
+            await invoke('update_geometry', { id: activeId, geom: current_geom });
+            await loadProxyImage();
+        } else {
+            updateBackendParams();
+        }
         requestThumbnailSync();
     });
 }
@@ -765,8 +782,8 @@ async function selectImage(id) {
         renderLibraryAndFilmstrip(); // update active class
         
         enableUI();
-        updateUIFromParams(state.params);
         current_geom = state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
+        updateUIFromParams(state.params, current_geom);
         updateCropOverlay();
         await loadProxyImage();
     } catch(e) { console.error(e); }
@@ -836,9 +853,9 @@ btnConfirmExport.addEventListener('click', async () => {
     try {
         btnConfirmExport.textContent = "Exporting...";
         btnConfirmExport.disabled = true;
+        const format = document.getElementById('export-format').value;
+        const colorSpace = document.getElementById('export-colorspace').value;
         
-        // the user wants to pass format and color space as parameters to backend if implemented,
-        // but for now we just show we have the UI and do batch export.
         const outputDir = await invoke('select_export_dir');
         if (!outputDir) {
             btnConfirmExport.textContent = "Select Output Folder";
@@ -846,7 +863,7 @@ btnConfirmExport.addEventListener('click', async () => {
             return;
         }
         closeExportModal();
-        const count = await invoke('batch_export_images', { outputDir });
+        const count = await invoke('batch_export_images', { outputDir, format, colorSpace });
         showToast(`Successfully exported ${count} image(s) to:\n${outputDir}`, "success");
     } catch (e) { showToast("Batch export failed: " + e, "error"); } 
     finally {
