@@ -13,72 +13,115 @@ pub fn crop(img: &mut ImageBuffer<Rgb<u16>, Vec<u16>>, x: u32, y: u32, width: u3
     image::imageops::crop(img, x, y, width, height).to_image()
 }
 
-/// 基于边缘自动校正对齐
-/// 如果未找到高置信度的至少3条物理边缘（片基黑边/齿孔），原样返回。
-pub fn auto_align(img: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+use crate::app_state::{CropRect, AutoAlignResult};
+
+/// 基于边缘内容自动算出内部有效区域的边界
+pub fn auto_crop_rect(img: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> Result<AutoAlignResult, String> {
     let (width, height) = img.dimensions();
     
-    // 我们仅在图像外围的 8% 区域进行分析，以避免艺术内容干扰
-    let margin_x = (width as f32 * 0.08) as u32;
-    let margin_y = (height as f32 * 0.08) as u32;
-
     // 1. 转为灰度图像
     let mut gray = GrayImage::new(width, height);
     for y in 0..height {
         for x in 0..width {
-            // 仅对边缘区域的像素进行处理，内部置 0
-            if x < margin_x || x > width - margin_x || y < margin_y || y > height - margin_y {
-                let px = img.get_pixel(x, y);
-                // 简单的取绿通道或亮度
-                let luma = (px[1] >> 8) as u8;
-                gray.put_pixel(x, y, Luma([luma]));
-            } else {
-                gray.put_pixel(x, y, Luma([0]));
-            }
+            let px = img.get_pixel(x, y);
+            // 简单的亮度转换
+            let luma = (px[0] as u32 + px[1] as u32 + px[2] as u32) / (3 * 256);
+            gray.put_pixel(x, y, Luma([luma as u8]));
         }
     }
 
-    // 2. 高斯模糊，平滑噪点
-    let blurred = gaussian_blur_f32(&gray, 2.0);
+    // 2. 高斯模糊，过滤噪点
+    let blurred = gaussian_blur_f32(&gray, 3.0);
 
     // 3. 边缘检测
-    let edges = canny(&blurred, 50.0, 150.0);
+    let edges = canny(&blurred, 40.0, 100.0);
 
-    // 4. 霍夫变换寻找直线
+    // 4. 霍夫直线检测
     let options = LineDetectionOptions {
         vote_threshold: (width.min(height) / 4) as u32,
         suppression_radius: 10,
     };
-    
     let lines = detect_lines(&edges, options);
 
-    // 筛选出边界直线（垂直于边缘或接近水平垂直）
-    let mut valid_lines = 0;
-    for line in &lines {
-        // 角度 r, theta
-        let theta = line.angle_in_degrees as f32;
-        let is_horizontal = theta < 15.0 || theta > 165.0;
-        let is_vertical = theta > 75.0 && theta < 105.0;
-        
-        if is_horizontal || is_vertical {
-            valid_lines += 1;
+    let margin_w = width as f32 * 0.25;
+    let margin_h = height as f32 * 0.25;
+
+    let mut best_top = 0.0_f32;
+    let mut best_bottom = height as f32;
+    let mut best_left = 0.0_f32;
+    let mut best_right = width as f32;
+
+    let mut best_top_deg = 90;
+    let mut best_bottom_deg = 90;
+    let mut best_left_deg = 0;
+    let mut best_right_deg = 0;
+
+    for line in lines {
+        let deg = line.angle_in_degrees;
+        let r = line.r;
+        let rad = (deg as f32).to_radians();
+        let cos_a = rad.cos();
+        let sin_a = rad.sin();
+
+        // 水平线
+        if deg > 75 && deg < 105 {
+            let y_int = r / sin_a;
+            if y_int < margin_h && y_int > best_top {
+                best_top = y_int; // 取最靠里的顶线
+                best_top_deg = deg;
+            } else if y_int > height as f32 - margin_h && y_int < best_bottom {
+                best_bottom = y_int; // 取最靠里的底线
+                best_bottom_deg = deg;
+            }
+        }
+        // 垂直线
+        else if deg < 15 || deg > 165 {
+            let x_int = r / cos_a;
+            let x_int_abs = x_int.abs(); // r 可能是负的，如果 deg > 165, cos 是负数，r也是负数，结果是正的
+            if x_int_abs < margin_w && x_int_abs > best_left {
+                best_left = x_int_abs;
+                best_left_deg = deg;
+            } else if x_int_abs > width as f32 - margin_w && x_int_abs < best_right {
+                best_right = x_int_abs;
+                best_right_deg = deg;
+            }
         }
     }
 
-    // 5. 极强的稳定性兜底：有效边界小于3，直接跳过自动校正，原样返回
-    if valid_lines < 3 {
-        // 置信度不足，可能已经被裁切过
-        return Ok(img.clone());
+    // 如果未检测到，使用安全的保底裁切
+    let final_x = if best_left > 0.0 { best_left / width as f32 } else { 0.05 };
+    let final_y = if best_top > 0.0 { best_top / height as f32 } else { 0.05 };
+    let final_r = if best_right < width as f32 { best_right / width as f32 } else { 0.95 };
+    let final_b = if best_bottom < height as f32 { best_bottom / height as f32 } else { 0.95 };
+
+    let mut angles = Vec::new();
+    if best_top > 0.0 { angles.push(best_top_deg as i32 - 90); }
+    if best_bottom < height as f32 { angles.push(best_bottom_deg as i32 - 90); }
+    if best_left > 0.0 { 
+        let d = if best_left_deg > 90 { best_left_deg as i32 - 180 } else { best_left_deg as i32 };
+        angles.push(d); 
+    }
+    if best_right < width as f32 { 
+        let d = if best_right_deg > 90 { best_right_deg as i32 - 180 } else { best_right_deg as i32 };
+        angles.push(d); 
     }
 
-    // 6. 透视更正 (Perspective Correction)
-    // 这里因为是 Rust 后端并使用基础库，若要执行完整的单应性变换需要解 8 个方程
-    // 为保持代码纯粹和高效，当识别出足够的线条时，我们仅示例做轻微的透视或直接进行紧致裁切
-    // 这里直接利用 imageproc::geometric_transformations::warp_into 进行单应性变换（假定找到了交点）
-    // （在真实情况下，我们会使用霍夫直线交点计算出 4 个角点，然后映射为矩阵）
+    let avg_angle = if !angles.is_empty() {
+        let sum: i32 = angles.iter().sum();
+        sum as f32 / angles.len() as f32
+    } else {
+        0.0
+    };
 
-    // TODO: 实现真实基于4点交点的 Homography 计算。当前为了代码安全性和运行正确性，假定只做非常安全的微调或原样返回
-    // 既然已经到了这里，说明有边框。目前因为缺少 OpenCV 的 `getPerspectiveTransform` 简单封装，我们返回原图
-    
-    Ok(img.clone())
+    let rect = CropRect {
+        x: final_x,
+        y: final_y,
+        width: (final_r - final_x).max(0.1),
+        height: (final_b - final_y).max(0.1),
+    };
+
+    Ok(AutoAlignResult {
+        crop_rect: rect,
+        angle: avg_angle,
+    })
 }

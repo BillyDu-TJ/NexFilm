@@ -96,27 +96,78 @@ pub async fn select_export_dir() -> Result<Option<String>, String> {
     Ok(dir_path.map(|p| p.to_string_lossy().to_string()))
 }
 
-pub fn load_image_buffer(path: &str) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+pub fn load_image_buffer(path: &str, use_half_size: bool) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
     if path.to_lowercase().ends_with(".tif") || path.to_lowercase().ends_with(".tiff") {
-        image::open(path).map(|i| i.into_rgb16()).map_err(|e| format!("TIFF读取失败: {:?}", e))
+        let img = image::open(path).map(|i| i.into_rgb16()).map_err(|e| format!("TIFF读取失败: {:?}", e))?;
+        if use_half_size {
+            let (w, h) = img.dimensions();
+            Ok(image::imageops::resize(&img, w / 2, h / 2, FilterType::Triangle))
+        } else {
+            Ok(img)
+        }
     } else {
         let buf = std::fs::read(path).map_err(|e| format!("RAW文件读取失败: {:?}", e))?;
-        let processor = libraw::Processor::new();
-        let mem_image = processor.process_16bit(&buf).map_err(|e| format!("RAW图像处理失败: {:?}", e))?;
-        
-        let data: &[u16] = &mem_image;
-        let width = mem_image.width() as u32;
-        let height = mem_image.height() as u32;
-        let colors = 3;
-        
-        let mut img_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
-        for (i, pixel) in img_buffer.pixels_mut().enumerate() {
-            let idx = i * colors;
-            pixel[0] = data.get(idx).copied().unwrap_or(0);
-            pixel[1] = data.get(idx + 1).copied().unwrap_or(0);
-            pixel[2] = data.get(idx + 2).copied().unwrap_or(0);
+        unsafe {
+            let data = libraw_sys::libraw_init(0);
+            if data.is_null() {
+                return Err("Failed to init libraw".to_string());
+            }
+
+            // Set Linear Color Mapping
+            (*data).params.use_camera_wb = 1;
+            (*data).params.use_camera_matrix = 1;
+            (*data).params.output_color = 1; // sRGB
+            (*data).params.gamm[0] = 1.0;
+            (*data).params.gamm[1] = 1.0;
+            
+            // Set half_size for preview
+            if use_half_size {
+                (*data).params.half_size = 1;
+            }
+
+            if libraw_sys::libraw_open_buffer(data, buf.as_ptr() as *const _, buf.len()) != 0 {
+                libraw_sys::libraw_close(data);
+                return Err("Failed to open RAW buffer".to_string());
+            }
+            if libraw_sys::libraw_unpack(data) != 0 {
+                libraw_sys::libraw_close(data);
+                return Err("Failed to unpack RAW".to_string());
+            }
+
+            (*data).params.output_bps = 16;
+            
+            if libraw_sys::libraw_dcraw_process(data) != 0 {
+                libraw_sys::libraw_close(data);
+                return Err("Failed to process RAW".to_string());
+            }
+
+            let mut err = 0;
+            let mem_image = libraw_sys::libraw_dcraw_make_mem_image(data, &mut err);
+            if mem_image.is_null() {
+                libraw_sys::libraw_close(data);
+                return Err("Failed to create mem image".to_string());
+            }
+
+            let width = (*mem_image).width as u32;
+            let height = (*mem_image).height as u32;
+            let colors = (*mem_image).colors as usize;
+            let data_len = (*mem_image).data_size as usize;
+            
+            let slice = std::slice::from_raw_parts((*mem_image).data.as_ptr() as *const u16, data_len / 2);
+            
+            let mut img_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
+            for (i, pixel) in img_buffer.pixels_mut().enumerate() {
+                let idx = i * colors;
+                pixel[0] = slice.get(idx).copied().unwrap_or(0);
+                pixel[1] = slice.get(idx + 1).copied().unwrap_or(0);
+                pixel[2] = slice.get(idx + 2).copied().unwrap_or(0);
+            }
+            
+            libraw_sys::libraw_dcraw_clear_mem(mem_image as *mut _);
+            libraw_sys::libraw_close(data);
+
+            Ok(img_buffer)
         }
-        Ok(img_buffer)
     }
 }
 
@@ -127,7 +178,7 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
     }
 
     let new_items_result: Result<Vec<FilmItem>, String> = paths.into_par_iter().map(|path| {
-        let img_buffer = load_image_buffer(&path)?;
+        let img_buffer = load_image_buffer(&path, true)?;
 
         let (width, height) = img_buffer.dimensions();
         
@@ -165,8 +216,7 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
             pristine_proxy,
             base_color,
             params: TuningParams::default(),
-            rotation: 0,
-            crop_rect: crate::app_state::CropRect::default(),
+            geom: crate::app_state::GeometryState::default(),
         })
     }).collect();
 
@@ -197,7 +247,7 @@ pub async fn get_filmstrip(state: State<'_, EngineState>) -> Result<Vec<Filmstri
 #[derive(serde::Serialize)]
 pub struct ActiveImageState {
     pub params: TuningParams,
-    pub crop_rect: crate::app_state::CropRect,
+    pub geom: crate::app_state::GeometryState,
 }
 
 #[tauri::command]
@@ -207,7 +257,7 @@ pub async fn switch_active_image(id: String, state: State<'_, EngineState>) -> R
         *state.active_id.write().map_err(|e| e.to_string())? = Some(id);
         Ok(ActiveImageState {
             params: item.params.clone(),
-            crop_rect: item.crop_rect.clone(),
+            geom: item.geom.clone(),
         })
     } else {
         Err("Image ID not found".into())
@@ -294,10 +344,21 @@ pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) ->
                 out_px[2] = (norm_b.powf(1.0 / gamma) * 255.0) as u8;
             });
             
-            let ratio_thumb = 120.0 / (width.max(height) as f32);
-            let thumb_width = (width as f32 * ratio_thumb).max(1.0) as u32;
-            let thumb_height = (height as f32 * ratio_thumb).max(1.0) as u32;
-            let thumb = image::imageops::resize(&thumb_8bit, thumb_width, thumb_height, FilterType::Triangle);
+            let (orig_width, orig_height) = (width, height);
+            let cx = (item.geom.crop_rect.x * orig_width as f32).max(0.0).min(orig_width as f32) as u32;
+            let cy = (item.geom.crop_rect.y * orig_height as f32).max(0.0).min(orig_height as f32) as u32;
+            let cw = (item.geom.crop_rect.width * orig_width as f32).max(1.0).min((orig_width - cx) as f32) as u32;
+            let ch = (item.geom.crop_rect.height * orig_height as f32).max(1.0).min((orig_height - cy) as f32) as u32;
+            
+            let mut cropped_thumb = thumb_8bit;
+            if cw < orig_width || ch < orig_height {
+                cropped_thumb = image::imageops::crop(&mut cropped_thumb, cx, cy, cw, ch).to_image();
+            }
+
+            let ratio_thumb = 120.0 / (cw.max(ch) as f32);
+            let thumb_width = (cw as f32 * ratio_thumb).max(1.0) as u32;
+            let thumb_height = (ch as f32 * ratio_thumb).max(1.0) as u32;
+            let thumb = image::imageops::resize(&cropped_thumb, thumb_width, thumb_height, FilterType::Triangle);
             
             let mut cursor = Cursor::new(Vec::new());
             thumb.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).map_err(|e| e.to_string())?;
@@ -315,24 +376,10 @@ pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) ->
 }
 
 #[tauri::command]
-pub async fn geometry_rotate(id: String, direction: String, state: State<'_, EngineState>) -> Result<(), String> {
+pub async fn update_geometry(id: String, geom: crate::app_state::GeometryState, state: State<'_, EngineState>) -> Result<(), String> {
     let mut items = state.items.write().map_err(|e| e.to_string())?;
     if let Some(item) = items.iter_mut().find(|i| i.id == id) {
-        if direction == "left" {
-            item.rotation = (item.rotation - 90).rem_euclid(360);
-        } else {
-            item.rotation = (item.rotation + 90).rem_euclid(360);
-        }
-        reapply_geometry(item);
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn geometry_crop_normalized(id: String, rect: crate::app_state::CropRect, state: State<'_, EngineState>) -> Result<(), String> {
-    let mut items = state.items.write().map_err(|e| e.to_string())?;
-    if let Some(item) = items.iter_mut().find(|i| i.id == id) {
-        item.crop_rect = rect;
+        item.geom = geom;
         reapply_geometry(item);
     }
     Ok(())
@@ -341,38 +388,76 @@ pub async fn geometry_crop_normalized(id: String, rect: crate::app_state::CropRe
 fn reapply_geometry(item: &mut FilmItem) {
     let mut current = item.original_proxy.clone();
     
-    // 1. Rotate
-    match item.rotation {
-        90 => current = image::imageops::rotate90(&current),
-        180 => current = image::imageops::rotate180(&current),
-        270 => current = image::imageops::rotate270(&current),
+    // 1. Arbitrary angle interpolation rotation with black background padding
+    if item.geom.angle.abs() > 0.01 {
+        // Find bounding box for rotation
+        let angle_rad = item.geom.angle.to_radians();
+        let (w, h) = current.dimensions();
+        
+        let cos_a = angle_rad.cos();
+        let sin_a = angle_rad.sin();
+        
+        let new_w = (w as f32 * cos_a.abs() + h as f32 * sin_a.abs()).ceil() as u32;
+        let new_h = (w as f32 * sin_a.abs() + h as f32 * cos_a.abs()).ceil() as u32;
+        
+        // Create an expanded image filled with black
+        let mut expanded = ImageBuffer::from_pixel(new_w, new_h, image::Rgb([0, 0, 0]));
+        let offset_x = (new_w - w) / 2;
+        let offset_y = (new_h - h) / 2;
+        image::imageops::overlay(&mut expanded, &current, offset_x as i64, offset_y as i64);
+        
+        current = imageproc::geometric_transformations::rotate_about_center(
+            &expanded,
+            angle_rad,
+            imageproc::geometric_transformations::Interpolation::Bicubic,
+            image::Rgb([0, 0, 0]),
+        );
+    }
+    
+    // 2. 90-degree step rotation
+    match item.geom.rotate_90_count.rem_euclid(4) {
+        1 => current = image::imageops::rotate90(&current),
+        2 => current = image::imageops::rotate180(&current),
+        3 => current = image::imageops::rotate270(&current),
         _ => {}
     }
     
-    // 2. Crop
-    let (w, h) = current.dimensions();
-    let cx = (item.crop_rect.x * w as f32).max(0.0).min(w as f32) as u32;
-    let cy = (item.crop_rect.y * h as f32).max(0.0).min(h as f32) as u32;
-    let cw = (item.crop_rect.width * w as f32).max(1.0).min((w - cx) as f32) as u32;
-    let ch = (item.crop_rect.height * h as f32).max(1.0).min((h - cy) as f32) as u32;
-    
-    if cw < w || ch < h {
-        current = image::imageops::crop(&mut current, cx, cy, cw, ch).to_image();
+    // 3. Mirror
+    if item.geom.flip_h {
+        current = image::imageops::flip_horizontal(&current);
     }
+    if item.geom.flip_v {
+        current = image::imageops::flip_vertical(&current);
+    }
+    
+    // 4. Crop is DEFERRED to export and thumbnail generation only.
+    // The frontend UI needs the full uncropped image to allow the user to adjust the crop box visually.
     
     item.proxy_image = current;
     item.pristine_proxy = compute_pristine_proxy(&item.proxy_image, &item.base_color, item.params.film_mode.clone());
 }
 
 #[tauri::command]
-pub async fn geometry_auto_align(id: String, state: State<'_, EngineState>) -> Result<(), String> {
+pub async fn geometry_auto_align(id: String, state: State<'_, EngineState>) -> Result<crate::app_state::AutoAlignResult, String> {
     let mut items = state.items.write().map_err(|e| e.to_string())?;
     if let Some(item) = items.iter_mut().find(|i| i.id == id) {
-        let aligned = geometry::auto_align(&item.proxy_image)?;
-        item.proxy_image = aligned;
-        item.pristine_proxy = compute_pristine_proxy(&item.proxy_image, &item.base_color, item.params.film_mode.clone());
+        // Pass 1: Find the absolute leveling angle on the original unrotated image
+        let first_result = geometry::auto_crop_rect(&item.original_proxy)?;
+        item.geom.angle = first_result.angle;
+        
+        // Apply this angle (along with any user step-rotations and flips) to generate a leveled canvas
+        reapply_geometry(item);
+        
+        // Pass 2: Find the precise bounding box of the film frame within the final transformed canvas
+        let second_result = geometry::auto_crop_rect(&item.proxy_image)?;
+        item.geom.crop_rect = second_result.crop_rect.clone();
+        
+        return Ok(crate::app_state::AutoAlignResult {
+            crop_rect: item.geom.crop_rect.clone(),
+            angle: item.geom.angle,
+        });
     }
-    Ok(())
+    Err("Image not found".to_string())
 }
 
 #[tauri::command]
@@ -444,7 +529,7 @@ pub async fn batch_export_images(
     let success_count = std::sync::atomic::AtomicUsize::new(0);
 
     items.par_iter().for_each(|item| {
-        if let Ok(original) = load_image_buffer(&item.file_path) {
+        if let Ok(original) = load_image_buffer(&item.file_path, false) {
             let params = &item.params;
             let base_color = &item.base_color;
 
@@ -460,20 +545,52 @@ pub async fn batch_export_images(
 
             let mut transformed = original;
             
-            // 1. Rotate
-            match item.rotation {
-                90 => transformed = image::imageops::rotate90(&transformed),
-                180 => transformed = image::imageops::rotate180(&transformed),
-                270 => transformed = image::imageops::rotate270(&transformed),
+            // 1. Arbitrary angle rotation
+            if item.geom.angle.abs() > 0.01 {
+                let angle_rad = item.geom.angle.to_radians();
+                let (w, h) = transformed.dimensions();
+                
+                let cos_a = angle_rad.cos();
+                let sin_a = angle_rad.sin();
+                
+                let new_w = (w as f32 * cos_a.abs() + h as f32 * sin_a.abs()).ceil() as u32;
+                let new_h = (w as f32 * sin_a.abs() + h as f32 * cos_a.abs()).ceil() as u32;
+                
+                let mut expanded = ImageBuffer::from_pixel(new_w, new_h, image::Rgb([0, 0, 0]));
+                let offset_x = (new_w - w) / 2;
+                let offset_y = (new_h - h) / 2;
+                image::imageops::overlay(&mut expanded, &transformed, offset_x as i64, offset_y as i64);
+                
+                transformed = imageproc::geometric_transformations::rotate_about_center(
+                    &expanded,
+                    angle_rad,
+                    imageproc::geometric_transformations::Interpolation::Bicubic,
+                    image::Rgb([0, 0, 0]),
+                );
+            }
+
+            // 2. 90-degree step rotation
+            match item.geom.rotate_90_count.rem_euclid(4) {
+                1 => transformed = image::imageops::rotate90(&transformed),
+                2 => transformed = image::imageops::rotate180(&transformed),
+                3 => transformed = image::imageops::rotate270(&transformed),
                 _ => {}
             }
             
-            // 2. Crop
+            // 3. Mirror
+            if item.geom.flip_h {
+                transformed = image::imageops::flip_horizontal(&transformed);
+            }
+            if item.geom.flip_v {
+                transformed = image::imageops::flip_vertical(&transformed);
+            }
+
+            // 4. Crop
             let (orig_width, orig_height) = transformed.dimensions();
-            let cx = (item.crop_rect.x * orig_width as f32).max(0.0).min(orig_width as f32) as u32;
-            let cy = (item.crop_rect.y * orig_height as f32).max(0.0).min(orig_height as f32) as u32;
-            let cw = (item.crop_rect.width * orig_width as f32).max(1.0).min((orig_width - cx) as f32) as u32;
-            let ch = (item.crop_rect.height * orig_height as f32).max(1.0).min((orig_height - cy) as f32) as u32;
+            let cx = (item.geom.crop_rect.x * orig_width as f32).max(0.0).min(orig_width as f32) as u32;
+            let cy = (item.geom.crop_rect.y * orig_height as f32).max(0.0).min(orig_height as f32) as u32;
+            let cw = (item.geom.crop_rect.width * orig_width as f32).max(1.0).min((orig_width - cx) as f32) as u32;
+            let ch = (item.geom.crop_rect.height * orig_height as f32).max(1.0).min((orig_height - cy) as f32) as u32;
             
             if cw < orig_width || ch < orig_height {
                 transformed = image::imageops::crop(&mut transformed, cx, cy, cw, ch).to_image();

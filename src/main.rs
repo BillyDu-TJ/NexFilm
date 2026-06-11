@@ -16,8 +16,7 @@ fn main() {
             nexfilm_engine::commands::batch_export_images,
             nexfilm_engine::commands::set_film_mode,
             nexfilm_engine::commands::sync_thumbnail_buffer,
-            nexfilm_engine::commands::geometry_rotate,
-            nexfilm_engine::commands::geometry_crop_normalized,
+            nexfilm_engine::commands::update_geometry,
             nexfilm_engine::commands::geometry_auto_align
         ])
         .run(tauri::generate_context!())

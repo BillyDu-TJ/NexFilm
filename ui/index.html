@@ -29,19 +29,27 @@
             
             <!-- Transform Tool Bar -->
             <div class="h-[40px] border-b border-zinc-800/50 flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm" style="background-color: #1a1a1e;">
-                <button id="btn-crop-mode" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>CROP MODE</button>
+                <div class="flex space-x-2">
+                    <button id="btn-crop-mode" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>CROP</button>
+                    <button id="btn-rotate-mode" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>ROTATE</button>
+                </div>
+                <button id="btn-auto-crop" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>AUTO CROP</button>
                 <div class="w-px h-4 bg-zinc-700"></div>
-                <button id="btn-rotate-left" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>ROTATE LEFT 90°</button>
-                <button id="btn-rotate-right" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>ROTATE RIGHT 90°</button>
+                <button id="btn-rotate-left" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>ROT L</button>
+                <button id="btn-rotate-right" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>ROT R</button>
+                <div class="w-px h-4 bg-zinc-700"></div>
+                <button id="btn-flip-h" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>FLIP H</button>
+                <button id="btn-flip-v" class="px-4 py-1 text-[11px] font-bold text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 rounded transition-colors disabled:opacity-50 tracking-wider" disabled>FLIP V</button>
             </div>
 
             <!-- Main Preview -->
             <div id="image-container" class="flex-1 w-full h-full p-8 flex items-center justify-center overflow-hidden bg-black shadow-inner relative">
                 <div id="placeholder" class="text-zinc-600 font-medium tracking-widest text-sm uppercase">No Roll Loaded</div>
                 
-                <!-- Canvas Wrapper sizes itself to the canvas aspect ratio via JS -->
                 <div id="canvas-wrapper" class="relative hidden" style="max-width: 100%; max-height: 100%; display: none;">
-                    <canvas id="preview-canvas" class="block w-full h-full drop-shadow-2xl rounded" style="object-fit: contain;"></canvas>
+                    <!-- Dummy pusher keeps the wrapper sizing correct while preview-canvas is absolutely positioned -->
+                    <canvas id="dummy-pusher" class="block" style="max-width: 100%; max-height: 100%; object-fit: contain; visibility: hidden; pointer-events: none;"></canvas>
+                    <canvas id="preview-canvas" class="absolute top-0 left-0 drop-shadow-2xl rounded" style="object-fit: fill;"></canvas>
                     
                     <!-- SVG Crop Overlay -->
                     <svg id="crop-overlay" class="absolute top-0 left-0 w-full h-full pointer-events-none hidden z-10" style="overflow: visible;">
@@ -56,6 +64,7 @@
                         </g>
 
                         <g id="crop-handles" class="pointer-events-auto">
+                            <!-- Resize Handles -->
                             <rect class="crop-handle" data-pos="nw" x="-4" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nwse-resize;"/>
                             <rect class="crop-handle" data-pos="n" x="50%" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ns-resize;" transform="translate(-4, 0)"/>
                             <rect class="crop-handle" data-pos="ne" x="100%" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nesw-resize;" transform="translate(-4, 0)"/>

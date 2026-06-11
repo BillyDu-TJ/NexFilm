@@ -57,8 +57,28 @@ pub struct FilmItem {
     pub pristine_proxy: ImageBuffer<Rgb<f32>, Vec<f32>>,
     pub base_color: BaseColor,
     pub params: TuningParams,
-    pub rotation: i32,
+    pub geom: GeometryState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeometryState {
     pub crop_rect: CropRect,
+    pub angle: f32,
+    pub flip_h: bool,
+    pub flip_v: bool,
+    pub rotate_90_count: i32,
+}
+
+impl Default for GeometryState {
+    fn default() -> Self {
+        GeometryState {
+            crop_rect: CropRect::default(),
+            angle: 0.0,
+            flip_h: false,
+            flip_v: false,
+            rotate_90_count: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +93,12 @@ impl Default for CropRect {
     fn default() -> Self {
         CropRect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AutoAlignResult {
+    pub crop_rect: CropRect,
+    pub angle: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]

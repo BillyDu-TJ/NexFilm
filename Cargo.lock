@@ -2477,6 +2477,7 @@ dependencies = [
  "image",
  "imageproc",
  "libraw-rs",
+ "libraw-rs-sys",
  "nalgebra 0.32.6",
  "rayon",
  "rfd",

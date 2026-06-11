@@ -6,6 +6,7 @@ const btnExportBatch = document.getElementById('btn-export-batch');
 const filmstripContainer = document.getElementById('filmstrip-container');
 const canvasWrapper = document.getElementById('canvas-wrapper');
 const previewCanvas = document.getElementById('preview-canvas');
+const dummyPusher = document.getElementById('dummy-pusher');
 const ctx = previewCanvas.getContext('2d');
 const placeholder = document.getElementById('placeholder');
 
@@ -14,6 +15,7 @@ const btnModeBw = document.getElementById('btn-mode-bw');
 
 // Crop Elements
 const btnCropMode = document.getElementById('btn-crop-mode');
+const btnRotateMode = document.getElementById('btn-rotate-mode');
 const btnRotateLeft = document.getElementById('btn-rotate-left');
 const btnRotateRight = document.getElementById('btn-rotate-right');
 const cropOverlay = document.getElementById('crop-overlay');
@@ -21,6 +23,12 @@ const cropMask = document.getElementById('crop-mask');
 const cropBox = document.getElementById('crop-box');
 const cropGrid = document.getElementById('crop-grid');
 const cropHandles = document.getElementById('crop-handles');
+
+// New Geometry Elements
+const btnAutoCrop = document.getElementById('btn-auto-crop');
+const btnFlipH = document.getElementById('btn-flip-h');
+const btnFlipV = document.getElementById('btn-flip-v');
+// Angle slider removed
 
 const sliders = {
     dmin: { el: document.getElementById('dmin'), val: document.getElementById('val-dmin') },
@@ -33,8 +41,67 @@ const sliders = {
 };
 
 let activeId = null;
-let current_crop_rect = { x: 0, y: 0, width: 1, height: 1 };
+let current_geom = { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
 let isCropMode = false;
+
+// History Stack for Undo/Redo
+const undoStacks = {};
+
+function pushUndoState() {
+    if (!activeId) return;
+    if (!undoStacks[activeId]) undoStacks[activeId] = [];
+    
+    const mode = btnModeColor.classList.contains('bg-zinc-700') ? 'Color' : 'BW';
+    const params = {
+        film_mode: mode,
+        d_min: parseFloat(sliders.dmin.el.value),
+        d_max: parseFloat(sliders.dmax.el.value),
+        exposure: parseFloat(sliders.exposure.el.value),
+        gamma: parseFloat(sliders.gamma.el.value),
+        exp_r: parseFloat(sliders.expr.el.value),
+        exp_g: parseFloat(sliders.expg.el.value),
+        exp_b: parseFloat(sliders.expb.el.value)
+    };
+    
+    const geom = JSON.parse(JSON.stringify(current_geom));
+    
+    const stack = undoStacks[activeId];
+    if (stack.length > 0) {
+        const last = stack[stack.length - 1];
+        if (JSON.stringify(last.params) === JSON.stringify(params) && 
+            JSON.stringify(last.geom) === JSON.stringify(geom)) {
+            return;
+        }
+    }
+    
+    stack.push({ params, geom });
+    if (stack.length > 50) stack.shift();
+}
+
+// Keyboard shortcuts
+window.addEventListener('keydown', async (e) => {
+    if (e.key === 'Enter') {
+        if (isCropMode || isRotateMode) {
+            e.preventDefault();
+            if (isCropMode) btnCropMode.click();
+            if (isRotateMode) btnRotateMode.click();
+        }
+    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        if (!activeId || !undoStacks[activeId] || undoStacks[activeId].length === 0) return;
+        
+        const prevState = undoStacks[activeId].pop();
+        updateUIFromParams(prevState.params);
+        current_geom = JSON.parse(JSON.stringify(prevState.geom));
+        
+        await invoke('update_geometry', { id: activeId, geom: current_geom });
+        applyTuning(); 
+        requestThumbnailSync();
+        if (isCropMode || isRotateMode) {
+            updateCropOverlay();
+        }
+    }
+});
 
 // Global Toast logic
 function showToast(message, type = "error") {
@@ -133,7 +200,7 @@ const applyTuning = throttleAsync(async () => {
     };
     
     // Apply visual CSS transforms (handled differently now, or reset to 1)
-    previewCanvas.style.transform = `rotate(0deg) scale(1) translate(0%, 0%)`;
+    // We will do CSS zooming in updateCanvasTransform
 
     try {
         const result = await invoke('apply_tuning_parameters', { params });
@@ -160,9 +227,9 @@ const applyTuning = throttleAsync(async () => {
         if (previewCanvas.width !== width || previewCanvas.height !== height) {
             previewCanvas.width = width;
             previewCanvas.height = height;
-            canvasWrapper.style.aspectRatio = `${width} / ${height}`;
         }
         ctx.putImageData(imageData, 0, 0);
+        updateCanvasTransform(width, height);
         requestThumbnailSync();
     } catch (e) {
         console.error("Error applying tuning:", e);
@@ -210,6 +277,7 @@ function updateUIFromParams(params) {
 
 for (const key in sliders) {
     const s = sliders[key];
+    s.el.addEventListener('mousedown', () => pushUndoState());
     s.el.addEventListener('input', (e) => {
         s.val.textContent = parseFloat(e.target.value).toFixed(3);
         updateSliderTrack(e.target);
@@ -224,8 +292,12 @@ function enableUI() {
     }
     btnExportBatch.disabled = false;
     btnCropMode.disabled = false;
+    btnRotateMode.disabled = false;
+    btnAutoCrop.disabled = false;
     btnRotateLeft.disabled = false;
     btnRotateRight.disabled = false;
+    btnFlipH.disabled = false;
+    btnFlipV.disabled = false;
     placeholder.style.display = 'none';
     canvasWrapper.style.display = 'flex';
     canvasWrapper.classList.remove('hidden');
@@ -268,7 +340,7 @@ async function selectImage(id) {
         updateUIFromParams(state.params);
         
         // Restore crop overlay
-        current_crop_rect = state.crop_rect || { x: 0, y: 0, width: 1, height: 1 };
+        current_geom = state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
         updateCropOverlay();
         
         applyTuning(); // Trigger render for this image
@@ -279,6 +351,7 @@ async function selectImage(id) {
 
 btnModeColor.addEventListener('click', async () => {
     if (!activeId) return;
+    pushUndoState();
     setMode('Color');
     await invoke('set_film_mode', { id: activeId, mode: 'Color' });
     applyTuning();
@@ -286,7 +359,8 @@ btnModeColor.addEventListener('click', async () => {
 
 btnModeBw.addEventListener('click', async () => {
     if (!activeId) return;
-    setMode('B&W');
+    pushUndoState();
+    setMode('BW');
     await invoke('set_film_mode', { id: activeId, mode: 'B&W' });
     applyTuning();
 });
@@ -349,41 +423,210 @@ for (const key in sliders) {
 // ==========================================
 // CROP MODE INTERACTION
 // ==========================================
+let isRotateMode = false;
+let currentImageWidth = 1;
+let currentImageHeight = 1;
+
+function updateCanvasTransform(w, h) {
+    if (w) currentImageWidth = w;
+    if (h) currentImageHeight = h;
+    
+    const cw = currentImageWidth;
+    const ch = currentImageHeight;
+    const rect = current_geom.crop_rect;
+
+    canvasWrapper.style.overflow = 'hidden';
+    previewCanvas.style.position = 'absolute';
+    // Use fill instead of contain because we manually maintain aspect ratio
+    previewCanvas.style.objectFit = 'fill'; 
+
+    if (isCropMode || isRotateMode) {
+        // Show full image
+        canvasWrapper.style.aspectRatio = `${cw} / ${ch}`;
+        dummyPusher.width = cw;
+        dummyPusher.height = ch;
+        
+        previewCanvas.style.width = '100%';
+        previewCanvas.style.height = '100%';
+        previewCanvas.style.left = '0';
+        previewCanvas.style.top = '0';
+        
+        cropOverlay.classList.remove('hidden');
+        updateCropOverlay();
+    } else {
+        // Zoom to cropped region
+        const cropW = cw * rect.width;
+        const cropH = ch * rect.height;
+        canvasWrapper.style.aspectRatio = `${cropW} / ${cropH}`;
+        dummyPusher.width = cropW;
+        dummyPusher.height = cropH;
+        
+        const scaleX = 100 / rect.width;
+        const scaleY = 100 / rect.height;
+        const offsetX = - (rect.x / rect.width) * 100;
+        const offsetY = - (rect.y / rect.height) * 100;
+        
+        previewCanvas.style.width = `${scaleX}%`;
+        previewCanvas.style.height = `${scaleY}%`;
+        previewCanvas.style.left = `${offsetX}%`;
+        previewCanvas.style.top = `${offsetY}%`;
+        
+        cropOverlay.classList.add('hidden');
+    }
+}
+
 btnCropMode.addEventListener('click', () => {
     isCropMode = !isCropMode;
     if (isCropMode) {
         btnCropMode.classList.add('bg-zinc-800', 'text-zinc-100');
-        cropOverlay.classList.remove('hidden');
-        updateCropOverlay();
+        isRotateMode = false;
+        btnRotateMode.classList.remove('bg-zinc-800', 'text-zinc-100');
+        cropBox.style.cursor = 'move';
+        cropMask.style.pointerEvents = 'none';
     } else {
         btnCropMode.classList.remove('bg-zinc-800', 'text-zinc-100');
-        cropOverlay.classList.add('hidden');
     }
+    updateCanvasTransform();
 });
+
+btnRotateMode.addEventListener('click', () => {
+    isRotateMode = !isRotateMode;
+    if (isRotateMode) {
+        btnRotateMode.classList.add('bg-zinc-800', 'text-zinc-100');
+        isCropMode = false;
+        btnCropMode.classList.remove('bg-zinc-800', 'text-zinc-100');
+        cropBox.style.cursor = 'crosshair';
+        cropMask.style.pointerEvents = 'auto'; // allow dragging anywhere on mask
+        cropMask.style.cursor = 'crosshair';
+    } else {
+        btnRotateMode.classList.remove('bg-zinc-800', 'text-zinc-100');
+        cropMask.style.pointerEvents = 'none';
+    }
+    updateCanvasTransform();
+});
+
+function updateCropRectForRotation(rect, isCW, flipH, flipV) {
+    let p1 = { x: rect.x, y: rect.y };
+    let p2 = { x: rect.x + rect.width, y: rect.y + rect.height };
+    
+    function transform(p) {
+        let x = p.x, y = p.y;
+        if (flipV) y = 1 - y;
+        if (flipH) x = 1 - x;
+        
+        if (isCW) {
+            let t = x;
+            x = 1 - y;
+            y = t;
+        } else {
+            let t = x;
+            x = y;
+            y = 1 - t;
+        }
+        
+        if (flipH) x = 1 - x;
+        if (flipV) y = 1 - y;
+        return { x, y };
+    }
+    
+    let tp1 = transform(p1);
+    let tp2 = transform(p2);
+    
+    let nx = Math.min(tp1.x, tp2.x);
+    let ny = Math.min(tp1.y, tp2.y);
+    let nw = Math.abs(tp2.x - tp1.x);
+    let nh = Math.abs(tp2.y - tp1.y);
+    
+    return { x: nx, y: ny, width: nw, height: nh };
+}
 
 btnRotateLeft.addEventListener('click', async () => {
     if (!activeId) return;
-    // Let's assume geometry_rotate left is equivalent to -90, or just use rotate_90 for right. The backend has geometry_rotate.
-    // The instructions say add the buttons. We'll call geometry_rotate and update.
-    // Since backend has `geometry_rotate` (which is rotate_90 right), let's call it 3 times for left or change backend.
-    // For now, let's call it.
-    await invoke('geometry_rotate', { id: activeId, direction: 'left' });
+    pushUndoState();
+    current_geom.rotate_90_count -= 1;
+    current_geom.crop_rect = updateCropRectForRotation(
+        current_geom.crop_rect, 
+        false, 
+        current_geom.flip_h, 
+        current_geom.flip_v
+    );
+    await invoke('update_geometry', { id: activeId, geom: current_geom });
     applyTuning();
     requestThumbnailSync();
 });
 
 btnRotateRight.addEventListener('click', async () => {
     if (!activeId) return;
-    await invoke('geometry_rotate', { id: activeId, direction: 'right' });
+    pushUndoState();
+    current_geom.rotate_90_count += 1;
+    current_geom.crop_rect = updateCropRectForRotation(
+        current_geom.crop_rect, 
+        true, 
+        current_geom.flip_h, 
+        current_geom.flip_v
+    );
+    await invoke('update_geometry', { id: activeId, geom: current_geom });
     applyTuning();
     requestThumbnailSync();
 });
 
+btnFlipH.addEventListener('click', async () => {
+    if (!activeId) return;
+    pushUndoState();
+    current_geom.flip_h = !current_geom.flip_h;
+    
+    // Mirror crop_rect horizontally
+    current_geom.crop_rect.x = 1.0 - current_geom.crop_rect.x - current_geom.crop_rect.width;
+    
+    await invoke('update_geometry', { id: activeId, geom: current_geom });
+    applyTuning();
+    requestThumbnailSync();
+});
+
+btnFlipV.addEventListener('click', async () => {
+    if (!activeId) return;
+    pushUndoState();
+    current_geom.flip_v = !current_geom.flip_v;
+    
+    // Mirror crop_rect vertically
+    current_geom.crop_rect.y = 1.0 - current_geom.crop_rect.y - current_geom.crop_rect.height;
+    
+    await invoke('update_geometry', { id: activeId, geom: current_geom });
+    applyTuning();
+    requestThumbnailSync();
+});
+
+
+
+btnAutoCrop.addEventListener('click', async () => {
+    if (!activeId) return;
+    pushUndoState();
+    try {
+        const result = await invoke('geometry_auto_align', { id: activeId });
+        current_geom.crop_rect = result.crop_rect;
+        current_geom.angle = result.angle;
+        updateCropOverlay();
+        applyTuning();
+        requestThumbnailSync();
+    } catch (err) {
+        showToast("Auto align failed: " + err, "error");
+    }
+});
+
+function getRenderRect() {
+    // Because in Crop Mode canvasWrapper has the aspect ratio of the FULL image,
+    // its bounding rect is exactly the render rectangle.
+    return canvasWrapper.getBoundingClientRect();
+}
+
 function updateCropOverlay() {
-    const w = current_crop_rect.width * 100;
-    const h = current_crop_rect.height * 100;
-    const x = current_crop_rect.x * 100;
-    const y = current_crop_rect.y * 100;
+    if (!isCropMode && !isRotateMode) return;
+
+    // In crop mode, SVG width/height perfectly matches the full uncropped image.
+    const x = current_geom.crop_rect.x * 100;
+    const y = current_geom.crop_rect.y * 100;
+    const w = current_geom.crop_rect.width * 100;
+    const h = current_geom.crop_rect.height * 100;
 
     cropBox.setAttribute('x', `${x}%`);
     cropBox.setAttribute('y', `${y}%`);
@@ -437,38 +680,69 @@ function updateCropOverlay() {
 let isDraggingCrop = false;
 let dragType = null; // 'box' or handle pos
 let dragStartPos = { x: 0, y: 0 };
-let dragStartRect = { ...current_crop_rect };
+let dragStartAngle = 0;
+let dragCenter = { x: 0, y: 0 };
 
 cropOverlay.addEventListener('mousedown', (e) => {
-    if (!isCropMode) return;
+    if (!isCropMode && !isRotateMode) return;
+    pushUndoState();
     
     const target = e.target;
-    if (target === cropBox) {
-        dragType = 'box';
-    } else if (target.classList.contains('crop-handle')) {
-        dragType = target.getAttribute('data-pos');
+    if (isRotateMode) {
+        dragType = 'rotate';
     } else {
-        return;
+        if (target === cropBox) {
+            dragType = 'box';
+        } else if (target.classList.contains('crop-handle')) {
+            dragType = target.getAttribute('data-pos');
+        } else {
+            return;
+        }
     }
 
     isDraggingCrop = true;
     dragStartPos = { x: e.clientX, y: e.clientY };
-    dragStartRect = { ...current_crop_rect };
+    dragStartRect = { ...current_geom.crop_rect };
+    dragStartAngle = current_geom.angle;
+    
+    const rect = canvasWrapper.getBoundingClientRect();
+    dragCenter = {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2
+    };
+
     cropGrid.style.opacity = '1'; // Show rule of thirds grid
 });
 
 window.addEventListener('mousemove', (e) => {
     if (!isDraggingCrop) return;
     
-    const svgRect = cropOverlay.getBoundingClientRect();
-    const dx = (e.clientX - dragStartPos.x) / svgRect.width;
-    const dy = (e.clientY - dragStartPos.y) / svgRect.height;
+    const renderRect = getRenderRect();
+    const dx = (e.clientX - dragStartPos.x) / renderRect.width;
+    const dy = (e.clientY - dragStartPos.y) / renderRect.height;
     
     let newRect = { ...dragStartRect };
 
     if (dragType === 'box') {
         newRect.x = Math.max(0, Math.min(1 - newRect.width, newRect.x + dx));
         newRect.y = Math.max(0, Math.min(1 - newRect.height, newRect.y + dy));
+    } else if (dragType === 'rotate') {
+        const startRad = Math.atan2(dragStartPos.y - dragCenter.y, dragStartPos.x - dragCenter.x);
+        const currentRad = Math.atan2(e.clientY - dragCenter.y, e.clientX - dragCenter.x);
+        let deltaDeg = (currentRad - startRad) * (180 / Math.PI);
+        
+        let newAngle = dragStartAngle + deltaDeg;
+        
+        if (Math.abs(newAngle) < 1.0) newAngle = 0.0;
+        else if (Math.abs(newAngle - 90) < 1.0) newAngle = 90.0;
+        else if (Math.abs(newAngle + 90) < 1.0) newAngle = -90.0;
+        else if (Math.abs(newAngle - 180) < 1.0) newAngle = 180.0;
+        else if (Math.abs(newAngle + 180) < 1.0) newAngle = -180.0;
+        
+        current_geom.angle = newAngle;
+        // Do not update DOM transform here to avoid desync with crop box.
+        // We rely on backend reapply_geometry for rotation.
+        return; // Skip crop overlay update
     } else {
         if (dragType.includes('w')) {
             const maxW = newRect.x + newRect.width;
@@ -488,7 +762,7 @@ window.addEventListener('mousemove', (e) => {
         }
     }
 
-    current_crop_rect = newRect;
+    current_geom.crop_rect = newRect;
     updateCropOverlay();
 });
 
@@ -497,13 +771,15 @@ window.addEventListener('mouseup', async () => {
         isDraggingCrop = false;
         cropGrid.style.opacity = '0'; // Hide grid
         
+        if (dragType === 'rotate') {
+            previewCanvas.style.transform = 'rotate(0deg)';
+        }
+
         if (activeId) {
             try {
-                // Determine pixel coordinates based on actual image dimensions
-                // Since frontend only knows normalized rect, let backend do the multiplication
-                await invoke('geometry_crop_normalized', { 
+                await invoke('update_geometry', { 
                     id: activeId, 
-                    rect: current_crop_rect 
+                    geom: current_geom 
                 });
                 applyTuning();
                 requestThumbnailSync();
