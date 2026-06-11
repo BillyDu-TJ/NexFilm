@@ -497,7 +497,6 @@ function initWebGL() {
 
 initWebGL();
 
-let tex = null;
 let hasLUT = false;
 let is1DLUT = false;
 let lutTex = null;
