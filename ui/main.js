@@ -48,6 +48,7 @@ const btnCropMode = document.getElementById('btn-crop-mode');
 const btnRotateMode = document.getElementById('btn-rotate-mode');
 const btnAutoCrop = document.getElementById('btn-auto-crop');
 const btnAutoColor = document.getElementById('btn-auto-color');
+const btnResetColor = document.getElementById('btn-reset-color');
 const btnRotateLeft = document.getElementById('btn-rotate-left');
 const btnRotateRight = document.getElementById('btn-rotate-right');
 const btnFlipH = document.getElementById('btn-flip-h');
@@ -997,6 +998,7 @@ function enableUI() {
     btnAutoCrop.disabled = false;
     document.getElementById('btn-reset-crop').disabled = false;
     btnAutoColor.disabled = false;
+    btnResetColor.disabled = false;
     btnRotateLeft.disabled = false;
     btnRotateRight.disabled = false;
     btnFlipH.disabled = false;
@@ -1510,6 +1512,39 @@ btnAutoCrop.addEventListener('click', async () => {
 btnAutoColor.addEventListener('click', async () => {
     pushUndoState();
     await doAutoColor();
+});
+
+btnResetColor.addEventListener('click', async () => {
+    if (!activeId) return;
+    if (!window.confirm("Are you sure you want to reset all color adjustments?")) return;
+    
+    pushUndoState();
+    
+    currentDMin = [0.1, 0.1, 0.1];
+    currentDMax = [2.0, 2.0, 2.0];
+    updateDMinMaxDisplay();
+    
+    sliders.masterDmin.el.value = 0; sliders.masterDmin.val.textContent = "0.000"; lastMasterDmin = 0;
+    sliders.masterDmax.el.value = 0; sliders.masterDmax.val.textContent = "0.000"; lastMasterDmax = 0;
+    
+    sliders.exposure.el.value = 0;
+    sliders.gamma.el.value = 1;
+    sliders.expr.el.value = 0;
+    sliders.expg.el.value = 0;
+    sliders.expb.el.value = 0;
+    sliders.highlights.el.value = 0;
+    sliders.shadows.el.value = 0;
+    sliders.lutOpacity.el.value = 1;
+    
+    for (const key in sliders) {
+        const s = sliders[key];
+        s.val.textContent = parseFloat(s.el.value).toFixed(3);
+        updateSliderTrack(s.el);
+    }
+    
+    updateBackendParams();
+    renderWebGL();
+    requestThumbnailSync();
 });
 
 function getRenderRect() { return canvasWrapper.getBoundingClientRect(); }
