@@ -350,16 +350,7 @@ function initWebGL() {
     uniform vec4 u_crop;
     uniform float u_image_aspect;
     void main() {
-        float crop_aspect = u_image_aspect * (u_crop.z / u_crop.w);
-        vec2 scale = vec2(1.0);
-        if (crop_aspect > u_aspect) {
-            scale.y = u_aspect / crop_aspect;
-        } else {
-            scale.x = crop_aspect / u_aspect;
-        }
-        
         vec4 pos = a_position;
-        pos.xy *= scale;
         
         pos.x *= u_aspect;
         pos = u_transform * pos;
@@ -1467,14 +1458,14 @@ async function doAutoColor() {
 
     const batchState = {
         dmin: [
-            toDensity(r_arr[end], currentDMin[0], currentDMax[0]),
-            toDensity(g_arr[end], currentDMin[1], currentDMax[1]),
-            toDensity(b_arr[end], currentDMin[2], currentDMax[2])
-        ],
-        dmax: [
             toDensity(r_arr[start], currentDMin[0], currentDMax[0]),
             toDensity(g_arr[start], currentDMin[1], currentDMax[1]),
             toDensity(b_arr[start], currentDMin[2], currentDMax[2])
+        ],
+        dmax: [
+            toDensity(r_arr[end], currentDMin[0], currentDMax[0]),
+            toDensity(g_arr[end], currentDMin[1], currentDMax[1]),
+            toDensity(b_arr[end], currentDMin[2], currentDMax[2])
         ]
     };
 
@@ -1497,6 +1488,10 @@ async function doAutoColor() {
 document.getElementById('btn-reset-crop').addEventListener('click', async () => {
     if (!activeId) return; pushUndoState();
     current_geom.crop_rect = { x: 0, y: 0, width: 1, height: 1 };
+    current_geom.angle = 0.0;
+    current_geom.flip_h = false;
+    current_geom.flip_v = false;
+    current_geom.rotate_90_count = 0;
     if (isCropMode) updateCropOverlay();
     await invoke('update_geometry', { id: activeId, geom: current_geom });
     await loadProxyImage();

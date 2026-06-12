@@ -255,7 +255,7 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
         let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
         let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
 
-        let ratio_thumb = 120.0 / (width.max(height) as f32);
+        let ratio_thumb = 1024.0 / (width.max(height) as f32);
         let thumb_width = (width as f32 * ratio_thumb).max(1.0) as u32;
         let thumb_height = (height as f32 * ratio_thumb).max(1.0) as u32;
         let thumb = image::imageops::resize(&img_buffer, thumb_width, thumb_height, FilterType::Triangle);
@@ -680,7 +680,7 @@ pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) ->
                 cropped_thumb = image::imageops::crop(&mut cropped_thumb, cx, cy, cw, ch).to_image();
             }
 
-            let ratio_thumb = 120.0 / (cw.max(ch) as f32);
+            let ratio_thumb = 1024.0 / (cw.max(ch) as f32);
             let thumb_width = (cw as f32 * ratio_thumb).max(1.0) as u32;
             let thumb_height = (ch as f32 * ratio_thumb).max(1.0) as u32;
             let thumb = image::imageops::resize(&cropped_thumb, thumb_width, thumb_height, FilterType::Triangle);
