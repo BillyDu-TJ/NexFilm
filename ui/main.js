@@ -7,8 +7,10 @@ const btnImportTrigger = document.querySelector('.btn-import-trigger');
 const toastContainer = document.getElementById('toast-container');
 
 // DOM: Navigation & Views
+const navHistory = document.getElementById('nav-history');
 const navLibrary = document.getElementById('nav-library');
 const navDevelop = document.getElementById('nav-develop');
+const viewHistory = document.getElementById('view-history');
 const viewLibrary = document.getElementById('view-library');
 const viewDevelop = document.getElementById('view-develop');
 
@@ -152,29 +154,30 @@ btnDeselectAll.addEventListener('click', () => {
 
 // Routing
 function switchView(viewName) {
-    if (viewName === 'library') {
-        viewDevelop.classList.add('opacity-0', 'pointer-events-none');
-        viewLibrary.classList.remove('opacity-0', 'pointer-events-none');
-        
-        navLibrary.classList.add('text-zinc-100', 'border-zinc-100');
-        navLibrary.classList.remove('text-zinc-500', 'border-transparent');
-        
-        navDevelop.classList.add('text-zinc-500', 'border-transparent');
-        navDevelop.classList.remove('text-zinc-100', 'border-zinc-100');
-    } else {
-        viewLibrary.classList.add('opacity-0', 'pointer-events-none');
-        viewDevelop.classList.remove('opacity-0', 'pointer-events-none');
-        
-        navDevelop.classList.add('text-zinc-100', 'border-zinc-100');
-        navDevelop.classList.remove('text-zinc-500', 'border-transparent');
-        
-        navLibrary.classList.add('text-zinc-500', 'border-transparent');
-        navLibrary.classList.remove('text-zinc-100', 'border-zinc-100');
-        
+    const views = [
+        { name: 'history', nav: navHistory, el: viewHistory },
+        { name: 'library', nav: navLibrary, el: viewLibrary },
+        { name: 'develop', nav: navDevelop, el: viewDevelop }
+    ];
+
+    views.forEach(v => {
+        if (v.name === viewName) {
+            v.el.classList.remove('opacity-0', 'pointer-events-none');
+            v.nav.classList.add('text-zinc-100', 'border-zinc-100');
+            v.nav.classList.remove('text-zinc-500', 'border-transparent');
+        } else {
+            v.el.classList.add('opacity-0', 'pointer-events-none');
+            v.nav.classList.remove('text-zinc-100', 'border-zinc-100');
+            v.nav.classList.add('text-zinc-500', 'border-transparent');
+        }
+    });
+
+    if (viewName === 'develop') {
         requestRender();
     }
 }
 
+if (navHistory) navHistory.addEventListener('click', () => switchView('history'));
 navLibrary.addEventListener('click', () => switchView('library'));
 navDevelop.addEventListener('click', () => switchView('develop'));
 
@@ -1026,8 +1029,6 @@ async function fetchRolls() {
 function updateFilterSidebar() {
     const cameraList = document.getElementById('filter-camera-list');
     const dateList = document.getElementById('filter-date-list');
-    const dlCamera = document.getElementById('camera-list');
-    const dlFilm = document.getElementById('film-list');
     
     let cameras = new Set();
     let dates = new Set();
@@ -1040,21 +1041,36 @@ function updateFilterSidebar() {
     });
     
     // Update Filter Sidebar
-    cameraList.innerHTML = Array.from(cameras).map(c => `
-        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]">
-            <input type="checkbox" value="${c}" class="filter-checkbox filter-camera rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> ${c}
-        </label>
-    `).join('');
+    if (cameraList) {
+        cameraList.innerHTML = Array.from(cameras).map(c => `
+            <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]">
+                <input type="checkbox" value="${c}" class="filter-checkbox filter-camera rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> ${c}
+            </label>
+        `).join('');
+    }
     
-    dateList.innerHTML = Array.from(dates).map(d => `
-        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]">
-            <input type="checkbox" value="${d}" class="filter-checkbox filter-date rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> ${d}
-        </label>
-    `).join('');
+    if (dateList) {
+        dateList.innerHTML = Array.from(dates).map(d => `
+            <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]">
+                <input type="checkbox" value="${d}" class="filter-checkbox filter-date rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> ${d}
+            </label>
+        `).join('');
+    }
     
-    // Populate Datalists for Metadata Modal
-    if (dlCamera) dlCamera.innerHTML = Array.from(cameras).map(c => `<option value="${c}">`).join('');
-    if (dlFilm) dlFilm.innerHTML = Array.from(films).map(f => `<option value="${f}">`).join('');
+    // Populate Selects for Metadata Modal
+    const selCamera = document.getElementById('roll-camera-select');
+    if (selCamera) {
+        selCamera.innerHTML = `
+            <option value="">Select Camera...</option>
+            ${Array.from(cameras).map(c => `<option value="${c}">${c}</option>`).join('')}
+            <option value="__new__">+ Add New...</option>
+        `;
+    }
+
+    const optgroupFilmHistory = document.querySelector('#roll-film-select optgroup[label="History"]');
+    if (optgroupFilmHistory) {
+        optgroupFilmHistory.innerHTML = Array.from(films).map(f => `<option value="${f}">${f}</option>`).join('');
+    }
     
     document.querySelectorAll('.filter-checkbox').forEach(cb => {
         cb.addEventListener('change', renderLibraryAndFilmstrip);
@@ -1073,48 +1089,33 @@ async function renderLibraryAndFilmstrip() {
         await fetchRolls();
         const items = await invoke('get_filmstrip');
         allLibraryItems = items;
+        
         const libraryRollsGrid = document.getElementById('library-rolls-grid');
-        const btnLibraryBack = document.getElementById('btn-library-back');
-        const viewTitle = document.getElementById('library-view-title');
+        const historyInternalGrid = document.getElementById('history-internal-grid');
+        const btnHistoryBack = document.getElementById('btn-history-back');
+        const historyTitle = document.getElementById('history-view-title');
         const btnExportContactSheet = document.getElementById('btn-export-contact-sheet');
+        const historyEmpty = document.getElementById('history-empty');
         
         libraryGrid.innerHTML = '';
         libraryRollsGrid.innerHTML = '';
+        historyInternalGrid.innerHTML = '';
         filmstripContainer.innerHTML = '';
         
-        if (items.length === 0 && allRolls.length === 0) {
+        // --- Populate LIBRARY View (All Images) ---
+        if (items.length === 0) {
             libraryEmpty.classList.remove('hidden');
             libraryGrid.classList.add('hidden');
-            libraryRollsGrid.classList.add('hidden');
             btnSelectAll.classList.add('hidden');
-            btnLibraryBack.classList.add('hidden');
-            btnExportContactSheet.classList.add('hidden');
-            return;
-        }
-        
-        libraryEmpty.classList.add('hidden');
-        btnSelectAll.classList.remove('hidden');
-        
-        const filters = getActiveFilters();
-        
-        if (currentRollViewId) {
-            // INNER ROLL VIEW
-            libraryRollsGrid.classList.add('hidden');
+        } else {
+            libraryEmpty.classList.add('hidden');
             libraryGrid.classList.remove('hidden');
-            btnLibraryBack.classList.remove('hidden');
-            btnExportContactSheet.classList.remove('hidden');
-            viewTitle.textContent = "ROLL CONTENTS";
+            btnSelectAll.classList.remove('hidden');
             
-            const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
-            const rollPaths = currentRoll ? new Set(currentRoll.image_paths) : new Set();
-            
-            const rollItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\\\/g, '/')) || rollPaths.has(item.file_path));
-            
-            rollItems.forEach(item => {
+            items.forEach(item => {
                 const libDiv = document.createElement('div');
                 libDiv.className = `library-item rounded overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
                 libDiv.dataset.id = item.id;
-                
                 libDiv.ondblclick = () => {
                     selectedLibraryIds.clear();
                     selectedLibraryIds.add(item.id);
@@ -1132,74 +1133,38 @@ async function renderLibraryAndFilmstrip() {
                     }
                     updateLibrarySelectionUI();
                 };
-                
                 const libImg = document.createElement('img');
                 libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
                 libImg.className = 'w-full h-full object-cover pointer-events-none';
-                
-                const filenameLabel = document.createElement('div');
-                filenameLabel.className = 'absolute bottom-0 left-0 w-full bg-black/60 backdrop-blur-sm text-[10px] text-zinc-300 p-1.5 truncate text-center pointer-events-none';
-                filenameLabel.textContent = item.file_path.split(/[\\/]/).pop();
-                
                 libDiv.appendChild(libImg);
-                libDiv.appendChild(filenameLabel);
                 libraryGrid.appendChild(libDiv);
             });
-        } else {
-            // ROLLS ARCHIVE VIEW
-            libraryRollsGrid.classList.remove('hidden');
-            libraryGrid.classList.add('hidden'); // Also show single items?
-            btnLibraryBack.classList.add('hidden');
+        }
+        
+        // --- Populate HISTORY FILMS View ---
+        if (items.length === 0 && allRolls.length === 0) {
+            historyEmpty.classList.remove('hidden');
+            libraryRollsGrid.classList.add('hidden');
+            historyInternalGrid.classList.add('hidden');
+            btnHistoryBack.classList.add('hidden');
             btnExportContactSheet.classList.add('hidden');
-            viewTitle.textContent = "THE ROLL ARCHIVE";
+        } else {
+            historyEmpty.classList.add('hidden');
+            const filters = getActiveFilters();
             
-            let filteredRolls = allRolls.filter(r => {
-                if (filters.formats.length > 0 && !filters.formats.includes(r.format)) return false;
-                if (filters.cameras.length > 0 && !filters.cameras.includes(r.camera)) return false;
-                if (filters.dates.length > 0 && !filters.dates.includes(r.date)) return false;
-                return true;
-            });
-            
-            filteredRolls.forEach(roll => {
-                const rollPaths = new Set(roll.image_paths);
-                const firstItem = items.find(item => rollPaths.has(item.file_path.replace(/\\\\/g, '/')) || rollPaths.has(item.file_path));
-                const thumbSrc = firstItem ? `data:image/jpeg;base64,${firstItem.thumbnail_base64}` : '';
+            if (currentRollViewId) {
+                // Inner Roll View
+                libraryRollsGrid.classList.add('hidden');
+                historyInternalGrid.classList.remove('hidden');
+                btnHistoryBack.classList.remove('hidden');
+                btnExportContactSheet.classList.remove('hidden');
+                historyTitle.textContent = "ROLL CONTENTS";
                 
-                const card = document.createElement('div');
-                card.className = "group relative bg-[#1C1C1E] border border-[#28282c] rounded-lg overflow-hidden cursor-pointer hover:border-zinc-500 transition-colors flex h-[200px] shadow-lg";
-                card.ondblclick = () => {
-                    currentRollViewId = roll.roll_id;
-                    selectedLibraryIds.clear();
-                    renderLibraryAndFilmstrip();
-                };
+                const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
+                const rollPaths = currentRoll ? new Set(currentRoll.image_paths) : new Set();
+                const rollItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\\\/g, '/')) || rollPaths.has(item.file_path));
                 
-                card.innerHTML = `
-                    <div class="flex-1 p-6 flex flex-col justify-between z-10 bg-gradient-to-r from-[#1C1C1E] to-[#1C1C1E]/80">
-                        <div>
-                            <div class="text-[24px] font-black tracking-tighter text-zinc-100 uppercase leading-none mb-2">${roll.film_stock || 'Unknown Film'}</div>
-                            <div class="text-[12px] font-bold text-zinc-500 uppercase tracking-widest">${roll.format || '135'} FORMAT</div>
-                        </div>
-                        <div>
-                            <div class="text-[11px] text-zinc-400 font-medium mb-1"><span class="text-zinc-600">CAM</span> ${roll.camera || 'Unknown'}</div>
-                            <div class="text-[11px] text-zinc-400 font-medium"><span class="text-zinc-600">DAT</span> ${roll.date || 'Unknown'}</div>
-                        </div>
-                    </div>
-                    <div class="w-1/2 h-full relative overflow-hidden shrink-0">
-                        <div class="absolute inset-0 bg-gradient-to-r from-[#1C1C1E]/80 to-transparent z-10"></div>
-                        ${thumbSrc ? `<img src="${thumbSrc}" class="w-full h-full object-cover scale-100 group-hover:scale-105 transition-transform duration-500 opacity-80 group-hover:opacity-100">` : `<div class="w-full h-full bg-[#121214]"></div>`}
-                    </div>
-                `;
-                libraryRollsGrid.appendChild(card);
-            });
-            
-            // Render unassigned loose images if requested
-            const rollPathsAll = new Set();
-            allRolls.forEach(r => r.image_paths.forEach(p => rollPathsAll.add(p)));
-            const looseItems = items.filter(i => !rollPathsAll.has(i.file_path.replace(/\\\\/g, '/')) && !rollPathsAll.has(i.file_path));
-            
-            if (looseItems.length > 0) {
-                libraryGrid.classList.remove('hidden');
-                looseItems.forEach(item => {
+                rollItems.forEach(item => {
                     const libDiv = document.createElement('div');
                     libDiv.className = `library-item rounded overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
                     libDiv.dataset.id = item.id;
@@ -1222,14 +1187,59 @@ async function renderLibraryAndFilmstrip() {
                     };
                     const libImg = document.createElement('img');
                     libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
-                    libImg.className = 'w-full h-full object-cover pointer-events-none opacity-50 hover:opacity-100 transition-opacity';
+                    libImg.className = 'w-full h-full object-cover pointer-events-none';
                     libDiv.appendChild(libImg);
-                    libraryGrid.appendChild(libDiv);
+                    historyInternalGrid.appendChild(libDiv);
+                });
+            } else {
+                // Rolls Archive View
+                libraryRollsGrid.classList.remove('hidden');
+                historyInternalGrid.classList.add('hidden');
+                btnHistoryBack.classList.add('hidden');
+                btnExportContactSheet.classList.add('hidden');
+                historyTitle.textContent = "THE ROLL ARCHIVE";
+                
+                let filteredRolls = allRolls.filter(r => {
+                    if (filters.formats.length > 0 && !filters.formats.includes(r.format)) return false;
+                    if (filters.cameras.length > 0 && !filters.cameras.includes(r.camera)) return false;
+                    if (filters.dates.length > 0 && !filters.dates.includes(r.date)) return false;
+                    return true;
+                });
+                
+                filteredRolls.forEach(roll => {
+                    const rollPaths = new Set(roll.image_paths);
+                    const firstItem = items.find(item => rollPaths.has(item.file_path.replace(/\\\\/g, '/')) || rollPaths.has(item.file_path));
+                    const thumbSrc = firstItem ? `data:image/jpeg;base64,${firstItem.thumbnail_base64}` : '';
+                    
+                    const card = document.createElement('div');
+                    card.className = "group relative bg-[#1C1C1E] border border-[#28282c] rounded-lg overflow-hidden cursor-pointer hover:border-zinc-500 transition-colors flex h-[200px] shadow-lg w-full";
+                    card.ondblclick = () => {
+                        currentRollViewId = roll.roll_id;
+                        selectedLibraryIds.clear();
+                        renderLibraryAndFilmstrip();
+                    };
+                    card.innerHTML = `
+                        <div class="flex-1 p-6 flex flex-col justify-between z-10 bg-gradient-to-r from-[#1C1C1E] to-[#1C1C1E]/80">
+                            <div>
+                                <div class="text-[24px] font-black tracking-tighter text-zinc-100 uppercase leading-none mb-2">${roll.film_stock || 'Unknown Film'}</div>
+                                <div class="text-[12px] font-bold text-zinc-500 uppercase tracking-widest">${roll.format || '135'} FORMAT</div>
+                            </div>
+                            <div>
+                                <div class="text-[11px] text-zinc-400 font-medium mb-1"><span class="text-zinc-600">CAM</span> ${roll.camera || 'Unknown'}</div>
+                                <div class="text-[11px] text-zinc-400 font-medium"><span class="text-zinc-600">DAT</span> ${roll.date || 'Unknown'}</div>
+                            </div>
+                        </div>
+                        <div class="w-1/2 h-full relative overflow-hidden shrink-0">
+                            <div class="absolute inset-0 bg-gradient-to-r from-[#1C1C1E]/80 to-transparent z-10"></div>
+                            ${thumbSrc ? `<img src="${thumbSrc}" class="w-full h-full object-cover scale-100 group-hover:scale-105 transition-transform duration-500 opacity-80 group-hover:opacity-100">` : `<div class="w-full h-full bg-[#121214]"></div>`}
+                        </div>
+                    `;
+                    libraryRollsGrid.appendChild(card);
                 });
             }
         }
         
-        // Populate Filmstrip always
+        // --- Populate DEVELOP Filmstrip ---
         items.forEach(item => {
             const stripDiv = document.createElement('div');
             stripDiv.className = `film-item shrink-0 ${item.id === activeId ? 'active' : ''}`;
@@ -1249,7 +1259,7 @@ async function renderLibraryAndFilmstrip() {
     } catch (e) { console.error("Filmstrip error:", e); }
 }
 
-document.getElementById('btn-library-back').addEventListener('click', () => {
+document.getElementById('btn-history-back').addEventListener('click', () => {
     currentRollViewId = null;
     selectedLibraryIds.clear();
     renderLibraryAndFilmstrip();
@@ -1324,9 +1334,13 @@ const doImportSingle = async () => {
 const doImportRoll = async () => {
     try {
         const format = document.getElementById('roll-format').value;
-        const camera = document.getElementById('roll-camera').value;
-        const film = document.getElementById('roll-film').value;
         const date = document.getElementById('roll-date').value;
+        
+        let camera = document.getElementById('roll-camera-select').value;
+        if (camera === "__new__") camera = document.getElementById('roll-camera-input').value;
+        
+        let film = document.getElementById('roll-film-select').value;
+        if (film === "__new__") film = document.getElementById('roll-film-input').value;
         
         if(!film) {
             showToast("Film stock is required", "error");
@@ -1351,6 +1365,18 @@ const doImportRoll = async () => {
         document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
     }
 };
+
+document.getElementById('roll-camera-select').addEventListener('change', (e) => {
+    const input = document.getElementById('roll-camera-input');
+    if (e.target.value === '__new__') input.classList.remove('hidden');
+    else input.classList.add('hidden');
+});
+
+document.getElementById('roll-film-select').addEventListener('change', (e) => {
+    const input = document.getElementById('roll-film-input');
+    if (e.target.value === '__new__') input.classList.remove('hidden');
+    else input.classList.add('hidden');
+});
 
 const showImportChoice = () => {
     document.getElementById('import-choice-modal').classList.remove('opacity-0', 'pointer-events-none');
