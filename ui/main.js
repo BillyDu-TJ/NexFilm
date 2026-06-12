@@ -258,7 +258,7 @@ window.addEventListener('keydown', async (e) => {
 });
 
 document.getElementById('btn-delete-rolls').addEventListener('click', () => {
-    if (currentView === 'library' && currentNav === 'history' && !currentRollViewId) {
+    if (navHistory.classList.contains('text-zinc-100') && !currentRollViewId) {
         isDeleteMode = !isDeleteMode;
         if (!isDeleteMode) selectedRollIds.clear();
         renderLibraryAndFilmstrip();
@@ -1443,6 +1443,19 @@ const doImportRoll = async () => {
             const roll = { roll_id, date, format, film_stock: film, camera, image_paths: paths };
             
             await invoke('import_roll', { roll, paths });
+            
+            // Persist Camera and Film
+            if (camera) {
+                const cameras = new Set(JSON.parse(localStorage.getItem('user_cameras') || '[]'));
+                cameras.add(camera);
+                localStorage.setItem('user_cameras', JSON.stringify(Array.from(cameras)));
+            }
+            if (film) {
+                const films = new Set(JSON.parse(localStorage.getItem('user_films') || '[]'));
+                films.add(film);
+                localStorage.setItem('user_films', JSON.stringify(Array.from(films)));
+            }
+            
             await renderLibraryAndFilmstrip();
         }
     } catch (e) { showToast("Import failed: " + e, "error"); }
@@ -1456,6 +1469,77 @@ const doImportRoll = async () => {
         document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
     }
 };
+
+document.getElementById('btn-continue-roll').addEventListener('click', async () => {
+    document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
+    
+    const select = document.getElementById('continue-roll-select');
+    select.innerHTML = '';
+    
+    if (allRolls.length === 0) {
+        showToast("No rolls in archive to continue.", "error");
+        return;
+    }
+    
+    allRolls.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.roll_id;
+        opt.textContent = `${r.film_stock} (${r.date || 'Unknown Date'}) - ${r.camera || 'Unknown Camera'}`;
+        select.appendChild(opt);
+    });
+    
+    document.getElementById('continue-roll-modal').classList.remove('opacity-0', 'pointer-events-none');
+});
+
+document.getElementById('btn-close-continue-roll').addEventListener('click', () => {
+    document.getElementById('continue-roll-modal').classList.add('opacity-0', 'pointer-events-none');
+});
+
+document.getElementById('btn-confirm-continue').addEventListener('click', async () => {
+    const rollId = document.getElementById('continue-roll-select').value;
+    if (!rollId) return;
+    
+    document.getElementById('continue-roll-modal').classList.add('opacity-0', 'pointer-events-none');
+    
+    try {
+        const paths = await invoke('open_file_dialog');
+        if (paths && paths.length > 0) {
+            await invoke('append_to_roll', { rollId, paths });
+            currentRollViewId = rollId;
+            switchView('history');
+            await renderLibraryAndFilmstrip();
+            showToast("Images appended to roll.", "success");
+        }
+    } catch(e) {
+        showToast("Failed to continue roll: " + e, "error");
+    }
+});
+
+function loadPersistedMetadata() {
+    try {
+        const cameras = JSON.parse(localStorage.getItem('user_cameras') || '[]');
+        const films = JSON.parse(localStorage.getItem('user_films') || '[]');
+        
+        const selCamera = document.getElementById('roll-camera-select');
+        cameras.forEach(c => {
+            if (!Array.from(selCamera.options).some(o => o.value === c)) {
+                const opt = document.createElement('option');
+                opt.value = c; opt.textContent = c;
+                selCamera.insertBefore(opt, selCamera.querySelector('option[value="__new__"]'));
+            }
+        });
+        
+        const selFilm = document.getElementById('roll-film-select');
+        films.forEach(f => {
+            if (!Array.from(selFilm.options).some(o => o.value === f)) {
+                const opt = document.createElement('option');
+                opt.value = f; opt.textContent = f;
+                selFilm.insertBefore(opt, selFilm.querySelector('option[value="__new__"]'));
+            }
+        });
+    } catch(e) {}
+}
+loadPersistedMetadata();
 
 const handleInputEnter = (inputId, selectId) => {
     document.getElementById(inputId).addEventListener('keydown', (e) => {
@@ -2220,7 +2304,9 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
 function updateCalibrationPolygon() {
     if (!isCalibrationMode) return;
     const polygon = document.getElementById('calibration-polygon');
+    const grid = document.getElementById('calibration-grid');
     const handles = document.querySelectorAll('.calib-handle');
+    const dots = document.querySelectorAll('.calib-dot');
     const svgRect = document.getElementById('calibration-svg').getBoundingClientRect();
     if (!svgRect.width || !svgRect.height) {
         requestAnimationFrame(updateCalibrationPolygon);
@@ -2228,16 +2314,43 @@ function updateCalibrationPolygon() {
     }
     
     let pointsStr = '';
+    const pts = [];
     calibrationPoints.forEach((p, i) => {
         const cx = p[0] * svgRect.width;
         const cy = p[1] * svgRect.height;
+        pts.push({x: cx, y: cy});
         pointsStr += `${cx},${cy} `;
         if (handles[i]) {
             handles[i].setAttribute('cx', cx);
             handles[i].setAttribute('cy', cy);
         }
+        if (dots[i]) {
+            dots[i].setAttribute('cx', cx);
+            dots[i].setAttribute('cy', cy);
+        }
     });
     polygon.setAttribute('points', pointsStr.trim());
+
+    if (pts.length === 4) {
+        const lerp = (p1, p2, t) => ({x: p1.x + (p2.x - p1.x) * t, y: p1.y + (p2.y - p1.y) * t});
+        
+        const top1 = lerp(pts[0], pts[1], 1/3);
+        const top2 = lerp(pts[0], pts[1], 2/3);
+        const bot1 = lerp(pts[3], pts[2], 1/3);
+        const bot2 = lerp(pts[3], pts[2], 2/3);
+        
+        const left1 = lerp(pts[0], pts[3], 1/3);
+        const left2 = lerp(pts[0], pts[3], 2/3);
+        const right1 = lerp(pts[1], pts[2], 1/3);
+        const right2 = lerp(pts[1], pts[2], 2/3);
+        
+        grid.setAttribute('d', `
+            M ${top1.x} ${top1.y} L ${bot1.x} ${bot1.y}
+            M ${top2.x} ${top2.y} L ${bot2.x} ${bot2.y}
+            M ${left1.x} ${left1.y} L ${right1.x} ${right1.y}
+            M ${left2.x} ${left2.y} L ${right2.x} ${right2.y}
+        `);
+    }
 }
 
 document.getElementById('calibration-svg').addEventListener('mousedown', (e) => {

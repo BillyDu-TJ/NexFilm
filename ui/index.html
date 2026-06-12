@@ -176,19 +176,28 @@
                         <canvas id="preview-canvas" class="absolute top-0 left-0 w-full h-full" style="object-fit: fill;"></canvas>
                         
                         <!-- Calibration Mode Overlay -->
-                        <div id="calibration-overlay" class="absolute top-0 left-0 w-full h-full z-20 hidden flex-col items-center justify-center bg-black/50 pointer-events-auto">
-                            <div class="absolute top-8 left-1/2 -translate-x-1/2 bg-zinc-900/90 border border-red-500/50 text-red-400 px-6 py-4 rounded-lg shadow-2xl text-center max-w-2xl backdrop-blur">
-                                <h3 class="text-sm font-bold uppercase tracking-widest mb-2 text-red-300">Calibration Mode</h3>
-                                <p class="text-xs leading-relaxed">请拖动四角，将选框严格贴合胶片实际成像区域（排除所有黑色边框与齿孔）。此步骤仅用于精确色彩解码，不影响最终带边框导出。</p>
-                                <button id="btn-confirm-calibration" class="mt-4 px-8 py-2 bg-red-600 hover:bg-red-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg">Confirm</button>
+                        <div id="calibration-overlay" class="absolute top-0 left-0 w-full h-full z-30 hidden flex-col items-center justify-center pointer-events-auto">
+                            <div class="absolute inset-0 bg-black/50 pointer-events-none"></div>
+                            <div class="relative z-40 bg-zinc-900/90 border border-orange-500/50 text-orange-200 px-8 py-8 rounded-lg shadow-2xl text-center max-w-xl backdrop-blur flex flex-col items-center pointer-events-auto">
+                                <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Calibration Mode</h3>
+                                <p class="text-xs leading-relaxed text-zinc-300">请拖动四角，将选框严格贴合胶片实际成像区域（排除所有黑色边框与齿孔）。此步骤仅用于精确色彩解码，不影响最终带边框导出。</p>
+                                <button id="btn-confirm-calibration" class="mt-6 px-10 py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg pointer-events-auto">CONFIRM</button>
                             </div>
-                            <svg id="calibration-svg" class="absolute top-0 left-0 w-full h-full overflow-visible pointer-events-none">
-                                <polygon id="calibration-polygon" points="" fill="rgba(239,68,68,0.2)" stroke="#ef4444" stroke-width="2" class="pointer-events-auto"></polygon>
+                            <svg id="calibration-svg" class="absolute top-0 left-0 w-full h-full overflow-visible pointer-events-none z-20">
+                                <polygon id="calibration-polygon" points="" fill="rgba(249,115,22,0.1)" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4 4" class="pointer-events-auto"></polygon>
+                                <path id="calibration-grid" d="" stroke="rgba(249,115,22,0.4)" stroke-width="1" class="pointer-events-none"></path>
                                 <g id="calibration-handles" class="pointer-events-auto">
-                                    <circle class="calib-handle cursor-move hover:scale-150 transition-transform" data-idx="0" cx="0" cy="0" r="8" fill="#ef4444" stroke="white" stroke-width="2"/>
-                                    <circle class="calib-handle cursor-move hover:scale-150 transition-transform" data-idx="1" cx="0" cy="0" r="8" fill="#ef4444" stroke="white" stroke-width="2"/>
-                                    <circle class="calib-handle cursor-move hover:scale-150 transition-transform" data-idx="2" cx="0" cy="0" r="8" fill="#ef4444" stroke="white" stroke-width="2"/>
-                                    <circle class="calib-handle cursor-move hover:scale-150 transition-transform" data-idx="3" cx="0" cy="0" r="8" fill="#ef4444" stroke="white" stroke-width="2"/>
+                                    <circle class="calib-handle cursor-crosshair" data-idx="0" cx="0" cy="0" r="16" fill="transparent" stroke="transparent"/>
+                                    <circle class="pointer-events-none calib-dot" id="calib-dot-0" cx="0" cy="0" r="4" fill="#f97316" stroke="white" stroke-width="1"/>
+                                    
+                                    <circle class="calib-handle cursor-crosshair" data-idx="1" cx="0" cy="0" r="16" fill="transparent" stroke="transparent"/>
+                                    <circle class="pointer-events-none calib-dot" id="calib-dot-1" cx="0" cy="0" r="4" fill="#f97316" stroke="white" stroke-width="1"/>
+                                    
+                                    <circle class="calib-handle cursor-crosshair" data-idx="2" cx="0" cy="0" r="16" fill="transparent" stroke="transparent"/>
+                                    <circle class="pointer-events-none calib-dot" id="calib-dot-2" cx="0" cy="0" r="4" fill="#f97316" stroke="white" stroke-width="1"/>
+                                    
+                                    <circle class="calib-handle cursor-crosshair" data-idx="3" cx="0" cy="0" r="16" fill="transparent" stroke="transparent"/>
+                                    <circle class="pointer-events-none calib-dot" id="calib-dot-3" cx="0" cy="0" r="4" fill="#f97316" stroke="white" stroke-width="1"/>
                                 </g>
                             </svg>
                         </div>
@@ -442,6 +451,35 @@
                 <button id="btn-import-single" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
                     <span class="text-white">Single Import</span>
                     <span class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Import loose images directly to the archive.</span>
+                </button>
+                <button id="btn-continue-roll" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
+                    <span class="text-white">Continue Editing Roll</span>
+                    <span class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Select an existing roll from the archive to add photos.</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Continue Roll Modal -->
+    <div id="continue-roll-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
+        <div class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[450px] flex flex-col transform scale-95 transition-transform duration-200" id="continue-roll-content">
+            <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
+                <h2 class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Select Roll</h2>
+                <button id="btn-close-continue-roll" class="text-zinc-500 hover:text-zinc-200 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div class="p-6 flex flex-col gap-6">
+                <div class="flex flex-col gap-4 bg-[#121214] p-4 rounded-md border border-[#28282c]">
+                    <div class="flex items-center justify-between">
+                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Roll Archive</label>
+                        <select id="continue-roll-select" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 w-[200px]">
+                            <!-- Options populated via JS -->
+                        </select>
+                    </div>
+                </div>
+                <button id="btn-confirm-continue" class="w-full px-4 py-3 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm">
+                    Select & Import
                 </button>
             </div>
         </div>

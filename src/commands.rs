@@ -1091,3 +1091,26 @@ pub async fn delete_rolls(
     }
     Ok(())
 }
+
+#[tauri::command]
+pub async fn append_to_roll(
+    roll_id: String,
+    paths: Vec<String>,
+    state: State<'_, EngineState>
+) -> Result<(), String> {
+    {
+        let mut rolls = state.rolls.write().unwrap();
+        if let Some(roll) = rolls.iter_mut().find(|r| r.roll_id == roll_id) {
+            for p in &paths {
+                if !roll.image_paths.contains(p) {
+                    roll.image_paths.push(p.clone());
+                }
+            }
+        }
+        if let Ok(json) = serde_json::to_string_pretty(&*rolls) {
+            let _ = std::fs::write("rolls.json", json);
+        }
+    }
+    
+    crate::commands::import_images(paths, state).await
+}

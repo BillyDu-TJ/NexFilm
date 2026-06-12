@@ -86,5 +86,16 @@
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650035.tif",
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650036.tif"
     ]
+  },
+  {
+    "roll_id": "roll_1781278834885_850",
+    "date": "2026-06-12",
+    "format": "135",
+    "film_stock": "Fujifilm C400",
+    "camera": "Contax RTS 2",
+    "image_paths": [
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\EpsonV700-Portra400暴雨前自然光.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\EpsonV700-Portra400鲜艳街头.tif"
+    ]
   }
 ]
