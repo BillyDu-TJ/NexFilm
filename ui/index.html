@@ -47,25 +47,65 @@
         <!-- ============================== -->
         <!-- VIEW: LIBRARY                  -->
         <!-- ============================== -->
-        <div id="view-library" class="absolute inset-0 flex flex-col z-20 transition-opacity duration-300">
-            <div class="h-[48px] border-b border-[#28282c] flex items-center justify-between px-8 bg-[#1C1C1E] shrink-0">
-                <div class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">GRID VIEW</div>
-                <div class="flex items-center gap-4">
-                    <span id="library-selection-count" class="text-[11px] text-zinc-400 font-medium">0 selected</span>
-                    <button id="btn-select-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors">Select All</button>
-                    <button id="btn-deselect-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors hidden">Deselect All</button>
+        <div id="view-library" class="absolute inset-0 flex z-20 transition-opacity duration-300">
+            <!-- Left Filter Sidebar -->
+            <div class="w-[260px] h-full bg-[#171719] border-r border-[#28282c] shrink-0 flex flex-col p-6 overflow-y-auto z-10 custom-scrollbar">
+                <h2 class="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase mb-6">Library Filter</h2>
+                
+                <div class="mb-6">
+                    <h3 class="text-[11px] font-bold tracking-widest text-zinc-400 uppercase mb-3">Format</h3>
+                    <div class="flex flex-col gap-2" id="filter-format-list">
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="135" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 135 (35mm)</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="120" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 120 Medium Format</label>
+                    </div>
+                </div>
+
+                <div class="mb-6">
+                    <h3 class="text-[11px] font-bold tracking-widest text-zinc-400 uppercase mb-3">Camera</h3>
+                    <div class="flex flex-col gap-2" id="filter-camera-list">
+                        <!-- Populated by JS -->
+                    </div>
+                </div>
+                
+                <div class="mb-6">
+                    <h3 class="text-[11px] font-bold tracking-widest text-zinc-400 uppercase mb-3">Date</h3>
+                    <div class="flex flex-col gap-2" id="filter-date-list">
+                        <!-- Populated by JS -->
+                    </div>
                 </div>
             </div>
-            <div class="flex-1 p-8 overflow-y-auto custom-scrollbar">
-                <div id="library-empty" class="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-4">
-                    <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                    </svg>
-                    <div class="font-medium tracking-widest text-sm uppercase">No Images Loaded</div>
-                    <button class="btn-import-trigger px-6 py-2 mt-4 text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import From Disk</button>
+
+            <!-- Right Main Area -->
+            <div class="flex-1 flex flex-col h-full overflow-hidden bg-[#121214] relative">
+                <div class="h-[48px] border-b border-[#28282c] flex items-center justify-between px-8 bg-[#1C1C1E] shrink-0">
+                    <div class="flex items-center gap-4">
+                        <button id="btn-library-back" class="hidden text-zinc-400 hover:text-zinc-100 transition-colors">
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
+                        </button>
+                        <div id="library-view-title" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">THE ROLL ARCHIVE</div>
+                    </div>
+                    <div class="flex items-center gap-4">
+                        <button id="btn-export-contact-sheet" class="hidden px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Export Contact Sheet</button>
+                        <div class="h-4 w-px bg-zinc-700"></div>
+                        <span id="library-selection-count" class="text-[11px] text-zinc-400 font-medium">0 selected</span>
+                        <button id="btn-select-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors">Select All</button>
+                        <button id="btn-deselect-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors hidden">Deselect All</button>
+                    </div>
                 </div>
-                <div id="library-grid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 hidden">
-                    <!-- Library Items -->
+                <div class="flex-1 p-8 overflow-y-auto custom-scrollbar">
+                    <div id="library-empty" class="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-4">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        <div class="font-medium tracking-widest text-sm uppercase">Archive is Empty</div>
+                        <button class="btn-import-trigger px-6 py-2 mt-4 text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
+                    </div>
+                    <div id="library-rolls-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 hidden">
+                        <!-- Rolls Cards -->
+                    </div>
+                    <div id="library-grid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 hidden">
+                        <!-- Library Items (Single Images) -->
+                    </div>
                 </div>
             </div>
         </div>
@@ -324,6 +364,70 @@
                             </div>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Import Choice Modal -->
+    <div id="import-choice-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
+        <div class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[320px] flex flex-col transform scale-95 transition-transform duration-200" id="import-choice-content">
+            <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
+                <h2 class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Import Method</h2>
+                <button id="btn-close-import-choice" class="text-zinc-500 hover:text-zinc-200 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div class="p-6 flex flex-col gap-4">
+                <button id="btn-import-by-roll" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
+                    <span class="text-white">Import by Roll</span>
+                    <span class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Group images with camera and film stock metadata.</span>
+                </button>
+                <button id="btn-import-single" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
+                    <span class="text-white">Single Import</span>
+                    <span class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Import loose images directly to the archive.</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Roll Metadata Modal -->
+    <div id="roll-metadata-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
+        <div class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[450px] flex flex-col transform scale-95 transition-transform duration-200" id="roll-metadata-content">
+            <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
+                <h2 class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Roll Metadata</h2>
+                <button id="btn-close-roll-meta" class="text-zinc-500 hover:text-zinc-200 transition-colors">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div class="p-6 flex flex-col gap-6">
+                <div class="flex flex-col gap-4 bg-[#121214] p-4 rounded-md border border-[#28282c]">
+                    <div class="flex items-center justify-between">
+                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Format</label>
+                        <select id="roll-format" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
+                            <option value="135">135 (35mm)</option>
+                            <option value="120">120 Medium Format</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center justify-between relative">
+                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Camera</label>
+                        <input type="text" id="roll-camera" list="camera-list" placeholder="e.g. Contax G2" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 w-48">
+                        <datalist id="camera-list"></datalist>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Film Stock</label>
+                        <input type="text" id="roll-film" list="film-list" placeholder="e.g. Kodak Portra 400" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 w-48">
+                        <datalist id="film-list"></datalist>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Date</label>
+                        <input type="date" id="roll-date" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 w-48">
+                    </div>
+                </div>
+
+                <div class="flex justify-end gap-3 pt-2">
+                    <button id="btn-cancel-roll-meta" class="px-5 py-2 text-[12px] font-bold uppercase tracking-wider text-zinc-400 hover:text-zinc-200 transition-colors">Cancel</button>
+                    <button id="btn-confirm-roll-meta" class="px-6 py-2 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm">Select Images</button>
                 </div>
             </div>
         </div>

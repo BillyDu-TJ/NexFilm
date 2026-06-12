@@ -154,12 +154,24 @@ pub struct FilmstripItem {
     pub thumbnail_base64: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Roll {
+    pub roll_id: String,
+    pub date: String,
+    pub format: String, // "135" or "120"
+    pub film_stock: String,
+    pub camera: String,
+    pub image_paths: Vec<String>,
+}
+
+
 pub struct EngineState {
     pub items: dashmap::DashMap<String, std::sync::Arc<std::sync::RwLock<FilmItem>>>,
     pub item_order: RwLock<Vec<String>>,
     pub active_id: RwLock<Option<String>>,
     pub dcp_profile: RwLock<Option<String>>,
     pub working_colorspace: RwLock<String>,
+    pub rolls: RwLock<Vec<Roll>>,
 }
 
 impl EngineState {
@@ -170,6 +182,7 @@ impl EngineState {
             active_id: RwLock::new(None),
             dcp_profile: RwLock::new(None),
             working_colorspace: RwLock::new("rec2020".to_string()),
+            rolls: RwLock::new(Vec::new()),
         }
     }
 }

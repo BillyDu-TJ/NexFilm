@@ -1011,73 +1011,226 @@ function enableUI() {
     canvasWrapper.style.display = 'block';
 }
 
+let allRolls = [];
+let currentRollViewId = null;
+
+async function fetchRolls() {
+    try {
+        allRolls = await invoke('get_rolls');
+        updateFilterSidebar();
+    } catch(e) {
+        console.error("Fetch rolls error", e);
+    }
+}
+
+function updateFilterSidebar() {
+    const cameraList = document.getElementById('filter-camera-list');
+    const dateList = document.getElementById('filter-date-list');
+    const dlCamera = document.getElementById('camera-list');
+    const dlFilm = document.getElementById('film-list');
+    
+    let cameras = new Set();
+    let dates = new Set();
+    let films = new Set();
+    
+    allRolls.forEach(r => {
+        if(r.camera) cameras.add(r.camera);
+        if(r.date) dates.add(r.date);
+        if(r.film_stock) films.add(r.film_stock);
+    });
+    
+    // Update Filter Sidebar
+    cameraList.innerHTML = Array.from(cameras).map(c => `
+        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]">
+            <input type="checkbox" value="${c}" class="filter-checkbox filter-camera rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> ${c}
+        </label>
+    `).join('');
+    
+    dateList.innerHTML = Array.from(dates).map(d => `
+        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]">
+            <input type="checkbox" value="${d}" class="filter-checkbox filter-date rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> ${d}
+        </label>
+    `).join('');
+    
+    // Populate Datalists for Metadata Modal
+    if (dlCamera) dlCamera.innerHTML = Array.from(cameras).map(c => `<option value="${c}">`).join('');
+    if (dlFilm) dlFilm.innerHTML = Array.from(films).map(f => `<option value="${f}">`).join('');
+    
+    document.querySelectorAll('.filter-checkbox').forEach(cb => {
+        cb.addEventListener('change', renderLibraryAndFilmstrip);
+    });
+}
+
+function getActiveFilters() {
+    const formats = Array.from(document.querySelectorAll('#filter-format-list input:checked')).map(i => i.value);
+    const cameras = Array.from(document.querySelectorAll('.filter-camera:checked')).map(i => i.value);
+    const dates = Array.from(document.querySelectorAll('.filter-date:checked')).map(i => i.value);
+    return { formats, cameras, dates };
+}
+
 async function renderLibraryAndFilmstrip() {
     try {
+        await fetchRolls();
         const items = await invoke('get_filmstrip');
         allLibraryItems = items;
+        const libraryRollsGrid = document.getElementById('library-rolls-grid');
+        const btnLibraryBack = document.getElementById('btn-library-back');
+        const viewTitle = document.getElementById('library-view-title');
+        const btnExportContactSheet = document.getElementById('btn-export-contact-sheet');
+        
         libraryGrid.innerHTML = '';
+        libraryRollsGrid.innerHTML = '';
         filmstripContainer.innerHTML = '';
         
-        if (items.length === 0) {
+        if (items.length === 0 && allRolls.length === 0) {
             libraryEmpty.classList.remove('hidden');
             libraryGrid.classList.add('hidden');
+            libraryRollsGrid.classList.add('hidden');
             btnSelectAll.classList.add('hidden');
+            btnLibraryBack.classList.add('hidden');
+            btnExportContactSheet.classList.add('hidden');
             return;
         }
         
         libraryEmpty.classList.add('hidden');
-        libraryGrid.classList.remove('hidden');
         btnSelectAll.classList.remove('hidden');
         
-        // ensure selectedLibraryIds only contains valid items
-        const validIds = new Set(items.map(i => i.id));
-        for (const id of selectedLibraryIds) {
-            if (!validIds.has(id)) selectedLibraryIds.delete(id);
-        }
+        const filters = getActiveFilters();
         
-        if (selectedLibraryIds.size === 0 && items.length > 0) {
-            selectedLibraryIds.add(items[0].id); // auto select first
-        }
-        
-        updateLibrarySelectionUI();
-        
-        items.forEach(item => {
-            // Library View Grid Item
-            const libDiv = document.createElement('div');
-            libDiv.className = `library-item rounded overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
-            libDiv.dataset.id = item.id;
+        if (currentRollViewId) {
+            // INNER ROLL VIEW
+            libraryRollsGrid.classList.add('hidden');
+            libraryGrid.classList.remove('hidden');
+            btnLibraryBack.classList.remove('hidden');
+            btnExportContactSheet.classList.remove('hidden');
+            viewTitle.textContent = "ROLL CONTENTS";
             
-            libDiv.ondblclick = () => {
-                selectedLibraryIds.clear();
-                selectedLibraryIds.add(item.id);
-                updateLibrarySelectionUI();
-                selectImage(item.id);
-                switchView('develop');
-            };
-            libDiv.onclick = (e) => {
-                if (e.ctrlKey || e.metaKey) {
-                    if (selectedLibraryIds.has(item.id)) selectedLibraryIds.delete(item.id);
-                    else selectedLibraryIds.add(item.id);
-                } else {
+            const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
+            const rollPaths = currentRoll ? new Set(currentRoll.image_paths) : new Set();
+            
+            const rollItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\\\/g, '/')) || rollPaths.has(item.file_path));
+            
+            rollItems.forEach(item => {
+                const libDiv = document.createElement('div');
+                libDiv.className = `library-item rounded overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
+                libDiv.dataset.id = item.id;
+                
+                libDiv.ondblclick = () => {
                     selectedLibraryIds.clear();
                     selectedLibraryIds.add(item.id);
-                }
-                updateLibrarySelectionUI();
-            };
+                    updateLibrarySelectionUI();
+                    selectImage(item.id);
+                    switchView('develop');
+                };
+                libDiv.onclick = (e) => {
+                    if (e.ctrlKey || e.metaKey) {
+                        if (selectedLibraryIds.has(item.id)) selectedLibraryIds.delete(item.id);
+                        else selectedLibraryIds.add(item.id);
+                    } else {
+                        selectedLibraryIds.clear();
+                        selectedLibraryIds.add(item.id);
+                    }
+                    updateLibrarySelectionUI();
+                };
+                
+                const libImg = document.createElement('img');
+                libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+                libImg.className = 'w-full h-full object-cover pointer-events-none';
+                
+                const filenameLabel = document.createElement('div');
+                filenameLabel.className = 'absolute bottom-0 left-0 w-full bg-black/60 backdrop-blur-sm text-[10px] text-zinc-300 p-1.5 truncate text-center pointer-events-none';
+                filenameLabel.textContent = item.file_path.split(/[\\/]/).pop();
+                
+                libDiv.appendChild(libImg);
+                libDiv.appendChild(filenameLabel);
+                libraryGrid.appendChild(libDiv);
+            });
+        } else {
+            // ROLLS ARCHIVE VIEW
+            libraryRollsGrid.classList.remove('hidden');
+            libraryGrid.classList.add('hidden'); // Also show single items?
+            btnLibraryBack.classList.add('hidden');
+            btnExportContactSheet.classList.add('hidden');
+            viewTitle.textContent = "THE ROLL ARCHIVE";
             
-            const libImg = document.createElement('img');
-            libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
-            libImg.className = 'w-full h-full object-cover pointer-events-none';
+            let filteredRolls = allRolls.filter(r => {
+                if (filters.formats.length > 0 && !filters.formats.includes(r.format)) return false;
+                if (filters.cameras.length > 0 && !filters.cameras.includes(r.camera)) return false;
+                if (filters.dates.length > 0 && !filters.dates.includes(r.date)) return false;
+                return true;
+            });
             
-            const filenameLabel = document.createElement('div');
-            filenameLabel.className = 'absolute bottom-0 left-0 w-full bg-black/60 backdrop-blur-sm text-[10px] text-zinc-300 p-1.5 truncate text-center pointer-events-none';
-            filenameLabel.textContent = item.file_path.split(/[\\/]/).pop();
+            filteredRolls.forEach(roll => {
+                const rollPaths = new Set(roll.image_paths);
+                const firstItem = items.find(item => rollPaths.has(item.file_path.replace(/\\\\/g, '/')) || rollPaths.has(item.file_path));
+                const thumbSrc = firstItem ? `data:image/jpeg;base64,${firstItem.thumbnail_base64}` : '';
+                
+                const card = document.createElement('div');
+                card.className = "group relative bg-[#1C1C1E] border border-[#28282c] rounded-lg overflow-hidden cursor-pointer hover:border-zinc-500 transition-colors flex h-[200px] shadow-lg";
+                card.ondblclick = () => {
+                    currentRollViewId = roll.roll_id;
+                    selectedLibraryIds.clear();
+                    renderLibraryAndFilmstrip();
+                };
+                
+                card.innerHTML = `
+                    <div class="flex-1 p-6 flex flex-col justify-between z-10 bg-gradient-to-r from-[#1C1C1E] to-[#1C1C1E]/80">
+                        <div>
+                            <div class="text-[24px] font-black tracking-tighter text-zinc-100 uppercase leading-none mb-2">${roll.film_stock || 'Unknown Film'}</div>
+                            <div class="text-[12px] font-bold text-zinc-500 uppercase tracking-widest">${roll.format || '135'} FORMAT</div>
+                        </div>
+                        <div>
+                            <div class="text-[11px] text-zinc-400 font-medium mb-1"><span class="text-zinc-600">CAM</span> ${roll.camera || 'Unknown'}</div>
+                            <div class="text-[11px] text-zinc-400 font-medium"><span class="text-zinc-600">DAT</span> ${roll.date || 'Unknown'}</div>
+                        </div>
+                    </div>
+                    <div class="w-1/2 h-full relative overflow-hidden shrink-0">
+                        <div class="absolute inset-0 bg-gradient-to-r from-[#1C1C1E]/80 to-transparent z-10"></div>
+                        ${thumbSrc ? `<img src="${thumbSrc}" class="w-full h-full object-cover scale-100 group-hover:scale-105 transition-transform duration-500 opacity-80 group-hover:opacity-100">` : `<div class="w-full h-full bg-[#121214]"></div>`}
+                    </div>
+                `;
+                libraryRollsGrid.appendChild(card);
+            });
             
-            libDiv.appendChild(libImg);
-            libDiv.appendChild(filenameLabel);
-            libraryGrid.appendChild(libDiv);
-
-            // Develop View Filmstrip Item
+            // Render unassigned loose images if requested
+            const rollPathsAll = new Set();
+            allRolls.forEach(r => r.image_paths.forEach(p => rollPathsAll.add(p)));
+            const looseItems = items.filter(i => !rollPathsAll.has(i.file_path.replace(/\\\\/g, '/')) && !rollPathsAll.has(i.file_path));
+            
+            if (looseItems.length > 0) {
+                libraryGrid.classList.remove('hidden');
+                looseItems.forEach(item => {
+                    const libDiv = document.createElement('div');
+                    libDiv.className = `library-item rounded overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
+                    libDiv.dataset.id = item.id;
+                    libDiv.ondblclick = () => {
+                        selectedLibraryIds.clear();
+                        selectedLibraryIds.add(item.id);
+                        updateLibrarySelectionUI();
+                        selectImage(item.id);
+                        switchView('develop');
+                    };
+                    libDiv.onclick = (e) => {
+                        if (e.ctrlKey || e.metaKey) {
+                            if (selectedLibraryIds.has(item.id)) selectedLibraryIds.delete(item.id);
+                            else selectedLibraryIds.add(item.id);
+                        } else {
+                            selectedLibraryIds.clear();
+                            selectedLibraryIds.add(item.id);
+                        }
+                        updateLibrarySelectionUI();
+                    };
+                    const libImg = document.createElement('img');
+                    libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+                    libImg.className = 'w-full h-full object-cover pointer-events-none opacity-50 hover:opacity-100 transition-opacity';
+                    libDiv.appendChild(libImg);
+                    libraryGrid.appendChild(libDiv);
+                });
+            }
+        }
+        
+        // Populate Filmstrip always
+        items.forEach(item => {
             const stripDiv = document.createElement('div');
             stripDiv.className = `film-item shrink-0 ${item.id === activeId ? 'active' : ''}`;
             stripDiv.onclick = () => {
@@ -1086,16 +1239,21 @@ async function renderLibraryAndFilmstrip() {
                 selectedLibraryIds.add(item.id);
                 updateLibrarySelectionUI();
             };
-            
             const stripImg = document.createElement('img');
             stripImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
             stripImg.className = 'w-full h-full object-cover rounded-[2px] pointer-events-none';
-            
             stripDiv.appendChild(stripImg);
             filmstripContainer.appendChild(stripDiv);
         });
+        
     } catch (e) { console.error("Filmstrip error:", e); }
 }
+
+document.getElementById('btn-library-back').addEventListener('click', () => {
+    currentRollViewId = null;
+    selectedLibraryIds.clear();
+    renderLibraryAndFilmstrip();
+});
 
 async function selectImage(id) {
     if (activeId === id) return;
@@ -1143,47 +1301,86 @@ btnModeBw.addEventListener('click', async () => {
     requestThumbnailSync();
 });
 
-const doImport = async () => {
+const doImportSingle = async () => {
     try {
         btnImport.textContent = "Importing...";
         btnImport.disabled = true;
-        if (btnImportTrigger) {
-            btnImportTrigger.textContent = "Importing...";
-            btnImportTrigger.disabled = true;
-        }
+        if (btnImportTrigger) { btnImportTrigger.textContent = "Importing..."; btnImportTrigger.disabled = true; }
         
-        console.log("Calling open_file_dialog...");
         const paths = await invoke('open_file_dialog');
-        console.log("open_file_dialog returned:", paths);
-        
         if (paths && paths.length > 0) {
             await invoke('import_images', { paths });
-            const items = await invoke('get_filmstrip');
-            if (items.length > 0) {
-                if (!activeId) {
-                    await selectImage(items[0].id);
-                    switchView('library');
-                } else {
-                    await renderLibraryAndFilmstrip();
-                }
-            }
+            await renderLibraryAndFilmstrip();
         }
-    } catch (e) { 
-        console.error("Import error:", e);
-        showToast("Import failed: " + e, "error"); 
-    } 
+    } catch (e) { showToast("Import failed: " + e, "error"); }
     finally {
         btnImport.textContent = "Import Roll";
         btnImport.disabled = false;
-        if (btnImportTrigger) {
-            btnImportTrigger.textContent = "Import From Disk";
-            btnImportTrigger.disabled = false;
-        }
+        if (btnImportTrigger) { btnImportTrigger.textContent = "Import From Disk"; btnImportTrigger.disabled = false; }
+        document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
     }
 };
 
-btnImport.addEventListener('click', doImport);
-btnImportTrigger.addEventListener('click', doImport);
+const doImportRoll = async () => {
+    try {
+        const format = document.getElementById('roll-format').value;
+        const camera = document.getElementById('roll-camera').value;
+        const film = document.getElementById('roll-film').value;
+        const date = document.getElementById('roll-date').value;
+        
+        if(!film) {
+            showToast("Film stock is required", "error");
+            return;
+        }
+
+        btnImport.textContent = "Importing...";
+        btnImport.disabled = true;
+        
+        const paths = await invoke('open_file_dialog');
+        if (paths && paths.length > 0) {
+            const roll_id = `roll_${Date.now()}_${Math.floor(Math.random()*1000)}`;
+            const roll = { roll_id, date, format, film_stock: film, camera, image_paths: paths };
+            
+            await invoke('import_roll', { roll, paths });
+            await renderLibraryAndFilmstrip();
+        }
+    } catch (e) { showToast("Import failed: " + e, "error"); }
+    finally {
+        btnImport.textContent = "Import Roll";
+        btnImport.disabled = false;
+        document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
+    }
+};
+
+const showImportChoice = () => {
+    document.getElementById('import-choice-modal').classList.remove('opacity-0', 'pointer-events-none');
+    setTimeout(() => document.getElementById('import-choice-content').classList.remove('scale-95'), 10);
+};
+
+btnImport.addEventListener('click', showImportChoice);
+btnImportTrigger.addEventListener('click', showImportChoice);
+
+document.getElementById('btn-close-import-choice').addEventListener('click', () => {
+    document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
+});
+
+document.getElementById('btn-import-single').addEventListener('click', doImportSingle);
+
+document.getElementById('btn-import-by-roll').addEventListener('click', () => {
+    document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
+    document.getElementById('roll-metadata-modal').classList.remove('opacity-0', 'pointer-events-none');
+    setTimeout(() => document.getElementById('roll-metadata-content').classList.remove('scale-95'), 10);
+});
+
+document.getElementById('btn-close-roll-meta').addEventListener('click', () => {
+    document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
+});
+document.getElementById('btn-cancel-roll-meta').addEventListener('click', () => {
+    document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
+});
+document.getElementById('btn-confirm-roll-meta').addEventListener('click', doImportRoll);
+
+
 
 // Export Modal Logic
 btnExportDialog.addEventListener('click', () => {
@@ -1761,3 +1958,117 @@ previewCanvas.addEventListener('click', (e) => {
         showToast("White Balance updated.", "success");
     }
 });
+
+// Contact Sheet Generator Logic
+document.getElementById('btn-export-contact-sheet').addEventListener('click', async () => {
+    if (!currentRollViewId) return;
+    const btnExportContactSheet = document.getElementById('btn-export-contact-sheet');
+    
+    try {
+        btnExportContactSheet.textContent = "GENERATING...";
+        btnExportContactSheet.disabled = true;
+
+        const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
+        const rollPaths = new Set(currentRoll.image_paths);
+        const rollItems = allLibraryItems.filter(item => rollPaths.has(item.file_path.replace(/\\\\/g, '/')) || rollPaths.has(item.file_path));
+
+        if (rollItems.length === 0) throw new Error("No images in roll");
+
+        // Use 3000px width
+        const canvasW = 3000;
+        // 5 columns
+        const cols = 5;
+        const padding = 60;
+        const colWidth = (canvasW - padding * (cols + 1)) / cols;
+        // Assume 3:2 ratio for rough height calculation
+        const colHeight = colWidth * (2/3); 
+        const rows = Math.ceil(rollItems.length / cols);
+        
+        // Footer height 300
+        const footerHeight = 300;
+        const canvasH = padding + rows * (colHeight + padding) + footerHeight;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = canvasW;
+        canvas.height = canvasH;
+        const ctx = canvas.getContext('2d');
+
+        // Draw background
+        ctx.fillStyle = '#121214'; // Dark background
+        ctx.fillRect(0, 0, canvasW, canvasH);
+
+        // Load images
+        for (let i = 0; i < rollItems.length; i++) {
+            const item = rollItems[i];
+            const img = new Image();
+            await new Promise(res => {
+                img.onload = res;
+                img.onerror = res;
+                img.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+            });
+
+            const r = Math.floor(i / cols);
+            const c = i % cols;
+            
+            const x = padding + c * (colWidth + padding);
+            const y = padding + r * (colHeight + padding);
+            
+            // Adjust draw height based on actual image ratio
+            let drawW = colWidth;
+            let drawH = drawW * (img.height / img.width);
+            
+            // Draw image
+            ctx.drawImage(img, x, y + (colHeight - drawH)/2, drawW, drawH);
+            
+            // Draw borders / sprocket mask placeholders
+            try {
+                const overlayImg = new Image();
+                await new Promise((res, rej) => {
+                    overlayImg.onload = res;
+                    overlayImg.onerror = rej;
+                    overlayImg.src = currentRoll.format === "120" ? "assets/overlays/120_border.png" : "assets/overlays/135_sprocket.png";
+                });
+                // Draw overlay matching image dimensions
+                ctx.drawImage(overlayImg, x, y + (colHeight - drawH)/2, drawW, drawH);
+            } catch(e) {
+                // Ignore missing placeholder
+            }
+            
+            // Draw frame number
+            ctx.fillStyle = '#555';
+            ctx.font = '24px Inter, Helvetica, sans-serif';
+            ctx.fillText(`Frame ${i+1}`, x, y + colHeight + 30);
+        }
+
+        // Footer typography
+        const footerY = canvasH - 100;
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = 'bold 48px Inter, Helvetica, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('NEXFILM ENGINE', padding, footerY);
+        
+        ctx.textAlign = 'right';
+        ctx.font = 'bold 48px Inter, Helvetica, sans-serif';
+        ctx.fillText((currentRoll.film_stock || 'UNKNOWN FILM').toUpperCase(), canvasW - padding, footerY - 40);
+        
+        ctx.fillStyle = '#888888';
+        ctx.font = '32px Inter, Helvetica, sans-serif';
+        const numImages = rollItems.length;
+        ctx.fillText(`Order #${currentRoll.roll_id} | ${currentRoll.camera || 'Unknown Camera'} | ${numImages} images`, canvasW - padding, footerY + 10);
+
+        // Convert to high quality JPEG
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+        
+        // Invoke Rust save
+        const savedPath = await invoke('save_contact_sheet', { dataUrl });
+        showToast("Contact sheet saved: " + savedPath, "success");
+
+    } catch (e) {
+        console.error(e);
+        showToast("Failed to generate contact sheet: " + e, "error");
+    } finally {
+        btnExportContactSheet.textContent = "Export Contact Sheet";
+        btnExportContactSheet.disabled = false;
+    }
+});
+

@@ -1,4 +1,4 @@
-use crate::app_state::{BaseColor, EngineState, FilmItem, FilmstripItem, TuningParams, FilmMode};
+use crate::app_state::{BaseColor, EngineState, FilmItem, FilmstripItem, TuningParams, FilmMode, Roll};
 use serde::{Serialize, Deserialize};
 use crate::pipeline::FilmPipeline;
 use crate::geometry;
@@ -1018,4 +1018,60 @@ pub async fn batch_export_images(
     });
 
     Ok(success_count.into_inner())
+}
+
+#[tauri::command]
+pub async fn get_rolls(state: State<'_, EngineState>) -> Result<Vec<Roll>, String> {
+    let rolls = state.rolls.read().unwrap();
+    Ok(rolls.clone())
+}
+
+#[tauri::command]
+pub async fn import_roll(
+    roll: Roll,
+    paths: Vec<String>,
+    state: State<'_, EngineState>
+) -> Result<(), String> {
+    {
+        let mut rolls = state.rolls.write().unwrap();
+        rolls.push(roll);
+    }
+    
+    {
+        let rolls = state.rolls.read().unwrap();
+        if let Ok(json) = serde_json::to_string_pretty(&*rolls) {
+            let _ = std::fs::write("rolls.json", json);
+        }
+    }
+    
+    crate::commands::import_images(paths, state).await
+}
+
+#[tauri::command]
+pub async fn save_contact_sheet(data_url: String) -> Result<String, String> {
+    let b64_data = if data_url.starts_with("data:image/") {
+        if let Some(idx) = data_url.find("base64,") {
+            &data_url[idx + 7..]
+        } else {
+            return Err("Invalid data URL".into());
+        }
+    } else {
+        &data_url
+    };
+    
+    let bytes = general_purpose::STANDARD.decode(b64_data).map_err(|e| format!("Base64 decode error: {:?}", e))?;
+    
+    let file_path = tauri::async_runtime::spawn_blocking(|| {
+        FileDialog::new()
+            .set_file_name("contact_sheet.jpg")
+            .add_filter("JPEG Image", &["jpg", "jpeg"])
+            .save_file()
+    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
+    
+    if let Some(path) = file_path {
+        std::fs::write(&path, bytes).map_err(|e| format!("Save error: {:?}", e))?;
+        Ok(path.to_string_lossy().to_string())
+    } else {
+        Err("Cancelled".into())
+    }
 }

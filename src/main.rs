@@ -4,8 +4,15 @@ use nexfilm_engine::app_state::EngineState;
 
 
 fn main() {
+    let state = EngineState::new();
+    if let Ok(json) = std::fs::read_to_string("rolls.json") {
+        if let Ok(rolls) = serde_json::from_str(&json) {
+            *state.rolls.write().unwrap() = rolls;
+        }
+    }
+
     tauri::Builder::default()
-        .manage(EngineState::new())
+        .manage(state)
         .invoke_handler(tauri::generate_handler![
             nexfilm_engine::commands::open_file_dialog,
             nexfilm_engine::commands::select_export_dir,
@@ -25,7 +32,10 @@ fn main() {
             nexfilm_engine::commands::open_lut_dialog,
             nexfilm_engine::commands::open_dcp_dialog,
             nexfilm_engine::commands::get_builtin_luts,
-            nexfilm_engine::commands::get_builtin_dcps
+            nexfilm_engine::commands::get_builtin_dcps,
+            nexfilm_engine::commands::get_rolls,
+            nexfilm_engine::commands::import_roll,
+            nexfilm_engine::commands::save_contact_sheet
         ])
         .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())
