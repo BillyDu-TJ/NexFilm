@@ -332,17 +332,30 @@ pub struct LutData {
 fn extract_points(v: &Value, channel: &str) -> Vec<[f32; 2]> {
     let mut points = Vec::new();
     let mut target = &Value::Null;
-    if let Some(p) = v.get(channel) {
-        target = p;
+    let channel_upper = channel.to_uppercase();
+    let channel_lower = channel.to_lowercase();
+
+    macro_rules! find_channel {
+        ($obj:expr) => {
+            $obj.get(&channel_upper).or_else(|| $obj.get(&channel_lower))
+        };
+    }
+
+    if let Some(t1) = find_channel!(v) {
+        target = t1;
+    } else if let Some(curves) = v.get("curves") {
+        if let Some(t2) = find_channel!(curves) {
+            target = t2;
+        }
     } else if let Some(points_obj) = v.get("points") {
-        if let Some(p) = points_obj.get(channel) {
-            target = p;
+        if let Some(t3) = find_channel!(points_obj) {
+            target = t3;
         }
     } else if let Some(cc) = v.get("cc_params") {
         if let Some(dc) = cc.get("density_curve") {
             if let Some(pts) = dc.get("points") {
-                if let Some(p) = pts.get(channel) {
-                    target = p;
+                if let Some(t4) = find_channel!(pts) {
+                    target = t4;
                 }
             }
         }
@@ -615,9 +628,9 @@ pub async fn set_film_mode(id: String, mode: String, state: State<'_, EngineStat
 
 #[tauri::command]
 pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) -> Result<(), String> {
-    let mut new_thumbnail = String::new();
+    // Removed new_thumbnail variable hoisting
     if let Some(item_arc) = state.items.get(&id) {
-        {
+        let new_thumbnail = {
             let item = item_arc.read().map_err(|e| e.to_string())?;
             let params = &item.params;
             let base_color = &item.base_color;
@@ -672,9 +685,13 @@ pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) ->
             let thumb = image::imageops::resize(&cropped_thumb, thumb_width, thumb_height, FilterType::Triangle);
             
             let mut cursor = Cursor::new(Vec::new());
-            thumb.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).map_err(|e| e.to_string())?;
-            new_thumbnail = general_purpose::STANDARD.encode(cursor.into_inner());
-        }
+            let mut new_thumbnail = String::new();
+            if let Ok(_) = thumb.write_to(&mut cursor, image::ImageOutputFormat::Jpeg(70)) {
+                new_thumbnail = general_purpose::STANDARD.encode(cursor.into_inner());
+            }
+            new_thumbnail
+        };
+        
         if !new_thumbnail.is_empty() {
             let mut item = item_arc.write().map_err(|e| e.to_string())?;
             item.thumbnail_base64 = new_thumbnail;
