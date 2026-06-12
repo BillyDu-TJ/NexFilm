@@ -35,6 +35,7 @@ fn main() {
             nexfilm_engine::commands::get_builtin_dcps,
             nexfilm_engine::commands::get_rolls,
             nexfilm_engine::commands::import_roll,
+            nexfilm_engine::commands::delete_rolls,
             nexfilm_engine::commands::save_contact_sheet
         ])
         .plugin(tauri_plugin_dialog::init())

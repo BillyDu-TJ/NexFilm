@@ -113,6 +113,8 @@ pub struct GeometryState {
     pub flip_h: bool,
     pub flip_v: bool,
     pub rotate_90_count: i32,
+    #[serde(default)]
+    pub calibration_points: Option<[[f32; 2]; 4]>,
 }
 
 impl Default for GeometryState {
@@ -123,6 +125,7 @@ impl Default for GeometryState {
             flip_h: false,
             flip_v: false,
             rotate_90_count: 0,
+            calibration_points: None,
         }
     }
 }

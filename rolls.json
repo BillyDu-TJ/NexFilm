@@ -8,5 +8,83 @@
     "image_paths": [
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax极暗室内.tif"
     ]
+  },
+  {
+    "roll_id": "roll_1781274281774_538",
+    "date": "",
+    "format": "135",
+    "film_stock": "as \\",
+    "camera": "",
+    "image_paths": [
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax带片头.tif"
+    ]
+  },
+  {
+    "roll_id": "roll_1781276375395_436",
+    "date": "2026-06-12",
+    "format": "135",
+    "film_stock": "Fujifilm C400",
+    "camera": "Contax RTS2",
+    "image_paths": [
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650016.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650031.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650033.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650034.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650035.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650036.tif"
+    ]
+  },
+  {
+    "roll_id": "roll_1781276409274_787",
+    "date": "2026-06-12",
+    "format": "135",
+    "film_stock": "Fujifilm C400",
+    "camera": "Contax RTS2",
+    "image_paths": [
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650001.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650012.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650016.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650019.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650020.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650033.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650034.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650035.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650036.tif"
+    ]
+  },
+  {
+    "roll_id": "roll_1781276892786_888",
+    "date": "2026-06-12",
+    "format": "135",
+    "film_stock": "Fujifilm C400",
+    "camera": "Nikon F5",
+    "image_paths": [
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650012.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650016.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650019.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650020.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650033.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650034.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650035.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650036.tif"
+    ]
+  },
+  {
+    "roll_id": "roll_1781277091290_309",
+    "date": "2026-06-12",
+    "format": "135",
+    "film_stock": "Fujifilm C400",
+    "camera": "Nikon F5",
+    "image_paths": [
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650012.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650016.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650019.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650020.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650032.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650033.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650034.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650035.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\00004065 fj400 正扫\\000040650036.tif"
+    ]
   }
 ]

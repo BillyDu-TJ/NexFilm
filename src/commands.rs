@@ -245,8 +245,10 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
     let dcp_profile = state.dcp_profile.read().unwrap().clone();
     let colorspace = state.working_colorspace.read().unwrap().clone();
 
-    let new_items_result: Result<Vec<FilmItem>, String> = paths.into_par_iter().map(|path| {
-        let img_buffer = load_image_buffer(&path, true, dcp_profile.as_deref(), &colorspace)?;
+    let mut new_items = Vec::new();
+    for chunk in paths.chunks(4) {
+        let chunk_items_result: Result<Vec<FilmItem>, String> = chunk.into_par_iter().map(|path| {
+            let img_buffer = load_image_buffer(path, true, dcp_profile.as_deref(), &colorspace)?;
 
         let (width, height) = img_buffer.dimensions();
         
@@ -277,7 +279,7 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
 
         Ok(FilmItem {
             id,
-            file_path: path,
+            file_path: path.clone(),
             thumbnail_base64,
             original_proxy: proxy.clone(),
             proxy_image: proxy,
@@ -287,9 +289,8 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
             geom: crate::app_state::GeometryState::default(),
         })
     }).collect();
-
-    let new_items = new_items_result?;
-    
+        new_items.extend(chunk_items_result?);
+    }
     let mut order_guard = state.item_order.write().map_err(|e| e.to_string())?;
     for item in new_items {
         let id = item.id.clone();

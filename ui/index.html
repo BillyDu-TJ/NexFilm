@@ -31,9 +31,9 @@
             <div class="text-[14px] font-black tracking-[0.25em] text-zinc-200">NEXFILM <span class="text-zinc-500 font-normal">v2.0</span></div>
             <div class="h-6 w-px bg-zinc-700"></div>
             <nav class="flex h-full gap-2">
-                <button id="nav-history" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">HISTORY FILMS</button>
                 <button id="nav-library" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-100 border-zinc-100">LIBRARY</button>
                 <button id="nav-develop" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">DEVELOP</button>
+                <button id="nav-history" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">HISTORY FILMS</button>
             </nav>
         </div>
         <div class="flex items-center gap-4">
@@ -56,7 +56,17 @@
                     <h3 class="text-[11px] font-bold tracking-widest text-zinc-400 uppercase mb-3">Format</h3>
                     <div class="flex flex-col gap-2" id="filter-format-list">
                         <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="135" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 135 (35mm)</label>
-                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="120" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 120 Medium Format</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="135 Half-frame" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 135 Half-frame</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="APS" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> APS</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="120 (645)" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 120 (645)</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="120 (6x6)" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 120 (6x6)</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="120 (6x7)" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 120 (6x7)</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="120 (6x9)" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 120 (6x9)</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="120 (6x12)" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 120 (6x12)</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="120 (6x17)" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 120 (6x17)</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="4x5" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 4x5</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="5x7" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 5x7</label>
+                        <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="8x10" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 8x10</label>
                     </div>
                 </div>
                 <div class="mb-6">
@@ -71,6 +81,15 @@
 
             <!-- Right Main Area (History Films) -->
             <div class="flex-1 flex flex-col h-full overflow-hidden bg-[#121214] relative">
+                
+                <!-- Delete Action Bar -->
+                <div id="delete-action-bar" class="absolute bottom-8 left-1/2 -translate-x-1/2 bg-red-900/90 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4 z-50 backdrop-blur border border-red-700/50 hidden">
+                    <span id="delete-count" class="text-sm font-bold tracking-wider">0 SELECTED</span>
+                    <div class="w-px h-4 bg-red-700"></div>
+                    <button id="btn-confirm-delete" class="px-4 py-1.5 bg-red-600 hover:bg-red-500 rounded text-xs font-bold tracking-widest uppercase transition-colors">Delete</button>
+                    <button id="btn-cancel-delete" class="px-4 py-1.5 bg-transparent hover:bg-red-800 rounded text-xs font-bold tracking-widest uppercase transition-colors">Cancel</button>
+                </div>
+
                 <div class="h-[48px] border-b border-[#28282c] flex items-center justify-between px-8 bg-[#1C1C1E] shrink-0">
                     <div class="flex items-center gap-4">
                         <button id="btn-history-back" class="hidden text-zinc-400 hover:text-zinc-100 transition-colors">
@@ -155,6 +174,24 @@
                         <canvas id="dummy-pusher" class="block" style="max-width: 100%; max-height: 100%; object-fit: contain; visibility: hidden; pointer-events: none;"></canvas>
                         <canvas id="preview-canvas" class="absolute top-0 left-0 w-full h-full" style="object-fit: fill;"></canvas>
                         
+                        <!-- Calibration Mode Overlay -->
+                        <div id="calibration-overlay" class="absolute top-0 left-0 w-full h-full z-20 hidden flex-col items-center justify-center bg-black/50 pointer-events-auto">
+                            <div class="absolute top-8 left-1/2 -translate-x-1/2 bg-zinc-900/90 border border-red-500/50 text-red-400 px-6 py-4 rounded-lg shadow-2xl text-center max-w-2xl backdrop-blur">
+                                <h3 class="text-sm font-bold uppercase tracking-widest mb-2 text-red-300">Calibration Mode</h3>
+                                <p class="text-xs leading-relaxed">请拖动四角，将选框严格贴合胶片实际成像区域（排除所有黑色边框与齿孔）。此步骤仅用于精确色彩解码，不影响最终带边框导出。</p>
+                                <button id="btn-confirm-calibration" class="mt-4 px-8 py-2 bg-red-600 hover:bg-red-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg">Confirm</button>
+                            </div>
+                            <svg id="calibration-svg" class="absolute top-0 left-0 w-full h-full overflow-visible pointer-events-none">
+                                <polygon id="calibration-polygon" points="" fill="rgba(239,68,68,0.2)" stroke="#ef4444" stroke-width="2" class="pointer-events-auto"></polygon>
+                                <g id="calibration-handles" class="pointer-events-auto">
+                                    <circle class="calib-handle cursor-move hover:scale-150 transition-transform" data-idx="0" cx="0" cy="0" r="8" fill="#ef4444" stroke="white" stroke-width="2"/>
+                                    <circle class="calib-handle cursor-move hover:scale-150 transition-transform" data-idx="1" cx="0" cy="0" r="8" fill="#ef4444" stroke="white" stroke-width="2"/>
+                                    <circle class="calib-handle cursor-move hover:scale-150 transition-transform" data-idx="2" cx="0" cy="0" r="8" fill="#ef4444" stroke="white" stroke-width="2"/>
+                                    <circle class="calib-handle cursor-move hover:scale-150 transition-transform" data-idx="3" cx="0" cy="0" r="8" fill="#ef4444" stroke="white" stroke-width="2"/>
+                                </g>
+                            </svg>
+                        </div>
+                        
                         <!-- SVG Crop Overlay -->
                         <svg id="crop-overlay" class="absolute top-0 left-0 w-full h-full pointer-events-none hidden z-10" style="overflow: visible;">
                             <!-- Outer Rotation Handles (Large invisible paths surrounding the box) -->
@@ -188,7 +225,9 @@
             </div>
             
             <!-- Right Sidebar -->
-            <div class="w-[340px] h-full border-l border-[#28282c] shrink-0 flex flex-col shadow-2xl overflow-y-auto custom-scrollbar z-10 bg-[#1C1C1E]">
+            <div class="w-[340px] h-full border-l border-[#28282c] shrink-0 flex flex-col shadow-2xl overflow-y-auto custom-scrollbar z-10 bg-[#1C1C1E] relative">
+                
+                <div id="right-panel-blocker" class="absolute inset-0 z-50 bg-[#1C1C1E]/50 backdrop-blur-[2px] hidden cursor-not-allowed"></div>
                 
                 <!-- Histogram / Waveform Area -->
                 <div class="px-6 py-5 border-b border-[#28282c] bg-[#1a1a1ef0] backdrop-blur sticky top-0 z-10 shadow-sm">
@@ -422,7 +461,21 @@
                         <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Format</label>
                         <select id="roll-format" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
                             <option value="135">135 (35mm)</option>
-                            <option value="120">120 Medium Format</option>
+                            <option value="135 Half-frame">135 Half-frame</option>
+                            <option value="APS">APS</option>
+                            <optgroup label="120 Medium Format">
+                                <option value="120 (645)">120 (645)</option>
+                                <option value="120 (6x6)">120 (6x6)</option>
+                                <option value="120 (6x7)">120 (6x7)</option>
+                                <option value="120 (6x9)">120 (6x9)</option>
+                                <option value="120 (6x12)">120 (6x12)</option>
+                                <option value="120 (6x17)">120 (6x17)</option>
+                            </optgroup>
+                            <optgroup label="Large Format">
+                                <option value="4x5">4x5</option>
+                                <option value="5x7">5x7</option>
+                                <option value="8x10">8x10</option>
+                            </optgroup>
                         </select>
                     </div>
                     <div class="flex items-center justify-between relative">
@@ -440,9 +493,7 @@
                         <div class="flex flex-col gap-1 w-48">
                             <select id="roll-film-select" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
                                 <option value="">Select Film...</option>
-                                <optgroup label="History">
-                                    <!-- Populated by JS -->
-                                </optgroup>
+
                                 <optgroup label="Color Negative">
                                     <option value="Kodak Gold 200">Kodak Gold 200</option>
                                     <option value="Kodak Ultramax 400">Kodak Ultramax 400</option>
@@ -474,8 +525,12 @@
                                     <option value="Ilford Pan 100">Ilford Pan 100</option>
                                     <option value="Ilford Pan 200">Ilford Pan 200</option>
                                     <option value="Ilford Pan 400">Ilford Pan 400</option>
-                                    <option value="Kentmere 100/200/400">Kentmere 100/200/400</option>
-                                    <option value="Foma 100/200/400">Foma 100/200/400</option>
+                                    <option value="Kentmere 100">Kentmere 100</option>
+                                    <option value="Kentmere 200">Kentmere 200</option>
+                                    <option value="Kentmere 400">Kentmere 400</option>
+                                    <option value="Foma 100">Foma 100</option>
+                                    <option value="Foma 200">Foma 200</option>
+                                    <option value="Foma 400">Foma 400</option>
                                 </optgroup>
                                 <optgroup label="Slide/Reversal">
                                     <option value="Fujifilm Velvia 50">Fujifilm Velvia 50</option>

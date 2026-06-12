@@ -3,7 +3,7 @@ const invoke = window.__TAURI__.core.invoke;
 // DOM: Global
 const btnImport = document.getElementById('btn-import');
 const btnExportDialog = document.getElementById('btn-export-dialog');
-const btnImportTrigger = document.querySelector('.btn-import-trigger');
+const btnImportTriggers = document.querySelectorAll('.btn-import-trigger');
 const toastContainer = document.getElementById('toast-container');
 
 // DOM: Navigation & Views
@@ -111,6 +111,11 @@ canvasWrapper.parentElement.addEventListener('wheel', (e) => {
     updateCanvasTransform();
 }, { passive: false });
 
+filmstripContainer.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    filmstripContainer.scrollLeft += e.deltaY;
+}, { passive: false });
+
 let isWaveform = false;
 let lastPixels = null;
 const HIST_W = 768;
@@ -119,6 +124,15 @@ const HIST_H = 256;
 // Library Multi-Selection State
 let allLibraryItems = [];
 let selectedLibraryIds = new Set();
+
+// Delete Mode State
+let isDeleteMode = false;
+let selectedRollIds = new Set();
+
+// Calibration State
+let isCalibrationMode = false;
+let calibrationDragIdx = -1;
+let calibrationPoints = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]];
 
 function updateLibrarySelectionUI() {
     librarySelectionCount.textContent = `${selectedLibraryIds.size} selected`;
@@ -240,7 +254,31 @@ window.addEventListener('keydown', async (e) => {
         
         requestThumbnailSync();
         if (isCropMode) updateCropOverlay();
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (currentView === 'library' && currentNav === 'history' && !currentRollViewId) {
+            isDeleteMode = true;
+            renderLibraryAndFilmstrip();
+        }
     }
+});
+
+document.getElementById('btn-confirm-delete').addEventListener('click', async () => {
+    if (selectedRollIds.size === 0) return;
+    const confirm = await showConfirm(`Are you sure you want to delete ${selectedRollIds.size} roll(s)?`);
+    if (confirm) {
+        await invoke('delete_rolls', { rollIds: Array.from(selectedRollIds) });
+        selectedRollIds.clear();
+        isDeleteMode = false;
+        allRolls = await invoke('get_rolls');
+        renderLibraryAndFilmstrip();
+        showToast("Rolls deleted", "success");
+    }
+});
+
+document.getElementById('btn-cancel-delete').addEventListener('click', () => {
+    isDeleteMode = false;
+    selectedRollIds.clear();
+    renderLibraryAndFilmstrip();
 });
 
 function showToast(message, type = "error") {
@@ -1067,10 +1105,7 @@ function updateFilterSidebar() {
         `;
     }
 
-    const optgroupFilmHistory = document.querySelector('#roll-film-select optgroup[label="History"]');
-    if (optgroupFilmHistory) {
-        optgroupFilmHistory.innerHTML = Array.from(films).map(f => `<option value="${f}">${f}</option>`).join('');
-    }
+    
     
     document.querySelectorAll('.filter-checkbox').forEach(cb => {
         cb.addEventListener('change', renderLibraryAndFilmstrip);
@@ -1205,6 +1240,12 @@ async function renderLibraryAndFilmstrip() {
                     if (filters.dates.length > 0 && !filters.dates.includes(r.date)) return false;
                     return true;
                 });
+                if (isDeleteMode) {
+                    document.getElementById('delete-action-bar').classList.remove('hidden');
+                    document.getElementById('delete-count').textContent = `${selectedRollIds.size} SELECTED FOR DELETION`;
+                } else {
+                    document.getElementById('delete-action-bar').classList.add('hidden');
+                }
                 
                 filteredRolls.forEach(roll => {
                     const rollPaths = new Set(roll.image_paths);
@@ -1212,11 +1253,24 @@ async function renderLibraryAndFilmstrip() {
                     const thumbSrc = firstItem ? `data:image/jpeg;base64,${firstItem.thumbnail_base64}` : '';
                     
                     const card = document.createElement('div');
-                    card.className = "group relative bg-[#1C1C1E] border border-[#28282c] rounded-lg overflow-hidden cursor-pointer hover:border-zinc-500 transition-colors flex h-[200px] shadow-lg w-full";
-                    card.ondblclick = () => {
-                        currentRollViewId = roll.roll_id;
-                        selectedLibraryIds.clear();
-                        renderLibraryAndFilmstrip();
+                    card.className = "group relative bg-[#1C1C1E] rounded-lg overflow-hidden cursor-pointer hover:border-zinc-500 transition-all duration-300 flex h-[200px] shadow-lg w-full";
+                    
+                    if (isDeleteMode && selectedRollIds.has(roll.roll_id)) {
+                        card.style.border = "2px solid #ef4444";
+                    } else {
+                        card.style.border = "1px solid #28282c";
+                    }
+
+                    card.onclick = () => {
+                        if (isDeleteMode) {
+                            if (selectedRollIds.has(roll.roll_id)) selectedRollIds.delete(roll.roll_id);
+                            else selectedRollIds.add(roll.roll_id);
+                            renderLibraryAndFilmstrip();
+                        } else {
+                            currentRollViewId = roll.roll_id;
+                            selectedLibraryIds.clear();
+                            renderLibraryAndFilmstrip();
+                        }
                     };
                     card.innerHTML = `
                         <div class="flex-1 p-6 flex flex-col justify-between z-10 bg-gradient-to-r from-[#1C1C1E] to-[#1C1C1E]/80">
@@ -1286,6 +1340,22 @@ async function selectImage(id) {
         current_geom = JSON.parse(JSON.stringify(state.geom));
         updateUIFromParams(state.params, current_geom);
         updateCropOverlay();
+
+        if (!current_geom.calibration_points) {
+            isCalibrationMode = true;
+            document.getElementById('calibration-overlay').classList.remove('hidden');
+            document.getElementById('calibration-overlay').classList.add('flex');
+            document.getElementById('right-panel-blocker').classList.remove('hidden');
+            
+            calibrationPoints = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]];
+            requestAnimationFrame(updateCalibrationPolygon);
+        } else {
+            isCalibrationMode = false;
+            document.getElementById('calibration-overlay').classList.add('hidden');
+            document.getElementById('calibration-overlay').classList.remove('flex');
+            document.getElementById('right-panel-blocker').classList.add('hidden');
+        }
+
         await loadProxyImage();
         requestRender(); // Force uniform update
     } catch(e) { console.error(e); }
@@ -1312,10 +1382,15 @@ btnModeBw.addEventListener('click', async () => {
 });
 
 const doImportSingle = async () => {
+    document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
     try {
         btnImport.textContent = "Importing...";
         btnImport.disabled = true;
-        if (btnImportTrigger) { btnImportTrigger.textContent = "Importing..."; btnImportTrigger.disabled = true; }
+        btnImportTriggers.forEach(btn => { 
+            btn.dataset.originalText = btn.dataset.originalText || btn.textContent;
+            btn.textContent = "Importing..."; 
+            btn.disabled = true; 
+        });
         
         const paths = await invoke('open_file_dialog');
         if (paths && paths.length > 0) {
@@ -1326,8 +1401,10 @@ const doImportSingle = async () => {
     finally {
         btnImport.textContent = "Import Roll";
         btnImport.disabled = false;
-        if (btnImportTrigger) { btnImportTrigger.textContent = "Import From Disk"; btnImportTrigger.disabled = false; }
-        document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
+        btnImportTriggers.forEach(btn => { 
+            btn.textContent = btn.dataset.originalText || "Import Roll"; 
+            btn.disabled = false; 
+        });
     }
 };
 
@@ -1347,8 +1424,15 @@ const doImportRoll = async () => {
             return;
         }
 
+        document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
+
         btnImport.textContent = "Importing...";
         btnImport.disabled = true;
+        btnImportTriggers.forEach(btn => { 
+            btn.dataset.originalText = btn.dataset.originalText || btn.textContent;
+            btn.textContent = "Importing..."; 
+            btn.disabled = true; 
+        });
         
         const paths = await invoke('open_file_dialog');
         if (paths && paths.length > 0) {
@@ -1362,21 +1446,50 @@ const doImportRoll = async () => {
     finally {
         btnImport.textContent = "Import Roll";
         btnImport.disabled = false;
+        btnImportTriggers.forEach(btn => { 
+            btn.textContent = btn.dataset.originalText || "Import Roll"; 
+            btn.disabled = false; 
+        });
         document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
     }
 };
 
+const handleInputEnter = (inputId, selectId) => {
+    document.getElementById(inputId).addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const val = e.target.value.trim();
+            if (val) {
+                const select = document.getElementById(selectId);
+                const option = document.createElement('option');
+                option.value = val;
+                option.textContent = val;
+                select.insertBefore(option, select.querySelector('option[value="__new__"]'));
+                select.value = val;
+                e.target.classList.add('hidden');
+                e.target.value = '';
+            }
+        }
+    });
+};
+
 document.getElementById('roll-camera-select').addEventListener('change', (e) => {
     const input = document.getElementById('roll-camera-input');
-    if (e.target.value === '__new__') input.classList.remove('hidden');
-    else input.classList.add('hidden');
+    if (e.target.value === '__new__') {
+        input.classList.remove('hidden');
+        input.focus();
+    } else input.classList.add('hidden');
 });
+handleInputEnter('roll-camera-input', 'roll-camera-select');
 
 document.getElementById('roll-film-select').addEventListener('change', (e) => {
     const input = document.getElementById('roll-film-input');
-    if (e.target.value === '__new__') input.classList.remove('hidden');
-    else input.classList.add('hidden');
+    if (e.target.value === '__new__') {
+        input.classList.remove('hidden');
+        input.focus();
+    } else input.classList.add('hidden');
 });
+handleInputEnter('roll-film-input', 'roll-film-select');
 
 const showImportChoice = () => {
     document.getElementById('import-choice-modal').classList.remove('opacity-0', 'pointer-events-none');
@@ -1384,7 +1497,7 @@ const showImportChoice = () => {
 };
 
 btnImport.addEventListener('click', showImportChoice);
-btnImportTrigger.addEventListener('click', showImportChoice);
+btnImportTriggers.forEach(btn => btn.addEventListener('click', showImportChoice));
 
 document.getElementById('btn-close-import-choice').addEventListener('click', () => {
     document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
@@ -1719,6 +1832,7 @@ btnAutoCrop.addEventListener('click', async () => {
 btnAutoColor.addEventListener('click', async () => {
     pushUndoState();
     await doAutoColor();
+    requestThumbnailSync();
 });
 
 async function showConfirm(message) {
@@ -2040,11 +2154,13 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
             const y = padding + r * (colHeight + padding);
             
             // Adjust draw height based on actual image ratio
-            let drawW = colWidth;
-            let drawH = drawW * (img.height / img.width);
+            let drawW = Math.round(colWidth);
+            let drawH = Math.round(drawW * (img.height / img.width));
+            let drawX = Math.round(x);
+            let drawY = Math.round(y + (colHeight - drawH)/2);
             
             // Draw image
-            ctx.drawImage(img, x, y + (colHeight - drawH)/2, drawW, drawH);
+            ctx.drawImage(img, drawX, drawY, drawW, drawH);
             
             // Draw borders / sprocket mask placeholders
             try {
@@ -2054,8 +2170,8 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
                     overlayImg.onerror = rej;
                     overlayImg.src = currentRoll.format === "120" ? "assets/overlays/120_border.png" : "assets/overlays/135_sprocket.png";
                 });
-                // Draw overlay matching image dimensions
-                ctx.drawImage(overlayImg, x, y + (colHeight - drawH)/2, drawW, drawH);
+                // Draw overlay matching EXACT image dimensions
+                ctx.drawImage(overlayImg, drawX, drawY, drawW, drawH);
             } catch(e) {
                 // Ignore missing placeholder
             }
@@ -2098,3 +2214,64 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
     }
 });
 
+function updateCalibrationPolygon() {
+    if (!isCalibrationMode) return;
+    const polygon = document.getElementById('calibration-polygon');
+    const handles = document.querySelectorAll('.calib-handle');
+    const svgRect = document.getElementById('calibration-svg').getBoundingClientRect();
+    if (!svgRect.width || !svgRect.height) {
+        requestAnimationFrame(updateCalibrationPolygon);
+        return;
+    }
+    
+    let pointsStr = '';
+    calibrationPoints.forEach((p, i) => {
+        const cx = p[0] * svgRect.width;
+        const cy = p[1] * svgRect.height;
+        pointsStr += `${cx},${cy} `;
+        if (handles[i]) {
+            handles[i].setAttribute('cx', cx);
+            handles[i].setAttribute('cy', cy);
+        }
+    });
+    polygon.setAttribute('points', pointsStr.trim());
+}
+
+document.getElementById('calibration-svg').addEventListener('mousedown', (e) => {
+    if (!isCalibrationMode) return;
+    if (e.target.classList.contains('calib-handle')) {
+        calibrationDragIdx = parseInt(e.target.dataset.idx);
+    }
+});
+
+window.addEventListener('mousemove', (e) => {
+    if (isCalibrationMode && calibrationDragIdx !== -1) {
+        const svgRect = document.getElementById('calibration-svg').getBoundingClientRect();
+        let nx = (e.clientX - svgRect.left) / svgRect.width;
+        let ny = (e.clientY - svgRect.top) / svgRect.height;
+        nx = Math.max(0, Math.min(1, nx));
+        ny = Math.max(0, Math.min(1, ny));
+        calibrationPoints[calibrationDragIdx] = [nx, ny];
+        updateCalibrationPolygon();
+    }
+});
+
+window.addEventListener('mouseup', () => {
+    calibrationDragIdx = -1;
+});
+
+window.addEventListener('resize', () => {
+    if (isCalibrationMode) updateCalibrationPolygon();
+});
+
+document.getElementById('btn-confirm-calibration').addEventListener('click', async () => {
+    if (!activeId) return;
+    current_geom.calibration_points = calibrationPoints;
+    saveCurrentState();
+    await invoke('update_geometry', { id: activeId, geom: current_geom });
+    isCalibrationMode = false;
+    document.getElementById('calibration-overlay').classList.add('hidden');
+    document.getElementById('calibration-overlay').classList.remove('flex');
+    document.getElementById('right-panel-blocker').classList.add('hidden');
+    showToast("Calibration applied.", "success");
+});
