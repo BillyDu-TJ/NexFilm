@@ -1076,3 +1076,18 @@ pub async fn save_contact_sheet(data_url: String) -> Result<String, String> {
         Err("Cancelled".into())
     }
 }
+
+#[tauri::command]
+pub async fn delete_rolls(
+    roll_ids: Vec<String>,
+    state: State<'_, EngineState>
+) -> Result<(), String> {
+    {
+        let mut rolls = state.rolls.write().unwrap();
+        rolls.retain(|r| !roll_ids.contains(&r.roll_id));
+        if let Ok(json) = serde_json::to_string_pretty(&*rolls) {
+            let _ = std::fs::write("rolls.json", json);
+        }
+    }
+    Ok(())
+}

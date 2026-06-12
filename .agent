@@ -5,3 +5,7 @@
 - After successfully completing a phase or a requested step, automatically execute `git add`, `git commit` with conventional commit messages (e.g., `feat:`, `fix:`, `refactor:`).
 - Always `git push` to the remote repository `origin main` automatically.
 - Ensure the project always stays in a clean git state after significant modifications.
+
+## Phase Execution Rules
+- 以后凡是执行完一个Phase都要做git管理。
+- 设计一定要出于用户交互友好，切忌反直觉的设计（如不提供可见按钮而依赖隐式快捷键）。

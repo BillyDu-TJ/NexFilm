@@ -254,11 +254,14 @@ window.addEventListener('keydown', async (e) => {
         
         requestThumbnailSync();
         if (isCropMode) updateCropOverlay();
-    } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        if (currentView === 'library' && currentNav === 'history' && !currentRollViewId) {
-            isDeleteMode = true;
-            renderLibraryAndFilmstrip();
-        }
+    }
+});
+
+document.getElementById('btn-delete-rolls').addEventListener('click', () => {
+    if (currentView === 'library' && currentNav === 'history' && !currentRollViewId) {
+        isDeleteMode = !isDeleteMode;
+        if (!isDeleteMode) selectedRollIds.clear();
+        renderLibraryAndFilmstrip();
     }
 });
 
