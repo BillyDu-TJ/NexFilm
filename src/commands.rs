@@ -531,7 +531,7 @@ pub async fn load_dcp_profile(path: String, state: State<'_, EngineState>) -> Re
             let colorspace = state.working_colorspace.read().unwrap().clone();
             if let Ok(img_buffer) = load_image_buffer(&item.file_path, true, Some(&path), &colorspace) {
                 let (width, height) = img_buffer.dimensions();
-                let ratio_proxy = 800.0 / (width.max(height) as f32);
+                let ratio_proxy = 2048.0 / (width.max(height) as f32);
                 let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
                 let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
                 let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
@@ -555,7 +555,7 @@ pub async fn set_working_colorspace(colorspace: String, state: State<'_, EngineS
             let dcp = state.dcp_profile.read().unwrap().clone();
             if let Ok(img_buffer) = load_image_buffer(&item.file_path, true, dcp.as_deref(), &colorspace) {
                 let (width, height) = img_buffer.dimensions();
-                let ratio_proxy = 800.0 / (width.max(height) as f32);
+                let ratio_proxy = 2048.0 / (width.max(height) as f32);
                 let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
                 let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
                 let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
