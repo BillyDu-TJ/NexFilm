@@ -1378,60 +1378,44 @@ function updateCropRectForRotation(rect, isCW, flipH, flipV) {
 }
 
 let geomSyncId = 0;
-function sendGeometrySync(deltaRot, deltaFlipH, deltaFlipV) {
-    if (deltaRot !== 0 && Math.abs(deltaRot) % 2 === 1) {
-        let t = currentImageWidth; currentImageWidth = currentImageHeight; currentImageHeight = t;
-    }
-    updateCanvasTransform();
-    
+function sendGeometrySync() {
     geomSyncId++;
     const currentSyncId = geomSyncId;
-    
-    let currentTransform = previewCanvas.style.transform;
-    if (currentTransform === 'none' || !currentTransform) currentTransform = '';
-    let newTransform = currentTransform;
-    if (deltaRot !== 0) newTransform += ` rotate(${deltaRot * 90}deg)`;
-    if (deltaFlipH) newTransform += ` scaleX(-1)`;
-    if (deltaFlipV) newTransform += ` scaleY(-1)`;
-    previewCanvas.style.transform = newTransform;
     
     invoke('update_geometry', { id: activeId, geom: current_geom }).then(() => {
         if (geomSyncId !== currentSyncId) return;
         loadProxyImage().then(() => {
-            if (geomSyncId === currentSyncId) {
-                previewCanvas.style.transform = 'none';
-            }
+            requestThumbnailSync();
         });
-        requestThumbnailSync();
     });
 }
 
 btnRotateLeft.addEventListener('click', () => {
     if (!activeId) return; pushUndoState();
-    current_geom.rotate_90_count -= 1;
-    current_geom.crop_rect = updateCropRectForRotation(current_geom.crop_rect, false, current_geom.flip_h, current_geom.flip_v);
-    sendGeometrySync(-1, false, false);
+    current_geom.rotate_90_count += 1;
+    current_geom.crop_rect = updateCropRectForRotation(current_geom.crop_rect, true, current_geom.flip_h, current_geom.flip_v);
+    sendGeometrySync();
 });
 
 btnRotateRight.addEventListener('click', () => {
     if (!activeId) return; pushUndoState();
-    current_geom.rotate_90_count += 1;
-    current_geom.crop_rect = updateCropRectForRotation(current_geom.crop_rect, true, current_geom.flip_h, current_geom.flip_v);
-    sendGeometrySync(1, false, false);
+    current_geom.rotate_90_count -= 1;
+    current_geom.crop_rect = updateCropRectForRotation(current_geom.crop_rect, false, current_geom.flip_h, current_geom.flip_v);
+    sendGeometrySync();
 });
 
 btnFlipH.addEventListener('click', () => {
     if (!activeId) return; pushUndoState();
     current_geom.flip_h = !current_geom.flip_h;
     current_geom.crop_rect.x = 1.0 - current_geom.crop_rect.x - current_geom.crop_rect.width;
-    sendGeometrySync(0, true, false);
+    sendGeometrySync();
 });
 
 btnFlipV.addEventListener('click', () => {
     if (!activeId) return; pushUndoState();
     current_geom.flip_v = !current_geom.flip_v;
     current_geom.crop_rect.y = 1.0 - current_geom.crop_rect.y - current_geom.crop_rect.height;
-    sendGeometrySync(0, false, true);
+    sendGeometrySync();
 });
 
 async function doAutoColor() {
@@ -1514,9 +1498,39 @@ btnAutoColor.addEventListener('click', async () => {
     await doAutoColor();
 });
 
+async function showConfirm(message) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 bg-black/80 flex items-center justify-center z-50 backdrop-blur-sm';
+        overlay.innerHTML = `
+            <div class="bg-[#1a1a1e] border border-[#28282c] rounded-lg p-6 max-w-sm w-full mx-4 shadow-2xl">
+                <h3 class="text-zinc-100 font-bold mb-2">Confirm Action</h3>
+                <p class="text-zinc-400 text-sm mb-6">${message}</p>
+                <div class="flex justify-end gap-3">
+                    <button id="btn-confirm-cancel" class="px-4 py-2 text-xs font-bold tracking-wider uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">CANCEL</button>
+                    <button id="btn-confirm-ok" class="px-4 py-2 text-xs font-bold tracking-wider uppercase bg-red-900/50 hover:bg-red-800/60 border border-red-700/50 text-white rounded transition-colors">RESET</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        
+        document.getElementById('btn-confirm-cancel').onclick = () => {
+            document.body.removeChild(overlay);
+            resolve(false);
+        };
+        document.getElementById('btn-confirm-ok').onclick = () => {
+            document.body.removeChild(overlay);
+            resolve(true);
+        };
+    });
+}
+
 btnResetColor.addEventListener('click', async () => {
     if (!activeId) return;
-    if (!window.confirm("Are you sure you want to reset all color adjustments?")) return;
+    
+    const isConfirmed = await showConfirm("Are you sure you want to reset all color adjustments?");
+    if (!isConfirmed) return;
+
     
     pushUndoState();
     
@@ -1616,7 +1630,7 @@ window.addEventListener('mousemove', (e) => {
         const currentRad = Math.atan2(e.clientY - dragCenter.y, e.clientX - dragCenter.x);
         let deltaDeg = (currentRad - startRad) * (180 / Math.PI);
         if (e.shiftKey) deltaDeg *= 0.1;
-        current_geom.angle = dragStartAngle + deltaDeg;
+        current_geom.angle = dragStartAngle - deltaDeg;
         requestRender();
         return;
     } else {
