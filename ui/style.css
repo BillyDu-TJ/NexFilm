@@ -118,7 +118,6 @@ body {
 
 /* Canvas Wrapper for Develop View */
 #canvas-wrapper {
-    transition: width 0.2s ease, height 0.2s ease, top 0.2s ease, left 0.2s ease;
 }
 
 .toolbar-btn {
