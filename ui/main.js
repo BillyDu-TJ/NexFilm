@@ -64,6 +64,8 @@ let currentDMin = [0.1, 0.1, 0.1];
 let currentDMax = [2.0, 2.0, 2.0];
 
 const sliders = {
+    masterDmin: { el: document.getElementById('master-dmin'), val: document.getElementById('val-master-dmin') },
+    masterDmax: { el: document.getElementById('master-dmax'), val: document.getElementById('val-master-dmax') },
     exposure: { el: document.getElementById('exposure'), val: document.getElementById('val-exposure') },
     gamma: { el: document.getElementById('gamma'), val: document.getElementById('val-gamma') },
     expr: { el: document.getElementById('expr'), val: document.getElementById('val-expr') },
@@ -323,9 +325,9 @@ let u_shadows_loc;
 let u_lut3d_loc;
 let u_lut_opacity_loc;
 let u_has_lut_loc;
-let u_lut_is_1d_loc;
+let u_lut1d_loc;
 let u_image_loc;
-let u_aspect_loc;
+let u_image_aspect_loc;
 let u_crop_loc;
 
 let currentBaseDensity = [0, 0, 0];
@@ -346,12 +348,24 @@ function initWebGL() {
     uniform mat4 u_transform;
     uniform float u_aspect;
     uniform vec4 u_crop;
+    uniform float u_image_aspect;
     void main() {
+        float crop_aspect = u_image_aspect * (u_crop.z / u_crop.w);
+        vec2 scale = vec2(1.0);
+        if (crop_aspect > u_aspect) {
+            scale.y = u_aspect / crop_aspect;
+        } else {
+            scale.x = crop_aspect / u_aspect;
+        }
+        
         vec4 pos = a_position;
+        pos.xy *= scale;
+        
         pos.x *= u_aspect;
         pos = u_transform * pos;
         pos.x /= u_aspect;
         gl_Position = pos;
+        
         vec2 base_uv = vec2(a_texcoord.x, 1.0 - a_texcoord.y);
         v_texcoord = vec2(
             u_crop.x + base_uv.x * u_crop.z,
@@ -422,28 +436,24 @@ function initWebGL() {
         // 4. 对数域高光/阴影 (Log Tone Control) & 5. 归一化与数学截断
         vec3 norm = (density - u_dmin) / (u_dmax - u_dmin);
         
-        vec3 clamped_norm = clamp(norm, 0.0, 1.0);
-        norm = norm + u_shadows * pow(1.0 - clamped_norm, vec3(2.0)) * norm + u_highlights * pow(clamped_norm, vec3(2.0)) * (1.0 - norm);
-        
-        // 进入 LUT 前，必须强制绝杀溢出
-        norm = clamp(norm, 0.0, 1.0);
+        norm = norm + u_shadows * pow(1.0 - clamp(norm, 0.0, 1.0), vec3(2.0)) * norm + u_highlights * pow(clamp(norm, 0.0, 1.0), vec3(2.0)) * (1.0 - norm);
         
         // 6. 应用 LUT
         vec3 final_rgb;
         if (u_has_lut == 1) {
-            vec3 lut_in = norm * 0.6 + 0.2; // 5.5 模拟 Cineon Log 压缩 (Soft Clip)
+            vec3 lut_in = clamp(norm, 0.0, 1.0);
             vec3 lut_color;
             if (u_lut_is_1d == 1) {
-                lut_color.r = texture(u_lut1d, vec2(clamp(lut_in.r, 0.0, 1.0), 0.5)).r;
-                lut_color.g = texture(u_lut1d, vec2(clamp(lut_in.g, 0.0, 1.0), 0.5)).g;
-                lut_color.b = texture(u_lut1d, vec2(clamp(lut_in.b, 0.0, 1.0), 0.5)).b;
+                lut_color.r = texture(u_lut1d, vec2(lut_in.r, 0.5)).r;
+                lut_color.g = texture(u_lut1d, vec2(lut_in.g, 0.5)).g;
+                lut_color.b = texture(u_lut1d, vec2(lut_in.b, 0.5)).b;
             } else {
-                lut_color = texture(u_lut3d, clamp(lut_in, 0.0, 1.0)).rgb;
+                lut_color = texture(u_lut3d, lut_in).rgb;
             }
-            final_rgb = mix(vec3(pow(norm.r, 1.0 / u_gamma), pow(norm.g, 1.0 / u_gamma), pow(norm.b, 1.0 / u_gamma)), lut_color, u_lut_opacity);
+            final_rgb = mix(vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma)), lut_color, u_lut_opacity);
         } else {
             // 7. 终端显示映射
-            final_rgb = vec3(pow(norm.r, 1.0 / u_gamma), pow(norm.g, 1.0 / u_gamma), pow(norm.b, 1.0 / u_gamma));
+            final_rgb = vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma));
         }
         
         outColor = vec4(final_rgb, 1.0);
@@ -484,6 +494,7 @@ function initWebGL() {
     u_lut_is_1d_loc = gl.getUniformLocation(shaderProgram, "u_lut_is_1d");
     u_image_loc = gl.getUniformLocation(shaderProgram, "u_image");
     u_aspect_loc = gl.getUniformLocation(shaderProgram, "u_aspect");
+    u_image_aspect_loc = gl.getUniformLocation(shaderProgram, "u_image_aspect");
     u_crop_loc = gl.getUniformLocation(shaderProgram, "u_crop");
     
     gl.getExtension("OES_texture_float_linear");
@@ -813,6 +824,7 @@ function renderWebGL() {
     gl.uniform1i(u_lut1d_loc, 2);
     gl.uniform1i(u_image_loc, 0);
     gl.uniform1f(u_aspect_loc, gl.canvas.width / gl.canvas.height);
+    gl.uniform1f(u_image_aspect_loc, proxyWidth / proxyHeight);
     
     let a = current_geom.angle * Math.PI / 180.0;
     if (!isCropMode && !isRotateMode) a = 0;
@@ -927,11 +939,17 @@ function setMode(mode) {
     }
 }
 
+function updateDMinMaxDisplay() {
+    document.getElementById('val-dmin').innerHTML = `<span class="text-red-400">${currentDMin[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMin[1].toFixed(3)}</span><span class="text-blue-400">${currentDMin[2].toFixed(3)}</span>`;
+    document.getElementById('val-dmax').innerHTML = `<span class="text-red-400">${currentDMax[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMax[1].toFixed(3)}</span><span class="text-blue-400">${currentDMax[2].toFixed(3)}</span>`;
+}
+
 function updateUIFromParams(params, geom) {
     currentDMin = params.d_min.slice();
     currentDMax = params.d_max.slice();
-    document.getElementById('val-dmin').innerHTML = `<span class="text-red-400">${currentDMin[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMin[1].toFixed(3)}</span><span class="text-blue-400">${currentDMin[2].toFixed(3)}</span>`;
-    document.getElementById('val-dmax').innerHTML = `<span class="text-red-400">${currentDMax[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMax[1].toFixed(3)}</span><span class="text-blue-400">${currentDMax[2].toFixed(3)}</span>`;
+    updateDMinMaxDisplay();
+    sliders.masterDmin.el.value = 0; sliders.masterDmin.val.textContent = "0.000"; lastMasterDmin = 0;
+    sliders.masterDmax.el.value = 0; sliders.masterDmax.val.textContent = "0.000"; lastMasterDmax = 0;
     
     sliders.exposure.el.value = params.exposure;
     sliders.gamma.el.value = params.gamma;
@@ -1210,6 +1228,30 @@ btnConfirmExport.addEventListener('click', async () => {
     }
 });
 
+// MASTER SLIDERS SETUP
+let lastMasterDmin = 0;
+let lastMasterDmax = 0;
+
+sliders.masterDmin.el.addEventListener('input', (e) => {
+    let current = parseFloat(e.target.value);
+    let delta = current - lastMasterDmin;
+    lastMasterDmin = current;
+    currentDMin[0] += delta; currentDMin[1] += delta; currentDMin[2] += delta;
+    sliders.masterDmin.val.textContent = current.toFixed(3);
+    updateDMinMaxDisplay(); requestRender();
+});
+sliders.masterDmin.el.addEventListener('change', updateBackendParams);
+
+sliders.masterDmax.el.addEventListener('input', (e) => {
+    let current = parseFloat(e.target.value);
+    let delta = current - lastMasterDmax;
+    lastMasterDmax = current;
+    currentDMax[0] += delta; currentDMax[1] += delta; currentDMax[2] += delta;
+    sliders.masterDmax.val.textContent = current.toFixed(3);
+    updateDMinMaxDisplay(); requestRender();
+});
+sliders.masterDmax.el.addEventListener('change', updateBackendParams);
+
 for (const key in sliders) updateSliderTrack(sliders[key].el);
 
 // ==========================================
@@ -1342,39 +1384,67 @@ function updateCropRectForRotation(rect, isCW, flipH, flipV) {
     return { x: nx, y: ny, width: nw, height: nh };
 }
 
-btnRotateLeft.addEventListener('click', async () => {
+let geomSyncId = 0;
+function sendGeometrySync(deltaRot, deltaFlipH, deltaFlipV) {
+    if (deltaRot !== 0 && Math.abs(deltaRot) % 2 === 1) {
+        let t = currentImageWidth; currentImageWidth = currentImageHeight; currentImageHeight = t;
+    }
+    updateCanvasTransform();
+    
+    geomSyncId++;
+    const currentSyncId = geomSyncId;
+    
+    let currentTransform = previewCanvas.style.transform;
+    if (currentTransform === 'none' || !currentTransform) currentTransform = '';
+    let newTransform = currentTransform;
+    if (deltaRot !== 0) newTransform += ` rotate(${deltaRot * 90}deg)`;
+    if (deltaFlipH) newTransform += ` scaleX(-1)`;
+    if (deltaFlipV) newTransform += ` scaleY(-1)`;
+    previewCanvas.style.transform = newTransform;
+    
+    invoke('update_geometry', { id: activeId, geom: current_geom }).then(() => {
+        if (geomSyncId !== currentSyncId) return;
+        loadProxyImage().then(() => {
+            if (geomSyncId === currentSyncId) {
+                previewCanvas.style.transform = 'none';
+            }
+        });
+        requestThumbnailSync();
+    });
+}
+
+btnRotateLeft.addEventListener('click', () => {
     if (!activeId) return; pushUndoState();
     current_geom.rotate_90_count -= 1;
     current_geom.crop_rect = updateCropRectForRotation(current_geom.crop_rect, false, current_geom.flip_h, current_geom.flip_v);
-    await invoke('update_geometry', { id: activeId, geom: current_geom }); await loadProxyImage(); requestThumbnailSync();
+    sendGeometrySync(-1, false, false);
 });
 
-btnRotateRight.addEventListener('click', async () => {
+btnRotateRight.addEventListener('click', () => {
     if (!activeId) return; pushUndoState();
     current_geom.rotate_90_count += 1;
     current_geom.crop_rect = updateCropRectForRotation(current_geom.crop_rect, true, current_geom.flip_h, current_geom.flip_v);
-    await invoke('update_geometry', { id: activeId, geom: current_geom }); await loadProxyImage(); requestThumbnailSync();
+    sendGeometrySync(1, false, false);
 });
 
-btnFlipH.addEventListener('click', async () => {
-    if (!activeId) return; pushUndoState(); current_geom.flip_h = !current_geom.flip_h;
+btnFlipH.addEventListener('click', () => {
+    if (!activeId) return; pushUndoState();
+    current_geom.flip_h = !current_geom.flip_h;
     current_geom.crop_rect.x = 1.0 - current_geom.crop_rect.x - current_geom.crop_rect.width;
-    await invoke('update_geometry', { id: activeId, geom: current_geom }); await loadProxyImage(); requestThumbnailSync();
+    sendGeometrySync(0, true, false);
 });
 
-btnFlipV.addEventListener('click', async () => {
-    if (!activeId) return; pushUndoState(); current_geom.flip_v = !current_geom.flip_v;
+btnFlipV.addEventListener('click', () => {
+    if (!activeId) return; pushUndoState();
+    current_geom.flip_v = !current_geom.flip_v;
     current_geom.crop_rect.y = 1.0 - current_geom.crop_rect.y - current_geom.crop_rect.height;
-    await invoke('update_geometry', { id: activeId, geom: current_geom }); await loadProxyImage(); requestThumbnailSync();
+    sendGeometrySync(0, false, true);
 });
 
 async function doAutoColor() {
     if (!activeId || !lastHistPixels) return;
 
-    let r_arr = [];
-    let g_arr = [];
-    let b_arr = [];
-
+    let r_arr = []; let g_arr = []; let b_arr = [];
     for (let i = 0; i < lastHistPixels.length; i += 4) {
         r_arr.push(lastHistPixels[i]);
         g_arr.push(lastHistPixels[i+1]);
@@ -1395,29 +1465,33 @@ async function doAutoColor() {
         return norm * (channelDmax - channelDmin) + channelDmin;
     }
 
-    let new_dmax_r = toDensity(r_arr[start], currentDMin[0], currentDMax[0]);
-    let new_dmin_r = toDensity(r_arr[end], currentDMin[0], currentDMax[0]);
-    let new_dmax_g = toDensity(g_arr[start], currentDMin[1], currentDMax[1]);
-    let new_dmin_g = toDensity(g_arr[end], currentDMin[1], currentDMax[1]);
-    let new_dmax_b = toDensity(b_arr[start], currentDMin[2], currentDMax[2]);
-    let new_dmin_b = toDensity(b_arr[end], currentDMin[2], currentDMax[2]);
+    const batchState = {
+        dmin: [
+            toDensity(r_arr[end], currentDMin[0], currentDMax[0]),
+            toDensity(g_arr[end], currentDMin[1], currentDMax[1]),
+            toDensity(b_arr[end], currentDMin[2], currentDMax[2])
+        ],
+        dmax: [
+            toDensity(r_arr[start], currentDMin[0], currentDMax[0]),
+            toDensity(g_arr[start], currentDMin[1], currentDMax[1]),
+            toDensity(b_arr[start], currentDMin[2], currentDMax[2])
+        ]
+    };
 
-    currentDMin = [new_dmin_r, new_dmin_g, new_dmin_b];
-    currentDMax = [new_dmax_r, new_dmax_g, new_dmax_b];
+    currentDMin = batchState.dmin;
+    currentDMax = batchState.dmax;
+    updateDMinMaxDisplay();
 
-    document.getElementById('val-dmin').innerHTML = `<span class="text-red-400">${currentDMin[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMin[1].toFixed(3)}</span><span class="text-blue-400">${currentDMin[2].toFixed(3)}</span>`;
-    document.getElementById('val-dmax').innerHTML = `<span class="text-red-400">${currentDMax[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMax[1].toFixed(3)}</span><span class="text-blue-400">${currentDMax[2].toFixed(3)}</span>`;
-
-    document.getElementById('expr').value = 0; document.getElementById('val-expr').innerText = "0.000";
-    document.getElementById('expg').value = 0; document.getElementById('val-expg').innerText = "0.000";
-    document.getElementById('expb').value = 0; document.getElementById('val-expb').innerText = "0.000";
+    sliders.expr.el.value = 0; sliders.expr.val.textContent = "0.000";
+    sliders.expg.el.value = 0; sliders.expg.val.textContent = "0.000";
+    sliders.expb.el.value = 0; sliders.expb.val.textContent = "0.000";
     
-    updateSliderTrack(document.getElementById('expr'));
-    updateSliderTrack(document.getElementById('expg'));
-    updateSliderTrack(document.getElementById('expb'));
+    updateSliderTrack(sliders.expr.el);
+    updateSliderTrack(sliders.expg.el);
+    updateSliderTrack(sliders.expb.el);
 
     updateBackendParams();
-    requestRender();
+    renderWebGL();
 }
 
 document.getElementById('btn-reset-crop').addEventListener('click', async () => {
@@ -1505,29 +1579,27 @@ window.addEventListener('mousemove', (e) => {
     let newRect = { ...dragStartRect };
 
     if (dragType === 'box') {
-        newRect.x = Math.max(0, Math.min(1 - newRect.width, newRect.x + dx));
-        newRect.y = Math.max(0, Math.min(1 - newRect.height, newRect.y + dy));
+        newRect.x = newRect.x + dx;
+        newRect.y = newRect.y + dy;
     } else if (dragType === 'rotate') {
         const startRad = Math.atan2(dragStartPos.y - dragCenter.y, dragStartPos.x - dragCenter.x);
         const currentRad = Math.atan2(e.clientY - dragCenter.y, e.clientX - dragCenter.x);
         let deltaDeg = (currentRad - startRad) * (180 / Math.PI);
-        if (e.shiftKey) {
-            deltaDeg *= 0.1; // Fine adjustment when shift is held
-        }
-        let newAngle = dragStartAngle + deltaDeg;
-        current_geom.angle = newAngle;
-        
-        requestRender(); // real-time rotate rendering via uniforms
+        if (e.shiftKey) deltaDeg *= 0.1;
+        current_geom.angle = dragStartAngle + deltaDeg;
+        requestRender();
         return;
     } else {
         if (dragType.includes('w')) {
-            const maxW = newRect.x + newRect.width; newRect.x = Math.max(0, Math.min(maxW - 0.05, newRect.x + dx)); newRect.width = maxW - newRect.x;
+            const maxW = newRect.x + newRect.width; newRect.x = maxW - newRect.width + dx; newRect.width = newRect.width - dx;
         }
-        if (dragType.includes('e')) { newRect.width = Math.max(0.05, Math.min(1 - newRect.x, newRect.width + dx)); }
+        if (dragType.includes('e')) { newRect.width = newRect.width + dx; }
         if (dragType.includes('n')) {
-            const maxH = newRect.y + newRect.height; newRect.y = Math.max(0, Math.min(maxH - 0.05, newRect.y + dy)); newRect.height = maxH - newRect.y;
+            const maxH = newRect.y + newRect.height; newRect.y = maxH - newRect.height + dy; newRect.height = newRect.height - dy;
         }
-        if (dragType.includes('s')) { newRect.height = Math.max(0.05, Math.min(1 - newRect.y, newRect.height + dy)); }
+        if (dragType.includes('s')) { newRect.height = newRect.height + dy; }
+        newRect.width = Math.max(0.01, newRect.width);
+        newRect.height = Math.max(0.01, newRect.height);
     }
     current_geom.crop_rect = newRect; updateCropOverlay();
 });

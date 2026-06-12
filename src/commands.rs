@@ -762,22 +762,35 @@ fn reapply_geometry(item: &mut FilmItem) {
 
 #[tauri::command]
 pub async fn geometry_auto_align(id: String, state: State<'_, EngineState>) -> Result<crate::app_state::AutoAlignResult, String> {
-    if let Some(item_arc) = state.items.get(&id) {
+    let item_arc = state.items.get(&id).ok_or("Image not found")?.clone();
+    
+    let (crop_rect, angle) = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let original_proxy = {
+            let item = item_arc.read().map_err(|e| e.to_string())?;
+            item.original_proxy.clone()
+        };
+        
+        let first_result = crate::geometry::auto_crop_rect(&original_proxy)?;
+        
+        let proxy_image = {
+            let mut item = item_arc.write().map_err(|e| e.to_string())?;
+            item.geom.angle = first_result.angle;
+            reapply_geometry(&mut item);
+            item.proxy_image.clone()
+        };
+        
+        let second_result = crate::geometry::auto_crop_rect(&proxy_image)?;
+        
         let mut item = item_arc.write().map_err(|e| e.to_string())?;
-        let first_result = geometry::auto_crop_rect(&item.original_proxy)?;
-        item.geom.angle = first_result.angle;
-        
-        reapply_geometry(&mut item);
-        
-        let second_result = geometry::auto_crop_rect(&item.proxy_image)?;
         item.geom.crop_rect = second_result.crop_rect.clone();
         
-        return Ok(crate::app_state::AutoAlignResult {
-            crop_rect: item.geom.crop_rect.clone(),
-            angle: item.geom.angle,
-        });
-    }
-    Err("Image not found".to_string())
+        Ok((item.geom.crop_rect.clone(), item.geom.angle))
+    }).await.map_err(|e| e.to_string())??;
+
+    Ok(crate::app_state::AutoAlignResult {
+        crop_rect,
+        angle,
+    })
 }
 
 #[tauri::command]
