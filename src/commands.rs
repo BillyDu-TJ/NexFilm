@@ -122,7 +122,8 @@ pub async fn get_builtin_luts() -> Result<Vec<String>, String> {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_file() {
                     let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("cube") {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    if ext == "cube" || ext == "json" {
                         if let Some(path_str) = path.to_str() {
                             luts.push(path_str.to_string());
                         }
@@ -249,7 +250,7 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
 
         let (width, height) = img_buffer.dimensions();
         
-        let ratio_proxy = 800.0 / (width.max(height) as f32);
+        let ratio_proxy = 2048.0 / (width.max(height) as f32);
         let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
         let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
         let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
@@ -659,9 +660,9 @@ pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) ->
                 let true_density = [in_px[0], in_px[1], in_px[2]];
                 let density = pipeline.apply_exposure(&true_density);
 
-                let norm_r = ((density[0] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-                let norm_g = ((density[1] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-                let norm_b = ((density[2] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
+                let norm_r = ((density[0] - d_min[0]) / (d_max[0] - d_min[0])).clamp(0.0, 1.0);
+                let norm_g = ((density[1] - d_min[1]) / (d_max[1] - d_min[1])).clamp(0.0, 1.0);
+                let norm_b = ((density[2] - d_min[2]) / (d_max[2] - d_min[2])).clamp(0.0, 1.0);
 
                 out_px[0] = (norm_r.powf(1.0 / gamma) * 255.0) as u8;
                 out_px[1] = (norm_g.powf(1.0 / gamma) * 255.0) as u8;
@@ -939,9 +940,9 @@ pub async fn batch_export_images(
                         (in_px[2] as f32) / 65535.0,
                     ];
                     let density = pipeline.process_pixel(&linear_rgb);
-                    let norm_r = ((density[0] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-                    let norm_g = ((density[1] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-                    let norm_b = ((density[2] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
+                    let norm_r = ((density[0] - d_min[0]) / (d_max[0] - d_min[0])).clamp(0.0, 1.0);
+                    let norm_g = ((density[1] - d_min[1]) / (d_max[1] - d_min[1])).clamp(0.0, 1.0);
+                    let norm_b = ((density[2] - d_min[2]) / (d_max[2] - d_min[2])).clamp(0.0, 1.0);
                     out_px[0] = (norm_r.powf(1.0 / gamma) * 65535.0) as u16;
                     out_px[1] = (norm_g.powf(1.0 / gamma) * 65535.0) as u16;
                     out_px[2] = (norm_b.powf(1.0 / gamma) * 65535.0) as u16;

@@ -60,9 +60,10 @@ const cropGrid = document.getElementById('crop-grid');
 const cropHandles = document.getElementById('crop-handles');
 const rotateHandleOuter = document.getElementById('rotate-handle-outer');
 
+let currentDMin = [0.1, 0.1, 0.1];
+let currentDMax = [2.0, 2.0, 2.0];
+
 const sliders = {
-    dmin: { el: document.getElementById('dmin'), val: document.getElementById('val-dmin') },
-    dmax: { el: document.getElementById('dmax'), val: document.getElementById('val-dmax') },
     exposure: { el: document.getElementById('exposure'), val: document.getElementById('val-exposure') },
     gamma: { el: document.getElementById('gamma'), val: document.getElementById('val-gamma') },
     expr: { el: document.getElementById('expr'), val: document.getElementById('val-expr') },
@@ -87,10 +88,28 @@ let isCropMode = false;
 let isRotateMode = false;
 let currentImageWidth = 1;
 let currentImageHeight = 1;
+let zoomLevel = 1.0;
+
+window.addEventListener('resize', () => {
+    if (activeId) updateCanvasTransform();
+});
+
+canvasWrapper.parentElement.addEventListener('wheel', (e) => {
+    if (!activeId) return;
+    e.preventDefault();
+    if (e.deltaY < 0) {
+        zoomLevel *= 1.1;
+    } else {
+        zoomLevel /= 1.1;
+    }
+    zoomLevel = Math.max(0.1, Math.min(zoomLevel, 10.0));
+    updateCanvasTransform();
+}, { passive: false });
 
 let isWaveform = false;
 let lastPixels = null;
-const HIST_SIZE = 256;
+const HIST_W = 768;
+const HIST_H = 256;
 
 // Library Multi-Selection State
 let allLibraryItems = [];
@@ -166,8 +185,8 @@ function pushUndoState() {
     const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 'Color' : 'BW';
     const params = {
         film_mode: mode,
-        d_min: parseFloat(sliders.dmin.el.value),
-        d_max: parseFloat(sliders.dmax.el.value),
+        d_min: currentDMin.slice(),
+        d_max: currentDMax.slice(),
         exposure: parseFloat(sliders.exposure.el.value),
         gamma: parseFloat(sliders.gamma.el.value),
         exp_r: parseFloat(sliders.expr.el.value),
@@ -260,8 +279,8 @@ function saveCurrentState() {
     const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 'Color' : 'BW';
     const params = {
         film_mode: mode,
-        d_min: parseFloat(sliders.dmin.el.value),
-        d_max: parseFloat(sliders.dmax.el.value),
+        d_min: currentDMin.slice(),
+        d_max: currentDMax.slice(),
         exposure: parseFloat(sliders.exposure.el.value),
         gamma: parseFloat(sliders.gamma.el.value),
         exp_r: parseFloat(sliders.expr.el.value),
@@ -347,8 +366,8 @@ function initWebGL() {
 
     uniform mediump usampler2D u_image;
     uniform vec3 u_base_density;
-    uniform float u_dmin;
-    uniform float u_dmax;
+    uniform vec3 u_dmin;
+    uniform vec3 u_dmax;
     uniform vec3 u_exposure;
     uniform float u_gamma;
     uniform int u_mode;
@@ -412,13 +431,14 @@ function initWebGL() {
         // 6. 应用 LUT
         vec3 final_rgb;
         if (u_has_lut == 1) {
+            vec3 lut_in = norm * 0.6 + 0.2; // 5.5 模拟 Cineon Log 压缩 (Soft Clip)
             vec3 lut_color;
             if (u_lut_is_1d == 1) {
-                lut_color.r = texture(u_lut1d, vec2(clamp(norm.r, 0.0, 1.0), 0.5)).r;
-                lut_color.g = texture(u_lut1d, vec2(clamp(norm.g, 0.0, 1.0), 0.5)).g;
-                lut_color.b = texture(u_lut1d, vec2(clamp(norm.b, 0.0, 1.0), 0.5)).b;
+                lut_color.r = texture(u_lut1d, vec2(clamp(lut_in.r, 0.0, 1.0), 0.5)).r;
+                lut_color.g = texture(u_lut1d, vec2(clamp(lut_in.g, 0.0, 1.0), 0.5)).g;
+                lut_color.b = texture(u_lut1d, vec2(clamp(lut_in.b, 0.0, 1.0), 0.5)).b;
             } else {
-                lut_color = texture(u_lut3d, clamp(norm, 0.0, 1.0)).rgb;
+                lut_color = texture(u_lut3d, clamp(lut_in, 0.0, 1.0)).rgb;
             }
             final_rgb = mix(vec3(pow(norm.r, 1.0 / u_gamma), pow(norm.g, 1.0 / u_gamma), pow(norm.b, 1.0 / u_gamma)), lut_color, u_lut_opacity);
         } else {
@@ -493,7 +513,7 @@ function initWebGL() {
     // Setup FBO for Histogram
     fboTex = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, fboTex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, HIST_SIZE, HIST_SIZE, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, HIST_W, HIST_H, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
 
@@ -704,46 +724,48 @@ function drawHistogram(pixels) {
 }
 
 function drawWaveform(pixels) {
-    waveCanvas.width = waveCanvas.offsetWidth;
-    waveCanvas.height = waveCanvas.offsetHeight;
+    waveCanvas.width = waveCanvas.offsetWidth * 2;
+    waveCanvas.height = waveCanvas.offsetHeight * 2;
     const w = waveCanvas.width, h = waveCanvas.height;
     
     waveCtx.clearRect(0, 0, w, h);
     waveCtx.globalCompositeOperation = 'screen';
     
+    const colW = w / 3;
+    
     // Draw Red
-    waveCtx.fillStyle = 'rgba(255, 0, 0, 0.1)';
-    for (let y = 0; y < HIST_SIZE; y+=2) {
-        for (let x = 0; x < HIST_SIZE; x+=2) {
-            const idx = (y * HIST_SIZE + x) * 4;
+    waveCtx.fillStyle = 'rgba(255, 60, 60, 0.15)';
+    for (let y = 0; y < HIST_H; y+=1) {
+        for (let x = 0; x < HIST_W; x+=1) {
+            const idx = (y * HIST_W + x) * 4;
             const r = pixels[idx];
-            const plotX = (x / HIST_SIZE) * w;
+            const plotX = (x / HIST_W) * colW;
             const plotY_R = h - (r / 255.0) * h;
-            waveCtx.fillRect(plotX, plotY_R, 2, 2);
+            waveCtx.fillRect(plotX, plotY_R, 1.5, 1.5);
         }
     }
     
     // Draw Green
-    waveCtx.fillStyle = 'rgba(0, 255, 0, 0.1)';
-    for (let y = 0; y < HIST_SIZE; y+=2) {
-        for (let x = 0; x < HIST_SIZE; x+=2) {
-            const idx = (y * HIST_SIZE + x) * 4;
+    waveCtx.fillStyle = 'rgba(60, 255, 60, 0.15)';
+    for (let y = 0; y < HIST_H; y+=1) {
+        for (let x = 0; x < HIST_W; x+=1) {
+            const idx = (y * HIST_W + x) * 4;
             const g = pixels[idx+1];
-            const plotX = (x / HIST_SIZE) * w;
+            const plotX = colW + (x / HIST_W) * colW;
             const plotY_G = h - (g / 255.0) * h;
-            waveCtx.fillRect(plotX, plotY_G, 2, 2);
+            waveCtx.fillRect(plotX, plotY_G, 1.5, 1.5);
         }
     }
     
     // Draw Blue
-    waveCtx.fillStyle = 'rgba(0, 150, 255, 0.1)';
-    for (let y = 0; y < HIST_SIZE; y+=2) {
-        for (let x = 0; x < HIST_SIZE; x+=2) {
-            const idx = (y * HIST_SIZE + x) * 4;
+    waveCtx.fillStyle = 'rgba(60, 150, 255, 0.15)';
+    for (let y = 0; y < HIST_H; y+=1) {
+        for (let x = 0; x < HIST_W; x+=1) {
+            const idx = (y * HIST_W + x) * 4;
             const b = pixels[idx+2];
-            const plotX = (x / HIST_SIZE) * w;
+            const plotX = colW * 2 + (x / HIST_W) * colW;
             const plotY_B = h - (b / 255.0) * h;
-            waveCtx.fillRect(plotX, plotY_B, 2, 2);
+            waveCtx.fillRect(plotX, plotY_B, 1.5, 1.5);
         }
     }
 }
@@ -768,8 +790,7 @@ function renderWebGL() {
     gl.bindVertexArray(vao);
 
     const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 0 : 1;
-    const dminVal = parseFloat(sliders.dmin.el.value);
-    const dmaxVal = parseFloat(sliders.dmax.el.value);
+    // dmin/dmax are tracked globally
     const expVal = parseFloat(sliders.exposure.el.value);
     const exprVal = parseFloat(sliders.expr.el.value);
     const expgVal = parseFloat(sliders.expg.el.value);
@@ -777,8 +798,8 @@ function renderWebGL() {
     const gammaVal = parseFloat(sliders.gamma.el.value);
 
     gl.uniform3f(u_base_density_loc, currentBaseDensity[0], currentBaseDensity[1], currentBaseDensity[2]);
-    gl.uniform1f(u_dmin_loc, dminVal);
-    gl.uniform1f(u_dmax_loc, dmaxVal);
+    gl.uniform3f(u_dmin_loc, currentDMin[0], currentDMin[1], currentDMin[2]);
+    gl.uniform3f(u_dmax_loc, currentDMax[0], currentDMax[1], currentDMax[2]);
     gl.uniform3f(u_exposure_loc, expVal + exprVal, expVal + expgVal, expVal + expbVal);
     gl.uniform1f(u_gamma_loc, gammaVal);
     gl.uniform1i(u_mode_loc, mode);
@@ -819,18 +840,22 @@ function renderWebGL() {
     // Render to FBO for Histogram
     gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
+    gl.viewport(0, 0, HIST_W, HIST_H);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     
-    const pixels = new Uint8Array(HIST_SIZE * HIST_SIZE * 4);
-    gl.readPixels(0, 0, HIST_SIZE, HIST_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    const pixels = new Uint8Array(HIST_W * HIST_H * 4);
+    gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
     lastHistPixels = pixels;
 
     // Render to Main Canvas
     if (!isCropMode) {
         gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
+        gl.canvas.width = Math.max(1, proxyWidth * current_geom.crop_rect.width);
+        gl.canvas.height = Math.max(1, proxyHeight * current_geom.crop_rect.height);
     } else {
         gl.uniform4f(u_crop_loc, 0.0, 0.0, 1.0, 1.0);
+        gl.canvas.width = proxyWidth;
+        gl.canvas.height = proxyHeight;
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
@@ -903,8 +928,11 @@ function setMode(mode) {
 }
 
 function updateUIFromParams(params, geom) {
-    sliders.dmin.el.value = params.d_min;
-    sliders.dmax.el.value = params.d_max;
+    currentDMin = params.d_min.slice();
+    currentDMax = params.d_max.slice();
+    document.getElementById('val-dmin').innerHTML = `<span class="text-red-400">${currentDMin[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMin[1].toFixed(3)}</span><span class="text-blue-400">${currentDMin[2].toFixed(3)}</span>`;
+    document.getElementById('val-dmax').innerHTML = `<span class="text-red-400">${currentDMax[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMax[1].toFixed(3)}</span><span class="text-blue-400">${currentDMax[2].toFixed(3)}</span>`;
+    
     sliders.exposure.el.value = params.exposure;
     sliders.gamma.el.value = params.gamma;
     sliders.expr.el.value = params.exp_r;
@@ -958,6 +986,7 @@ function enableUI() {
     btnCropMode.disabled = false;
     btnRotateMode.disabled = false;
     btnAutoCrop.disabled = false;
+    document.getElementById('btn-reset-crop').disabled = false;
     btnAutoColor.disabled = false;
     btnRotateLeft.disabled = false;
     btnRotateRight.disabled = false;
@@ -1197,11 +1226,35 @@ function updateCanvasTransform(w, h) {
     previewCanvas.style.position = 'absolute';
     previewCanvas.style.objectFit = 'fill'; 
 
+    let aspect;
     if (isCropMode || isRotateMode) {
-        canvasWrapper.style.aspectRatio = `${cw} / ${ch}`;
-        dummyPusher.width = cw;
-        dummyPusher.height = ch;
-        
+        aspect = cw / ch;
+    } else {
+        aspect = (cw * rect.width) / (ch * rect.height);
+    }
+    if (isNaN(aspect) || aspect === 0) aspect = 1;
+
+    const parent = canvasWrapper.parentElement;
+    const availableW = parent.clientWidth - 64; // p-8 padding
+    const availableH = parent.clientHeight - 64;
+    
+    let targetW, targetH;
+    if (availableW / availableH > aspect) {
+        targetH = availableH;
+        targetW = targetH * aspect;
+    } else {
+        targetW = availableW;
+        targetH = targetW / aspect;
+    }
+    
+    targetW *= zoomLevel;
+    targetH *= zoomLevel;
+
+    canvasWrapper.style.width = `${targetW}px`;
+    canvasWrapper.style.height = `${targetH}px`;
+    dummyPusher.style.display = 'none';
+
+    if (isCropMode || isRotateMode) {
         previewCanvas.style.width = '100%';
         previewCanvas.style.height = '100%';
         previewCanvas.style.left = '0';
@@ -1212,21 +1265,10 @@ function updateCanvasTransform(w, h) {
             updateCropOverlay();
         }
     } else {
-        const cropW = cw * rect.width;
-        const cropH = ch * rect.height;
-        canvasWrapper.style.aspectRatio = `${cropW} / ${cropH}`;
-        dummyPusher.width = cropW;
-        dummyPusher.height = cropH;
-        
-        const scaleX = 100 / rect.width;
-        const scaleY = 100 / rect.height;
-        const offsetX = - (rect.x / rect.width) * 100;
-        const offsetY = - (rect.y / rect.height) * 100;
-        
-        previewCanvas.style.width = `${scaleX}%`;
-        previewCanvas.style.height = `${scaleY}%`;
-        previewCanvas.style.left = `${offsetX}%`;
-        previewCanvas.style.top = `${offsetY}%`;
+        previewCanvas.style.width = '100%';
+        previewCanvas.style.height = '100%';
+        previewCanvas.style.left = '0';
+        previewCanvas.style.top = '0';
         
         cropOverlay.classList.add('hidden');
     }
@@ -1343,52 +1385,49 @@ async function doAutoColor() {
     g_arr.sort((a,b)=>a-b);
     b_arr.sort((a,b)=>a-b);
 
-    let start = Math.floor(r_arr.length * 0.1);
-    let end = Math.floor(r_arr.length * 0.9);
-    let count = end - start;
-    if (count <= 0) return;
+    let start = Math.floor(r_arr.length * 0.01);
+    let end = Math.floor(r_arr.length * 0.99);
 
-    let r_core = r_arr.slice(start, end);
-    let g_core = g_arr.slice(start, end);
-    let b_core = b_arr.slice(start, end);
-
-    let mid = Math.floor(count / 2);
-    let r_med = r_core[mid];
-    let g_med = g_core[mid];
-    let b_med = b_core[mid];
-
-    const dminVal = parseFloat(sliders.dmin.el.value);
-    const dmaxVal = parseFloat(sliders.dmax.el.value);
     const gammaVal = parseFloat(sliders.gamma.el.value);
 
-    // Convert 8-bit back to normalized density
-    function toDensity(val) {
+    function toDensity(val, channelDmin, channelDmax) {
         let norm = Math.pow(val / 255.0, gammaVal);
-        return norm * (dmaxVal - dminVal) + dminVal;
+        return norm * (channelDmax - channelDmin) + channelDmin;
     }
 
-    let density_R = toDensity(r_med);
-    let density_G = toDensity(g_med);
-    let density_B = toDensity(b_med);
+    let new_dmax_r = toDensity(r_arr[start], currentDMin[0], currentDMax[0]);
+    let new_dmin_r = toDensity(r_arr[end], currentDMin[0], currentDMax[0]);
+    let new_dmax_g = toDensity(g_arr[start], currentDMin[1], currentDMax[1]);
+    let new_dmin_g = toDensity(g_arr[end], currentDMin[1], currentDMax[1]);
+    let new_dmax_b = toDensity(b_arr[start], currentDMin[2], currentDMax[2]);
+    let new_dmin_b = toDensity(b_arr[end], currentDMin[2], currentDMax[2]);
 
-    let diff_R = density_G - density_R;
-    let diff_B = density_G - density_B;
+    currentDMin = [new_dmin_r, new_dmin_g, new_dmin_b];
+    currentDMax = [new_dmax_r, new_dmax_g, new_dmax_b];
 
-    let current_expr = parseFloat(sliders.expr.el.value);
-    let current_expb = parseFloat(sliders.expb.el.value);
+    document.getElementById('val-dmin').innerHTML = `<span class="text-red-400">${currentDMin[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMin[1].toFixed(3)}</span><span class="text-blue-400">${currentDMin[2].toFixed(3)}</span>`;
+    document.getElementById('val-dmax').innerHTML = `<span class="text-red-400">${currentDMax[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMax[1].toFixed(3)}</span><span class="text-blue-400">${currentDMax[2].toFixed(3)}</span>`;
 
-    let new_expr = current_expr + diff_R;
-    let new_expb = current_expb + diff_B;
+    document.getElementById('expr').value = 0; document.getElementById('val-expr').innerText = "0.000";
+    document.getElementById('expg').value = 0; document.getElementById('val-expg').innerText = "0.000";
+    document.getElementById('expb').value = 0; document.getElementById('val-expb').innerText = "0.000";
+    
+    updateSliderTrack(document.getElementById('expr'));
+    updateSliderTrack(document.getElementById('expg'));
+    updateSliderTrack(document.getElementById('expb'));
 
-    document.getElementById('expr').value = new_expr;
-    document.getElementById('val-expr').innerText = new_expr.toFixed(3);
-    document.getElementById('expb').value = new_expb;
-    document.getElementById('val-expb').innerText = new_expb.toFixed(3);
-
-    document.getElementById('expr').dispatchEvent(new Event('input'));
-    document.getElementById('expb').dispatchEvent(new Event('input'));
+    updateBackendParams();
     requestRender();
 }
+
+document.getElementById('btn-reset-crop').addEventListener('click', async () => {
+    if (!activeId) return; pushUndoState();
+    current_geom.crop_rect = { x: 0, y: 0, width: 1, height: 1 };
+    if (isCropMode) updateCropOverlay();
+    await invoke('update_geometry', { id: activeId, geom: current_geom });
+    await loadProxyImage();
+    requestThumbnailSync();
+});
 
 btnAutoCrop.addEventListener('click', async () => {
     if (!activeId) return; pushUndoState();
@@ -1472,14 +1511,10 @@ window.addEventListener('mousemove', (e) => {
         const startRad = Math.atan2(dragStartPos.y - dragCenter.y, dragStartPos.x - dragCenter.x);
         const currentRad = Math.atan2(e.clientY - dragCenter.y, e.clientX - dragCenter.x);
         let deltaDeg = (currentRad - startRad) * (180 / Math.PI);
+        if (e.shiftKey) {
+            deltaDeg *= 0.1; // Fine adjustment when shift is held
+        }
         let newAngle = dragStartAngle + deltaDeg;
-        if (Math.abs(newAngle) < 1.0) newAngle = 0.0;
-        else if (Math.abs(newAngle - 90) < 1.0) newAngle = 90.0;
-        else if (Math.abs(newAngle + 90) < 1.0) newAngle = -90.0;
-        else if (Math.abs(newAngle - 180) < 1.0) newAngle = 180.0;
-        else if (Math.abs(newAngle + 180) < 1.0) newAngle = -180.0;
-        
-        // Allow continuous rotation without clamping for slider
         current_geom.angle = newAngle;
         
         requestRender(); // real-time rotate rendering via uniforms

@@ -81,6 +81,8 @@
                 <div class="h-[48px] border-b border-[#28282c] flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm bg-[#1C1C1E]">
                     <div class="flex space-x-2">
                         <button id="btn-crop-mode" class="toolbar-btn" disabled>CROP</button>
+                        <button id="btn-auto-crop" class="toolbar-btn" disabled>AUTO CROP</button>
+                        <button id="btn-reset-crop" class="toolbar-btn" disabled>RESET CROP</button>
                         <button id="btn-rotate-mode" class="toolbar-btn" disabled>ROTATE</button>
                     </div>
                     <div class="w-px h-4 bg-zinc-700"></div>
@@ -154,7 +156,6 @@
                     <!-- Mode Toggle -->
                     <div class="control-group">
                         <div class="flex gap-2 mb-4">
-                            <button id="btn-auto-crop" class="flex-1 px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>AUTO CROP</button>
                             <button id="btn-auto-color" class="flex-1 px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>AUTO CALIBRATE</button>
                         </div>
                         <div class="flex items-center justify-between bg-[#121214] p-1 rounded-md border border-[#28282c]">
@@ -170,19 +171,24 @@
                             Density Limits
                         </h3>
                         <div class="flex flex-col gap-5">
-                            <div class="slider-container">
-                                <div class="flex justify-between items-center mb-2">
-                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">D-Min</label>
-                                    <span id="val-dmin" class="text-[10px] font-mono text-zinc-400">0.100</span>
+                            <div class="bg-[#121214] border border-[#28282c] rounded-md p-3 flex flex-col gap-3">
+                                <div class="flex justify-between items-center">
+                                    <label class="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">D-Min</label>
+                                    <div class="flex gap-3 text-[10px] font-mono" id="val-dmin">
+                                        <span class="text-red-400">0.100</span>
+                                        <span class="text-emerald-400">0.100</span>
+                                        <span class="text-blue-400">0.100</span>
+                                    </div>
                                 </div>
-                                <input type="range" id="dmin" class="w-full custom-range silver-track" min="0.00" max="1.00" step="0.002" value="0.10" disabled>
-                            </div>
-                            <div class="slider-container">
-                                <div class="flex justify-between items-center mb-2">
-                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">D-Max</label>
-                                    <span id="val-dmax" class="text-[10px] font-mono text-zinc-400">2.000</span>
+                                <div class="h-px w-full bg-[#28282c]"></div>
+                                <div class="flex justify-between items-center">
+                                    <label class="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">D-Max</label>
+                                    <div class="flex gap-3 text-[10px] font-mono" id="val-dmax">
+                                        <span class="text-red-400">2.000</span>
+                                        <span class="text-emerald-400">2.000</span>
+                                        <span class="text-blue-400">2.000</span>
+                                    </div>
                                 </div>
-                                <input type="range" id="dmax" class="w-full custom-range silver-track" min="0.50" max="3.00" step="0.002" value="2.00" disabled>
                             </div>
                         </div>
                     </div>

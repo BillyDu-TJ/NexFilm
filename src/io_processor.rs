@@ -3,7 +3,7 @@ use image::ImageResult;
 use rayon::prelude::*;
 
 /// 读取 16-bit 图像，结合指定的物理管线实例进行并发对数转换和去串扰。
-pub fn process_image_file(input_path: &str, output_path: &str, pipeline: &FilmPipeline, d_min: f32, d_max: f32, gamma: f32) -> ImageResult<()> {
+pub fn process_image_file(input_path: &str, output_path: &str, pipeline: &FilmPipeline, d_min: [f32; 3], d_max: [f32; 3], gamma: f32) -> ImageResult<()> {
     // 1. 读取并转换为 16-bit RGB
     let img = image::open(input_path)?;
     let mut img_buffer = img.into_rgb16();
@@ -24,9 +24,9 @@ pub fn process_image_file(input_path: &str, output_path: &str, pipeline: &FilmPi
         let density = pipeline.process_pixel(&linear_rgb);
 
         // [C] Log 映射 (The Math)：使用 d_min 和 d_max 进行区间归一化，并引入 gamma 曲线进行反差增强
-        let norm_r = ((density[0] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-        let norm_g = ((density[1] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
-        let norm_b = ((density[2] - d_min) / (d_max - d_min)).clamp(0.0, 1.0);
+        let norm_r = ((density[0] - d_min[0]) / (d_max[0] - d_min[0])).clamp(0.0, 1.0);
+        let norm_g = ((density[1] - d_min[1]) / (d_max[1] - d_min[1])).clamp(0.0, 1.0);
+        let norm_b = ((density[2] - d_min[2]) / (d_max[2] - d_min[2])).clamp(0.0, 1.0);
 
         pixel[0] = (norm_r.powf(1.0 / gamma) * 65535.0) as u16;
         pixel[1] = (norm_g.powf(1.0 / gamma) * 65535.0) as u16;

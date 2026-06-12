@@ -16,16 +16,16 @@ impl Default for FilmMode {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct DensityParams {
-    pub d_min: f32,
-    pub d_max: f32,
+    pub d_min: [f32; 3],
+    pub d_max: [f32; 3],
     pub gamma: f32,
 }
 
 impl Default for DensityParams {
     fn default() -> Self {
         Self {
-            d_min: 0.1,
-            d_max: 2.0,
+            d_min: [0.1, 0.1, 0.1],
+            d_max: [2.0, 2.0, 2.0],
             gamma: 1.0,
         }
     }
