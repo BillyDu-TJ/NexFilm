@@ -10,6 +10,7 @@ use std::io::Cursor;
 use tauri::State;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
+use serde_json::Value;
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
@@ -328,9 +329,107 @@ pub struct LutData {
     pub is_1d: bool,
 }
 
+fn extract_points(v: &Value, channel: &str) -> Vec<[f32; 2]> {
+    let mut points = Vec::new();
+    let mut target = &Value::Null;
+    if let Some(p) = v.get(channel) {
+        target = p;
+    } else if let Some(points_obj) = v.get("points") {
+        if let Some(p) = points_obj.get(channel) {
+            target = p;
+        }
+    } else if let Some(cc) = v.get("cc_params") {
+        if let Some(dc) = cc.get("density_curve") {
+            if let Some(pts) = dc.get("points") {
+                if let Some(p) = pts.get(channel) {
+                    target = p;
+                }
+            }
+        }
+    }
+
+    if let Some(arr) = target.as_array() {
+        for item in arr {
+            if let Some(pair) = item.as_array() {
+                if pair.len() >= 2 {
+                    if let (Some(x), Some(y)) = (pair[0].as_f64(), pair[1].as_f64()) {
+                        points.push([x as f32, y as f32]);
+                    }
+                }
+            }
+        }
+    }
+    points
+}
+
+fn interpolate(x: f32, points: &[[f32; 2]]) -> f32 {
+    if points.is_empty() { return x; }
+    if x <= points[0][0] { return points[0][1]; }
+    if x >= points[points.len() - 1][0] { return points[points.len() - 1][1]; }
+    for i in 0..points.len() - 1 {
+        let p0 = points[i];
+        let p1 = points[i + 1];
+        if x >= p0[0] && x <= p1[0] {
+            let mut t = 0.0;
+            if p1[0] - p0[0] > 1e-6 {
+                t = (x - p0[0]) / (p1[0] - p0[0]);
+            }
+            return p0[1] + t * (p1[1] - p0[1]);
+        }
+    }
+    x
+}
+
 #[tauri::command]
 pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
     let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+
+    if path.to_lowercase().ends_with(".json") {
+        let v: Value = serde_json::from_str(&content).map_err(|e| format!("Invalid JSON: {}", e))?;
+        let mut r_points = extract_points(&v, "r");
+        let mut g_points = extract_points(&v, "g");
+        let mut b_points = extract_points(&v, "b");
+        let rgb_points = extract_points(&v, "rgb");
+        
+        if r_points.is_empty() { r_points = rgb_points.clone(); }
+        if g_points.is_empty() { g_points = rgb_points.clone(); }
+        if b_points.is_empty() { b_points = rgb_points.clone(); }
+
+        if r_points.is_empty() {
+            return Err("No valid curve points found in JSON".to_string());
+        }
+
+        r_points.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
+        g_points.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
+        b_points.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
+
+        let size = 1024;
+        let mut data_floats: Vec<f32> = Vec::with_capacity(size * 4);
+        for i in 0..size {
+            let x = i as f32 / (size - 1) as f32;
+            let r_val = interpolate(x, &r_points);
+            let g_val = interpolate(x, &g_points);
+            let b_val = interpolate(x, &b_points);
+            data_floats.push(r_val);
+            data_floats.push(g_val);
+            data_floats.push(b_val);
+            data_floats.push(1.0); // Alpha
+        }
+
+        let data_bytes = unsafe {
+            std::slice::from_raw_parts(
+                data_floats.as_ptr() as *const u8,
+                data_floats.len() * std::mem::size_of::<f32>()
+            )
+        }.to_vec();
+
+        return Ok(LutData {
+            size: size as u32,
+            data: data_bytes,
+            is_1d: true,
+        });
+    }
+
     let mut size_3d = 0;
     let mut size_1d = 0;
     let mut data_floats: Vec<f32> = Vec::new();
@@ -525,9 +624,9 @@ pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) ->
             let pipeline = FilmPipeline::new(
                 [base_color.base_r, base_color.base_g, base_color.base_b],
                 [
-                    params.exposure + params.exp_r,
-                    params.exposure + params.exp_g,
-                    params.exposure + params.exp_b,
+                    params.exposure.exposure + params.exposure.exp_r,
+                    params.exposure.exposure + params.exposure.exp_g,
+                    params.exposure.exposure + params.exposure.exp_b,
                 ],
                 params.film_mode.clone(),
             );
@@ -539,9 +638,9 @@ pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) ->
             let pristine_pixels: &[f32] = pristine.as_raw().as_slice();
             let out_pixels: &mut [u8] = thumb_8bit.as_mut();
 
-            let d_min = params.d_min;
-            let d_max = params.d_max;
-            let gamma = params.gamma;
+            let d_min = params.density.d_min;
+            let d_max = params.density.d_max;
+            let gamma = params.density.gamma;
 
             pristine_pixels.par_chunks(3).zip(out_pixels.par_chunks_mut(3)).for_each(|(in_px, out_px)| {
                 let true_density = [in_px[0], in_px[1], in_px[2]];
@@ -746,9 +845,9 @@ pub async fn batch_export_images(
                 let pipeline = FilmPipeline::new(
                     [base_color.base_r, base_color.base_g, base_color.base_b],
                     [
-                        params.exposure + params.exp_r,
-                        params.exposure + params.exp_g,
-                        params.exposure + params.exp_b,
+                        params.exposure.exposure + params.exposure.exp_r,
+                        params.exposure.exposure + params.exposure.exp_g,
+                        params.exposure.exposure + params.exposure.exp_b,
                     ],
                     params.film_mode.clone(),
                 );
@@ -812,9 +911,9 @@ pub async fn batch_export_images(
                 let raw_pixels: &[u16] = transformed.as_raw().as_slice();
                 let out_pixels: &mut [u16] = out_buffer.as_mut();
 
-                let d_min = params.d_min;
-                let d_max = params.d_max;
-                let gamma = params.gamma;
+                let d_min = params.density.d_min;
+                let d_max = params.density.d_max;
+                let gamma = params.density.gamma;
 
                 raw_pixels.par_chunks(3).zip(out_pixels.par_chunks_mut(3)).for_each(|(in_px, out_px)| {
                     let linear_rgb = [

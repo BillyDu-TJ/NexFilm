@@ -84,8 +84,6 @@
                         <button id="btn-rotate-mode" class="toolbar-btn" disabled>ROTATE</button>
                     </div>
                     <div class="w-px h-4 bg-zinc-700"></div>
-                    <button id="btn-auto-crop" class="toolbar-btn" disabled>AUTO CROP</button>
-                    <button id="btn-auto-color" class="toolbar-btn" disabled>AUTO WB</button>
                     <button id="btn-rotate-left" class="toolbar-btn" disabled>ROT L</button>
                     <button id="btn-rotate-right" class="toolbar-btn" disabled>ROT R</button>
                     <div class="w-px h-4 bg-zinc-700"></div>
@@ -155,6 +153,10 @@
 
                     <!-- Mode Toggle -->
                     <div class="control-group">
+                        <div class="flex gap-2 mb-4">
+                            <button id="btn-auto-crop" class="flex-1 px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>AUTO CROP</button>
+                            <button id="btn-auto-color" class="flex-1 px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>AUTO CALIBRATE</button>
+                        </div>
                         <div class="flex items-center justify-between bg-[#121214] p-1 rounded-md border border-[#28282c]">
                             <button id="btn-mode-color" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all bg-[#28282c] text-zinc-100 shadow-sm disabled:opacity-50">COLOR</button>
                             <button id="btn-mode-bw" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all text-zinc-500 hover:text-zinc-300 disabled:opacity-50">B&W</button>

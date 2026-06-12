@@ -15,32 +15,74 @@ impl Default for FilmMode {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TuningParams {
-    pub film_mode: FilmMode,
+pub struct DensityParams {
     pub d_min: f32,
     pub d_max: f32,
-    pub exposure: f32,
     pub gamma: f32,
+}
+
+impl Default for DensityParams {
+    fn default() -> Self {
+        Self {
+            d_min: 0.1,
+            d_max: 2.0,
+            gamma: 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ExposureParams {
+    pub exposure: f32,
     pub exp_r: f32,
     pub exp_g: f32,
     pub exp_b: f32,
+}
+
+impl Default for ExposureParams {
+    fn default() -> Self {
+        Self {
+            exposure: 0.0,
+            exp_r: 0.0,
+            exp_g: 0.0,
+            exp_b: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ToneParams {
     pub highlights: f32,
     pub shadows: f32,
+}
+
+impl Default for ToneParams {
+    fn default() -> Self {
+        Self {
+            highlights: 0.0,
+            shadows: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TuningParams {
+    pub film_mode: FilmMode,
+    #[serde(flatten)]
+    pub density: DensityParams,
+    #[serde(flatten)]
+    pub exposure: ExposureParams,
+    #[serde(flatten)]
+    pub tone: ToneParams,
 }
 
 impl Default for TuningParams {
     fn default() -> Self {
         Self {
             film_mode: FilmMode::Color,
-            d_min: 0.1,
-            d_max: 2.0,
-            exposure: 0.0,
-            gamma: 1.0,
-            exp_r: 0.0,
-            exp_g: 0.0,
-            exp_b: 0.0,
-            highlights: 0.0,
-            shadows: 0.0,
+            density: DensityParams::default(),
+            exposure: ExposureParams::default(),
+            tone: ToneParams::default(),
         }
     }
 }

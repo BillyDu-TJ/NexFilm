@@ -80,6 +80,8 @@ let activeId = null;
 let proxyPixels = null;
 let proxyWidth = 0;
 let proxyHeight = 0;
+
+let lastHistPixels = null;
 let current_geom = { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
 let isCropMode = false;
 let isRotateMode = false;
@@ -302,8 +304,10 @@ let u_shadows_loc;
 let u_lut3d_loc;
 let u_lut_opacity_loc;
 let u_has_lut_loc;
+let u_lut_is_1d_loc;
 let u_image_loc;
 let u_aspect_loc;
+let u_crop_loc;
 
 let currentBaseDensity = [0, 0, 0];
 let webGLInitialized = false;
@@ -322,13 +326,18 @@ function initWebGL() {
     out vec2 v_texcoord;
     uniform mat4 u_transform;
     uniform float u_aspect;
+    uniform vec4 u_crop;
     void main() {
         vec4 pos = a_position;
         pos.x *= u_aspect;
         pos = u_transform * pos;
         pos.x /= u_aspect;
         gl_Position = pos;
-        v_texcoord = vec2(a_texcoord.x, 1.0 - a_texcoord.y);
+        vec2 base_uv = vec2(a_texcoord.x, 1.0 - a_texcoord.y);
+        v_texcoord = vec2(
+            u_crop.x + base_uv.x * u_crop.z,
+            u_crop.y + base_uv.y * u_crop.w
+        );
     }`;
 
     const fsSource = `#version 300 es
@@ -455,6 +464,7 @@ function initWebGL() {
     u_lut_is_1d_loc = gl.getUniformLocation(shaderProgram, "u_lut_is_1d");
     u_image_loc = gl.getUniformLocation(shaderProgram, "u_image");
     u_aspect_loc = gl.getUniformLocation(shaderProgram, "u_aspect");
+    u_crop_loc = gl.getUniformLocation(shaderProgram, "u_crop");
     
     gl.getExtension("OES_texture_float_linear");
 
@@ -699,17 +709,41 @@ function drawWaveform(pixels) {
     const w = waveCanvas.width, h = waveCanvas.height;
     
     waveCtx.clearRect(0, 0, w, h);
-    waveCtx.globalCompositeOperation = 'lighter';
-    waveCtx.fillStyle = 'rgba(180, 200, 255, 0.05)';
+    waveCtx.globalCompositeOperation = 'screen';
     
+    // Draw Red
+    waveCtx.fillStyle = 'rgba(255, 0, 0, 0.1)';
     for (let y = 0; y < HIST_SIZE; y+=2) {
         for (let x = 0; x < HIST_SIZE; x+=2) {
             const idx = (y * HIST_SIZE + x) * 4;
-            const r = pixels[idx], g = pixels[idx+1], b = pixels[idx+2];
-            const lum = 0.299*r + 0.587*g + 0.114*b;
+            const r = pixels[idx];
             const plotX = (x / HIST_SIZE) * w;
-            const plotY = h - (lum / 255.0) * h;
-            waveCtx.fillRect(plotX, plotY, 2, 2);
+            const plotY_R = h - (r / 255.0) * h;
+            waveCtx.fillRect(plotX, plotY_R, 2, 2);
+        }
+    }
+    
+    // Draw Green
+    waveCtx.fillStyle = 'rgba(0, 255, 0, 0.1)';
+    for (let y = 0; y < HIST_SIZE; y+=2) {
+        for (let x = 0; x < HIST_SIZE; x+=2) {
+            const idx = (y * HIST_SIZE + x) * 4;
+            const g = pixels[idx+1];
+            const plotX = (x / HIST_SIZE) * w;
+            const plotY_G = h - (g / 255.0) * h;
+            waveCtx.fillRect(plotX, plotY_G, 2, 2);
+        }
+    }
+    
+    // Draw Blue
+    waveCtx.fillStyle = 'rgba(0, 150, 255, 0.1)';
+    for (let y = 0; y < HIST_SIZE; y+=2) {
+        for (let x = 0; x < HIST_SIZE; x+=2) {
+            const idx = (y * HIST_SIZE + x) * 4;
+            const b = pixels[idx+2];
+            const plotX = (x / HIST_SIZE) * w;
+            const plotY_B = h - (b / 255.0) * h;
+            waveCtx.fillRect(plotX, plotY_B, 2, 2);
         }
     }
 }
@@ -783,14 +817,21 @@ function renderWebGL() {
     }
 
     // Render to FBO for Histogram
+    gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.viewport(0, 0, HIST_SIZE, HIST_SIZE);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     
     const pixels = new Uint8Array(HIST_SIZE * HIST_SIZE * 4);
     gl.readPixels(0, 0, HIST_SIZE, HIST_SIZE, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    lastHistPixels = pixels;
 
     // Render to Main Canvas
+    if (!isCropMode) {
+        gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
+    } else {
+        gl.uniform4f(u_crop_loc, 0.0, 0.0, 1.0, 1.0);
+    }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
     gl.clearColor(0, 0, 0, 1);
@@ -1286,126 +1327,67 @@ btnFlipV.addEventListener('click', async () => {
 });
 
 async function doAutoColor() {
-    if (!activeId) return;
-    try {
-        const result = await invoke('get_proxy_image_data', { id: activeId });
-        let arrayBuffer = result.buffer instanceof ArrayBuffer ? result.buffer : (result instanceof ArrayBuffer ? result : new Uint8Array(result).buffer);
-        let byteOffset = result.byteOffset || 0;
-        
-        let sendBuffer = arrayBuffer;
-        if (byteOffset !== 0 || arrayBuffer.byteLength !== (result.byteLength || result.length)) {
-            sendBuffer = arrayBuffer.slice(byteOffset, byteOffset + (result.byteLength || result.length));
-        }
+    if (!activeId || !lastHistPixels) return;
 
-        const workerCode = `
-        self.onmessage = function(e) {
-            const arrayBuffer = e.data.buffer;
-            const baseDensity = e.data.baseDensity;
-            const dataView = new DataView(arrayBuffer);
-            const width = dataView.getUint32(0, true);
-            const height = dataView.getUint32(4, true);
-            const pixels = new Uint16Array(arrayBuffer, 20, width * height * 4);
-            
-            // 2. & 3. D-Min and D-Max from 16-bit linear data
-            let trans = new Float32Array(width * height);
-            for (let i = 0; i < width * height; i++) {
-                let r = Math.max(1e-6, pixels[i * 4] / 65535.0);
-                let g = Math.max(1e-6, pixels[i * 4 + 1] / 65535.0);
-                let b = Math.max(1e-6, pixels[i * 4 + 2] / 65535.0);
-                trans[i] = Math.max(r, Math.max(g, b));
-            }
-            trans.sort();
-            let trans_max = trans[Math.floor(trans.length * 0.999)];
-            let dmin_val = -Math.log10(trans_max);
-            let trans_min = trans[Math.floor(trans.length * 0.001)];
-            let dmax_val = -Math.log10(trans_min);
-            
-            let final_dmin = Math.max(0, dmin_val);
-            let final_dmax = Math.max(final_dmin + 0.1, Math.min(3.0, dmax_val));
-            
-            // 5. Auto White Balance in pure log density (Status M applied)
-            let minX = Math.floor(width * 0.2);
-            let maxX = Math.floor(width * 0.8);
-            let minY = Math.floor(height * 0.2);
-            let maxY = Math.floor(height * 0.8);
-            let centerCount = (maxX - minX) * (maxY - minY);
-            let r_densities = new Float32Array(centerCount);
-            let g_densities = new Float32Array(centerCount);
-            let b_densities = new Float32Array(centerCount);
-            
-            let idx = 0;
-            for (let y = minY; y < maxY; y++) {
-                for (let x = minX; x < maxX; x++) {
-                    let i = y * width + x;
-                    let r = Math.max(1e-6, pixels[i * 4] / 65535.0);
-                    let g = Math.max(1e-6, pixels[i * 4 + 1] / 65535.0);
-                    let b = Math.max(1e-6, pixels[i * 4 + 2] / 65535.0);
-                    
-                    let dr = -Math.log10(r);
-                    let dg = -Math.log10(g);
-                    let db = -Math.log10(b);
-                    
-                    let d_r = dr - baseDensity[0];
-                    let d_g = dg - baseDensity[1];
-                    let d_b = db - baseDensity[2];
-                    
-                    let tr = 1.0197 * d_r - 0.0052 * d_g + 0.0131 * d_b;
-                    let tg = 0.0317 * d_r + 0.8933 * d_g - 0.0011 * d_b;
-                    let tb = 0.0091 * d_r + 0.0521 * d_g + 0.9712 * d_b;
-                    
-                    tr -= final_dmin;
-                    tg -= final_dmin;
-                    tb -= final_dmin;
-                    
-                    r_densities[idx] = tr;
-                    g_densities[idx] = tg;
-                    b_densities[idx] = tb;
-                    idx++;
-                }
-            }
-            r_densities.sort();
-            g_densities.sort();
-            b_densities.sort();
-            
-            let mid = Math.floor(centerCount / 2);
-            let delta_r = g_densities[mid] - r_densities[mid];
-            let delta_b = g_densities[mid] - b_densities[mid];
-            
-            self.postMessage({
-                dmin: final_dmin,
-                dmax: final_dmax,
-                delta_r: delta_r,
-                delta_b: delta_b
-            });
-        };
-        `;
-        
-        const blob = new Blob([workerCode], {type: 'application/javascript'});
-        const worker = new Worker(URL.createObjectURL(blob));
-        
-        worker.onmessage = function(e) {
-            const { dmin, dmax, delta_r, delta_b } = e.data;
-            
-            document.getElementById('dmin').value = dmin;
-            document.getElementById('val-dmin').innerText = dmin.toFixed(3);
-            document.getElementById('dmax').value = dmax;
-            document.getElementById('val-dmax').innerText = dmax.toFixed(3);
-            document.getElementById('expr').value = delta_r;
-            document.getElementById('val-expr').innerText = delta_r.toFixed(3);
-            document.getElementById('expb').value = delta_b;
-            document.getElementById('val-expb').innerText = delta_b.toFixed(3);
-            
-            document.getElementById('dmin').dispatchEvent(new Event('input'));
-            document.getElementById('dmax').dispatchEvent(new Event('input'));
-            document.getElementById('expr').dispatchEvent(new Event('input'));
-            document.getElementById('expb').dispatchEvent(new Event('input'));
-            
-            requestRender();
-            worker.terminate();
-        };
-        
-        worker.postMessage({ buffer: sendBuffer, baseDensity: currentBaseDensity }, [sendBuffer]);
-    } catch(e) { console.error("Auto Color failed", e); }
+    let r_arr = [];
+    let g_arr = [];
+    let b_arr = [];
+
+    for (let i = 0; i < lastHistPixels.length; i += 4) {
+        r_arr.push(lastHistPixels[i]);
+        g_arr.push(lastHistPixels[i+1]);
+        b_arr.push(lastHistPixels[i+2]);
+    }
+
+    r_arr.sort((a,b)=>a-b);
+    g_arr.sort((a,b)=>a-b);
+    b_arr.sort((a,b)=>a-b);
+
+    let start = Math.floor(r_arr.length * 0.1);
+    let end = Math.floor(r_arr.length * 0.9);
+    let count = end - start;
+    if (count <= 0) return;
+
+    let r_core = r_arr.slice(start, end);
+    let g_core = g_arr.slice(start, end);
+    let b_core = b_arr.slice(start, end);
+
+    let mid = Math.floor(count / 2);
+    let r_med = r_core[mid];
+    let g_med = g_core[mid];
+    let b_med = b_core[mid];
+
+    const dminVal = parseFloat(sliders.dmin.el.value);
+    const dmaxVal = parseFloat(sliders.dmax.el.value);
+    const gammaVal = parseFloat(sliders.gamma.el.value);
+
+    // Convert 8-bit back to normalized density
+    function toDensity(val) {
+        let norm = Math.pow(val / 255.0, gammaVal);
+        return norm * (dmaxVal - dminVal) + dminVal;
+    }
+
+    let density_R = toDensity(r_med);
+    let density_G = toDensity(g_med);
+    let density_B = toDensity(b_med);
+
+    let diff_R = density_G - density_R;
+    let diff_B = density_G - density_B;
+
+    let current_expr = parseFloat(sliders.expr.el.value);
+    let current_expb = parseFloat(sliders.expb.el.value);
+
+    let new_expr = current_expr + diff_R;
+    let new_expb = current_expb + diff_B;
+
+    document.getElementById('expr').value = new_expr;
+    document.getElementById('val-expr').innerText = new_expr.toFixed(3);
+    document.getElementById('expb').value = new_expb;
+    document.getElementById('val-expb').innerText = new_expb.toFixed(3);
+
+    document.getElementById('expr').dispatchEvent(new Event('input'));
+    document.getElementById('expb').dispatchEvent(new Event('input'));
+    requestRender();
 }
 
 btnAutoCrop.addEventListener('click', async () => {
