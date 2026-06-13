@@ -1587,26 +1587,10 @@ document.getElementById('btn-confirm-continue').addEventListener('click', async 
     
     document.getElementById('continue-roll-modal').classList.add('opacity-0', 'pointer-events-none');
     
-    try {
-        const paths = await invoke('open_file_dialog');
-        if (paths && paths.length > 0) {
-            await invoke('append_to_roll', { rollId, paths });
-            currentRollViewId = rollId;
-            await renderLibraryAndFilmstrip();
-            
-            if (allLibraryItems && allLibraryItems.length > 0) {
-                const newPath = paths[0];
-                const newPhoto = allLibraryItems.find(i => i.file_path === newPath || i.file_path.replace(/\\\\/g, '/') === newPath);
-                if (newPhoto) {
-                    await selectImage(newPhoto.id);
-                    switchView('develop');
-                }
-            }
-            showToast("Images appended to roll.", "success");
-        }
-    } catch(e) {
-        showToast("Failed to continue roll: " + e, "error");
-    }
+    currentRollViewId = rollId;
+    selectedLibraryIds.clear();
+    await renderLibraryAndFilmstrip();
+    switchView('history');
 });
 
 function loadPersistedMetadata() {
