@@ -386,6 +386,7 @@ let u_image_aspect_loc;
 let u_crop_loc;
 let u_calib_pts_loc;
 let u_border_exposure_loc;
+let u_baseline_pass_loc;
 
 let currentBaseDensity = [0, 0, 0];
 let webGLInitialized = false;
@@ -436,6 +437,8 @@ function initWebGL() {
     
     uniform float u_highlights;
     uniform float u_shadows;
+    
+    uniform int u_baseline_pass;
     
     uniform mediump sampler3D u_lut3d;
     uniform mediump sampler2D u_lut1d;
@@ -514,6 +517,10 @@ function initWebGL() {
                 final_rgb = vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma));
             }
         } else {
+            if (u_baseline_pass == 1) {
+                outColor = vec4(0.0, 0.0, 0.0, 0.0);
+                return;
+            }
             final_rgb = vec3(1.0) - vec3(t_r, t_g, t_b);
             final_rgb *= exp2(u_border_exposure);
             final_rgb = vec3(pow(clamp(final_rgb.r, 0.0, 1.0), 1.0 / u_gamma), 
@@ -564,6 +571,7 @@ function initWebGL() {
     u_crop_loc = gl.getUniformLocation(shaderProgram, "u_crop");
     u_calib_pts_loc = gl.getUniformLocation(shaderProgram, "u_calib_pts");
     u_border_exposure_loc = gl.getUniformLocation(shaderProgram, "u_border_exposure");
+    u_baseline_pass_loc = gl.getUniformLocation(shaderProgram, "u_baseline_pass");
     
     gl.getExtension("OES_texture_float_linear");
 
@@ -898,6 +906,7 @@ function renderWebGL() {
     gl.uniform3f(u_exposure_loc, expVal + exprVal, expVal + expgVal, expVal + expbVal);
     gl.uniform1f(u_gamma_loc, gammaVal);
     gl.uniform1i(u_mode_loc, mode);
+    gl.uniform1i(u_baseline_pass_loc, 0);
     
     gl.uniform1f(u_highlights_loc, parseFloat(sliders.highlights.el.value));
     gl.uniform1f(u_shadows_loc, parseFloat(sliders.shadows.el.value));
@@ -1256,6 +1265,7 @@ async function renderLibraryAndFilmstrip() {
                     updateLibrarySelectionUI();
                 };
                 const libImg = document.createElement('img');
+                libImg.dataset.imgId = item.id;
                 if (item.thumbnail_base64 === "FILE_MISSING") {
                     libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
                     libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
@@ -1288,8 +1298,8 @@ async function renderLibraryAndFilmstrip() {
                 historyTitle.textContent = "ROLL CONTENTS";
                 
                 const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
-                const rollPaths = currentRoll ? new Set(currentRoll.image_paths) : new Set();
-                const rollItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\/g, '/')) || rollPaths.has(item.file_path));
+                const rollPaths = currentRoll ? new Set(currentRoll.image_paths.map(p => p.replace(/\\/g, '/').toLowerCase())) : new Set();
+                const rollItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\/g, '/').toLowerCase()));
                 
                 rollItems.forEach(item => {
                     const libDiv = document.createElement('div');
@@ -1326,6 +1336,7 @@ if (e.shiftKey && lastSelectedLibraryId) {
                         updateLibrarySelectionUI();
                     };
                     const libImg = document.createElement('img');
+                    libImg.dataset.imgId = item.id;
                     if (item.thumbnail_base64 === "FILE_MISSING") {
                         libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
                         libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
@@ -1357,16 +1368,15 @@ if (e.shiftKey && lastSelectedLibraryId) {
                     document.getElementById('delete-action-bar').classList.add('hidden');
                 }
                 
-                filteredRolls.forEach(roll => {
-                    const rollPaths = new Set(roll.image_paths);
+                for (const roll of filteredRolls) {
                     let thumbSrc = '';
-                    const firstItem = items.find(item => rollPaths.has(item.file_path.replace(/\\\\/g, '/')) || rollPaths.has(item.file_path));
-                    if (firstItem) {
-                        if (firstItem.thumbnail_base64 === "FILE_MISSING") {
-                            thumbSrc = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
-                        } else {
-                            thumbSrc = `data:image/jpeg;base64,${firstItem.thumbnail_base64}`;
+                    try {
+                        const previews = await invoke('get_roll_previews', { rollId: roll.roll_id });
+                        if (previews && previews.length > 0) {
+                            thumbSrc = `data:image/jpeg;base64,${previews[0]}`;
                         }
+                    } catch (e) {
+                        console.error(e);
                     }
                     
                     const card = document.createElement('div');
@@ -1386,7 +1396,7 @@ if (e.shiftKey && lastSelectedLibraryId) {
                         } else {
                             currentRollViewId = roll.roll_id;
                             selectedLibraryIds.clear();
-                            const pathsToImport = roll.image_paths.filter(p => !allLibraryItems.some(item => item.file_path === p || item.file_path.replace(/\\/g, '/') === p));
+                            const pathsToImport = roll.image_paths.filter(p => !allLibraryItems.some(item => item.file_path.replace(/\\/g, '/').toLowerCase() === p.replace(/\\/g, '/').toLowerCase()));
                             if (pathsToImport.length > 0) {
                                 document.getElementById('history-view-title').textContent = "LOADING ROLL...";
                                 try {
@@ -1415,7 +1425,7 @@ if (e.shiftKey && lastSelectedLibraryId) {
                         </div>
                     `;
                     libraryRollsGrid.appendChild(card);
-                });
+                }
             }
         }
         
@@ -1424,8 +1434,8 @@ if (e.shiftKey && lastSelectedLibraryId) {
         if (currentRollViewId) {
             const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
             if (currentRoll) {
-                const rollPaths = new Set(currentRoll.image_paths);
-                filmstripItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\/g, '/')) || rollPaths.has(item.file_path));
+                const rollPaths = new Set(currentRoll.image_paths.map(p => p.replace(/\\/g, '/').toLowerCase()));
+                filmstripItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\/g, '/').toLowerCase()));
                 invoke('start_precache', { ids: filmstripItems.map(i => i.id) }).catch(e => console.error("Precache error", e));
             }
         }
@@ -1439,6 +1449,7 @@ if (e.shiftKey && lastSelectedLibraryId) {
                 updateLibrarySelectionUI();
             };
             const stripImg = document.createElement('img');
+            stripImg.dataset.imgId = item.id;
             if (item.thumbnail_base64 === "FILE_MISSING") {
                 stripImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
                 stripImg.className = 'w-full h-full object-contain rounded-[2px] pointer-events-none opacity-50 bg-[#1C1C1E] p-2';
@@ -1701,6 +1712,20 @@ document.getElementById('btn-confirm-continue').addEventListener('click', async 
     
     currentRollViewId = rollId;
     selectedLibraryIds.clear();
+    
+    const roll = allRolls.find(r => r.roll_id === rollId);
+    if (roll) {
+        const pathsToImport = roll.image_paths.filter(p => !allLibraryItems.some(item => item.file_path.replace(/\\/g, '/').toLowerCase() === p.replace(/\\/g, '/').toLowerCase()));
+        if (pathsToImport.length > 0) {
+            document.getElementById('history-view-title').textContent = "LOADING ROLL...";
+            try {
+                await invoke('import_images', { paths: pathsToImport });
+                allLibraryItems = await invoke('get_filmstrip');
+            } catch (e) { console.error(e); }
+            document.getElementById('history-view-title').textContent = "ROLL CONTENTS";
+        }
+    }
+    
     await renderLibraryAndFilmstrip();
     switchView('history');
 });
@@ -2037,13 +2062,69 @@ btnFlipV.addEventListener('click', () => {
 });
 
 async function doAutoColor() {
-    if (!activeId || !lastHistPixels) return;
+    if (!activeId || !gl) return;
 
+    // --- PHASE 1: Baseline Isolation ---
+    // Force WebGL to a neutral state to prevent color feedback loops.
+    // D-min=0, D-max=3, Exposure=0, Gamma=1, no LUT/Shadows/Highlights.
+    const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 0 : 1;
+    gl.useProgram(shaderProgram);
+    gl.bindVertexArray(vao);
+    
+    gl.uniform3f(u_base_density_loc, currentBaseDensity[0], currentBaseDensity[1], currentBaseDensity[2]);
+    gl.uniform3f(u_dmin_loc, 0.0, 0.0, 0.0);
+    gl.uniform3f(u_dmax_loc, 3.0, 3.0, 3.0);
+    gl.uniform3f(u_exposure_loc, 0.0, 0.0, 0.0);
+    gl.uniform1f(u_gamma_loc, 1.0);
+    gl.uniform1i(u_mode_loc, mode);
+    gl.uniform1f(u_highlights_loc, 0.0);
+    gl.uniform1f(u_shadows_loc, 0.0);
+    gl.uniform1i(u_has_lut_loc, 0);
+    gl.uniform1i(u_baseline_pass_loc, 1);
+
+    // Transformation & calibration uniforms
+    let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
+    let flat_pts = new Float32Array([
+        pts[0][0], pts[0][1], pts[1][0], pts[1][1],
+        pts[2][0], pts[2][1], pts[3][0], pts[3][1]
+    ]);
+    gl.uniform2fv(u_calib_pts_loc, flat_pts);
+    gl.uniform1f(u_border_exposure_loc, 0.0);
+    
+    let a = current_geom.angle * Math.PI / 180.0;
+    if (!isCropMode && !isRotateMode) a = 0;
+    let s = Math.sin(a), c = Math.cos(a);
+    let transformMat = new Float32Array([
+        c, s, 0, 0,
+        -s, c, 0, 0,
+        0, 0, 1, 0,
+        0, 0, 0, 1
+    ]);
+    gl.uniformMatrix4fv(u_transform_loc, false, transformMat);
+    gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
+    
+    gl.uniform1f(u_aspect_loc, gl.canvas.width / gl.canvas.height);
+    gl.uniform1f(u_image_aspect_loc, proxyWidth / proxyHeight);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+
+    // Render pure image to FBO
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+    gl.viewport(0, 0, HIST_W, HIST_H);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    
+    const purePixels = new Uint8Array(HIST_W * HIST_H * 4);
+    gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, purePixels);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+    // --- PHASE 2: Calculation ---
     let r_arr = []; let g_arr = []; let b_arr = [];
-    for (let i = 0; i < lastHistPixels.length; i += 4) {
-        r_arr.push(lastHistPixels[i]);
-        g_arr.push(lastHistPixels[i+1]);
-        b_arr.push(lastHistPixels[i+2]);
+    for (let i = 0; i < purePixels.length; i += 4) {
+        if (purePixels[i+3] === 0) continue; // Skip pixels outside the calibration quad
+        r_arr.push(purePixels[i]);
+        g_arr.push(purePixels[i+1]);
+        b_arr.push(purePixels[i+2]);
     }
 
     r_arr.sort((a,b)=>a-b);
@@ -2072,24 +2153,23 @@ async function doAutoColor() {
     let [gStart, gEnd] = computeExtremes(g_arr);
     let [bStart, bEnd] = computeExtremes(b_arr);
 
-
-    const gammaVal = parseFloat(sliders.gamma.el.value);
-
-    function toDensity(val, channelDmin, channelDmax) {
-        let norm = Math.pow(val / 255.0, gammaVal);
-        return norm * (channelDmax - channelDmin) + channelDmin;
+    // In Baseline Isolation (Dmin=0, Dmax=3.0, Gamma=1.0),
+    // norm = density / 3.0 -> screen_val = norm * 255.
+    // So to retrieve true density from screen_val: density = (val / 255.0) * 3.0
+    function toDensity(val) {
+        return (val / 255.0) * 3.0;
     }
 
     const batchState = {
         dmin: [
-            toDensity(rStart, currentDMin[0], currentDMax[0]),
-            toDensity(gStart, currentDMin[1], currentDMax[1]),
-            toDensity(bStart, currentDMin[2], currentDMax[2])
+            toDensity(rStart),
+            toDensity(gStart),
+            toDensity(bStart)
         ],
         dmax: [
-            toDensity(rEnd, currentDMin[0], currentDMax[0]),
-            toDensity(gEnd, currentDMin[1], currentDMax[1]),
-            toDensity(bEnd, currentDMin[2], currentDMax[2])
+            toDensity(rEnd),
+            toDensity(gEnd),
+            toDensity(bEnd)
         ]
     };
 
@@ -2735,6 +2815,18 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 const { listen } = window.__TAURI__.event;
 
+listen('thumbnail_updated', (event) => {
+    const { id, thumbnail } = event.payload;
+    const item = allLibraryItems.find(i => i.id === id);
+    if (item) {
+        item.thumbnail_base64 = thumbnail;
+    }
+    // Update any img elements showing this thumbnail
+    document.querySelectorAll(`img[data-img-id="${id}"]`).forEach(img => {
+        img.src = "data:image/jpeg;base64," + thumbnail;
+    });
+});
+
 listen('tauri://file-drop-hover', (event) => {
     document.getElementById('drag-overlay').classList.remove('hidden');
 });
@@ -2773,8 +2865,7 @@ window.addEventListener('keyup', e => { if(e.code==='Space') isSpacePressed=fals
 
 canvasWrapper.parentElement.addEventListener('mousedown', e => {
     if (!activeId || isCropMode || isRotateMode || isCalibrationMode) return;
-    if (e.button === 1 || (e.button === 0 && isSpacePressed)) {
-        if (zoomLevel <= 1.0) return;
+    if (e.button === 0 || e.button === 1) {
         isPanning = true;
         startPanX = e.clientX - panX;
         startPanY = e.clientY - panY;
