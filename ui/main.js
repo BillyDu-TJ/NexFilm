@@ -2450,7 +2450,7 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
         
         ctx.fillStyle = '#888888';
         ctx.font = '24px Inter, Helvetica, sans-serif';
-        ctx.fillText(`Order #${currentRoll.roll_id} | ${currentRoll.camera || 'Unknown Camera'} | ${totalImages} images (${emptyFrames} empty)`, canvasW - outerMargin, footerY + 10);
+        ctx.fillText(`${currentRoll.date || 'Unknown Date'} | ${currentRoll.camera || 'Unknown Camera'} | ${totalImages} images (${emptyFrames} empty)`, canvasW - outerMargin, footerY + 10);
 
         // 8. Convert to high quality JPEG
         const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
