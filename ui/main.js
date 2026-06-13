@@ -475,10 +475,9 @@ function initWebGL() {
         bool is_inside = is_inside_quad(v_texcoord, u_calib_pts[0], u_calib_pts[1], u_calib_pts[2], u_calib_pts[3]);
         
         if (is_inside) {
-            // 1. 鑾峰彇 Log 鏁版嵁
             vec3 density = vec3(-log(t_r) / log(10.0), -log(t_g) / log(10.0), -log(t_b) / log(10.0));
             
-            // 2. 鐗囧熀涓庝覆鎵?            if (u_mode == 0) {
+            if (u_mode == 0) {
                 density = STATUS_M * (density - u_base_density);
             } else {
                 density = density - u_base_density;
@@ -486,18 +485,16 @@ function initWebGL() {
                 density = vec3(gray);
             }
             
-            // 3. 鏇濆厜涓庤壊褰╁榻?            if (u_mode == 0) {
+            if (u_mode == 0) {
                 density += u_exposure;
             } else {
                 density += vec3(u_exposure.r);
             }
             
-            // 4. 瀵规暟鍩熼珮鍏?闃村奖 (Log Tone Control) & 5. 褰掍竴鍖栦笌鏁板鎴柇
             vec3 norm = (density - u_dmin) / (u_dmax - u_dmin);
             
             norm = norm + u_shadows * pow(1.0 - clamp(norm, 0.0, 1.0), vec3(2.0)) * norm + u_highlights * pow(clamp(norm, 0.0, 1.0), vec3(2.0)) * (1.0 - norm);
             
-            // 6. 搴旂敤 LUT
             if (u_has_lut == 1) {
                 vec3 lut_in = clamp(norm, 0.0, 1.0);
                 vec3 lut_color;
@@ -510,7 +507,6 @@ function initWebGL() {
                 }
                 final_rgb = mix(vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma)), lut_color, u_lut_opacity);
             } else {
-                // 7. 缁堢鏄剧ず鏄犲皠
                 final_rgb = vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma));
             }
         } else {
@@ -1361,7 +1357,7 @@ if (e.shiftKey && lastSelectedLibraryId) {
                         card.style.border = "1px solid #28282c";
                     }
 
-                    card.onclick = () => {
+                    card.onclick = async () => {
                         if (isDeleteMode) {
                             if (selectedRollIds.has(roll.roll_id)) selectedRollIds.delete(roll.roll_id);
                             else selectedRollIds.add(roll.roll_id);
