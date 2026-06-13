@@ -184,12 +184,12 @@
                         </div>
 
                         <!-- Calibration Mode Overlay -->
-                        <div id="calibration-overlay" class="absolute top-0 left-0 w-full h-full z-30 hidden flex-col items-center justify-center pointer-events-auto">
+                        <div id="calibration-overlay" class="absolute top-0 left-0 w-full h-full z-30 hidden pointer-events-auto">
                             <div class="absolute inset-0 bg-black/50 pointer-events-none"></div>
-                            <div class="relative z-40 bg-zinc-900/90 border border-orange-500/50 text-orange-200 px-8 py-8 rounded-lg shadow-2xl text-center max-w-xl backdrop-blur flex flex-col items-center pointer-events-auto">
+                            <div class="absolute top-6 right-6 z-40 bg-zinc-900/90 border border-orange-500/50 text-orange-200 px-6 py-6 rounded-lg shadow-2xl text-center max-w-[320px] backdrop-blur flex flex-col items-center pointer-events-auto">
                                 <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Calibration Mode</h3>
                                 <p class="text-xs leading-relaxed text-zinc-300">请拖动四角，将选框严格贴合胶片实际成像区域（排除所有黑色边框与齿孔）。此步骤仅用于精确色彩解码，不影响最终带边框导出。</p>
-                                <button id="btn-confirm-calibration" class="mt-6 px-10 py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg pointer-events-auto">CONFIRM</button>
+                                <button id="btn-confirm-calibration" class="mt-6 w-full py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg pointer-events-auto">CONFIRM</button>
                             </div>
                             <svg id="calibration-svg" class="absolute top-0 left-0 w-full h-full overflow-visible pointer-events-none z-20">
                                 <polygon id="calibration-polygon" points="" fill="rgba(249,115,22,0.1)" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4 4" class="pointer-events-auto"></polygon>

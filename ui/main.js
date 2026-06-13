@@ -1418,15 +1418,13 @@ async function selectImage(id) {
         if (!current_geom.calibration_points) {
             isCalibrationMode = true;
             document.getElementById('calibration-overlay').classList.remove('hidden');
-            document.getElementById('calibration-overlay').classList.add('flex');
             document.getElementById('right-panel-blocker').classList.remove('hidden');
             
-            calibrationPoints = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]];
+            calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
             requestAnimationFrame(updateCalibrationPolygon);
         } else {
             isCalibrationMode = false;
             document.getElementById('calibration-overlay').classList.add('hidden');
-            document.getElementById('calibration-overlay').classList.remove('flex');
             document.getElementById('right-panel-blocker').classList.add('hidden');
         }
 
@@ -2297,115 +2295,165 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
 
         if (rollItems.length === 0) throw new Error("No images in roll");
 
-        // Use 3000px width
-        const canvasW = 3000;
-        // 5 columns
-        const cols = 5;
-        const padding = 60;
-        const colWidth = (canvasW - padding * (cols + 1)) / cols;
-        // Assume 3:2 ratio for rough height calculation
-        const colHeight = colWidth * (2/3); 
-        const rows = Math.ceil(rollItems.length / cols);
+        // 1. Determine frames_per_row and format flag
+        let formatStr = currentRoll.format ? currentRoll.format.toLowerCase() : "135";
+        let is120 = formatStr.includes("120");
+        let frames_per_row = 6;
+        let aspect = 2/3; // fallback 3:2
+
+        if (is120) {
+            if (formatStr.includes("6x4.5") || formatStr.includes("645")) { frames_per_row = 4; aspect = 3/4; }
+            else if (formatStr.includes("6x6")) { frames_per_row = 4; aspect = 1; }
+            else if (formatStr.includes("6x7")) { frames_per_row = 3; aspect = 6/7; }
+            else if (formatStr.includes("6x9")) { frames_per_row = 2; aspect = 2/3; }
+            else { frames_per_row = 3; aspect = 1; }
+        }
+
+        // 2. Pad with empty frames
+        const totalRows = Math.ceil(rollItems.length / frames_per_row);
+        const emptyFrames = (totalRows * frames_per_row) - rollItems.length;
+        const totalImages = rollItems.length; // store original
         
-        // Footer height 300
-        const footerHeight = 300;
-        const canvasH = padding + rows * (colHeight + padding) + footerHeight;
+        for (let i = 0; i < emptyFrames; i++) {
+            rollItems.push({ isEmpty: true });
+        }
+
+        const rows = totalRows;
+        
+        // 3. Math for grid layout
+        const canvasW = 3000;
+        const outerMargin = 100;
+        const hGap = is120 ? (canvasW * 0.02) : 0;
+        const totalHGap = hGap * (frames_per_row - 1);
+        const colWidth = (canvasW - outerMargin * 2 - totalHGap) / frames_per_row;
+        const colHeight = colWidth * aspect;
+        
+        const borderH = colHeight * 0.18; // 18% for top and bottom borders
+        const rowHeightTotal = colHeight + borderH * 2;
+        const vGap = is120 ? (rowHeightTotal * 0.15) : (rowHeightTotal * 0.08);
+        const footerHeight = 250;
+        
+        const canvasH = outerMargin + rows * rowHeightTotal + (rows > 1 ? (rows - 1) * vGap : 0) + footerHeight;
 
         const canvas = document.createElement('canvas');
         canvas.width = canvasW;
         canvas.height = canvasH;
         const ctx = canvas.getContext('2d');
 
-        // Draw background
-        ctx.fillStyle = '#121214'; // Dark background
+        // 4. Background (Dark Paper Color)
+        ctx.fillStyle = '#121214';
         ctx.fillRect(0, 0, canvasW, canvasH);
+        
+        const filmName = (currentRoll.film_stock || 'UNKNOWN FILM').toUpperCase();
 
-        // Load images
+        // 5. Draw images
         for (let i = 0; i < rollItems.length; i++) {
             const item = rollItems[i];
-            const img = new Image();
-            await new Promise(res => {
-                img.onload = res;
-                img.onerror = res;
-                img.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
-            });
-
-            const r = Math.floor(i / cols);
-            const c = i % cols;
+            const r = Math.floor(i / frames_per_row);
+            const c = i % frames_per_row;
             
-            const x = padding + c * (colWidth + padding);
-            const y = padding + r * (colHeight + padding);
+            const x = outerMargin + c * (colWidth + hGap);
+            const y = outerMargin + r * (rowHeightTotal + vGap);
             
-            // Adjust draw height based on actual image ratio
-            let isVertical = img.height > img.width;
-            let drawW, drawH, drawX, drawY;
+            // Draw pure black borders
+            ctx.fillStyle = '#000000';
+            ctx.fillRect(x, y, colWidth, borderH); // Top
+            ctx.fillRect(x, y + borderH + colHeight, colWidth, borderH); // Bottom
             
-            if (isVertical) {
-                drawW = Math.round(colWidth);
-                drawH = Math.round(drawW * (img.width / img.height));
-                drawX = Math.round(x);
-                drawY = Math.round(y + (colHeight - drawH)/2);
+            if (item.isEmpty) {
+                // Empty frame body
+                ctx.fillStyle = '#000000';
+                ctx.fillRect(x, y + borderH, colWidth, colHeight);
             } else {
-                drawW = Math.round(colWidth);
-                drawH = Math.round(drawW * (img.height / img.width));
-                drawX = Math.round(x);
-                drawY = Math.round(y + (colHeight - drawH)/2);
-            }
-            
-            ctx.save();
-            if (isVertical) {
-                ctx.translate(drawX + drawW/2, drawY + drawH/2);
-                ctx.rotate(Math.PI / 2);
-                ctx.drawImage(img, -drawH/2, -drawW/2, drawH, drawW);
-            } else {
-                ctx.drawImage(img, drawX, drawY, drawW, drawH);
-            }
-            
-            // Draw borders / sprocket mask placeholders
-            try {
-                const overlayImg = new Image();
-                await new Promise((res, rej) => {
-                    overlayImg.onload = res;
-                    overlayImg.onerror = rej;
-                    overlayImg.src = currentRoll.format === "120" ? "assets/overlays/120_border.png" : "assets/overlays/135_sprocket.png";
+                // Load & Draw real image
+                const img = new Image();
+                await new Promise(res => {
+                    img.onload = res;
+                    img.onerror = res;
+                    img.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
                 });
-                // Draw overlay matching EXACT image dimensions
+                
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(x, y + borderH, colWidth, colHeight);
+                ctx.clip();
+                
+                let isVertical = img.height > img.width;
                 if (isVertical) {
-                    ctx.drawImage(overlayImg, -drawH/2, -drawW/2, drawH, drawW);
+                    ctx.translate(x + colWidth/2, y + borderH + colHeight/2);
+                    ctx.rotate(Math.PI / 2);
+                    ctx.drawImage(img, -colHeight/2, -colWidth/2, colHeight, colWidth);
                 } else {
-                    ctx.drawImage(overlayImg, drawX, drawY, drawW, drawH);
+                    ctx.drawImage(img, x, y + borderH, colWidth, colHeight);
                 }
-            } catch(e) {
-                // Ignore missing placeholder
+                ctx.restore();
             }
-            ctx.restore();
             
-            // Draw frame number
-            ctx.fillStyle = '#555';
-            ctx.font = '24px Inter, Helvetica, sans-serif';
-            ctx.fillText(`Frame ${i+1}`, x, y + colHeight + 30);
+            // 6. Draw Procedural Edge Codes & Sprockets
+            ctx.fillStyle = '#D97736'; // Orange brand color
+            ctx.font = 'bold 12px "Helvetica Neue Extended", "Helvetica Neue", Arial, sans-serif';
+            ctx.textBaseline = 'middle';
+            
+            if (!is120) {
+                // --- 135 Procedural ---
+                const numHoles = 8;
+                const holeW = colWidth * 0.05;
+                const holeH = borderH * 0.45;
+                const holeSpacing = colWidth / numHoles;
+                const holeYTop = y + borderH - holeH - borderH * 0.1;
+                const holeYBottom = y + borderH + colHeight + borderH * 0.1;
+                
+                ctx.fillStyle = '#FFFFFF';
+                for (let h = 0; h < numHoles; h++) {
+                    const hx = x + h * holeSpacing + (holeSpacing - holeW)/2;
+                    // top hole
+                    ctx.beginPath();
+                    ctx.roundRect(hx, holeYTop, holeW, holeH, holeW * 0.2);
+                    ctx.fill();
+                    // bottom hole
+                    ctx.beginPath();
+                    ctx.roundRect(hx, holeYBottom, holeW, holeH, holeW * 0.2);
+                    ctx.fill();
+                }
+                
+                // Orange Texts
+                ctx.fillStyle = '#D97736';
+                ctx.textAlign = 'center';
+                // Top text (film name)
+                ctx.fillText(filmName, x + colWidth/2, y + borderH * 0.35);
+                
+                // Bottom text (frame num)
+                ctx.fillText(`${i+1}`, x + colWidth*0.25, y + borderH + colHeight + borderH * 0.65);
+                ctx.fillText(`${i+1}A`, x + colWidth*0.75, y + borderH + colHeight + borderH * 0.65);
+                
+            } else {
+                // --- 120 Procedural ---
+                ctx.textAlign = 'center';
+                // Top text
+                ctx.fillText(filmName, x + colWidth/2, y + borderH * 0.5);
+                // Bottom text (bold with arrow)
+                ctx.font = 'bold 20px "Helvetica Neue Extended", "Helvetica Neue", Arial, sans-serif';
+                ctx.fillText(`◄ ${i+1}`, x + colWidth/2, y + borderH + colHeight + borderH * 0.5);
+            }
         }
 
-        // Footer typography
-        const footerY = canvasH - 100;
+        // 7. High-Res Footer Typography
+        const footerY = canvasH - 80;
         ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 48px Inter, Helvetica, sans-serif';
+        ctx.font = 'bold 36px "Helvetica Neue Extended", "Helvetica Neue", Inter, sans-serif';
         ctx.textAlign = 'left';
-        ctx.fillText('NEXFILM ENGINE', padding, footerY);
+        ctx.fillText('NEXFILM ENGINE', outerMargin, footerY);
         
         ctx.textAlign = 'right';
-        ctx.font = 'bold 48px Inter, Helvetica, sans-serif';
-        ctx.fillText((currentRoll.film_stock || 'UNKNOWN FILM').toUpperCase(), canvasW - padding, footerY - 40);
+        ctx.font = 'bold 36px "Helvetica Neue Extended", "Helvetica Neue", Inter, sans-serif';
+        ctx.fillText(filmName, canvasW - outerMargin, footerY - 40);
         
         ctx.fillStyle = '#888888';
-        ctx.font = '32px Inter, Helvetica, sans-serif';
-        const numImages = rollItems.length;
-        ctx.fillText(`Order #${currentRoll.roll_id} | ${currentRoll.camera || 'Unknown Camera'} | ${numImages} images`, canvasW - padding, footerY + 10);
+        ctx.font = '24px Inter, Helvetica, sans-serif';
+        ctx.fillText(`Order #${currentRoll.roll_id} | ${currentRoll.camera || 'Unknown Camera'} | ${totalImages} images (${emptyFrames} empty)`, canvasW - outerMargin, footerY + 10);
 
-        // Convert to high quality JPEG
+        // 8. Convert to high quality JPEG
         const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
-        
-        // Invoke Rust save
         const savedPath = await invoke('save_contact_sheet', { dataUrl });
         showToast("Contact sheet saved: " + savedPath, "success");
 
@@ -2517,7 +2565,6 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
     await invoke('update_geometry', { id: activeId, geom: current_geom });
     isCalibrationMode = false;
     document.getElementById('calibration-overlay').classList.add('hidden');
-    document.getElementById('calibration-overlay').classList.remove('flex');
     document.getElementById('right-panel-blocker').classList.add('hidden');
     showToast("Calibration applied.", "success");
 });
