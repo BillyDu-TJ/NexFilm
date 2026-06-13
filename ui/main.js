@@ -2415,7 +2415,7 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
             
             // 6. Draw Procedural Edge Codes & Sprockets
             ctx.fillStyle = '#D97736'; // Orange brand color
-            ctx.font = 'bold 12px "Helvetica Neue Extended", "Helvetica Neue", Arial, sans-serif';
+            ctx.font = '900 16px "Helvetica Neue Extended", "Helvetica Neue", Arial, sans-serif';
             ctx.textBaseline = 'middle';
             
             if (!is120) {
@@ -2444,20 +2444,20 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
                 ctx.fillStyle = '#D97736';
                 ctx.textAlign = 'center';
                 // Top text (film name)
-                ctx.fillText(filmName, x + colWidth/2, y + borderH * 0.35);
+                ctx.fillText("NEXFILM", x + colWidth/2, y + borderH * 0.25);
                 
                 // Bottom text (frame num)
-                ctx.fillText(`${i+1}`, x + colWidth*0.25, y + borderH + colHeight + borderH * 0.65);
-                ctx.fillText(`${i+1}A`, x + colWidth*0.75, y + borderH + colHeight + borderH * 0.65);
+                ctx.fillText(`${i+1}`, x + colWidth*0.25, y + borderH + colHeight + borderH * 0.75);
+                ctx.fillText(`${i+1}A`, x + colWidth*0.75, y + borderH + colHeight + borderH * 0.75);
                 
             } else {
                 // --- 120 Procedural ---
                 ctx.textAlign = 'center';
                 // Top text
-                ctx.fillText(filmName, x + colWidth/2, y + borderH * 0.5);
+                ctx.fillText("NEXFILM", x + colWidth/2, y + borderH * 0.35);
                 // Bottom text (bold with arrow)
-                ctx.font = 'bold 20px "Helvetica Neue Extended", "Helvetica Neue", Arial, sans-serif';
-                ctx.fillText(`◄ ${i+1}`, x + colWidth/2, y + borderH + colHeight + borderH * 0.5);
+                ctx.font = '900 24px "Helvetica Neue Extended", "Helvetica Neue", Arial, sans-serif';
+                ctx.fillText(`◄ ${i+1}`, x + colWidth/2, y + borderH + colHeight + borderH * 0.65);
             }
         }
 
