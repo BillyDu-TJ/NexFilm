@@ -2586,3 +2586,8 @@ document.getElementById('btn-locate-file').addEventListener('click', async () =>
         if (e !== "Cancelled") showToast("Failed to locate file", "error");
     }
 });
+
+// Initialize on load
+window.addEventListener('DOMContentLoaded', () => {
+    renderLibraryAndFilmstrip();
+});
