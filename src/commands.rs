@@ -866,16 +866,17 @@ fn apply_usm(buffer: &mut ImageBuffer<Rgb<u16>, Vec<u16>>, sigma: f32, amount: f
 
 #[tauri::command]
 pub async fn batch_export_images(
+    export_ids: Vec<String>,
     output_dir: String,
     format: String,
     color_space: String,
     resample_mode: String,
     apply_usm_flag: bool,
     naming_token: String,
+    quality: u32,
     state: State<'_, EngineState>,
 ) -> Result<usize, String> {
-    let item_order = state.item_order.read().map_err(|e| e.to_string())?;
-    let count = item_order.len();
+    let count = export_ids.len();
     if count == 0 {
         return Ok(0);
     }
@@ -886,7 +887,7 @@ pub async fn batch_export_images(
     let working_colorspace = state.working_colorspace.read().unwrap().clone();
     let rolls = state.rolls.read().unwrap().clone();
 
-    item_order.par_iter().enumerate().for_each(|(seq_idx, id)| {
+    export_ids.par_iter().enumerate().for_each(|(seq_idx, id)| {
         if let Some(item_arc) = state.items.get(id) {
             let item = item_arc.read().unwrap();
             if let Ok(original) = load_image_buffer(&item.file_path, false, dcp_profile.as_deref(), &working_colorspace) {
@@ -967,6 +968,14 @@ pub async fn batch_export_images(
                         transformed = image::imageops::resize(&transformed, nw, nh, image::imageops::FilterType::Lanczos3);
                     }
                 }
+                
+                let scale = quality as f32 / 100.0;
+                if scale < 0.99 {
+                    let (tw, th) = transformed.dimensions();
+                    let nw = (tw as f32 * scale).max(1.0) as u32;
+                    let nh = (th as f32 * scale).max(1.0) as u32;
+                    transformed = image::imageops::resize(&transformed, nw, nh, image::imageops::FilterType::Lanczos3);
+                }
 
                 let (width, height) = transformed.dimensions();
                 let mut out_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
@@ -1027,7 +1036,16 @@ pub async fn batch_export_images(
                             out_p[2] = (in_p[2] >> 8) as u8;
                         }
                         let path = std::path::Path::new(&output_dir).join(format!("{}.jpg", file_stem));
-                        out8.save(&path).map(|_| path)
+                        
+                        let mut cursor = std::io::Cursor::new(Vec::new());
+                        let jpeg_quality = quality.clamp(1, 100) as u8;
+                        if image::DynamicImage::ImageRgb8(out8.clone()).write_to(&mut cursor, image::ImageOutputFormat::Jpeg(jpeg_quality)).is_ok() {
+                            std::fs::write(&path, cursor.into_inner())
+                                .map(|_| path)
+                                .map_err(|e| image::ImageError::IoError(e))
+                        } else {
+                            Err(image::ImageError::IoError(std::io::Error::new(std::io::ErrorKind::Other, "JPEG Encoding Error")))
+                        }
                     },
                     "png" => {
                         let path = std::path::Path::new(&output_dir).join(format!("{}.png", file_stem));
@@ -1088,7 +1106,7 @@ pub async fn import_roll(
 }
 
 #[tauri::command]
-pub async fn save_contact_sheet(data_url: String) -> Result<String, String> {
+pub async fn save_contact_sheet(data_url: String, filename: Option<String>) -> Result<String, String> {
     let b64_data = if data_url.starts_with("data:image/") {
         if let Some(idx) = data_url.find("base64,") {
             &data_url[idx + 7..]
@@ -1099,17 +1117,18 @@ pub async fn save_contact_sheet(data_url: String) -> Result<String, String> {
         &data_url
     };
     
-    let bytes = general_purpose::STANDARD.decode(b64_data).map_err(|e| format!("Base64 decode error: {:?}", e))?;
+    let image_data = general_purpose::STANDARD.decode(b64_data).map_err(|e| format!("Base64 decode failed: {:?}", e))?;
+    let default_name = filename.unwrap_or_else(|| "contact_sheet.jpg".to_string());
     
-    let file_path = tauri::async_runtime::spawn_blocking(|| {
+    let file_path = tauri::async_runtime::spawn_blocking(move || {
         FileDialog::new()
-            .set_file_name("contact_sheet.jpg")
+            .set_file_name(&default_name)
             .add_filter("JPEG Image", &["jpg", "jpeg"])
             .save_file()
     }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
     
     if let Some(path) = file_path {
-        std::fs::write(&path, bytes).map_err(|e| format!("Save error: {:?}", e))?;
+        std::fs::write(&path, image_data).map_err(|e| format!("Save error: {:?}", e))?;
         Ok(path.to_string_lossy().to_string())
     } else {
         Err("Cancelled".into())

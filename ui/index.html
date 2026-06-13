@@ -25,6 +25,33 @@
     
     <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
+    <!-- Drag Overlay -->
+    <div id="drag-overlay" class="hidden fixed inset-0 z-[100] bg-blue-500/20 border-4 border-blue-500/50 backdrop-blur-sm flex items-center justify-center pointer-events-none transition-all duration-200">
+        <div class="bg-[#1C1C1E] px-8 py-6 rounded-lg shadow-2xl flex flex-col items-center gap-4">
+            <svg class="w-12 h-12 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+            <div class="text-zinc-100 font-bold tracking-widest text-[14px]">RELEASE TO IMPORT</div>
+            <div class="text-zinc-400 text-[11px] uppercase tracking-wider">Images will be added loosely</div>
+        </div>
+    </div>
+
+    <!-- Native Menu Bar -->
+    <div id="native-menu-bar" class="h-[28px] shrink-0 bg-[#121214] border-b border-[#28282c] flex items-center px-4 text-[12px] text-zinc-400 gap-4 z-50 relative select-none">
+        <div class="font-bold text-zinc-200">NexFilm</div>
+        <div class="hover:text-zinc-100 cursor-pointer px-2 py-1 relative group">
+            Settings
+            <div class="absolute left-0 top-full mt-0 hidden group-hover:block bg-[#1C1C1E] border border-[#28282c] shadow-lg rounded w-48 py-1 z-50">
+                <div class="px-4 py-1.5 hover:bg-zinc-800 cursor-pointer flex justify-between items-center" id="menu-lang-toggle">
+                    <span>Language: EN</span>
+                </div>
+                <div class="px-4 py-1.5 hover:bg-zinc-800 cursor-pointer flex justify-between items-center" id="menu-theme-toggle">
+                    <span>Theme: Dark</span>
+                </div>
+            </div>
+        </div>
+        <div class="hover:text-zinc-100 cursor-pointer px-2 py-1">View</div>
+        <div class="hover:text-zinc-100 cursor-pointer px-2 py-1">Help</div>
+    </div>
+
     <!-- Global Header -->
     <header class="h-[56px] shrink-0 border-b border-[#28282c] flex items-center justify-between px-6 shadow-md z-20 bg-[#1C1C1E]">
         <div class="flex items-center gap-6 h-full">
@@ -37,6 +64,7 @@
             </nav>
         </div>
         <div class="flex items-center gap-4">
+            <button id="btn-export-roll" class="hidden px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Export Roll</button>
             <button id="btn-import" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
             <button id="btn-export-dialog" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed" disabled>Export</button>
         </div>
@@ -457,8 +485,8 @@
                     <span class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Group images with camera and film stock metadata.</span>
                 </button>
                 <button id="btn-import-single" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
-                    <span class="text-white">Single Import</span>
-                    <span class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Import loose images directly to the archive.</span>
+                    <span class="text-zinc-100">LOOSE IMPORT</span>
+                    <span class="text-[10px] text-zinc-400 font-normal">Add images directly without creating a roll</span>
                 </button>
                 <button id="btn-continue-roll" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
                     <span class="text-white">Continue Editing Roll</span>
@@ -647,6 +675,15 @@
                             <option value="aces">ACES-AP1</option>
                         </select>
                     </div>
+                    
+                    <div class="flex flex-col gap-2 mt-2">
+                        <div class="flex items-center justify-between">
+                            <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Quality / Size</label>
+                            <span id="export-quality-val" class="text-[12px] text-zinc-300">100</span>
+                        </div>
+                        <input type="range" id="export-quality" min="1" max="100" value="100" class="w-full accent-zinc-500" oninput="document.getElementById('export-quality-val').textContent = this.value">
+                    </div>
+
                     <div class="flex items-center justify-between mt-2">
                         <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Resampling</label>
                         <select id="export-resample" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">

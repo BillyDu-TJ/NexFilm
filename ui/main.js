@@ -127,6 +127,7 @@ const HIST_H = 256;
 // Library Multi-Selection State
 let allLibraryItems = [];
 let selectedLibraryIds = new Set();
+let lastSelectedLibraryId = null;
 
 // Delete Mode State
 let isDeleteMode = false;
@@ -141,9 +142,11 @@ function updateLibrarySelectionUI() {
     librarySelectionCount.textContent = `${selectedLibraryIds.size} selected`;
     if (selectedLibraryIds.size > 0) {
         btnExportDialog.disabled = false;
+        btnExportDialog.textContent = 'EXPORT (' + selectedLibraryIds.size + ')';
         btnDeselectAll.classList.remove('hidden');
     } else {
         btnExportDialog.disabled = true;
+        btnExportDialog.textContent = 'EXPORT';
         btnDeselectAll.classList.add('hidden');
     }
     
@@ -185,11 +188,11 @@ function switchView(viewName) {
         } else {
             v.el.classList.add('opacity-0', 'pointer-events-none');
             v.nav.classList.remove('text-zinc-100', 'border-zinc-100');
-            v.nav.classList.add('text-zinc-500', 'border-transparent');
-        }
+            v.nav.classList.add('text-zinc-500', 'border-transparent'); }
+        if (viewName !== 'develop') { document.getElementById('btn-export-roll').classList.add('hidden'); }
     });
 
-    if (viewName === 'develop') {
+    if (viewName === 'develop') { document.getElementById('btn-export-roll').classList.remove('hidden');
         requestRender();
     }
 }
@@ -472,11 +475,10 @@ function initWebGL() {
         bool is_inside = is_inside_quad(v_texcoord, u_calib_pts[0], u_calib_pts[1], u_calib_pts[2], u_calib_pts[3]);
         
         if (is_inside) {
-            // 1. 获取 Log 数据
+            // 1. 鑾峰彇 Log 鏁版嵁
             vec3 density = vec3(-log(t_r) / log(10.0), -log(t_g) / log(10.0), -log(t_b) / log(10.0));
             
-            // 2. 片基与串扰
-            if (u_mode == 0) {
+            // 2. 鐗囧熀涓庝覆鎵?            if (u_mode == 0) {
                 density = STATUS_M * (density - u_base_density);
             } else {
                 density = density - u_base_density;
@@ -484,19 +486,18 @@ function initWebGL() {
                 density = vec3(gray);
             }
             
-            // 3. 曝光与色彩对齐
-            if (u_mode == 0) {
+            // 3. 鏇濆厜涓庤壊褰╁榻?            if (u_mode == 0) {
                 density += u_exposure;
             } else {
                 density += vec3(u_exposure.r);
             }
             
-            // 4. 对数域高光/阴影 (Log Tone Control) & 5. 归一化与数学截断
+            // 4. 瀵规暟鍩熼珮鍏?闃村奖 (Log Tone Control) & 5. 褰掍竴鍖栦笌鏁板鎴柇
             vec3 norm = (density - u_dmin) / (u_dmax - u_dmin);
             
             norm = norm + u_shadows * pow(1.0 - clamp(norm, 0.0, 1.0), vec3(2.0)) * norm + u_highlights * pow(clamp(norm, 0.0, 1.0), vec3(2.0)) * (1.0 - norm);
             
-            // 6. 应用 LUT
+            // 6. 搴旂敤 LUT
             if (u_has_lut == 1) {
                 vec3 lut_in = clamp(norm, 0.0, 1.0);
                 vec3 lut_color;
@@ -509,7 +510,7 @@ function initWebGL() {
                 }
                 final_rgb = mix(vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma)), lut_color, u_lut_opacity);
             } else {
-                // 7. 终端显示映射
+                // 7. 缁堢鏄剧ず鏄犲皠
                 final_rgb = vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma));
             }
         } else {
@@ -1285,12 +1286,25 @@ async function renderLibraryAndFilmstrip() {
                         switchView('develop');
                     };
                     libDiv.onclick = (e) => {
-                        if (e.ctrlKey || e.metaKey) {
+if (e.shiftKey && lastSelectedLibraryId) {
+                            const arr = rollItems; // Need array of currently displayed items
+                            const startIdx = arr.findIndex(i => i.id === lastSelectedLibraryId);
+                            const endIdx = arr.findIndex(i => i.id === item.id);
+                            if (startIdx !== -1 && endIdx !== -1) {
+                                const minIdx = Math.min(startIdx, endIdx);
+                                const maxIdx = Math.max(startIdx, endIdx);
+                                for (let i = minIdx; i <= maxIdx; i++) {
+                                    selectedLibraryIds.add(arr[i].id);
+                                }
+                            }
+                        } else if (e.ctrlKey || e.metaKey) {
                             if (selectedLibraryIds.has(item.id)) selectedLibraryIds.delete(item.id);
                             else selectedLibraryIds.add(item.id);
+                            lastSelectedLibraryId = item.id;
                         } else {
                             selectedLibraryIds.clear();
                             selectedLibraryIds.add(item.id);
+                            lastSelectedLibraryId = item.id;
                         }
                         updateLibrarySelectionUI();
                     };
@@ -1355,6 +1369,15 @@ async function renderLibraryAndFilmstrip() {
                         } else {
                             currentRollViewId = roll.roll_id;
                             selectedLibraryIds.clear();
+                            const pathsToImport = roll.image_paths.filter(p => !allLibraryItems.some(item => item.file_path === p || item.file_path.replace(/\\/g, '/') === p));
+                            if (pathsToImport.length > 0) {
+                                document.getElementById('history-view-title').textContent = "LOADING ROLL...";
+                                try {
+                                    await invoke('import_images', { paths: pathsToImport });
+                                    allLibraryItems = await invoke('get_filmstrip');
+                                } catch (e) { console.error(e); }
+                                document.getElementById('history-view-title').textContent = "ROLL CONTENTS";
+                            }
                             renderLibraryAndFilmstrip();
                         }
                     };
@@ -1380,7 +1403,15 @@ async function renderLibraryAndFilmstrip() {
         }
         
         // --- Populate DEVELOP Filmstrip ---
-        items.forEach(item => {
+        let filmstripItems = items;
+        if (currentRollViewId) {
+            const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
+            if (currentRoll) {
+                const rollPaths = new Set(currentRoll.image_paths);
+                filmstripItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\/g, '/')) || rollPaths.has(item.file_path));
+            }
+        }
+        filmstripItems.forEach(item => {
             const stripDiv = document.createElement('div');
             stripDiv.className = `film-item shrink-0 ${item.id === activeId ? 'active' : ''}`;
             stripDiv.onclick = () => {
@@ -1746,14 +1777,16 @@ btnConfirmExport.addEventListener('click', async () => {
         const applyUsm = document.getElementById('export-usm').checked;
         const namingToken = document.getElementById('export-naming').value;
         
-        const outputDir = await invoke('select_export_dir');
+        const quality = parseInt(document.getElementById('export-quality').value) || 100;
+    const export_ids = Array.from(selectedLibraryIds);
+    const outputDir = await invoke('select_export_dir');
         if (!outputDir) {
             btnConfirmExport.textContent = "Select Output Folder";
             btnConfirmExport.disabled = false;
             return;
         }
         closeExportModal();
-        const count = await invoke('batch_export_images', { outputDir, format, colorSpace, resampleMode, applyUsm, namingToken });
+        const count = await invoke('batch_export_images', { export_ids, outputDir, format, colorSpace, resampleMode, applyUsmFlag: applyUsm, namingToken, quality });
         showToast(`Successfully exported ${count} image(s) to:\n${outputDir}`, "success");
     } catch (e) { showToast("Batch export failed: " + e, "error"); } 
     finally {
@@ -1828,7 +1861,7 @@ function updateCanvasTransform(w, h) {
 
     canvasWrapper.style.width = `${targetW}px`;
     canvasWrapper.style.height = `${targetH}px`;
-    dummyPusher.style.display = 'none';
+    dummyPusher.style.display = 'none'; canvasWrapper.style.transform = `translate(${panX}px, ${panY}px)`;
 
     if (isCropMode || isRotateMode) {
         previewCanvas.style.width = '100%';
@@ -1973,8 +2006,28 @@ async function doAutoColor() {
     g_arr.sort((a,b)=>a-b);
     b_arr.sort((a,b)=>a-b);
 
-    let start = Math.floor(r_arr.length * 0.01);
-    let end = Math.floor(r_arr.length * 0.99);
+    function computeExtremes(arr) {
+        let hist = new Array(256).fill(0);
+        for(let i=0; i<arr.length; i++) hist[arr[i]]++;
+        let total = arr.length; let threshold = total * 0.10;
+        let min_val = 0; let acc_low = 0;
+        for(let i=0; i<256; i++) {
+            if(hist[i] > threshold && acc_low < total * 0.2) continue;
+            acc_low += hist[i];
+            if(acc_low >= total * 0.01) { min_val = i; break; }
+        }
+        let max_val = 255; let acc_high = 0;
+        for(let i=255; i>=0; i--) {
+            if(hist[i] > threshold && acc_high < total * 0.2) continue;
+            acc_high += hist[i];
+            if(acc_high >= total * 0.01) { max_val = i; break; }
+        }
+        return [min_val, max_val];
+    }
+    let [rStart, rEnd] = computeExtremes(r_arr);
+    let [gStart, gEnd] = computeExtremes(g_arr);
+    let [bStart, bEnd] = computeExtremes(b_arr);
+
 
     const gammaVal = parseFloat(sliders.gamma.el.value);
 
@@ -1985,14 +2038,14 @@ async function doAutoColor() {
 
     const batchState = {
         dmin: [
-            toDensity(r_arr[start], currentDMin[0], currentDMax[0]),
-            toDensity(g_arr[start], currentDMin[1], currentDMax[1]),
-            toDensity(b_arr[start], currentDMin[2], currentDMax[2])
+            toDensity(rStart, currentDMin[0], currentDMax[0]),
+            toDensity(gStart, currentDMin[1], currentDMax[1]),
+            toDensity(bStart, currentDMin[2], currentDMax[2])
         ],
         dmax: [
-            toDensity(r_arr[end], currentDMin[0], currentDMax[0]),
-            toDensity(g_arr[end], currentDMin[1], currentDMax[1]),
-            toDensity(b_arr[end], currentDMin[2], currentDMax[2])
+            toDensity(rEnd, currentDMin[0], currentDMax[0]),
+            toDensity(gEnd, currentDMin[1], currentDMax[1]),
+            toDensity(bEnd, currentDMin[2], currentDMax[2])
         ]
     };
 
@@ -2444,7 +2497,7 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
                 ctx.fillStyle = '#D97736';
                 ctx.textAlign = 'center';
                 // Top text (film name)
-                ctx.fillText("NEXFILM", x + colWidth/2, y + borderH * 0.25);
+                if (c === 1 || c === 4) { ctx.fillText("NEXFILM", x + colWidth/2, y + borderH * 0.25); }
                 
                 // Bottom text (frame num)
                 ctx.fillText(`${i+1}`, x + colWidth*0.25, y + borderH + colHeight + borderH * 0.75);
@@ -2457,7 +2510,7 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
                 ctx.fillText("NEXFILM", x + colWidth/2, y + borderH * 0.35);
                 // Bottom text (bold with arrow)
                 ctx.font = '900 24px "Helvetica Neue Extended", "Helvetica Neue", Arial, sans-serif';
-                ctx.fillText(`◄ ${i+1}`, x + colWidth/2, y + borderH + colHeight + borderH * 0.65);
+                ctx.fillText(`鈼?${i+1}`, x + colWidth/2, y + borderH + colHeight + borderH * 0.65);
             }
         }
 
@@ -2614,4 +2667,90 @@ document.getElementById('btn-locate-file').addEventListener('click', async () =>
 // Initialize on load
 window.addEventListener('DOMContentLoaded', () => {
     renderLibraryAndFilmstrip();
+});
+
+const { listen } = window.__TAURI__.event;
+
+listen('tauri://file-drop-hover', (event) => {
+    document.getElementById('drag-overlay').classList.remove('hidden');
+});
+listen('tauri://file-drop-cancelled', (event) => {
+    document.getElementById('drag-overlay').classList.add('hidden');
+});
+
+listen('tauri://file-drop', async (event) => {
+    const paths = event.payload;
+    if (paths && paths.length > 0) {
+        btnImport.textContent = 'Importing...';
+        await invoke('import_images', { paths });
+        allLibraryItems = await invoke('get_filmstrip');
+        renderLibraryAndFilmstrip();
+        btnImport.textContent = 'Import Roll';
+        showToast(`Dropped ${paths.length} file(s)`, 'success');
+    }
+});
+
+document.getElementById('btn-export-roll').addEventListener('click', () => {
+    if (!currentRollViewId) { showToast('No active roll.', 'error'); return; }
+    const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
+    if (!currentRoll) return;
+    const rollPaths = new Set(currentRoll.image_paths);
+    const rollItems = allLibraryItems.filter(item => rollPaths.has(item.file_path.replace(/\\/g, '/')) || rollPaths.has(item.file_path));
+    selectedLibraryIds.clear();
+    rollItems.forEach(i => selectedLibraryIds.add(i.id));
+    updateLibrarySelectionUI();
+    exportModal.classList.remove('opacity-0', 'pointer-events-none');
+    setTimeout(() => exportModalContent.classList.remove('scale-95'), 10);
+});
+
+let panX = 0, panY = 0, isPanning = false, startPanX = 0, startPanY = 0, isSpacePressed = false;
+window.addEventListener('keydown', e => { if(e.code==='Space') isSpacePressed=true; });
+window.addEventListener('keyup', e => { if(e.code==='Space') isSpacePressed=false; });
+
+canvasWrapper.parentElement.addEventListener('mousedown', e => {
+    if (!activeId || isCropMode || isRotateMode || isCalibrationMode) return;
+    if (e.button === 1 || (e.button === 0 && isSpacePressed)) {
+        if (zoomLevel <= 1.0) return;
+        isPanning = true;
+        startPanX = e.clientX - panX;
+        startPanY = e.clientY - panY;
+        e.preventDefault();
+    }
+});
+window.addEventListener('mousemove', e => {
+    if (!isPanning) return;
+    panX = e.clientX - startPanX;
+    panY = e.clientY - startPanY;
+    updateCanvasTransform();
+});
+window.addEventListener('mouseup', () => isPanning = false);
+canvasWrapper.parentElement.addEventListener('dblclick', e => {
+    if (!activeId || isCropMode || isRotateMode || isCalibrationMode) return;
+    zoomLevel = 1.0; panX = 0; panY = 0;
+    updateCanvasTransform();
+});
+
+let isChinese = false;
+document.getElementById('menu-lang-toggle').addEventListener('click', () => {
+    isChinese = !isChinese;
+    document.getElementById('menu-lang-toggle').querySelector('span').textContent = isChinese ? 'Language: ZH-CN' : 'Language: EN';
+    if(isChinese) {
+        navLibrary.textContent = '图库';
+        navDevelop.textContent = '冲洗';
+        navHistory.textContent = '历史卷';
+    } else {
+        navLibrary.textContent = 'LIBRARY';
+        navDevelop.textContent = 'DEVELOP';
+        navHistory.textContent = 'HISTORY FILMS';
+    }
+});
+let isDarkTheme = true;
+document.getElementById('menu-theme-toggle').addEventListener('click', () => {
+    isDarkTheme = !isDarkTheme;
+    document.getElementById('menu-theme-toggle').querySelector('span').textContent = isDarkTheme ? 'Theme: Dark' : 'Theme: Light';
+    if(isDarkTheme) {
+        document.body.style.backgroundColor = '#121214';
+    } else {
+        document.body.style.backgroundColor = '#f4f4f5';
+    }
 });

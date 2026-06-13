@@ -87,5 +87,15 @@
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内广告.tif",
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内外混合光源.tif"
     ]
+  },
+  {
+    "roll_id": "roll_1781351456651_913",
+    "date": "",
+    "format": "135",
+    "film_stock": "Kodak Gold 200",
+    "camera": "Nikon F5",
+    "image_paths": [
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比.tif"
+    ]
   }
 ]
