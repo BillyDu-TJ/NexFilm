@@ -1289,7 +1289,7 @@ async function renderLibraryAndFilmstrip() {
                 
                 const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
                 const rollPaths = currentRoll ? new Set(currentRoll.image_paths) : new Set();
-                const rollItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\\\/g, '/')) || rollPaths.has(item.file_path));
+                const rollItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\/g, '/')) || rollPaths.has(item.file_path));
                 
                 rollItems.forEach(item => {
                     const libDiv = document.createElement('div');
@@ -1426,6 +1426,7 @@ if (e.shiftKey && lastSelectedLibraryId) {
             if (currentRoll) {
                 const rollPaths = new Set(currentRoll.image_paths);
                 filmstripItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\/g, '/')) || rollPaths.has(item.file_path));
+                invoke('start_precache', { ids: filmstripItems.map(i => i.id) }).catch(e => console.error("Precache error", e));
             }
         }
         filmstripItems.forEach(item => {
@@ -1507,18 +1508,25 @@ async function selectImage(id) {
         updateSliderTrack(sliders.gamma.el);
 
         const loadingUI = document.getElementById('loading-proxy-ui');
-        if(loadingUI) { loadingUI.classList.remove('hidden'); loadingUI.classList.add('flex'); }
         const rightPanel = document.querySelector('.w-\\[340px\\]');
-        if(rightPanel) rightPanel.style.pointerEvents = 'none';
-        document.getElementById('filmstrip-container').style.pointerEvents = 'none';
+        let isLoadingMaskActive = false;
+        const loadingTimeout = setTimeout(() => {
+            isLoadingMaskActive = true;
+            if(loadingUI) { loadingUI.classList.remove('hidden'); loadingUI.classList.add('flex'); }
+            if(rightPanel) rightPanel.style.pointerEvents = 'none';
+            document.getElementById('filmstrip-container').style.pointerEvents = 'none';
+        }, 100);
 
         await loadProxyImage();
         updateBackendParams();
         requestRender(); // Force uniform update
 
-        if(loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
-        if(rightPanel) rightPanel.style.pointerEvents = 'auto';
-        document.getElementById('filmstrip-container').style.pointerEvents = 'auto';
+        clearTimeout(loadingTimeout);
+        if(isLoadingMaskActive) {
+            if(loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
+            if(rightPanel) rightPanel.style.pointerEvents = 'auto';
+            document.getElementById('filmstrip-container').style.pointerEvents = 'auto';
+        }
 
         if (!current_geom.calibration_points) {
             isCalibrationMode = true;
@@ -1576,7 +1584,7 @@ const doImportSingle = async () => {
             
             if (allLibraryItems && allLibraryItems.length > 0) {
                 const newPath = paths[0];
-                const newPhoto = allLibraryItems.find(i => i.file_path === newPath || i.file_path.replace(/\\\\/g, '/') === newPath);
+                const newPhoto = allLibraryItems.find(i => i.file_path === newPath || i.file_path.replace(/\\/g, '/') === newPath);
                 if (newPhoto) {
                     await selectImage(newPhoto.id);
                     switchView('develop');
@@ -2709,14 +2717,20 @@ document.getElementById('btn-locate-file').addEventListener('click', async () =>
 
 // Initialize on load
 window.addEventListener('DOMContentLoaded', async () => {
+    const loadingOverlay = document.createElement('div');
+    loadingOverlay.id = 'startup-loading';
+    loadingOverlay.className = 'absolute inset-0 bg-[#121214] z-50 flex flex-col items-center justify-center text-zinc-400 gap-4';
+    loadingOverlay.innerHTML = '<svg class="animate-spin h-10 w-10 text-orange-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><div class="tracking-widest text-sm uppercase font-bold text-zinc-300">LOADING DATABASE...</div>';
+    document.body.appendChild(loadingOverlay);
+
     try {
-        const emptyState = document.getElementById('library-empty');
-        if (emptyState) emptyState.textContent = "LOADING DATABASE...";
         allRolls = await invoke('get_rolls');
         allLibraryItems = await invoke('get_filmstrip');
         await updateFilterSidebar();
     } catch(e) { console.error("Init Error", e); }
-    renderLibraryAndFilmstrip();
+
+    await renderLibraryAndFilmstrip();
+    if (loadingOverlay) loadingOverlay.remove();
 });
 
 const { listen } = window.__TAURI__.event;

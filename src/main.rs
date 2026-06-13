@@ -7,6 +7,8 @@ fn main() {
     let _ = nexfilm_engine::commands::init_db();
     
     let state = EngineState::new();
+    nexfilm_engine::commands::load_all_image_states(&state);
+
     if let Ok(json) = std::fs::read_to_string("rolls.json") {
         if let Ok(rolls) = serde_json::from_str(&json) {
             *state.rolls.write().unwrap() = rolls;
@@ -44,7 +46,8 @@ fn main() {
             nexfilm_engine::commands::get_user_cameras,
             nexfilm_engine::commands::get_user_films,
             nexfilm_engine::commands::add_user_camera,
-            nexfilm_engine::commands::add_user_film
+            nexfilm_engine::commands::add_user_film,
+            nexfilm_engine::commands::start_precache
         ])
         .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())

@@ -287,27 +287,36 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
                 unsafe {
                     let data = libraw_sys::libraw_init(0);
                     if !data.is_null() {
-                        if let Ok(buf) = std::fs::read(path) {
-                            if libraw_sys::libraw_open_buffer(data, buf.as_ptr() as *const _, buf.len()) == 0 {
-                                if libraw_sys::libraw_unpack_thumb(data) == 0 {
-                                    let mut err = 0;
-                                    let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
-                                    if !thumb.is_null() {
-                                        let thumb_type = (*thumb).type_;
-                                        let thumb_len = (*thumb).data_size as usize;
-                                        let thumb_data = std::slice::from_raw_parts((*thumb).data.as_ptr(), thumb_len);
-                                        if thumb_type == 1 { // JPEG
-                                            thumbnail_base64 = general_purpose::STANDARD.encode(thumb_data);
-                                        } else {
-                                            if let Ok(img) = image::load_from_memory(thumb_data) {
-                                                let mut cursor = Cursor::new(Vec::new());
-                                                if img.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
-                                                    thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
-                                                }
+                        let c_path = std::ffi::CString::new(path.as_str()).unwrap_or_default();
+                        let mut opened = libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0;
+                        
+                        let mut buf = Vec::new();
+                        if !opened {
+                            if let Ok(b) = std::fs::read(path) {
+                                buf = b;
+                                opened = libraw_sys::libraw_open_buffer(data, buf.as_ptr() as *const _, buf.len()) == 0;
+                            }
+                        }
+
+                        if opened {
+                            if libraw_sys::libraw_unpack_thumb(data) == 0 {
+                                let mut err = 0;
+                                let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
+                                if !thumb.is_null() {
+                                    let thumb_type = (*thumb).type_;
+                                    let thumb_len = (*thumb).data_size as usize;
+                                    let thumb_data = std::slice::from_raw_parts((*thumb).data.as_ptr(), thumb_len);
+                                    if thumb_type == 1 { // JPEG
+                                        thumbnail_base64 = general_purpose::STANDARD.encode(thumb_data);
+                                    } else {
+                                        if let Ok(img) = image::load_from_memory(thumb_data) {
+                                            let mut cursor = Cursor::new(Vec::new());
+                                            if img.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
+                                                thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
                                             }
                                         }
-                                        libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
                                     }
+                                    libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
                                 }
                             }
                         }
@@ -665,6 +674,51 @@ pub async fn switch_active_image(id: String, state: State<'_, EngineState>) -> R
         params: item.params.clone(),
         geom: item.geom.clone(),
     })
+}
+
+#[tauri::command]
+pub async fn start_precache(ids: Vec<String>, state: State<'_, EngineState>) -> Result<(), String> {
+    let mut items_to_cache = Vec::new();
+    for id in ids {
+        if let Some(arc) = state.items.get(&id) {
+            items_to_cache.push(arc.clone());
+        }
+    }
+    
+    let dcp = state.dcp_profile.read().unwrap().clone();
+    let colorspace = state.working_colorspace.read().unwrap().clone();
+    
+    std::thread::spawn(move || {
+        for item_arc in items_to_cache {
+            let needs_load = {
+                let item = item_arc.read().unwrap();
+                item.proxy_image.is_none()
+            };
+            
+            if needs_load {
+                let mut item = item_arc.write().unwrap();
+                if item.proxy_image.is_none() {
+                    if let Ok(img_buffer) = load_image_buffer(&item.file_path, true, dcp.as_deref(), &colorspace) {
+                        let (width, height) = img_buffer.dimensions();
+                        let ratio_proxy = 2048.0 / (width.max(height) as f32);
+                        let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
+                        let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
+                        let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
+                        
+                        if item.base_color.base_r == 32768 && item.base_color.base_g == 32768 && item.base_color.base_b == 32768 {
+                            item.base_color = compute_auto_base(&proxy);
+                        }
+                        item.original_proxy = Some(proxy.clone());
+                        item.proxy_image = Some(proxy.clone());
+                        let pristine = compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone());
+                        item.pristine_proxy = Some(pristine);
+                    }
+                }
+            }
+        }
+    });
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1338,6 +1392,47 @@ pub fn load_image_state_from_db(file_path: &str) -> Option<(String, crate::app_s
         return Some((thumb, params, geom, base_color));
     }
     None
+}
+
+pub fn load_all_image_states(state: &crate::app_state::EngineState) {
+    if let Ok(conn) = rusqlite::Connection::open(get_db_path()) {
+        if let Ok(mut stmt) = conn.prepare("SELECT file_path, thumbnail_base64, params, geom, base_color FROM image_states") {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                let file_path: String = row.get(0)?;
+                let thumb: String = row.get(1)?;
+                let params_str: String = row.get(2)?;
+                let geom_str: String = row.get(3)?;
+                let base_color_str: String = row.get(4)?;
+                Ok((file_path, thumb, params_str, geom_str, base_color_str))
+            }) {
+                let mut order_guard = state.item_order.write().unwrap();
+                for row_result in rows {
+                    if let Ok((file_path, thumb, params_str, geom_str, base_color_str)) = row_result {
+                        if let (Ok(params), Ok(geom), Ok(base_color)) = (
+                            serde_json::from_str(&params_str),
+                            serde_json::from_str(&geom_str),
+                            serde_json::from_str(&base_color_str)
+                        ) {
+                            let id = format!("img_{}", crate::commands::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+                            let item = crate::app_state::FilmItem {
+                                id: id.clone(),
+                                file_path,
+                                thumbnail_base64: thumb,
+                                original_proxy: None,
+                                proxy_image: None,
+                                pristine_proxy: None,
+                                base_color,
+                                params,
+                                geom,
+                            };
+                            state.items.insert(id.clone(), std::sync::Arc::new(std::sync::RwLock::new(item)));
+                            order_guard.push(id);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 

@@ -1,101 +1,31 @@
 [
   {
-    "roll_id": "roll_1781280513144_885",
+    "roll_id": "roll_1781359852197_926",
     "date": "2026-06-13",
-    "format": "135",
-    "film_stock": "Kodak Portra 160",
-    "camera": "Nikon F5",
-    "image_paths": [
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比室外.tif"
-    ]
-  },
-  {
-    "roll_id": "roll_1781319706370_212",
-    "date": "2026-06-13",
-    "format": "135",
-    "film_stock": "Fujifilm C400",
-    "camera": "Nikon F5",
-    "image_paths": [
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比室外.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax带片头.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax极暗室内.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内广告.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内外混合光源.tif"
-    ]
-  },
-  {
-    "roll_id": "roll_1781320490836_73",
-    "date": "2026-06-13",
-    "format": "135",
-    "film_stock": "Kodak Portra 160",
-    "camera": "Nikon F5",
-    "image_paths": [
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比室外.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax带片头.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax极暗室内.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内广告.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内外混合光源.tif"
-    ]
-  },
-  {
-    "roll_id": "roll_1781320641097_231",
-    "date": "2026-06-13",
-    "format": "135",
-    "film_stock": "Kodak Ultramax 400",
-    "camera": "Nikon F5",
-    "image_paths": [
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ektar室外大光比.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比室外.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax带片头.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax极暗室内.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内广告.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内外混合光源.tif"
-    ]
-  },
-  {
-    "roll_id": "roll_1781322635777_913",
-    "date": "2026-06-13",
-    "format": "135",
-    "film_stock": "Fujifilm C400",
-    "camera": "Nikon F5",
-    "image_paths": [
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ektar室外大光比.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比室外.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax带片头.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax极暗室内.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内广告.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内外混合光源.tif"
-    ]
-  },
-  {
-    "roll_id": "roll_1781323338354_686",
-    "date": "2026-06-13",
-    "format": "135",
-    "film_stock": "Fujifilm C200",
-    "camera": "Nikon F5",
-    "image_paths": [
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ektar室外大光比.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比室外.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax带片头.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax极暗室内.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内广告.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内外混合光源.tif"
-    ]
-  },
-  {
-    "roll_id": "roll_1781351456651_913",
-    "date": "",
-    "format": "135",
+    "format": "120 (6x6)",
     "film_stock": "Kodak Gold 200",
+    "camera": "Rolleiflex 2.8E",
+    "image_paths": [
+      "G:\\DCIM\\755ND810\\_DSC7178.NEF"
+    ]
+  },
+  {
+    "roll_id": "roll_1781360063116_121",
+    "date": "2026-06-13",
+    "format": "135",
+    "film_stock": "Fujifilm C100",
     "camera": "Nikon F5",
     "image_paths": [
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比.tif"
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\EpsonV700-Pro160NS室内外混合光源.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ektar黄昏色温挑战.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ektar落日大光比.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ektar室外大光比.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比室外.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax带片头.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax极暗室内.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内广告.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内外混合光源.tif"
     ]
   }
 ]
