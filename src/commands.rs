@@ -3,7 +3,7 @@ use serde::{Serialize, Deserialize};
 use crate::pipeline::FilmPipeline;
 use crate::geometry;
 use base64::{engine::general_purpose, Engine as _};
-use image::{imageops::FilterType, ImageBuffer, ImageOutputFormat, Rgb, RgbImage};
+use image::{imageops::FilterType, ImageBuffer, ImageOutputFormat, Rgb, RgbImage, GenericImageView};
 use rayon::prelude::*;
 use rfd::FileDialog;
 use std::io::Cursor;
@@ -270,30 +270,57 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
                 });
             }
 
-            let img_buffer = load_image_buffer(path, true, dcp_profile.as_deref(), &colorspace)?;
-            let (width, height) = img_buffer.dimensions();
-            let ratio_proxy = 2048.0 / (width.max(height) as f32);
-            let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
-            let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
-            let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
-            
-            let ratio_thumb = 1024.0 / (width.max(height) as f32);
-            let thumb_width = (width as f32 * ratio_thumb).max(1.0) as u32;
-            let thumb_height = (height as f32 * ratio_thumb).max(1.0) as u32;
-            let thumb = image::imageops::resize(&img_buffer, thumb_width, thumb_height, FilterType::Triangle);
-
-            let mut cursor = Cursor::new(Vec::new());
-            let mut thumb_8bit = RgbImage::new(thumb_width, thumb_height);
-            for (in_px, out_px) in thumb.pixels().zip(thumb_8bit.pixels_mut()) {
-                out_px[0] = (in_px[0] >> 8) as u8;
-                out_px[1] = (in_px[1] >> 8) as u8;
-                out_px[2] = (in_px[2] >> 8) as u8;
+            let mut thumbnail_base64 = String::new();
+            if path.to_lowercase().ends_with(".tif") || path.to_lowercase().ends_with(".tiff") {
+                if let Ok(img) = image::open(path) {
+                    let (w, h) = img.dimensions();
+                    let ratio = 256.0 / (w.max(h) as f32);
+                    let new_w = (w as f32 * ratio).max(1.0) as u32;
+                    let new_h = (h as f32 * ratio).max(1.0) as u32;
+                    let thumb = image::imageops::resize(&img, new_w, new_h, FilterType::Nearest);
+                    let mut cursor = Cursor::new(Vec::new());
+                    if thumb.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
+                        thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+                    }
+                }
+            } else {
+                unsafe {
+                    let data = libraw_sys::libraw_init(0);
+                    if !data.is_null() {
+                        if let Ok(buf) = std::fs::read(path) {
+                            if libraw_sys::libraw_open_buffer(data, buf.as_ptr() as *const _, buf.len()) == 0 {
+                                if libraw_sys::libraw_unpack_thumb(data) == 0 {
+                                    let mut err = 0;
+                                    let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
+                                    if !thumb.is_null() {
+                                        let thumb_type = (*thumb).type_;
+                                        let thumb_len = (*thumb).data_size as usize;
+                                        let thumb_data = std::slice::from_raw_parts((*thumb).data.as_ptr(), thumb_len);
+                                        if thumb_type == 1 { // JPEG
+                                            thumbnail_base64 = general_purpose::STANDARD.encode(thumb_data);
+                                        } else {
+                                            if let Ok(img) = image::load_from_memory(thumb_data) {
+                                                let mut cursor = Cursor::new(Vec::new());
+                                                if img.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
+                                                    thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+                                                }
+                                            }
+                                        }
+                                        libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
+                                    }
+                                }
+                            }
+                        }
+                        libraw_sys::libraw_close(data);
+                    }
+                }
             }
-            thumb_8bit.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).map_err(|e| format!("缩略图生成失败: {:?}", e))?;
-            let thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
 
-            let base_color = compute_auto_base(&proxy);
-            let pristine_proxy = compute_pristine_proxy(&proxy, &base_color, FilmMode::Color);
+            if thumbnail_base64.is_empty() {
+                thumbnail_base64 = "FILE_MISSING".to_string();
+            }
+
+            let base_color = BaseColor { base_r: 32768, base_g: 32768, base_b: 32768 };
 
             let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
 
@@ -301,9 +328,9 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
                 id,
                 file_path: path.clone(),
                 thumbnail_base64,
-                original_proxy: Some(proxy.clone()),
-                proxy_image: Some(proxy),
-                pristine_proxy: Some(pristine_proxy),
+                original_proxy: None,
+                proxy_image: None,
+                pristine_proxy: None,
                 base_color,
                 params: TuningParams::default(),
                 geom: crate::app_state::GeometryState::default(),
@@ -621,6 +648,9 @@ pub async fn switch_active_image(id: String, state: State<'_, EngineState>) -> R
             let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
             let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
             
+            if item.base_color.base_r == 32768 && item.base_color.base_g == 32768 && item.base_color.base_b == 32768 {
+                item.base_color = compute_auto_base(&proxy);
+            }
             item.original_proxy = Some(proxy.clone());
             item.proxy_image = Some(proxy.clone());
             let pristine = compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone());

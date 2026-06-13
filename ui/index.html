@@ -185,7 +185,7 @@
                 <div class="h-[48px] border-b border-[#28282c] flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm bg-[#1C1C1E]">
                     <div class="flex space-x-2">
                         <button id="btn-crop-mode" class="toolbar-btn" disabled>CROP</button>
-                        <button id="btn-auto-crop" class="toolbar-btn" disabled>AUTO CROP</button>
+                        <button id="btn-recalibrate" class="toolbar-btn" disabled>RE-CALIBRATE</button>
                         <button id="btn-reset-crop" class="toolbar-btn" disabled>RESET CROP</button>
                         <button id="btn-rotate-mode" class="toolbar-btn" disabled>ROTATE</button>
                     </div>
@@ -214,11 +214,6 @@
                         <!-- Calibration Mode Overlay -->
                         <div id="calibration-overlay" class="absolute top-0 left-0 w-full h-full z-30 hidden pointer-events-auto">
                             <div class="absolute inset-0 bg-black/50 pointer-events-none"></div>
-                            <div class="absolute top-6 right-6 z-40 bg-zinc-900/90 border border-orange-500/50 text-orange-200 px-6 py-6 rounded-lg shadow-2xl text-center max-w-[320px] backdrop-blur flex flex-col items-center pointer-events-auto">
-                                <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Calibration Mode</h3>
-                                <p class="text-xs leading-relaxed text-zinc-300">请拖动四角，将选框严格贴合胶片实际成像区域（排除所有黑色边框与齿孔）。此步骤仅用于精确色彩解码，不影响最终带边框导出。</p>
-                                <button id="btn-confirm-calibration" class="mt-6 w-full py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg pointer-events-auto">CONFIRM</button>
-                            </div>
                             <svg id="calibration-svg" class="absolute top-0 left-0 w-full h-full overflow-visible pointer-events-none z-20">
                                 <polygon id="calibration-polygon" points="" fill="rgba(249,115,22,0.1)" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4 4" class="pointer-events-auto"></polygon>
                                 <path id="calibration-grid" d="" stroke="rgba(249,115,22,0.4)" stroke-width="1" class="pointer-events-none"></path>
@@ -273,7 +268,11 @@
             <!-- Right Sidebar -->
             <div class="w-[340px] h-full border-l border-[#28282c] shrink-0 flex flex-col shadow-2xl overflow-y-auto custom-scrollbar z-10 bg-[#1C1C1E] relative">
                 
-                <div id="right-panel-blocker" class="absolute inset-0 z-50 bg-[#1C1C1E]/50 backdrop-blur-[2px] hidden cursor-not-allowed"></div>
+                <div id="right-panel-blocker" class="absolute inset-0 z-50 bg-[#1C1C1E]/80 backdrop-blur-[4px] hidden flex flex-col items-center justify-center p-6 text-center">
+                    <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Calibration Mode</h3>
+                    <p class="text-xs leading-relaxed text-zinc-300 mb-6">请拖动四角，将选框严格贴合胶片实际成像区域（排除所有黑色边框与齿孔）。此步骤仅用于精确色彩解码，不影响最终带边框导出。</p>
+                    <button id="btn-confirm-calibration" class="w-full py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg pointer-events-auto">CONFIRM</button>
+                </div>
                 
                 <!-- Histogram / Waveform Area -->
                 <div class="px-6 py-5 border-b border-[#28282c] bg-[#1a1a1ef0] backdrop-blur sticky top-0 z-10 shadow-sm">
@@ -361,7 +360,7 @@
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Exposure</label>
                                     <span id="val-exposure" class="text-[10px] font-mono text-zinc-400">0.000</span>
                                 </div>
-                                <input type="range" id="exposure" class="w-full custom-range silver-track" min="-3.00" max="3.00" step="0.002" value="0.00" disabled>
+                                <input type="range" id="exposure" class="w-full custom-range silver-track" min="-3.00" max="3.00" step="0.001" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
@@ -403,21 +402,21 @@
                                     <label class="text-[11px] font-medium text-red-400 tracking-wide">Red / Cyan</label>
                                     <span id="val-expr" class="text-[10px] font-mono text-zinc-400">0.000</span>
                                 </div>
-                                <input type="range" id="expr" class="w-full custom-range red-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
+                                <input type="range" id="expr" class="w-full custom-range red-track" min="-1.00" max="1.00" step="0.001" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
                                     <label class="text-[11px] font-medium text-emerald-400 tracking-wide">Green / Magenta</label>
                                     <span id="val-expg" class="text-[10px] font-mono text-zinc-400">0.000</span>
                                 </div>
-                                <input type="range" id="expg" class="w-full custom-range green-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
+                                <input type="range" id="expg" class="w-full custom-range green-track" min="-1.00" max="1.00" step="0.001" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
                                     <label class="text-[11px] font-medium text-blue-400 tracking-wide">Blue / Yellow</label>
                                     <span id="val-expb" class="text-[10px] font-mono text-zinc-400">0.000</span>
                                 </div>
-                                <input type="range" id="expb" class="w-full custom-range blue-track" min="-1.00" max="1.00" step="0.002" value="0.00" disabled>
+                                <input type="range" id="expb" class="w-full custom-range blue-track" min="-1.00" max="1.00" step="0.001" value="0.00" disabled>
                             </div>
                         </div>
                     </div>

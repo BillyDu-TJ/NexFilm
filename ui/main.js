@@ -32,6 +32,7 @@ const histCanvas = document.getElementById('histogram-canvas');
 const waveCanvas = document.getElementById('waveform-canvas');
 const btnToggleViz = document.getElementById('btn-toggle-viz');
 const vizTitle = document.getElementById('viz-title');
+
 const histCtx = histCanvas.getContext('2d');
 const waveCtx = waveCanvas.getContext('2d');
 
@@ -121,7 +122,7 @@ filmstripContainer.addEventListener('wheel', (e) => {
 
 let isWaveform = false;
 let lastPixels = null;
-const HIST_W = 768;
+const HIST_W = 256;
 const HIST_H = 256;
 
 // Library Multi-Selection State
@@ -515,6 +516,7 @@ function initWebGL() {
             final_rgb = vec3(pow(clamp(final_rgb.r, 0.0, 1.0), 1.0 / u_gamma), 
                              pow(clamp(final_rgb.g, 0.0, 1.0), 1.0 / u_gamma), 
                              pow(clamp(final_rgb.b, 0.0, 1.0), 1.0 / u_gamma));
+            final_rgb *= 0.6;
         }
         
         outColor = vec4(final_rgb, 1.0);
@@ -844,8 +846,24 @@ function drawWaveform(pixels) {
     }
 }
 
+let vizTimeout = null;
+let lastVizTime = 0;
 function updateDataViz(pixels) {
     lastPixels = pixels;
+    const now = performance.now();
+    if (now - lastVizTime < 33) {
+        if (!vizTimeout) {
+            vizTimeout = setTimeout(() => {
+                vizTimeout = null;
+                lastVizTime = performance.now();
+                if (isWaveform) drawWaveform(lastPixels);
+                else drawHistogram(lastPixels);
+            }, 33 - (now - lastVizTime));
+        }
+        return;
+    }
+    lastVizTime = now;
+    if (vizTimeout) { clearTimeout(vizTimeout); vizTimeout = null; }
     if (isWaveform) drawWaveform(pixels);
     else drawHistogram(pixels);
 }
@@ -1472,12 +1490,22 @@ async function selectImage(id) {
         document.getElementById('preview-canvas').style.display = 'block';
 
         activeId = id;
-        renderLibraryAndFilmstrip();
-        
         enableUI();
         current_geom = JSON.parse(JSON.stringify(state.geom));
         updateUIFromParams(state.params, current_geom);
         updateCropOverlay();
+
+        renderLibraryAndFilmstrip();
+
+        document.getElementById('view-develop').style.opacity = '1';
+        document.getElementById('view-develop').style.pointerEvents = 'auto';
+
+        updateSliderTrack(sliders.exposure.el);
+        updateSliderTrack(sliders.gamma.el);
+
+        await loadProxyImage();
+        updateBackendParams();
+        requestRender(); // Force uniform update
 
         if (!current_geom.calibration_points) {
             isCalibrationMode = true;
@@ -1492,8 +1520,7 @@ async function selectImage(id) {
             document.getElementById('right-panel-blocker').classList.add('hidden');
         }
 
-        await loadProxyImage();
-        requestRender(); // Force uniform update
+        
     } catch(e) { console.error(e); }
 }
 
@@ -2083,6 +2110,18 @@ btnAutoCrop.addEventListener('click', async () => {
     } catch (err) { showToast("Auto failed: " + err, "error"); }
 });
 
+document.getElementById('btn-recalibrate').addEventListener('click', () => {
+    isCalibrationMode = true;
+    document.getElementById('calibration-overlay').classList.remove('hidden');
+    document.getElementById('right-panel-blocker').classList.remove('hidden');
+    if (current_geom.calibration_points) {
+        calibrationPoints = JSON.parse(JSON.stringify(current_geom.calibration_points));
+    } else {
+        calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    }
+    requestAnimationFrame(updateCalibrationPolygon);
+});
+
 btnAutoColor.addEventListener('click', async () => {
     pushUndoState();
     await doAutoColor();
@@ -2419,6 +2458,13 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
         
         const filmName = (currentRoll.film_stock || 'UNKNOWN FILM').toUpperCase();
 
+        for (let r = 0; r < rows; r++) {
+            ctx.fillStyle = '#000000';
+            const rowY = outerMargin + r * (rowHeightTotal + vGap);
+            const rowW = canvasW - outerMargin * 2;
+            ctx.fillRect(outerMargin, rowY, rowW, rowHeightTotal);
+        }
+
         // 5. Draw images
         for (let i = 0; i < rollItems.length; i++) {
             const item = rollItems[i];
@@ -2427,11 +2473,6 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
             
             const x = outerMargin + c * (colWidth + hGap);
             const y = outerMargin + r * (rowHeightTotal + vGap);
-            
-            // Draw pure black borders
-            ctx.fillStyle = '#000000';
-            ctx.fillRect(x, y, colWidth, borderH); // Top
-            ctx.fillRect(x, y + borderH + colHeight, colWidth, borderH); // Bottom
             
             if (item.isEmpty) {
                 // Empty frame body
@@ -2506,7 +2547,7 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
                 ctx.fillText("NEXFILM", x + colWidth/2, y + borderH * 0.35);
                 // Bottom text (bold with arrow)
                 ctx.font = '900 24px "Helvetica Neue Extended", "Helvetica Neue", Arial, sans-serif';
-                ctx.fillText(`鈼?${i+1}`, x + colWidth/2, y + borderH + colHeight + borderH * 0.65);
+                ctx.fillText(`\u25C4 ${i+1}`, x + colWidth/2, y + borderH + colHeight + borderH * 0.65);
             }
         }
 
