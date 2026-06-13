@@ -71,5 +71,21 @@
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内广告.tif",
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内外混合光源.tif"
     ]
+  },
+  {
+    "roll_id": "roll_1781323338354_686",
+    "date": "2026-06-13",
+    "format": "135",
+    "film_stock": "Fujifilm C200",
+    "camera": "Nikon F5",
+    "image_paths": [
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ektar室外大光比.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比室外.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax带片头.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax极暗室内.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内广告.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内外混合光源.tif"
+    ]
   }
 ]

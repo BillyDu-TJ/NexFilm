@@ -647,6 +647,21 @@
                             <option value="aces">ACES-AP1</option>
                         </select>
                     </div>
+                    <div class="flex items-center justify-between mt-2">
+                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Resampling</label>
+                        <select id="export-resample" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
+                            <option value="original">Original Size</option>
+                            <option value="long_edge_2048">Long Edge: 2048px</option>
+                        </select>
+                    </div>
+                    <div class="flex items-center justify-between mt-2">
+                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Output Sharpening</label>
+                        <input type="checkbox" id="export-usm" class="rounded border-[#28282c] bg-[#1C1C1E] text-zinc-300 focus:ring-0 w-4 h-4">
+                    </div>
+                    <div class="flex items-center justify-between mt-2">
+                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Naming Token</label>
+                        <input type="text" id="export-naming" value="{Roll}_{Seq}" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 w-[180px]">
+                    </div>
                 </div>
 
                 <div class="flex justify-end gap-3 pt-2">

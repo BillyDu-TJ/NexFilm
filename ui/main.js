@@ -377,6 +377,8 @@ let u_lut1d_loc;
 let u_image_loc;
 let u_image_aspect_loc;
 let u_crop_loc;
+let u_calib_pts_loc;
+let u_border_exposure_loc;
 
 let currentBaseDensity = [0, 0, 0];
 let webGLInitialized = false;
@@ -433,12 +435,25 @@ function initWebGL() {
     uniform float u_lut_opacity;
     uniform int u_has_lut;
     uniform int u_lut_is_1d;
+    
+    uniform vec2 u_calib_pts[4];
+    uniform float u_border_exposure;
 
     const mat3 STATUS_M = mat3(
         1.0197, -0.0052, 0.0131,
         0.0317, 0.8933, -0.0011,
         0.0091, 0.0521, 0.9712
     );
+
+    bool is_inside_quad(vec2 p, vec2 a, vec2 b, vec2 c, vec2 d) {
+        vec2 ab = b - a; vec2 ap = p - a; float cross_ab = ab.x * ap.y - ab.y * ap.x;
+        vec2 bc = c - b; vec2 bp = p - b; float cross_bc = bc.x * bp.y - bc.y * bp.x;
+        vec2 cd = d - c; vec2 cp = p - c; float cross_cd = cd.x * cp.y - cd.y * cp.x;
+        vec2 da = a - d; vec2 dp = p - d; float cross_da = da.x * dp.y - da.y * dp.x;
+        bool same_sign = (cross_ab >= 0.0 && cross_bc >= 0.0 && cross_cd >= 0.0 && cross_da >= 0.0) ||
+                         (cross_ab <= 0.0 && cross_bc <= 0.0 && cross_cd <= 0.0 && cross_da <= 0.0);
+        return same_sign;
+    }
 
     void main() {
         if (v_texcoord.x < 0.0 || v_texcoord.x > 1.0 || v_texcoord.y < 0.0 || v_texcoord.y > 1.0) {
@@ -453,46 +468,56 @@ function initWebGL() {
         float t_g = max(float(texel.g) / 65535.0, epsilon);
         float t_b = max(float(texel.b) / 65535.0, epsilon);
         
-        // 1. 获取 Log 数据
-        vec3 density = vec3(-log(t_r) / log(10.0), -log(t_g) / log(10.0), -log(t_b) / log(10.0));
-        
-        // 2. 片基与串扰
-        if (u_mode == 0) {
-            density = STATUS_M * (density - u_base_density);
-        } else {
-            density = density - u_base_density;
-            float gray = (density.r + density.g + density.b) / 3.0;
-            density = vec3(gray);
-        }
-        
-        // 3. 曝光与色彩对齐
-        if (u_mode == 0) {
-            density += u_exposure;
-        } else {
-            density += vec3(u_exposure.r);
-        }
-        
-        // 4. 对数域高光/阴影 (Log Tone Control) & 5. 归一化与数学截断
-        vec3 norm = (density - u_dmin) / (u_dmax - u_dmin);
-        
-        norm = norm + u_shadows * pow(1.0 - clamp(norm, 0.0, 1.0), vec3(2.0)) * norm + u_highlights * pow(clamp(norm, 0.0, 1.0), vec3(2.0)) * (1.0 - norm);
-        
-        // 6. 应用 LUT
         vec3 final_rgb;
-        if (u_has_lut == 1) {
-            vec3 lut_in = clamp(norm, 0.0, 1.0);
-            vec3 lut_color;
-            if (u_lut_is_1d == 1) {
-                lut_color.r = texture(u_lut1d, vec2(lut_in.r, 0.5)).r;
-                lut_color.g = texture(u_lut1d, vec2(lut_in.g, 0.5)).g;
-                lut_color.b = texture(u_lut1d, vec2(lut_in.b, 0.5)).b;
+        bool is_inside = is_inside_quad(v_texcoord, u_calib_pts[0], u_calib_pts[1], u_calib_pts[2], u_calib_pts[3]);
+        
+        if (is_inside) {
+            // 1. 获取 Log 数据
+            vec3 density = vec3(-log(t_r) / log(10.0), -log(t_g) / log(10.0), -log(t_b) / log(10.0));
+            
+            // 2. 片基与串扰
+            if (u_mode == 0) {
+                density = STATUS_M * (density - u_base_density);
             } else {
-                lut_color = texture(u_lut3d, lut_in).rgb;
+                density = density - u_base_density;
+                float gray = (density.r + density.g + density.b) / 3.0;
+                density = vec3(gray);
             }
-            final_rgb = mix(vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma)), lut_color, u_lut_opacity);
+            
+            // 3. 曝光与色彩对齐
+            if (u_mode == 0) {
+                density += u_exposure;
+            } else {
+                density += vec3(u_exposure.r);
+            }
+            
+            // 4. 对数域高光/阴影 (Log Tone Control) & 5. 归一化与数学截断
+            vec3 norm = (density - u_dmin) / (u_dmax - u_dmin);
+            
+            norm = norm + u_shadows * pow(1.0 - clamp(norm, 0.0, 1.0), vec3(2.0)) * norm + u_highlights * pow(clamp(norm, 0.0, 1.0), vec3(2.0)) * (1.0 - norm);
+            
+            // 6. 应用 LUT
+            if (u_has_lut == 1) {
+                vec3 lut_in = clamp(norm, 0.0, 1.0);
+                vec3 lut_color;
+                if (u_lut_is_1d == 1) {
+                    lut_color.r = texture(u_lut1d, vec2(lut_in.r, 0.5)).r;
+                    lut_color.g = texture(u_lut1d, vec2(lut_in.g, 0.5)).g;
+                    lut_color.b = texture(u_lut1d, vec2(lut_in.b, 0.5)).b;
+                } else {
+                    lut_color = texture(u_lut3d, lut_in).rgb;
+                }
+                final_rgb = mix(vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma)), lut_color, u_lut_opacity);
+            } else {
+                // 7. 终端显示映射
+                final_rgb = vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma));
+            }
         } else {
-            // 7. 终端显示映射
-            final_rgb = vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma));
+            final_rgb = vec3(1.0) - vec3(t_r, t_g, t_b);
+            final_rgb *= exp2(u_border_exposure);
+            final_rgb = vec3(pow(clamp(final_rgb.r, 0.0, 1.0), 1.0 / u_gamma), 
+                             pow(clamp(final_rgb.g, 0.0, 1.0), 1.0 / u_gamma), 
+                             pow(clamp(final_rgb.b, 0.0, 1.0), 1.0 / u_gamma));
         }
         
         outColor = vec4(final_rgb, 1.0);
@@ -535,6 +560,8 @@ function initWebGL() {
     u_aspect_loc = gl.getUniformLocation(shaderProgram, "u_aspect");
     u_image_aspect_loc = gl.getUniformLocation(shaderProgram, "u_image_aspect");
     u_crop_loc = gl.getUniformLocation(shaderProgram, "u_crop");
+    u_calib_pts_loc = gl.getUniformLocation(shaderProgram, "u_calib_pts");
+    u_border_exposure_loc = gl.getUniformLocation(shaderProgram, "u_border_exposure");
     
     gl.getExtension("OES_texture_float_linear");
 
@@ -864,6 +891,16 @@ function renderWebGL() {
     gl.uniform1i(u_image_loc, 0);
     gl.uniform1f(u_aspect_loc, gl.canvas.width / gl.canvas.height);
     gl.uniform1f(u_image_aspect_loc, proxyWidth / proxyHeight);
+    
+    let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
+    let flat_pts = new Float32Array([
+        pts[0][0], pts[0][1],
+        pts[1][0], pts[1][1],
+        pts[2][0], pts[2][1],
+        pts[3][0], pts[3][1]
+    ]);
+    gl.uniform2fv(u_calib_pts_loc, flat_pts);
+    gl.uniform1f(u_border_exposure_loc, 0.0);
     
     let a = current_geom.angle * Math.PI / 180.0;
     if (!isCropMode && !isRotateMode) a = 0;
@@ -1705,6 +1742,9 @@ btnConfirmExport.addEventListener('click', async () => {
         btnConfirmExport.disabled = true;
         const format = document.getElementById('export-format').value;
         const colorSpace = document.getElementById('export-colorspace').value;
+        const resampleMode = document.getElementById('export-resample').value;
+        const applyUsm = document.getElementById('export-usm').checked;
+        const namingToken = document.getElementById('export-naming').value;
         
         const outputDir = await invoke('select_export_dir');
         if (!outputDir) {
@@ -1713,7 +1753,7 @@ btnConfirmExport.addEventListener('click', async () => {
             return;
         }
         closeExportModal();
-        const count = await invoke('batch_export_images', { outputDir, format, colorSpace });
+        const count = await invoke('batch_export_images', { outputDir, format, colorSpace, resampleMode, applyUsm, namingToken });
         showToast(`Successfully exported ${count} image(s) to:\n${outputDir}`, "success");
     } catch (e) { showToast("Batch export failed: " + e, "error"); } 
     finally {

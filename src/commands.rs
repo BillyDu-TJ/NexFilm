@@ -852,11 +852,26 @@ pub async fn update_tuning_parameters(
     Ok(())
 }
 
+fn apply_usm(buffer: &mut ImageBuffer<Rgb<u16>, Vec<u16>>, sigma: f32, amount: f32) {
+    let blurred = imageproc::filter::gaussian_blur_f32(buffer, sigma);
+    buffer.pixels_mut().zip(blurred.pixels()).for_each(|(p, b)| {
+        for i in 0..3 {
+            let orig = p[i] as f32;
+            let blur = b[i] as f32;
+            let usm = orig + (orig - blur) * amount;
+            p[i] = usm.clamp(0.0, 65535.0) as u16;
+        }
+    });
+}
+
 #[tauri::command]
 pub async fn batch_export_images(
     output_dir: String,
     format: String,
     color_space: String,
+    resample_mode: String,
+    apply_usm_flag: bool,
+    naming_token: String,
     state: State<'_, EngineState>,
 ) -> Result<usize, String> {
     let item_order = state.item_order.read().map_err(|e| e.to_string())?;
@@ -869,8 +884,9 @@ pub async fn batch_export_images(
 
     let dcp_profile = state.dcp_profile.read().unwrap().clone();
     let working_colorspace = state.working_colorspace.read().unwrap().clone();
+    let rolls = state.rolls.read().unwrap().clone();
 
-    item_order.par_iter().for_each(|id| {
+    item_order.par_iter().enumerate().for_each(|(seq_idx, id)| {
         if let Some(item_arc) = state.items.get(id) {
             let item = item_arc.read().unwrap();
             if let Ok(original) = load_image_buffer(&item.file_path, false, dcp_profile.as_deref(), &working_colorspace) {
@@ -941,6 +957,17 @@ pub async fn batch_export_images(
                     transformed = image::imageops::crop(&mut transformed, cx, cy, cw, ch).to_image();
                 }
 
+                if resample_mode == "long_edge_2048" {
+                    let (tw, th) = transformed.dimensions();
+                    let long_edge = tw.max(th);
+                    if long_edge > 2048 {
+                        let scale = 2048.0 / long_edge as f32;
+                        let nw = (tw as f32 * scale).ceil() as u32;
+                        let nh = (th as f32 * scale).ceil() as u32;
+                        transformed = image::imageops::resize(&transformed, nw, nh, image::imageops::FilterType::Lanczos3);
+                    }
+                }
+
                 let (width, height) = transformed.dimensions();
                 let mut out_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
                 let raw_pixels: &[u16] = transformed.as_raw().as_slice();
@@ -965,22 +992,31 @@ pub async fn batch_export_images(
                     out_px[2] = (norm_b.powf(1.0 / gamma) * 65535.0) as u16;
                 });
 
+                if apply_usm_flag && !format.starts_with("tiff16") {
+                    apply_usm(&mut out_buffer, 1.0, 0.5);
+                }
+
                 let file_stem = std::path::Path::new(&item.file_path)
                     .file_stem()
                     .unwrap_or_default()
                     .to_string_lossy()
                     .to_string();
+                    
+                let roll = rolls.iter().find(|r| r.image_paths.contains(&item.file_path));
+                let roll_name = roll.map(|r| r.roll_id.clone()).unwrap_or_else(|| "Roll".to_string());
+                let camera_name = roll.map(|r| r.camera.clone()).unwrap_or_else(|| "Camera".to_string());
+                let seq_str = format!("{:03}", seq_idx + 1);
                 
-                // Color space info is ignored by basic `image` crate save unless embedding ICC,
-                // but we name the file appropriately to acknowledge it
-                let cs_suffix = match color_space.as_str() {
-                    "adobergb" => "AdobeRGB",
-                    "rec2020" => "Rec2020",
-                    "prophoto" => "ProPhoto",
-                    "aces" => "ACES-AP1",
-                    _ => "sRGB"
-                };
-
+                let mut final_name = naming_token.clone();
+                final_name = final_name.replace("{Roll}", &roll_name);
+                final_name = final_name.replace("{Camera}", &camera_name);
+                final_name = final_name.replace("{Seq}", &seq_str);
+                
+                if final_name.trim().is_empty() {
+                    final_name = file_stem;
+                }
+                let file_stem = final_name;
+                
                 let out_path = match format.as_str() {
                     "jpeg100" => {
                         // JPEG is 8-bit, we must convert
@@ -990,11 +1026,11 @@ pub async fn batch_export_images(
                             out_p[1] = (in_p[1] >> 8) as u8;
                             out_p[2] = (in_p[2] >> 8) as u8;
                         }
-                        let path = std::path::Path::new(&output_dir).join(format!("nexfilm_{}_{}.jpg", file_stem, cs_suffix));
+                        let path = std::path::Path::new(&output_dir).join(format!("{}.jpg", file_stem));
                         out8.save(&path).map(|_| path)
                     },
                     "png" => {
-                        let path = std::path::Path::new(&output_dir).join(format!("nexfilm_{}_{}.png", file_stem, cs_suffix));
+                        let path = std::path::Path::new(&output_dir).join(format!("{}.png", file_stem));
                         out_buffer.save(&path).map(|_| path)
                     },
                     "tiff8" => {
@@ -1004,12 +1040,12 @@ pub async fn batch_export_images(
                             out_p[1] = (in_p[1] >> 8) as u8;
                             out_p[2] = (in_p[2] >> 8) as u8;
                         }
-                        let path = std::path::Path::new(&output_dir).join(format!("nexfilm_{}_{}_8bit.tiff", file_stem, cs_suffix));
+                        let path = std::path::Path::new(&output_dir).join(format!("{}_8bit.tiff", file_stem));
                         out8.save(&path).map(|_| path)
                     },
                     _ => {
                         // tiff16_uncompressed or tiff16_lzw
-                        let path = std::path::Path::new(&output_dir).join(format!("nexfilm_{}_{}_16bit.tiff", file_stem, cs_suffix));
+                        let path = std::path::Path::new(&output_dir).join(format!("{}_16bit.tiff", file_stem));
                         out_buffer.save(&path).map(|_| path)
                     }
                 };
