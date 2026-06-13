@@ -246,62 +246,81 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
     let colorspace = state.working_colorspace.read().unwrap().clone();
 
     let mut new_items = Vec::new();
-    for chunk in paths.chunks(4) {
+    let existing_paths: std::collections::HashSet<String> = {
+        let guard = state.items.clone();
+        guard.iter().map(|kv| kv.value().read().unwrap().file_path.clone()).collect()
+    };
+    
+    let paths_to_process: Vec<String> = paths.into_iter().filter(|p| !existing_paths.contains(p)).collect();
+
+    for chunk in paths_to_process.chunks(4) {
         let chunk_items_result: Result<Vec<FilmItem>, String> = chunk.into_par_iter().map(|path| {
+            if let Some((thumb, params, geom, base_color)) = load_image_state_from_db(path) {
+                let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
+                return Ok(FilmItem {
+                    id,
+                    file_path: path.clone(),
+                    thumbnail_base64: thumb,
+                    original_proxy: None,
+                    proxy_image: None,
+                    pristine_proxy: None,
+                    base_color,
+                    params,
+                    geom,
+                });
+            }
+
             let img_buffer = load_image_buffer(path, true, dcp_profile.as_deref(), &colorspace)?;
+            let (width, height) = img_buffer.dimensions();
+            let ratio_proxy = 2048.0 / (width.max(height) as f32);
+            let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
+            let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
+            let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
+            
+            let ratio_thumb = 1024.0 / (width.max(height) as f32);
+            let thumb_width = (width as f32 * ratio_thumb).max(1.0) as u32;
+            let thumb_height = (height as f32 * ratio_thumb).max(1.0) as u32;
+            let thumb = image::imageops::resize(&img_buffer, thumb_width, thumb_height, FilterType::Triangle);
 
-        let (width, height) = img_buffer.dimensions();
-        
-        let ratio_proxy = 2048.0 / (width.max(height) as f32);
-        let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
-        let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
-        let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
+            let mut cursor = Cursor::new(Vec::new());
+            let mut thumb_8bit = RgbImage::new(thumb_width, thumb_height);
+            for (in_px, out_px) in thumb.pixels().zip(thumb_8bit.pixels_mut()) {
+                out_px[0] = (in_px[0] >> 8) as u8;
+                out_px[1] = (in_px[1] >> 8) as u8;
+                out_px[2] = (in_px[2] >> 8) as u8;
+            }
+            thumb_8bit.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).map_err(|e| format!("缩略图生成失败: {:?}", e))?;
+            let thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
 
-        let ratio_thumb = 1024.0 / (width.max(height) as f32);
-        let thumb_width = (width as f32 * ratio_thumb).max(1.0) as u32;
-        let thumb_height = (height as f32 * ratio_thumb).max(1.0) as u32;
-        let thumb = image::imageops::resize(&img_buffer, thumb_width, thumb_height, FilterType::Triangle);
+            let base_color = compute_auto_base(&proxy);
+            let pristine_proxy = compute_pristine_proxy(&proxy, &base_color, FilmMode::Color);
 
-        let mut cursor = Cursor::new(Vec::new());
-        let mut thumb_8bit = RgbImage::new(thumb_width, thumb_height);
-        for (in_px, out_px) in thumb.pixels().zip(thumb_8bit.pixels_mut()) {
-            out_px[0] = (in_px[0] >> 8) as u8;
-            out_px[1] = (in_px[1] >> 8) as u8;
-            out_px[2] = (in_px[2] >> 8) as u8;
-        }
-        thumb_8bit.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).map_err(|e| format!("缩略图生成失败: {:?}", e))?;
-        let thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+            let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
 
-        let base_color = compute_auto_base(&proxy);
-        let pristine_proxy = compute_pristine_proxy(&proxy, &base_color, FilmMode::Color);
-
-        let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
-
-        Ok(FilmItem {
-            id,
-            file_path: path.clone(),
-            thumbnail_base64,
-            original_proxy: proxy.clone(),
-            proxy_image: proxy,
-            pristine_proxy,
-            base_color,
-            params: TuningParams::default(),
-            geom: crate::app_state::GeometryState::default(),
-        })
-    }).collect();
+            let item = FilmItem {
+                id,
+                file_path: path.clone(),
+                thumbnail_base64,
+                original_proxy: Some(proxy.clone()),
+                proxy_image: Some(proxy),
+                pristine_proxy: Some(pristine_proxy),
+                base_color,
+                params: TuningParams::default(),
+                geom: crate::app_state::GeometryState::default(),
+            };
+            
+            let _ = save_image_state_to_db(&item);
+            
+            Ok(item)
+        }).collect();
         new_items.extend(chunk_items_result?);
     }
+
     let mut order_guard = state.item_order.write().map_err(|e| e.to_string())?;
     for item in new_items {
         let id = item.id.clone();
         state.items.insert(id.clone(), Arc::new(RwLock::new(item)));
         order_guard.push(id);
-    }
-
-    if state.active_id.read().map_err(|e| e.to_string())?.is_none() {
-        if let Some(first_id) = order_guard.first() {
-            *state.active_id.write().map_err(|e| e.to_string())? = Some(first_id.clone());
-        }
     }
 
     Ok(())
@@ -538,9 +557,9 @@ pub async fn load_dcp_profile(path: String, state: State<'_, EngineState>) -> Re
                 let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
                 
                 item.base_color = compute_auto_base(&proxy);
-                item.pristine_proxy = compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone());
-                item.original_proxy = proxy.clone();
-                item.proxy_image = proxy;
+                item.pristine_proxy = Some(compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone()));
+                item.original_proxy = Some(proxy.clone());
+                item.proxy_image = Some(proxy);
             }
         }
     }
@@ -562,9 +581,9 @@ pub async fn set_working_colorspace(colorspace: String, state: State<'_, EngineS
                 let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
                 
                 item.base_color = compute_auto_base(&proxy);
-                item.pristine_proxy = compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone());
-                item.original_proxy = proxy.clone();
-                item.proxy_image = proxy;
+                item.pristine_proxy = Some(compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone()));
+                item.original_proxy = Some(proxy.clone());
+                item.proxy_image = Some(proxy);
             }
         }
     }
@@ -579,19 +598,43 @@ pub struct ActiveImageState {
 
 #[tauri::command]
 pub async fn switch_active_image(id: String, state: State<'_, EngineState>) -> Result<ActiveImageState, String> {
-    if let Some(item_arc) = state.items.get(&id) {
+    let needs_load = {
+        let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
         let item = item_arc.read().map_err(|e| e.to_string())?;
         if std::fs::File::open(&item.file_path).is_err() {
             return Err("FILE_MISSING".into());
         }
-        *state.active_id.write().map_err(|e| e.to_string())? = Some(id.clone());
-        Ok(ActiveImageState {
-            params: item.params.clone(),
-            geom: item.geom.clone(),
-        })
-    } else {
-        Err("Image ID not found".into())
+        item.proxy_image.is_none()
+    };
+    
+    if needs_load {
+        let item_arc = state.items.get(&id).unwrap();
+        let mut item = item_arc.write().map_err(|e| e.to_string())?;
+        if item.proxy_image.is_none() {
+            let dcp = state.dcp_profile.read().unwrap().clone();
+            let colorspace = state.working_colorspace.read().unwrap().clone();
+            
+            let img_buffer = load_image_buffer(&item.file_path, true, dcp.as_deref(), &colorspace)?;
+            let (width, height) = img_buffer.dimensions();
+            let ratio_proxy = 2048.0 / (width.max(height) as f32);
+            let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
+            let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
+            let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
+            
+            item.original_proxy = Some(proxy.clone());
+            item.proxy_image = Some(proxy.clone());
+            let pristine = compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone());
+            item.pristine_proxy = Some(pristine);
+        }
     }
+    
+    let item_arc = state.items.get(&id).unwrap();
+    let item = item_arc.read().map_err(|e| e.to_string())?;
+    *state.active_id.write().map_err(|e| e.to_string())? = Some(id.clone());
+    Ok(ActiveImageState {
+        params: item.params.clone(),
+        geom: item.geom.clone(),
+    })
 }
 
 #[tauri::command]
@@ -607,7 +650,7 @@ pub async fn set_film_mode(id: String, mode: String, state: State<'_, EngineStat
                 new_mode,
             );
             
-            let proxy = &item.proxy_image;
+            let proxy = item.proxy_image.as_ref().unwrap();
             let (width, height) = proxy.dimensions();
             let mut pristine = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(width, height);
             
@@ -625,7 +668,7 @@ pub async fn set_film_mode(id: String, mode: String, state: State<'_, EngineStat
                 out_px[1] = true_density[1];
                 out_px[2] = true_density[2];
             });
-            item.pristine_proxy = pristine;
+            item.pristine_proxy = Some(pristine);
         }
     }
     Ok(())
@@ -649,7 +692,7 @@ pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) ->
                 params.film_mode.clone(),
             );
 
-            let pristine = &item.pristine_proxy;
+            let pristine = item.pristine_proxy.as_ref().unwrap();
             let (width, height) = pristine.dimensions();
             let mut thumb_8bit = RgbImage::new(width, height);
             
@@ -711,12 +754,13 @@ pub async fn update_geometry(id: String, geom: crate::app_state::GeometryState, 
         let mut item = item_arc.write().map_err(|e| e.to_string())?;
         item.geom = geom;
         reapply_geometry(&mut item);
+        let _ = save_image_state_to_db(&item);
     }
     Ok(())
 }
 
 fn reapply_geometry(item: &mut FilmItem) {
-    let mut current = item.original_proxy.clone();
+    let mut current = item.original_proxy.clone().unwrap();
     
     if item.geom.angle.abs() > 0.01 {
         let angle_rad = item.geom.angle.to_radians();
@@ -760,8 +804,8 @@ fn reapply_geometry(item: &mut FilmItem) {
         current = image::imageops::flip_vertical(&current);
     }
     
-    item.proxy_image = current;
-    item.pristine_proxy = compute_pristine_proxy(&item.proxy_image, &item.base_color, item.params.film_mode.clone());
+    item.proxy_image = Some(current);
+    item.pristine_proxy = Some(compute_pristine_proxy(item.proxy_image.as_ref().unwrap(), &item.base_color, item.params.film_mode.clone()));
 }
 
 #[tauri::command]
@@ -771,7 +815,7 @@ pub async fn geometry_auto_align(id: String, state: State<'_, EngineState>) -> R
     let (crop_rect, angle) = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let original_proxy = {
             let item = item_arc.read().map_err(|e| e.to_string())?;
-            item.original_proxy.clone()
+            item.original_proxy.clone().unwrap()
         };
         
         let first_result = crate::geometry::auto_crop_rect(&original_proxy)?;
@@ -780,7 +824,7 @@ pub async fn geometry_auto_align(id: String, state: State<'_, EngineState>) -> R
             let mut item = item_arc.write().map_err(|e| e.to_string())?;
             item.geom.angle = first_result.angle;
             reapply_geometry(&mut item);
-            item.proxy_image.clone()
+            item.proxy_image.clone().unwrap()
         };
         
         let second_result = crate::geometry::auto_crop_rect(&proxy_image)?;
@@ -805,7 +849,7 @@ pub async fn get_proxy_image_data(
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
     let item = item_arc.read().map_err(|e| e.to_string())?;
     
-    let proxy = &item.proxy_image;
+    let proxy = item.proxy_image.as_ref().unwrap();
     let (width, height) = proxy.dimensions();
     let base_color = &item.base_color;
     
@@ -848,6 +892,7 @@ pub async fn update_tuning_parameters(
     if let Some(item_arc) = state.items.get(&id) {
         let mut item = item_arc.write().map_err(|e| e.to_string())?;
         item.params = params;
+        let _ = save_image_state_to_db(&item);
     }
     Ok(())
 }
@@ -1216,8 +1261,55 @@ pub fn init_db() -> rusqlite::Result<()> {
     let conn = rusqlite::Connection::open(get_db_path())?;
     conn.execute("CREATE TABLE IF NOT EXISTS user_cameras (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", [])?;
     conn.execute("CREATE TABLE IF NOT EXISTS user_films (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", [])?;
+    conn.execute("CREATE TABLE IF NOT EXISTS image_states (
+        file_path TEXT PRIMARY KEY,
+        thumbnail_base64 TEXT,
+        params TEXT,
+        geom TEXT,
+        base_color TEXT
+    )", [])?;
     Ok(())
 }
+
+pub fn save_image_state_to_db(item: &crate::app_state::FilmItem) -> Result<(), String> {
+    let conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
+    conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
+    let params_str = serde_json::to_string(&item.params).map_err(|e| e.to_string())?;
+    let geom_str = serde_json::to_string(&item.geom).map_err(|e| e.to_string())?;
+    let base_color_str = serde_json::to_string(&item.base_color).map_err(|e| e.to_string())?;
+    
+    conn.execute(
+        "INSERT INTO image_states (file_path, thumbnail_base64, params, geom, base_color) 
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(file_path) DO UPDATE SET 
+         params=excluded.params, 
+         geom=excluded.geom, 
+         base_color=excluded.base_color",
+        rusqlite::params![item.file_path, item.thumbnail_base64, params_str, geom_str, base_color_str]
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn load_image_state_from_db(file_path: &str) -> Option<(String, crate::app_state::TuningParams, crate::app_state::GeometryState, crate::app_state::BaseColor)> {
+    let conn = rusqlite::Connection::open(get_db_path()).ok()?;
+    let mut stmt = conn.prepare("SELECT thumbnail_base64, params, geom, base_color FROM image_states WHERE file_path = ?1").ok()?;
+    
+    let mut rows = stmt.query(rusqlite::params![file_path]).ok()?;
+    if let Some(row) = rows.next().ok()? {
+        let thumb: String = row.get(0).ok()?;
+        let params_str: String = row.get(1).ok()?;
+        let geom_str: String = row.get(2).ok()?;
+        let base_color_str: String = row.get(3).ok()?;
+        
+        let params = serde_json::from_str(&params_str).ok()?;
+        let geom = serde_json::from_str(&geom_str).ok()?;
+        let base_color = serde_json::from_str(&base_color_str).ok()?;
+        
+        return Some((thumb, params, geom, base_color));
+    }
+    None
+}
+
 
 #[tauri::command]
 pub fn get_user_cameras() -> Result<Vec<String>, String> {

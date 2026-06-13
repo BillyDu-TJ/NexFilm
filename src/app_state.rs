@@ -87,7 +87,7 @@ impl Default for TuningParams {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BaseColor {
     pub base_r: u16,
     pub base_g: u16,
@@ -98,9 +98,9 @@ pub struct FilmItem {
     pub id: String,
     pub file_path: String,
     pub thumbnail_base64: String,
-    pub original_proxy: ImageBuffer<Rgb<u16>, Vec<u16>>,
-    pub proxy_image: ImageBuffer<Rgb<u16>, Vec<u16>>,
-    pub pristine_proxy: ImageBuffer<Rgb<f32>, Vec<f32>>,
+    pub original_proxy: Option<ImageBuffer<Rgb<u16>, Vec<u16>>>,
+    pub proxy_image: Option<ImageBuffer<Rgb<u16>, Vec<u16>>>,
+    pub pristine_proxy: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
     pub base_color: BaseColor,
     pub params: TuningParams,
     pub geom: GeometryState,
