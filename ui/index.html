@@ -210,6 +210,15 @@
                             <div class="text-zinc-500 text-[11px] mb-6 max-w-sm text-center leading-relaxed">The original file has been moved or deleted. Please locate the file to continue editing.</div>
                             <button id="btn-locate-file" class="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-bold uppercase tracking-widest rounded border border-zinc-700/50 shadow-lg transition-colors pointer-events-auto">LOCATE FILE</button>
                         </div>
+                        
+                        <!-- High-Res Proxy Loading UI -->
+                        <div id="loading-proxy-ui" class="absolute inset-0 bg-[#121214]/80 backdrop-blur-sm flex-col items-center justify-center hidden z-50">
+                            <svg class="animate-spin h-10 w-10 text-orange-500 mb-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <div class="text-orange-400 font-bold uppercase tracking-widest text-[12px] animate-pulse">LOADING HIGH-RES PROXY...</div>
+                        </div>
 
                         <!-- Calibration Mode Overlay -->
                         <div id="calibration-overlay" class="absolute top-0 left-0 w-full h-full z-30 hidden pointer-events-auto">

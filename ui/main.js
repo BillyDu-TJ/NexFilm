@@ -49,7 +49,7 @@ const btnModeBw = document.getElementById('btn-mode-bw');
 // DOM: Crop & Transform
 const btnCropMode = document.getElementById('btn-crop-mode');
 const btnRotateMode = document.getElementById('btn-rotate-mode');
-const btnAutoCrop = document.getElementById('btn-auto-crop');
+const btnResetCrop = document.getElementById('btn-reset-crop');
 const btnAutoColor = document.getElementById('btn-auto-color');
 const btnResetColor = document.getElementById('btn-reset-color');
 const btnRotateLeft = document.getElementById('btn-rotate-left');
@@ -184,12 +184,15 @@ function switchView(viewName) {
     views.forEach(v => {
         if (v.name === viewName) {
             v.el.classList.remove('opacity-0', 'pointer-events-none');
+            v.el.style.display = 'flex';
             v.nav.classList.add('text-zinc-100', 'border-zinc-100');
             v.nav.classList.remove('text-zinc-500', 'border-transparent');
         } else {
             v.el.classList.add('opacity-0', 'pointer-events-none');
+            v.el.style.display = 'none';
             v.nav.classList.remove('text-zinc-100', 'border-zinc-100');
-            v.nav.classList.add('text-zinc-500', 'border-transparent'); }
+            v.nav.classList.add('text-zinc-500', 'border-transparent'); 
+        }
         if (viewName !== 'develop') { document.getElementById('btn-export-roll').classList.add('hidden'); }
     });
 
@@ -1094,8 +1097,8 @@ function enableUI() {
     sliders.lutOpacity.el.disabled = false;
     btnCropMode.disabled = false;
     btnRotateMode.disabled = false;
-    btnAutoCrop.disabled = false;
-    document.getElementById('btn-reset-crop').disabled = false;
+    document.getElementById('btn-recalibrate').disabled = false;
+    btnResetCrop.disabled = false;
     btnAutoColor.disabled = false;
     btnResetColor.disabled = false;
     btnRotateLeft.disabled = false;
@@ -1503,9 +1506,19 @@ async function selectImage(id) {
         updateSliderTrack(sliders.exposure.el);
         updateSliderTrack(sliders.gamma.el);
 
+        const loadingUI = document.getElementById('loading-proxy-ui');
+        if(loadingUI) { loadingUI.classList.remove('hidden'); loadingUI.classList.add('flex'); }
+        const rightPanel = document.querySelector('.w-\\[340px\\]');
+        if(rightPanel) rightPanel.style.pointerEvents = 'none';
+        document.getElementById('filmstrip-container').style.pointerEvents = 'none';
+
         await loadProxyImage();
         updateBackendParams();
         requestRender(); // Force uniform update
+
+        if(loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
+        if(rightPanel) rightPanel.style.pointerEvents = 'auto';
+        document.getElementById('filmstrip-container').style.pointerEvents = 'auto';
 
         if (!current_geom.calibration_points) {
             isCalibrationMode = true;
@@ -2101,14 +2114,7 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
     requestThumbnailSync();
 });
 
-btnAutoCrop.addEventListener('click', async () => {
-    if (!activeId) return; pushUndoState();
-    try {
-        const result = await invoke('geometry_auto_align', { id: activeId });
-        current_geom.crop_rect = result.crop_rect; current_geom.angle = result.angle;
-        updateCropOverlay(); await loadProxyImage(); requestThumbnailSync();
-    } catch (err) { showToast("Auto failed: " + err, "error"); }
-});
+
 
 document.getElementById('btn-recalibrate').addEventListener('click', () => {
     isCalibrationMode = true;
@@ -2702,7 +2708,14 @@ document.getElementById('btn-locate-file').addEventListener('click', async () =>
 });
 
 // Initialize on load
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
+    try {
+        const emptyState = document.getElementById('library-empty');
+        if (emptyState) emptyState.textContent = "LOADING DATABASE...";
+        allRolls = await invoke('get_rolls');
+        allLibraryItems = await invoke('get_filmstrip');
+        await updateFilterSidebar();
+    } catch(e) { console.error("Init Error", e); }
     renderLibraryAndFilmstrip();
 });
 
