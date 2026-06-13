@@ -5,3 +5,5 @@ reference_divere/
 *.jpeg
 *.tif
 *.tiff
+*.db
+*.db-journal

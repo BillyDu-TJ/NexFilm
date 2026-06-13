@@ -95,6 +95,9 @@ let currentImageWidth = 1;
 let currentImageHeight = 1;
 let zoomLevel = 1.0;
 
+let originalFilmOptions = null;
+let missingFileId = null;
+
 window.addEventListener('resize', () => {
     if (activeId) updateCanvasTransform();
 });
@@ -132,7 +135,7 @@ let selectedRollIds = new Set();
 // Calibration State
 let isCalibrationMode = false;
 let calibrationDragIdx = -1;
-let calibrationPoints = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]];
+let calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
 
 function updateLibrarySelectionUI() {
     librarySelectionCount.textContent = `${selectedLibraryIds.size} selected`;
@@ -1061,13 +1064,16 @@ let currentRollViewId = null;
 async function fetchRolls() {
     try {
         allRolls = await invoke('get_rolls');
-        updateFilterSidebar();
+        await updateFilterSidebar();
     } catch(e) {
         console.error("Fetch rolls error", e);
     }
 }
 
-function updateFilterSidebar() {
+async function updateFilterSidebar() {
+    const activeCameras = new Set(Array.from(document.querySelectorAll('.filter-camera:checked')).map(i => i.value));
+    const activeDates = new Set(Array.from(document.querySelectorAll('.filter-date:checked')).map(i => i.value));
+
     const cameraList = document.getElementById('filter-camera-list');
     const dateList = document.getElementById('filter-date-list');
     
@@ -1085,7 +1091,7 @@ function updateFilterSidebar() {
     if (cameraList) {
         cameraList.innerHTML = Array.from(cameras).map(c => `
             <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]">
-                <input type="checkbox" value="${c}" class="filter-checkbox filter-camera rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> ${c}
+                <input type="checkbox" value="${c}" class="filter-checkbox filter-camera rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0" ${activeCameras.has(c) ? 'checked' : ''}> ${c}
             </label>
         `).join('');
     }
@@ -1093,7 +1099,7 @@ function updateFilterSidebar() {
     if (dateList) {
         dateList.innerHTML = Array.from(dates).map(d => `
             <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]">
-                <input type="checkbox" value="${d}" class="filter-checkbox filter-date rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> ${d}
+                <input type="checkbox" value="${d}" class="filter-checkbox filter-date rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0" ${activeDates.has(d) ? 'checked' : ''}> ${d}
             </label>
         `).join('');
     }
@@ -1101,11 +1107,34 @@ function updateFilterSidebar() {
     // Populate Selects for Metadata Modal
     const selCamera = document.getElementById('roll-camera-select');
     if (selCamera) {
+        let userCameras = [];
+        try { userCameras = await invoke('get_user_cameras'); } catch(e) {}
+        const allCams = new Set([...cameras, ...userCameras]);
         selCamera.innerHTML = `
             <option value="">Select Camera...</option>
-            ${Array.from(cameras).map(c => `<option value="${c}">${c}</option>`).join('')}
+            ${Array.from(allCams).map(c => `<option value="${c}">${c}</option>`).join('')}
             <option value="__new__">+ Add New...</option>
         `;
+    }
+
+    const selFilm = document.getElementById('roll-film-select');
+    if (selFilm) {
+        if (!originalFilmOptions) originalFilmOptions = selFilm.innerHTML;
+        let userFilms = [];
+        try { userFilms = await invoke('get_user_films'); } catch(e) {}
+        
+        if (userFilms.length > 0) {
+            const addIdx = originalFilmOptions.lastIndexOf('<option value="__new__">');
+            const baseStr = addIdx !== -1 ? originalFilmOptions.substring(0, addIdx) : originalFilmOptions;
+            
+            selFilm.innerHTML = baseStr + 
+                `<optgroup label="User Defined">` + 
+                userFilms.map(f => `<option value="${f}">${f}</option>`).join('') +
+                `</optgroup>` +
+                `<option value="__new__">+ Add New...</option>`;
+        } else {
+            selFilm.innerHTML = originalFilmOptions;
+        }
     }
 
     
@@ -1172,8 +1201,13 @@ async function renderLibraryAndFilmstrip() {
                     updateLibrarySelectionUI();
                 };
                 const libImg = document.createElement('img');
-                libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
-                libImg.className = 'w-full h-full object-cover pointer-events-none';
+                if (item.thumbnail_base64 === "FILE_MISSING") {
+                    libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
+                    libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
+                } else {
+                    libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+                    libImg.className = 'w-full h-full object-cover pointer-events-none';
+                }
                 libDiv.appendChild(libImg);
                 libraryGrid.appendChild(libDiv);
             });
@@ -1224,8 +1258,13 @@ async function renderLibraryAndFilmstrip() {
                         updateLibrarySelectionUI();
                     };
                     const libImg = document.createElement('img');
-                    libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
-                    libImg.className = 'w-full h-full object-cover pointer-events-none';
+                    if (item.thumbnail_base64 === "FILE_MISSING") {
+                        libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
+                        libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
+                    } else {
+                        libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+                        libImg.className = 'w-full h-full object-cover pointer-events-none';
+                    }
                     libDiv.appendChild(libImg);
                     historyInternalGrid.appendChild(libDiv);
                 });
@@ -1252,8 +1291,15 @@ async function renderLibraryAndFilmstrip() {
                 
                 filteredRolls.forEach(roll => {
                     const rollPaths = new Set(roll.image_paths);
+                    let thumbSrc = '';
                     const firstItem = items.find(item => rollPaths.has(item.file_path.replace(/\\\\/g, '/')) || rollPaths.has(item.file_path));
-                    const thumbSrc = firstItem ? `data:image/jpeg;base64,${firstItem.thumbnail_base64}` : '';
+                    if (firstItem) {
+                        if (firstItem.thumbnail_base64 === "FILE_MISSING") {
+                            thumbSrc = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
+                        } else {
+                            thumbSrc = `data:image/jpeg;base64,${firstItem.thumbnail_base64}`;
+                        }
+                    }
                     
                     const card = document.createElement('div');
                     card.className = "group relative bg-[#1C1C1E] rounded-lg overflow-hidden cursor-pointer hover:border-zinc-500 transition-all duration-300 flex h-[200px] shadow-lg w-full";
@@ -1307,8 +1353,13 @@ async function renderLibraryAndFilmstrip() {
                 updateLibrarySelectionUI();
             };
             const stripImg = document.createElement('img');
-            stripImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
-            stripImg.className = 'w-full h-full object-cover rounded-[2px] pointer-events-none';
+            if (item.thumbnail_base64 === "FILE_MISSING") {
+                stripImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
+                stripImg.className = 'w-full h-full object-contain rounded-[2px] pointer-events-none opacity-50 bg-[#1C1C1E] p-2';
+            } else {
+                stripImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+                stripImg.className = 'w-full h-full object-cover rounded-[2px] pointer-events-none';
+            }
             stripDiv.appendChild(stripImg);
             filmstripContainer.appendChild(stripDiv);
         });
@@ -1328,13 +1379,33 @@ async function selectImage(id) {
         saveCurrentState(); // Save current state before switching
 
         let state;
-        if (imageStates.has(id)) {
-            state = imageStates.get(id);
-            await invoke('switch_active_image', { id });
-        } else {
-            state = await invoke('switch_active_image', { id });
-            imageStates.set(id, { params: state.params, geom: state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 } });
+        try {
+            if (imageStates.has(id)) {
+                state = imageStates.get(id);
+                await invoke('switch_active_image', { id });
+            } else {
+                state = await invoke('switch_active_image', { id });
+                imageStates.set(id, { params: state.params, geom: state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 } });
+            }
+        } catch (err) {
+            if (err === "FILE_MISSING") {
+                missingFileId = id;
+                document.getElementById('missing-file-ui').classList.remove('hidden');
+                document.getElementById('missing-file-ui').classList.add('flex');
+                document.getElementById('preview-canvas').style.display = 'none';
+                canvasWrapper.style.display = 'block';
+                canvasWrapper.style.width = '100%';
+                canvasWrapper.style.height = '100%';
+                activeId = id;
+                renderLibraryAndFilmstrip();
+                return;
+            }
+            throw err;
         }
+
+        document.getElementById('missing-file-ui').classList.add('hidden');
+        document.getElementById('missing-file-ui').classList.remove('flex');
+        document.getElementById('preview-canvas').style.display = 'block';
 
         activeId = id;
         renderLibraryAndFilmstrip();
@@ -1398,7 +1469,17 @@ const doImportSingle = async () => {
         const paths = await invoke('open_file_dialog');
         if (paths && paths.length > 0) {
             await invoke('import_images', { paths });
+            await fetchRolls();
             await renderLibraryAndFilmstrip();
+            
+            if (allLibraryItems && allLibraryItems.length > 0) {
+                const newPath = paths[0];
+                const newPhoto = allLibraryItems.find(i => i.file_path === newPath || i.file_path.replace(/\\\\/g, '/') === newPath);
+                if (newPhoto) {
+                    await selectImage(newPhoto.id);
+                    switchView('develop');
+                }
+            }
         }
     } catch (e) { showToast("Import failed: " + e, "error"); }
     finally {
@@ -1446,17 +1527,24 @@ const doImportRoll = async () => {
             
             // Persist Camera and Film
             if (camera) {
-                const cameras = new Set(JSON.parse(localStorage.getItem('user_cameras') || '[]'));
-                cameras.add(camera);
-                localStorage.setItem('user_cameras', JSON.stringify(Array.from(cameras)));
+                try { await invoke('add_user_camera', { camera }); } catch(e) {}
             }
             if (film) {
-                const films = new Set(JSON.parse(localStorage.getItem('user_films') || '[]'));
-                films.add(film);
-                localStorage.setItem('user_films', JSON.stringify(Array.from(films)));
+                try { await invoke('add_user_film', { film }); } catch(e) {}
             }
             
+            await fetchRolls(); // Fetch rolls so the newly imported roll is available for filtering
             await renderLibraryAndFilmstrip();
+            
+            if (allLibraryItems && allLibraryItems.length > 0) {
+                const newPath = paths[0];
+                const newPhoto = allLibraryItems.find(i => i.file_path === newPath || i.file_path.replace(/\\\\/g, '/') === newPath);
+                if (newPhoto) {
+                    currentRollViewId = roll_id;
+                    await selectImage(newPhoto.id);
+                    switchView('develop');
+                }
+            }
         }
     } catch (e) { showToast("Import failed: " + e, "error"); }
     finally {
@@ -1506,8 +1594,16 @@ document.getElementById('btn-confirm-continue').addEventListener('click', async 
         if (paths && paths.length > 0) {
             await invoke('append_to_roll', { rollId, paths });
             currentRollViewId = rollId;
-            switchView('history');
             await renderLibraryAndFilmstrip();
+            
+            if (allLibraryItems && allLibraryItems.length > 0) {
+                const newPath = paths[0];
+                const newPhoto = allLibraryItems.find(i => i.file_path === newPath || i.file_path.replace(/\\\\/g, '/') === newPath);
+                if (newPhoto) {
+                    await selectImage(newPhoto.id);
+                    switchView('develop');
+                }
+            }
             showToast("Images appended to roll.", "success");
         }
     } catch(e) {
@@ -2241,13 +2337,29 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
             const y = padding + r * (colHeight + padding);
             
             // Adjust draw height based on actual image ratio
-            let drawW = Math.round(colWidth);
-            let drawH = Math.round(drawW * (img.height / img.width));
-            let drawX = Math.round(x);
-            let drawY = Math.round(y + (colHeight - drawH)/2);
+            let isVertical = img.height > img.width;
+            let drawW, drawH, drawX, drawY;
             
-            // Draw image
-            ctx.drawImage(img, drawX, drawY, drawW, drawH);
+            if (isVertical) {
+                drawW = Math.round(colWidth);
+                drawH = Math.round(drawW * (img.width / img.height));
+                drawX = Math.round(x);
+                drawY = Math.round(y + (colHeight - drawH)/2);
+            } else {
+                drawW = Math.round(colWidth);
+                drawH = Math.round(drawW * (img.height / img.width));
+                drawX = Math.round(x);
+                drawY = Math.round(y + (colHeight - drawH)/2);
+            }
+            
+            ctx.save();
+            if (isVertical) {
+                ctx.translate(drawX + drawW/2, drawY + drawH/2);
+                ctx.rotate(Math.PI / 2);
+                ctx.drawImage(img, -drawH/2, -drawW/2, drawH, drawW);
+            } else {
+                ctx.drawImage(img, drawX, drawY, drawW, drawH);
+            }
             
             // Draw borders / sprocket mask placeholders
             try {
@@ -2258,10 +2370,15 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
                     overlayImg.src = currentRoll.format === "120" ? "assets/overlays/120_border.png" : "assets/overlays/135_sprocket.png";
                 });
                 // Draw overlay matching EXACT image dimensions
-                ctx.drawImage(overlayImg, drawX, drawY, drawW, drawH);
+                if (isVertical) {
+                    ctx.drawImage(overlayImg, -drawH/2, -drawW/2, drawH, drawW);
+                } else {
+                    ctx.drawImage(overlayImg, drawX, drawY, drawW, drawH);
+                }
             } catch(e) {
                 // Ignore missing placeholder
             }
+            ctx.restore();
             
             // Draw frame number
             ctx.fillStyle = '#555';
@@ -2353,14 +2470,16 @@ function updateCalibrationPolygon() {
     }
 }
 
-document.getElementById('calibration-svg').addEventListener('mousedown', (e) => {
+document.getElementById('calibration-svg').addEventListener('pointerdown', (e) => {
     if (!isCalibrationMode) return;
     if (e.target.classList.contains('calib-handle')) {
         calibrationDragIdx = parseInt(e.target.dataset.idx);
+        e.target.setPointerCapture(e.pointerId);
     }
 });
 
-window.addEventListener('mousemove', (e) => {
+let calibrationRAF = null;
+window.addEventListener('pointermove', (e) => {
     if (isCalibrationMode && calibrationDragIdx !== -1) {
         const svgRect = document.getElementById('calibration-svg').getBoundingClientRect();
         let nx = (e.clientX - svgRect.left) / svgRect.width;
@@ -2368,12 +2487,23 @@ window.addEventListener('mousemove', (e) => {
         nx = Math.max(0, Math.min(1, nx));
         ny = Math.max(0, Math.min(1, ny));
         calibrationPoints[calibrationDragIdx] = [nx, ny];
-        updateCalibrationPolygon();
+        
+        if (!calibrationRAF) {
+            calibrationRAF = requestAnimationFrame(() => {
+                updateCalibrationPolygon();
+                calibrationRAF = null;
+            });
+        }
     }
 });
 
-window.addEventListener('mouseup', () => {
-    calibrationDragIdx = -1;
+window.addEventListener('pointerup', (e) => {
+    if (calibrationDragIdx !== -1) {
+        if (e.target.classList && e.target.classList.contains('calib-handle')) {
+            e.target.releasePointerCapture(e.pointerId);
+        }
+        calibrationDragIdx = -1;
+    }
 });
 
 window.addEventListener('resize', () => {
@@ -2390,4 +2520,22 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
     document.getElementById('calibration-overlay').classList.remove('flex');
     document.getElementById('right-panel-blocker').classList.add('hidden');
     showToast("Calibration applied.", "success");
+});
+
+document.getElementById('btn-locate-file').addEventListener('click', async () => {
+    if (!missingFileId) return;
+    try {
+        const newPath = await invoke('locate_missing_file', { id: missingFileId });
+        if (newPath) {
+            document.getElementById('missing-file-ui').classList.add('hidden');
+            document.getElementById('missing-file-ui').classList.remove('flex');
+            document.getElementById('preview-canvas').style.display = 'block';
+            let id = missingFileId;
+            missingFileId = null;
+            activeId = null; // force re-select
+            await selectImage(id);
+        }
+    } catch(e) {
+        if (e !== "Cancelled") showToast("Failed to locate file", "error");
+    }
 });

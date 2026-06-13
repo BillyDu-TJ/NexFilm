@@ -317,7 +317,7 @@ pub async fn get_filmstrip(state: State<'_, EngineState>) -> Result<Vec<Filmstri
             strip.push(FilmstripItem {
                 id: item.id.clone(),
                 file_path: item.file_path.clone(),
-                thumbnail_base64: item.thumbnail_base64.clone(),
+                thumbnail_base64: if std::fs::File::open(&item.file_path).is_ok() { item.thumbnail_base64.clone() } else { "FILE_MISSING".to_string() },
             });
         }
     }
@@ -580,8 +580,11 @@ pub struct ActiveImageState {
 #[tauri::command]
 pub async fn switch_active_image(id: String, state: State<'_, EngineState>) -> Result<ActiveImageState, String> {
     if let Some(item_arc) = state.items.get(&id) {
-        *state.active_id.write().map_err(|e| e.to_string())? = Some(id.clone());
         let item = item_arc.read().map_err(|e| e.to_string())?;
+        if std::fs::File::open(&item.file_path).is_err() {
+            return Err("FILE_MISSING".into());
+        }
+        *state.active_id.write().map_err(|e| e.to_string())? = Some(id.clone());
         Ok(ActiveImageState {
             params: item.params.clone(),
             geom: item.geom.clone(),
@@ -1114,3 +1117,88 @@ pub async fn append_to_roll(
     
     crate::commands::import_images(paths, state).await
 }
+
+#[tauri::command]
+pub async fn locate_missing_file(id: String, state: State<'_, EngineState>) -> Result<String, String> {
+    let file_path = tauri::async_runtime::spawn_blocking(|| {
+        FileDialog::new()
+            .set_title("Locate Missing File")
+            .pick_file()
+    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
+    
+    if let Some(path) = file_path {
+        let new_path = path.to_string_lossy().to_string();
+        
+        // Update items
+        if let Some(item_arc) = state.items.get(&id) {
+            let mut item = item_arc.write().unwrap();
+            let old_path = item.file_path.clone();
+            item.file_path = new_path.clone();
+            
+            // Update rolls
+            let mut rolls = state.rolls.write().unwrap();
+            for roll in rolls.iter_mut() {
+                if let Some(pos) = roll.image_paths.iter().position(|p| p == &old_path) {
+                    roll.image_paths[pos] = new_path.clone();
+                }
+            }
+            if let Ok(json) = serde_json::to_string_pretty(&*rolls) {
+                let _ = std::fs::write("rolls.json", json);
+            }
+        }
+        Ok(new_path)
+    } else {
+        Err("Cancelled".into())
+    }
+}
+
+// SQLite Metadata Decoupling
+fn get_db_path() -> String {
+    "nexfilm_user.db".to_string()
+}
+
+pub fn init_db() -> rusqlite::Result<()> {
+    let conn = rusqlite::Connection::open(get_db_path())?;
+    conn.execute("CREATE TABLE IF NOT EXISTS user_cameras (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", [])?;
+    conn.execute("CREATE TABLE IF NOT EXISTS user_films (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", [])?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_user_cameras() -> Result<Vec<String>, String> {
+    let conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT name FROM user_cameras ORDER BY name").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let mut cameras = Vec::new();
+    for name_result in rows {
+        cameras.push(name_result.map_err(|e| e.to_string())?);
+    }
+    Ok(cameras)
+}
+
+#[tauri::command]
+pub fn get_user_films() -> Result<Vec<String>, String> {
+    let conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare("SELECT name FROM user_films ORDER BY name").map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let mut films = Vec::new();
+    for name_result in rows {
+        films.push(name_result.map_err(|e| e.to_string())?);
+    }
+    Ok(films)
+}
+
+#[tauri::command]
+pub fn add_user_camera(camera: String) -> Result<(), String> {
+    let conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
+    conn.execute("INSERT OR IGNORE INTO user_cameras (name) VALUES (?1)", rusqlite::params![camera]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn add_user_film(film: String) -> Result<(), String> {
+    let conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
+    conn.execute("INSERT OR IGNORE INTO user_films (name) VALUES (?1)", rusqlite::params![film]).map_err(|e| e.to_string())?;
+    Ok(())
+}
+

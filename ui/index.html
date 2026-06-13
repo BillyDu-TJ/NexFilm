@@ -175,6 +175,14 @@
                         <canvas id="dummy-pusher" class="block" style="max-width: 100%; max-height: 100%; object-fit: contain; visibility: hidden; pointer-events: none;"></canvas>
                         <canvas id="preview-canvas" class="absolute top-0 left-0 w-full h-full" style="object-fit: fill;"></canvas>
                         
+                        <!-- Missing File UI -->
+                        <div id="missing-file-ui" class="absolute inset-0 bg-[#121214] flex-col items-center justify-center hidden z-40">
+                            <svg class="w-16 h-16 text-red-500/50 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                            <div class="text-zinc-300 font-bold uppercase tracking-widest text-[13px] mb-2">文件已丢失 / File Missing</div>
+                            <div class="text-zinc-500 text-[11px] mb-6 max-w-sm text-center leading-relaxed">The original file has been moved or deleted. Please locate the file to continue editing.</div>
+                            <button id="btn-locate-file" class="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-bold uppercase tracking-widest rounded border border-zinc-700/50 shadow-lg transition-colors pointer-events-auto">LOCATE FILE</button>
+                        </div>
+
                         <!-- Calibration Mode Overlay -->
                         <div id="calibration-overlay" class="absolute top-0 left-0 w-full h-full z-30 hidden flex-col items-center justify-center pointer-events-auto">
                             <div class="absolute inset-0 bg-black/50 pointer-events-none"></div>

@@ -4,6 +4,8 @@ use nexfilm_engine::app_state::EngineState;
 
 
 fn main() {
+    let _ = nexfilm_engine::commands::init_db();
+    
     let state = EngineState::new();
     if let Ok(json) = std::fs::read_to_string("rolls.json") {
         if let Ok(rolls) = serde_json::from_str(&json) {
@@ -37,7 +39,12 @@ fn main() {
             nexfilm_engine::commands::import_roll,
             nexfilm_engine::commands::delete_rolls,
             nexfilm_engine::commands::save_contact_sheet,
-            nexfilm_engine::commands::append_to_roll
+            nexfilm_engine::commands::append_to_roll,
+            nexfilm_engine::commands::locate_missing_file,
+            nexfilm_engine::commands::get_user_cameras,
+            nexfilm_engine::commands::get_user_films,
+            nexfilm_engine::commands::add_user_camera,
+            nexfilm_engine::commands::add_user_film
         ])
         .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())
