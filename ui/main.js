@@ -3084,9 +3084,6 @@ window.addEventListener('pointerup', (e) => {
         if (e.target.classList && e.target.classList.contains('calib-handle')) {
             e.target.releasePointerCapture(e.pointerId);
         }
-        pushUndoState();
-        current_geom.calibration_points = JSON.parse(JSON.stringify(calibrationPoints));
-        requestRender();
         calibrationDragIdx = -1;
     }
 });
@@ -3097,7 +3094,9 @@ window.addEventListener('resize', () => {
 
 document.getElementById('btn-confirm-calibration').addEventListener('click', async () => {
     if (!activeId) return;
+    pushUndoState();
     current_geom.calibration_points = JSON.parse(JSON.stringify(calibrationPoints));
+    requestRender();
     saveCurrentState();
     await invoke('update_geometry', { id: activeId, geom: current_geom });
     isCalibrationMode = false;
