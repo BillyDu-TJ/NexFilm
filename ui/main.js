@@ -264,6 +264,27 @@ window.addEventListener('keydown', async (e) => {
         
         requestThumbnailSync();
         if (isCropMode) updateCropOverlay();
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        
+        const container = document.getElementById('filmstrip-container');
+        if (!container || container.offsetParent === null) return; // Only if filmstrip is visible
+        
+        const items = Array.from(container.querySelectorAll('.film-item'));
+        if (items.length === 0) return;
+        
+        let currentIndex = items.findIndex(item => item.classList.contains('active'));
+        if (currentIndex === -1) currentIndex = 0;
+        
+        let newIndex = currentIndex;
+        if (e.key === 'ArrowLeft' && currentIndex > 0) newIndex--;
+        else if (e.key === 'ArrowRight' && currentIndex < items.length - 1) newIndex++;
+        
+        if (newIndex !== currentIndex) {
+            e.preventDefault();
+            items[newIndex].click();
+            items[newIndex].scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        }
     }
 });
 

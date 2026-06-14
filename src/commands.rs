@@ -373,26 +373,23 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
         state.items.insert(id.clone(), Arc::new(RwLock::new(item)));
     }
 
-    let loose = is_loose.unwrap_or(false);
-    if !loose {
-        let mut order_guard = state.item_order.write().map_err(|e| e.to_string())?;
-        for path in paths {
-            let id_opt = {
-                let guard = state.items.clone();
-                let mut found = None;
-                for kv in guard.iter() {
-                    let db_path = kv.value().read().unwrap().file_path.clone();
-                    if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
-                        found = Some(kv.key().clone());
-                        break;
-                    }
+    let mut order_guard = state.item_order.write().map_err(|e| e.to_string())?;
+    for path in paths {
+        let id_opt = {
+            let guard = state.items.clone();
+            let mut found = None;
+            for kv in guard.iter() {
+                let db_path = kv.value().read().unwrap().file_path.clone();
+                if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
+                    found = Some(kv.key().clone());
+                    break;
                 }
-                found
-            };
-            if let Some(id) = id_opt {
-                if !order_guard.contains(&id) {
-                    order_guard.push(id);
-                }
+            }
+            found
+        };
+        if let Some(id) = id_opt {
+            if !order_guard.contains(&id) {
+                order_guard.push(id);
             }
         }
     }
@@ -1506,7 +1503,6 @@ pub fn init_db() -> rusqlite::Result<()> {
     let conn = rusqlite::Connection::open(get_db_path())?;
     conn.execute("CREATE TABLE IF NOT EXISTS user_cameras (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", [])?;
     conn.execute("CREATE TABLE IF NOT EXISTS user_films (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", [])?;
-    let _ = conn.execute("DROP TABLE IF EXISTS image_states", []);
     conn.execute("CREATE TABLE IF NOT EXISTS image_states (
         roll_id TEXT NOT NULL,
         file_path TEXT NOT NULL,
