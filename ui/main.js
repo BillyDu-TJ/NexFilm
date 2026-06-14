@@ -94,6 +94,7 @@ let proxyHeight = 0;
 
 let lastHistPixels = null;
 let current_geom = { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
+let current_loaded_geom = null;
 let isCropMode = false;
 let isRotateMode = false;
 let currentImageWidth = 1;
@@ -1034,10 +1035,21 @@ function renderWebGL() {
     
     let a = current_geom.angle * Math.PI / 180.0;
     if (!isCropMode && !isRotateMode) a = 0;
+    
+    let deltaRot = 0;
+    let scaleX = 1;
+    let scaleY = 1;
+    if (typeof current_loaded_geom !== 'undefined' && current_loaded_geom && current_geom) {
+        deltaRot = (current_geom.rotate_90_count - current_loaded_geom.rotate_90_count) * 90;
+        if (current_geom.flip_h !== current_loaded_geom.flip_h) scaleX = -1;
+        if (current_geom.flip_v !== current_loaded_geom.flip_v) scaleY = -1;
+    }
+    a += deltaRot * Math.PI / 180.0;
+
     let s = Math.sin(a), c = Math.cos(a);
     let transformMat = new Float32Array([
-        c, s, 0, 0,
-        -s, c, 0, 0,
+        c * scaleX, s * scaleX, 0, 0,
+        -s * scaleY, c * scaleY, 0, 0,
         0, 0, 1, 0,
         0, 0, 0, 1
     ]);
@@ -1206,6 +1218,8 @@ async function loadProxyImage(token = null) {
         proxyPixels = pixels;
         proxyWidth = width;
         proxyHeight = height;
+        
+        current_loaded_geom = JSON.parse(JSON.stringify(current_geom));
         
         if (previewCanvas.width !== width || previewCanvas.height !== height) {
             previewCanvas.width = width;
@@ -1431,15 +1445,18 @@ function getActiveFilters() {
 }
 
 let renderVersion = 0;
-async function renderLibraryAndFilmstrip() {
+async function renderLibraryAndFilmstrip(skipFetch = false) {
     renderVersion++;
     const currentVersion = renderVersion;
     try {
-        await fetchRolls();
-        if (renderVersion !== currentVersion) return;
-        const items = await invoke('get_filmstrip');
-        if (renderVersion !== currentVersion) return;
-        allLibraryItems = items;
+        let items = allLibraryItems;
+        if (!skipFetch) {
+            await fetchRolls();
+            if (renderVersion !== currentVersion) return;
+            items = await invoke('get_filmstrip');
+            if (renderVersion !== currentVersion) return;
+            allLibraryItems = items;
+        }
         
         const libraryRollsGrid = document.getElementById('library-rolls-grid');
         const historyInternalGrid = document.getElementById('history-internal-grid');
@@ -1490,20 +1507,26 @@ async function renderLibraryAndFilmstrip() {
                     }
                     updateLibrarySelectionUI();
                 };
-                const libImg = document.createElement('img');
-                libImg.dataset.imgId = item.id;
-                if (item.thumbnail_base64 === "FILE_MISSING") {
-                    libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
-                    libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
-                } else if (!item.thumbnail_base64 || item.thumbnail_base64 === "CALCULATING") {
-                    // Skeleton loader
-                    libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
-                    libImg.className = 'w-full h-full object-cover pointer-events-none opacity-80';
+                if (item.status === 'importing') {
+                    const skeleton = document.createElement('div');
+                    skeleton.className = 'w-full h-full bg-[#2C2C2E] flex items-center justify-center animate-pulse';
+                    skeleton.innerHTML = `<svg class="animate-spin h-6 w-6 text-[#8E8E93]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
+                    libDiv.appendChild(skeleton);
                 } else {
-                    libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
-                    libImg.className = 'w-full h-full object-cover pointer-events-none';
+                    const libImg = document.createElement('img');
+                    libImg.dataset.imgId = item.id;
+                    if (item.thumbnail_base64 === "FILE_MISSING") {
+                        libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
+                        libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
+                    } else if (!item.thumbnail_base64 || item.thumbnail_base64 === "CALCULATING") {
+                        libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
+                        libImg.className = 'w-full h-full object-cover pointer-events-none opacity-80';
+                    } else {
+                        libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+                        libImg.className = 'w-full h-full object-cover pointer-events-none';
+                    }
+                    libDiv.appendChild(libImg);
                 }
-                libDiv.appendChild(libImg);
                 libraryGrid.appendChild(libDiv);
             });
         }
@@ -1601,20 +1624,26 @@ async function renderLibraryAndFilmstrip() {
                             }
                             updateLibrarySelectionUI();
                         };
-                        const libImg = document.createElement('img');
-                        libImg.dataset.imgId = existingItem.id;
-                        if (existingItem.thumbnail_base64 === "FILE_MISSING") {
-                            libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
-                            libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
-                        } else if (!existingItem.thumbnail_base64 || existingItem.thumbnail_base64 === "CALCULATING") {
-                            // Skeleton loader
-                            libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
-                            libImg.className = 'w-full h-full object-cover pointer-events-none opacity-80';
+                        if (existingItem.status === 'importing') {
+                            const skeleton = document.createElement('div');
+                            skeleton.className = 'w-full h-full bg-[#2C2C2E] flex items-center justify-center animate-pulse';
+                            skeleton.innerHTML = `<svg class="animate-spin h-6 w-6 text-[#8E8E93]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
+                            libDiv.appendChild(skeleton);
                         } else {
-                            libImg.src = `data:image/jpeg;base64,${existingItem.thumbnail_base64}`;
-                            libImg.className = 'w-full h-full object-cover pointer-events-none';
+                            const libImg = document.createElement('img');
+                            libImg.dataset.imgId = existingItem.id;
+                            if (existingItem.thumbnail_base64 === "FILE_MISSING") {
+                                libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
+                                libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
+                            } else if (!existingItem.thumbnail_base64 || existingItem.thumbnail_base64 === "CALCULATING") {
+                                libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
+                                libImg.className = 'w-full h-full object-cover pointer-events-none opacity-80';
+                            } else {
+                                libImg.src = `data:image/jpeg;base64,${existingItem.thumbnail_base64}`;
+                                libImg.className = 'w-full h-full object-cover pointer-events-none';
+                            }
+                            libDiv.appendChild(libImg);
                         }
-                        libDiv.appendChild(libImg);
                         historyInternalGrid.appendChild(libDiv);
                     });
                 }
@@ -1718,16 +1747,28 @@ async function renderLibraryAndFilmstrip() {
                 selectedLibraryIds.add(item.id);
                 updateLibrarySelectionUI();
             };
-            const stripImg = document.createElement('img');
-            stripImg.dataset.imgId = item.id;
-            if (item.thumbnail_base64 === "FILE_MISSING") {
-                stripImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
-                stripImg.className = 'w-full h-full object-contain rounded-[2px] pointer-events-none opacity-50 bg-[#1C1C1E] p-2';
+            stripDiv.dataset.id = item.id;
+            
+            if (item.status === 'importing') {
+                const skeleton = document.createElement('div');
+                skeleton.className = 'w-full h-full bg-[#2C2C2E] flex items-center justify-center animate-pulse rounded-[2px]';
+                skeleton.innerHTML = `<svg class="animate-spin h-4 w-4 text-[#8E8E93]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
+                stripDiv.appendChild(skeleton);
             } else {
-                stripImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
-                stripImg.className = 'w-full h-full object-cover rounded-[2px] pointer-events-none';
+                const stripImg = document.createElement('img');
+                stripImg.dataset.imgId = item.id;
+                if (item.thumbnail_base64 === "FILE_MISSING") {
+                    stripImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
+                    stripImg.className = 'w-full h-full object-contain rounded-[2px] pointer-events-none opacity-50 bg-[#1C1C1E] p-2';
+                } else if (!item.thumbnail_base64 || item.thumbnail_base64 === "CALCULATING") {
+                    stripImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
+                    stripImg.className = 'w-full h-full object-cover rounded-[2px] pointer-events-none opacity-80';
+                } else {
+                    stripImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+                    stripImg.className = 'w-full h-full object-cover rounded-[2px] pointer-events-none';
+                }
+                stripDiv.appendChild(stripImg);
             }
-            stripDiv.appendChild(stripImg);
             filmstripContainer.appendChild(stripDiv);
         });
         
@@ -1798,7 +1839,15 @@ async function selectImage(id) {
         updateUIFromParams(state.params, current_geom);
         updateCropOverlay();
 
-        renderLibraryAndFilmstrip();
+        const filmItems = document.querySelectorAll('#filmstrip-container .film-item');
+        filmItems.forEach(item => {
+            if (item.dataset.id === activeId) {
+                item.classList.add('active');
+                item.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+            } else {
+                item.classList.remove('active');
+            }
+        });
 
         updateSliderTrack(sliders.exposure.el);
         updateSliderTrack(sliders.gamma.el);
@@ -1879,8 +1928,17 @@ const doImportSingle = async () => {
         if (paths && paths.length > 0) {
             currentRollViewId = null;
             currentImportSessionPaths = paths.map(p => p.replace(/\\/g, '/').toLowerCase());
+            
+            const tempItems = paths.map((p, idx) => ({
+                id: 'temp_import_' + Date.now() + '_' + idx,
+                file_path: p,
+                thumbnail_base64: '',
+                status: 'importing'
+            }));
+            allLibraryItems = [...allLibraryItems, ...tempItems];
+            await renderLibraryAndFilmstrip(true);
+            
             await invoke('import_images', { paths, isLoose: true, rollId: 'LOOSE_DEFAULT', isHistorical: false });
-            await fetchRolls();
             await renderLibraryAndFilmstrip();
             
             if (allLibraryItems && allLibraryItems.length > 0) {
@@ -2010,6 +2068,15 @@ document.getElementById('btn-confirm-continue').addEventListener('click', async 
         if (pathsToImport.length > 0) {
             document.getElementById('history-view-title').textContent = "LOADING ROLL...";
             try {
+                const tempItems = pathsToImport.map((p, idx) => ({
+                    id: 'temp_import_' + Date.now() + '_' + idx,
+                    file_path: p,
+                    thumbnail_base64: '',
+                    status: 'importing'
+                }));
+                allLibraryItems = [...allLibraryItems, ...tempItems];
+                await renderLibraryAndFilmstrip(true);
+                
                 await invoke('import_images', { paths: pathsToImport, isLoose: false, inLibrary: false, rollId: currentRollViewId, isHistorical: true });
                 allLibraryItems = await invoke('get_filmstrip');
             } catch (e) { console.error(e); }
@@ -2315,6 +2382,9 @@ let geomSyncId = 0;
 function sendGeometrySync() {
     geomSyncId++;
     const currentSyncId = geomSyncId;
+    
+    updateCanvasTransform();
+    requestRender();
     
     invoke('update_geometry', { id: activeId, geom: current_geom }).then(() => {
         if (geomSyncId !== currentSyncId) return;
@@ -3194,6 +3264,19 @@ const handleDrop = async (event) => {
     const paths = event.payload.paths || event.payload; // Tauri v2 uses payload.paths
     if (paths && paths.length > 0) {
         btnImport.textContent = 'Importing...';
+        
+        currentRollViewId = null;
+        currentImportSessionPaths = paths.map(p => p.replace(/\\/g, '/').toLowerCase());
+        
+        const tempItems = paths.map((p, idx) => ({
+            id: 'temp_import_' + Date.now() + '_' + idx,
+            file_path: p,
+            thumbnail_base64: '',
+            status: 'importing'
+        }));
+        allLibraryItems = [...allLibraryItems, ...tempItems];
+        await renderLibraryAndFilmstrip(true);
+        
         await invoke('import_images', { paths, isLoose: true, rollId: 'LOOSE_DEFAULT', isHistorical: false });
         allLibraryItems = await invoke('get_filmstrip');
         renderLibraryAndFilmstrip();
