@@ -596,7 +596,12 @@ function initWebGL() {
         const shader = gl.createShader(type);
         gl.shaderSource(shader, source);
         gl.compileShader(shader);
-        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) return null;
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            const info = gl.getShaderInfoLog(shader);
+            console.error("Shader compilation error:", info);
+            showToast("Shader error: " + info.substring(0, 50), "error");
+            return null;
+        }
         return shader;
     }
 
@@ -1280,8 +1285,8 @@ function updateUIFromParams(params, geom) {
     if (params.shadows !== undefined) sliders.shadows.el.value = params.shadows;
     
     currentSprocketTarget = params.sprocket_target ? new Float32Array(params.sprocket_target) : new Float32Array([-1.0, -1.0, -1.0]);
-    currentSprocketTolerance = params.sprocket_tolerance !== undefined ? params.sprocket_tolerance : 0.10;
-    currentSprocketFeather = params.sprocket_feather !== undefined ? params.sprocket_feather : 0.05;
+    currentSprocketTolerance = (params.sprocket_tolerance !== undefined && params.sprocket_tolerance !== null) ? params.sprocket_tolerance : 0.10;
+    currentSprocketFeather = (params.sprocket_feather !== undefined && params.sprocket_feather !== null) ? params.sprocket_feather : 0.05;
     
     sliders.sprocketTolerance.el.value = currentSprocketTolerance;
     sliders.sprocketFeather.el.value = currentSprocketFeather;
