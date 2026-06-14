@@ -51,6 +51,7 @@ const btnCropMode = document.getElementById('btn-crop-mode');
 const btnRotateMode = document.getElementById('btn-rotate-mode');
 const btnResetCrop = document.getElementById('btn-reset-crop');
 const btnAutoColor = document.getElementById('btn-auto-color');
+const btnSprocketPicker = document.getElementById('btn-sprocket-picker');
 const btnResetColor = document.getElementById('btn-reset-color');
 const btnRotateLeft = document.getElementById('btn-rotate-left');
 const btnRotateRight = document.getElementById('btn-rotate-right');
@@ -83,6 +84,7 @@ const sliders = {
 const imageStates = new Map();
 let copiedSettings = null;
 let isEyedropperActive = false;
+let isSprocketPickerActive = false;
 let activeId = null;
 let proxyPixels = null;
 let proxyWidth = 0;
@@ -469,16 +471,15 @@ function initWebGL() {
     uniform float u_highlights;
     uniform float u_shadows;
     
-    uniform int u_baseline_pass;
-    
     uniform mediump sampler3D u_lut3d;
     uniform mediump sampler2D u_lut1d;
     uniform float u_lut_opacity;
     uniform int u_has_lut;
     uniform int u_lut_is_1d;
     
-    uniform vec2 u_calib_pts[4];
-    uniform float u_border_exposure;
+    uniform mat3 u_homography;
+    uniform vec3 u_sprocket_target;
+    uniform float u_sprocket_tolerance;
 
     const mat3 STATUS_M = mat3(
         1.0197, -0.0052, 0.0131,
@@ -486,78 +487,88 @@ function initWebGL() {
         0.0091, 0.0521, 0.9712
     );
 
-    bool is_inside_quad(vec2 p, vec2 a, vec2 b, vec2 c, vec2 d) {
-        vec2 ab = b - a; vec2 ap = p - a; float cross_ab = ab.x * ap.y - ab.y * ap.x;
-        vec2 bc = c - b; vec2 bp = p - b; float cross_bc = bc.x * bp.y - bc.y * bp.x;
-        vec2 cd = d - c; vec2 cp = p - c; float cross_cd = cd.x * cp.y - cd.y * cp.x;
-        vec2 da = a - d; vec2 dp = p - d; float cross_da = da.x * dp.y - da.y * dp.x;
-        bool same_sign = (cross_ab >= 0.0 && cross_bc >= 0.0 && cross_cd >= 0.0 && cross_da >= 0.0) ||
-                         (cross_ab <= 0.0 && cross_bc <= 0.0 && cross_cd <= 0.0 && cross_da <= 0.0);
-        return same_sign;
+    vec3 rgbToHsl(vec3 c) {
+        float minC = min(min(c.r, c.g), c.b);
+        float maxC = max(max(c.r, c.g), c.b);
+        float delta = maxC - minC;
+        vec3 hsl = vec3(0.0, 0.0, (maxC + minC) / 2.0);
+        if (delta > 0.0) {
+            hsl.y = (hsl.z < 0.5) ? delta / (maxC + minC) : delta / (2.0 - maxC - minC);
+            if (maxC == c.r) {
+                hsl.x = (c.g - c.b) / delta + (c.g < c.b ? 6.0 : 0.0);
+            } else if (maxC == c.g) {
+                hsl.x = (c.b - c.r) / delta + 2.0;
+            } else {
+                hsl.x = (c.r - c.g) / delta + 4.0;
+            }
+            hsl.x /= 6.0;
+        }
+        return hsl;
+    }
+
+    vec2 applyHomography(vec2 uv, mat3 h) {
+        vec3 p = h * vec3(uv, 1.0);
+        return p.xy / p.z;
     }
 
     void main() {
-        if (v_texcoord.x < 0.0 || v_texcoord.x > 1.0 || v_texcoord.y < 0.0 || v_texcoord.y > 1.0) {
+        vec2 warped_uv = applyHomography(v_texcoord, u_homography);
+        if (warped_uv.x < 0.0 || warped_uv.x > 1.0 || warped_uv.y < 0.0 || warped_uv.y > 1.0) {
             outColor = vec4(0.0, 0.0, 0.0, 1.0);
             return;
         }
 
-        uvec4 texel = texture(u_image, v_texcoord);
+        uvec4 texel = texture(u_image, warped_uv);
         
         float epsilon = 1e-6;
         float t_r = max(float(texel.r) / 65535.0, epsilon);
         float t_g = max(float(texel.g) / 65535.0, epsilon);
         float t_b = max(float(texel.b) / 65535.0, epsilon);
         
-        vec3 final_rgb;
-        bool is_inside = is_inside_quad(v_texcoord, u_calib_pts[0], u_calib_pts[1], u_calib_pts[2], u_calib_pts[3]);
+        vec3 density = vec3(-log(t_r) / log(10.0), -log(t_g) / log(10.0), -log(t_b) / log(10.0));
         
-        if (is_inside) {
-            vec3 density = vec3(-log(t_r) / log(10.0), -log(t_g) / log(10.0), -log(t_b) / log(10.0));
-            
-            if (u_mode == 0) {
-                density = STATUS_M * (density - u_base_density);
-            } else {
-                density = density - u_base_density;
-                float gray = (density.r + density.g + density.b) / 3.0;
-                density = vec3(gray);
-            }
-            
-            if (u_mode == 0) {
-                density += u_exposure;
-            } else {
-                density += vec3(u_exposure.r);
-            }
-            
-            vec3 norm = (density - u_dmin) / (u_dmax - u_dmin);
-            
-            norm = norm + u_shadows * pow(1.0 - clamp(norm, 0.0, 1.0), vec3(2.0)) * norm + u_highlights * pow(clamp(norm, 0.0, 1.0), vec3(2.0)) * (1.0 - norm);
-            
-            if (u_has_lut == 1) {
-                vec3 lut_in = clamp(norm, 0.0, 1.0);
-                vec3 lut_color;
-                if (u_lut_is_1d == 1) {
-                    lut_color.r = texture(u_lut1d, vec2(lut_in.r, 0.5)).r;
-                    lut_color.g = texture(u_lut1d, vec2(lut_in.g, 0.5)).g;
-                    lut_color.b = texture(u_lut1d, vec2(lut_in.b, 0.5)).b;
-                } else {
-                    lut_color = texture(u_lut3d, lut_in).rgb;
-                }
-                final_rgb = mix(vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma)), lut_color, u_lut_opacity);
-            } else {
-                final_rgb = vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma));
-            }
+        if (u_mode == 0) {
+            density = STATUS_M * (density - u_base_density);
         } else {
-            if (u_baseline_pass == 1) {
-                outColor = vec4(0.0, 0.0, 0.0, 0.0);
-                return;
+            density = density - u_base_density;
+            float gray = (density.r + density.g + density.b) / 3.0;
+            density = vec3(gray);
+        }
+        
+        if (u_mode == 0) {
+            density += u_exposure;
+        } else {
+            density += vec3(u_exposure.r);
+        }
+        
+        vec3 norm = (density - u_dmin) / (u_dmax - u_dmin);
+        
+        norm = norm + u_shadows * pow(1.0 - clamp(norm, 0.0, 1.0), vec3(2.0)) * norm + u_highlights * pow(clamp(norm, 0.0, 1.0), vec3(2.0)) * (1.0 - norm);
+        
+        vec3 final_rgb;
+        if (u_has_lut == 1) {
+            vec3 lut_in = clamp(norm, 0.0, 1.0);
+            vec3 lut_color;
+            if (u_lut_is_1d == 1) {
+                lut_color.r = texture(u_lut1d, vec2(lut_in.r, 0.5)).r;
+                lut_color.g = texture(u_lut1d, vec2(lut_in.g, 0.5)).g;
+                lut_color.b = texture(u_lut1d, vec2(lut_in.b, 0.5)).b;
+            } else {
+                lut_color = texture(u_lut3d, lut_in).rgb;
             }
-            final_rgb = vec3(1.0) - vec3(t_r, t_g, t_b);
-            final_rgb *= exp2(u_border_exposure);
-            final_rgb = vec3(pow(clamp(final_rgb.r, 0.0, 1.0), 1.0 / u_gamma), 
-                             pow(clamp(final_rgb.g, 0.0, 1.0), 1.0 / u_gamma), 
-                             pow(clamp(final_rgb.b, 0.0, 1.0), 1.0 / u_gamma));
-            final_rgb *= 0.6;
+            final_rgb = mix(vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma)), lut_color, u_lut_opacity);
+        } else {
+            final_rgb = vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma));
+        }
+
+        if (u_sprocket_target.z >= 0.0) {
+            vec3 final_hsl = rgbToHsl(final_rgb);
+            float dh = abs(final_hsl.x - u_sprocket_target.x);
+            if (dh > 0.5) dh = 1.0 - dh;
+            vec3 diff = vec3(dh, final_hsl.y - u_sprocket_target.y, final_hsl.z - u_sprocket_target.z);
+            if (length(diff) < u_sprocket_tolerance) {
+                final_rgb = vec3(1.0);
+            }
         }
         
         outColor = vec4(final_rgb, 1.0);
@@ -600,9 +611,9 @@ function initWebGL() {
     u_aspect_loc = gl.getUniformLocation(shaderProgram, "u_aspect");
     u_image_aspect_loc = gl.getUniformLocation(shaderProgram, "u_image_aspect");
     u_crop_loc = gl.getUniformLocation(shaderProgram, "u_crop");
-    u_calib_pts_loc = gl.getUniformLocation(shaderProgram, "u_calib_pts");
-    u_border_exposure_loc = gl.getUniformLocation(shaderProgram, "u_border_exposure");
-    u_baseline_pass_loc = gl.getUniformLocation(shaderProgram, "u_baseline_pass");
+    u_homography_loc = gl.getUniformLocation(shaderProgram, "u_homography");
+    u_sprocket_target_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_target");
+    u_sprocket_tolerance_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_tolerance");
     
     gl.getExtension("OES_texture_float_linear");
 
@@ -910,6 +921,48 @@ function updateDataViz(pixels) {
     else drawHistogram(pixels);
 }
 
+let currentSprocketTarget = new Float32Array([-1.0, -1.0, -1.0]);
+let currentSprocketTolerance = 0.05;
+
+function getHomography(pts) {
+    const x0 = pts[0][0], y0 = pts[0][1];
+    const x1 = pts[1][0], y1 = pts[1][1];
+    const x2 = pts[2][0], y2 = pts[2][1];
+    const x3 = pts[3][0], y3 = pts[3][1];
+
+    const dx1 = x1 - x2;
+    const dx2 = x3 - x2;
+    const dx3 = x0 - x1 + x2 - x3;
+
+    const dy1 = y1 - y2;
+    const dy2 = y3 - y2;
+    const dy3 = y0 - y1 + y2 - y3;
+
+    let a, b, c, d, e, f, g, h;
+    c = x0;
+    f = y0;
+
+    const det = dx1 * dy2 - dy1 * dx2;
+    if (Math.abs(det) < 1e-6) {
+        a = x1 - x0; b = x3 - x0;
+        d = y1 - y0; e = y3 - y0;
+        g = 0.0; h = 0.0;
+    } else {
+        g = (dx3 * dy2 - dy3 * dx2) / det;
+        h = (dx1 * dy3 - dy1 * dx3) / det;
+        a = x1 - x0 + g * x1;
+        b = x3 - x0 + h * x3;
+        d = y1 - y0 + g * y1;
+        e = y3 - y0 + h * y3;
+    }
+
+    return new Float32Array([
+        a, d, g,
+        b, e, h,
+        c, f, 1.0
+    ]);
+}
+
 function requestRender() {
     if (!webGLInitialized || renderRequested) return;
     renderRequested = true;
@@ -937,7 +990,7 @@ function renderWebGL() {
     gl.uniform3f(u_exposure_loc, expVal + exprVal, expVal + expgVal, expVal + expbVal);
     gl.uniform1f(u_gamma_loc, gammaVal);
     gl.uniform1i(u_mode_loc, mode);
-    gl.uniform1i(u_baseline_pass_loc, 0);
+    gl.uniform1i(u_mode_loc, mode);
     
     gl.uniform1f(u_highlights_loc, parseFloat(sliders.highlights.el.value));
     gl.uniform1f(u_shadows_loc, parseFloat(sliders.shadows.el.value));
@@ -951,14 +1004,10 @@ function renderWebGL() {
     gl.uniform1f(u_image_aspect_loc, proxyWidth / proxyHeight);
     
     let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
-    let flat_pts = new Float32Array([
-        pts[0][0], pts[0][1],
-        pts[1][0], pts[1][1],
-        pts[2][0], pts[2][1],
-        pts[3][0], pts[3][1]
-    ]);
-    gl.uniform2fv(u_calib_pts_loc, flat_pts);
-    gl.uniform1f(u_border_exposure_loc, 0.0);
+    let homographyMat = getHomography(pts);
+    gl.uniformMatrix3fv(u_homography_loc, false, homographyMat);
+    gl.uniform3fv(u_sprocket_target_loc, currentSprocketTarget);
+    gl.uniform1f(u_sprocket_tolerance_loc, currentSprocketTolerance);
     
     let a = current_geom.angle * Math.PI / 180.0;
     if (!isCropMode && !isRotateMode) a = 0;
@@ -1239,6 +1288,7 @@ function enableUI() {
     document.getElementById('btn-recalibrate').disabled = false;
     btnResetCrop.disabled = false;
     btnAutoColor.disabled = false;
+    btnSprocketPicker.disabled = false;
     btnResetColor.disabled = false;
     btnRotateLeft.disabled = false;
     btnRotateRight.disabled = false;
@@ -2259,16 +2309,11 @@ async function doAutoColor() {
     gl.uniform1f(u_highlights_loc, 0.0);
     gl.uniform1f(u_shadows_loc, 0.0);
     gl.uniform1i(u_has_lut_loc, 0);
-    gl.uniform1i(u_baseline_pass_loc, 1);
-
-    // Transformation & calibration uniforms
     let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
-    let flat_pts = new Float32Array([
-        pts[0][0], pts[0][1], pts[1][0], pts[1][1],
-        pts[2][0], pts[2][1], pts[3][0], pts[3][1]
-    ]);
-    gl.uniform2fv(u_calib_pts_loc, flat_pts);
-    gl.uniform1f(u_border_exposure_loc, 0.0);
+    let homographyMat = getHomography(pts);
+    gl.uniformMatrix3fv(u_homography_loc, false, homographyMat);
+    gl.uniform3fv(u_sprocket_target_loc, new Float32Array([-1.0, -1.0, -1.0])); // Disable target during calibration
+    gl.uniform1f(u_sprocket_tolerance_loc, 0.0);
     
     let a = current_geom.angle * Math.PI / 180.0;
     if (!isCropMode && !isRotateMode) a = 0;
@@ -2300,10 +2345,20 @@ async function doAutoColor() {
     // --- PHASE 2: Calculation ---
     let r_arr = []; let g_arr = []; let b_arr = [];
     for (let i = 0; i < purePixels.length; i += 4) {
-        if (purePixels[i+3] === 0) continue; // Skip pixels outside the calibration quad
-        r_arr.push(purePixels[i]);
-        g_arr.push(purePixels[i+1]);
-        b_arr.push(purePixels[i+2]);
+        let px = (i / 4) % HIST_W;
+        let py = Math.floor((i / 4) / HIST_W);
+        let a_tex_x = px / (HIST_W - 1);
+        let a_tex_y = py / (HIST_H - 1);
+        let base_uv_x = a_tex_x;
+        let base_uv_y = 1.0 - a_tex_y;
+        let v_tex_x = current_geom.crop_rect.x + base_uv_x * current_geom.crop_rect.width;
+        let v_tex_y = current_geom.crop_rect.y + base_uv_y * current_geom.crop_rect.height;
+
+        if (v_tex_x >= 0.0 && v_tex_x <= 1.0 && v_tex_y >= 0.0 && v_tex_y <= 1.0) {
+            r_arr.push(purePixels[i]);
+            g_arr.push(purePixels[i+1]);
+            b_arr.push(purePixels[i+2]);
+        }
     }
 
     r_arr.sort((a,b)=>a-b);
@@ -2400,6 +2455,17 @@ btnAutoColor.addEventListener('click', async () => {
     pushUndoState();
     await doAutoColor();
     requestThumbnailSync();
+});
+
+btnSprocketPicker.addEventListener('click', () => {
+    isSprocketPickerActive = !isSprocketPickerActive;
+    if (isSprocketPickerActive) {
+        canvasWrapper.parentElement.style.cursor = 'crosshair';
+        btnSprocketPicker.classList.add('bg-zinc-600');
+    } else {
+        canvasWrapper.parentElement.style.cursor = '';
+        btnSprocketPicker.classList.remove('bg-zinc-600');
+    }
 });
 
 async function showConfirm(message) {
@@ -3087,6 +3153,45 @@ window.addEventListener('keydown', e => { if(e.code==='Space') isSpacePressed=tr
 window.addEventListener('keyup', e => { if(e.code==='Space') isSpacePressed=false; });
 
 canvasWrapper.parentElement.addEventListener('mousedown', e => {
+    if (isSprocketPickerActive) {
+        if (!gl || !activeId) return;
+        const rect = previewCanvas.getBoundingClientRect();
+        const scaleX = previewCanvas.width / rect.width;
+        const scaleY = previewCanvas.height / rect.height;
+        const x = Math.floor((e.clientX - rect.left) * scaleX);
+        const y = Math.floor((rect.bottom - e.clientY) * scaleY);
+        if (x >= 0 && x < previewCanvas.width && y >= 0 && y < previewCanvas.height) {
+            const pixel = new Uint8Array(4);
+            gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+            
+            function rgbToHslJs(r, g, b) {
+                r /= 255; g /= 255; b /= 255;
+                let max = Math.max(r, g, b), min = Math.min(r, g, b);
+                let h, s, l = (max + min) / 2;
+                if (max == min) { h = s = 0; }
+                else {
+                    let d = max - min;
+                    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+                    switch (max) {
+                        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+                        case g: h = (b - r) / d + 2; break;
+                        case b: h = (r - g) / d + 4; break;
+                    }
+                    h /= 6;
+                }
+                return [h, s, l];
+            }
+            
+            const hsl = rgbToHslJs(pixel[0], pixel[1], pixel[2]);
+            currentSprocketTarget = new Float32Array(hsl);
+            currentSprocketTolerance = 0.05;
+            isSprocketPickerActive = false;
+            canvasWrapper.parentElement.style.cursor = '';
+            btnSprocketPicker.classList.remove('bg-zinc-600');
+            requestRender();
+        }
+        return;
+    }
     if (!activeId || isCropMode || isRotateMode || isCalibrationMode) return;
     if (e.button === 0 || e.button === 1) {
         isPanning = true;
