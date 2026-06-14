@@ -35,5 +35,20 @@
       "G:\\DCIM\\755ND810\\_DSC7135.NEF",
       "G:\\DCIM\\755ND810\\_DSC7136.NEF"
     ]
+  },
+  {
+    "roll_id": "roll_1781439337630_113",
+    "date": "2026-06-14",
+    "format": "135",
+    "film_stock": "Kodak Gold 200",
+    "camera": "Nikon F5",
+    "image_paths": [
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax ColorChecker\\CC+1.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax ColorChecker\\CC+2.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax ColorChecker\\CC0.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax ColorChecker\\CC0-Croped.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax ColorChecker\\CC-1.tif",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax ColorChecker\\CC-2.tif"
+    ]
   }
 ]

@@ -1325,7 +1325,7 @@ async function renderLibraryAndFilmstrip() {
                     if (unimportedPaths.length > 0) {
                         document.getElementById('history-view-title').textContent = "LOADING ROLL...";
                         try {
-                            await invoke('import_images', { paths: unimportedPaths, isLoose: true, inLibrary: false });
+                            await invoke('import_images', { paths: unimportedPaths, isLoose: false, inLibrary: false, rollId: currentRollViewId, isHistorical: true });
                             // Re-fetch roll items after import
                             const rollStrip = await invoke('get_roll_filmstrip', { rollId: currentRollViewId });
                             const newIds = rollStrip.filter(i => unimportedPaths.includes(i.file_path)).map(i => i.id);
@@ -1636,7 +1636,7 @@ const doImportSingle = async () => {
         
         const paths = await invoke('open_file_dialog');
         if (paths && paths.length > 0) {
-            await invoke('import_images', { paths, isLoose: true });
+            await invoke('import_images', { paths, isLoose: true, rollId: 'LOOSE_DEFAULT', isHistorical: false });
             await fetchRolls();
             await renderLibraryAndFilmstrip();
             
@@ -1766,7 +1766,7 @@ document.getElementById('btn-confirm-continue').addEventListener('click', async 
         if (pathsToImport.length > 0) {
             document.getElementById('history-view-title').textContent = "LOADING ROLL...";
             try {
-                await invoke('import_images', { paths: pathsToImport, isLoose: false });
+                await invoke('import_images', { paths: pathsToImport, isLoose: false, inLibrary: false, rollId: currentRollViewId, isHistorical: true });
                 allLibraryItems = await invoke('get_filmstrip');
             } catch (e) { console.error(e); }
             document.getElementById('history-view-title').textContent = "ROLL CONTENTS";
@@ -2926,7 +2926,7 @@ const handleDrop = async (event) => {
     const paths = event.payload.paths || event.payload; // Tauri v2 uses payload.paths
     if (paths && paths.length > 0) {
         btnImport.textContent = 'Importing...';
-        await invoke('import_images', { paths });
+        await invoke('import_images', { paths, isLoose: true, rollId: 'LOOSE_DEFAULT', isHistorical: false });
         allLibraryItems = await invoke('get_filmstrip');
         renderLibraryAndFilmstrip();
         btnImport.textContent = 'Import Roll';

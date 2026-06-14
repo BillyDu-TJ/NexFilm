@@ -238,7 +238,7 @@ pub fn load_image_buffer(path: &str, use_half_size: bool, dcp_profile: Option<&s
 }
 
 #[tauri::command]
-pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_library: Option<bool>, roll_id: Option<String>, state: State<'_, EngineState>) -> Result<(), String> {
+pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_library: Option<bool>, roll_id: Option<String>, is_historical: Option<bool>, state: State<'_, EngineState>) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
@@ -275,6 +275,9 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                         is_loose: loose,
                         in_library: in_library.unwrap_or(true),
                     });
+                }
+                if is_historical.unwrap_or(false) {
+                    return Err(format!("HISTORICAL_MISS_DB: No database state found for roll {}, path: {}", active_roll, path));
                 }
             }
 
@@ -1327,7 +1330,7 @@ pub async fn import_roll(
         }
     }
     
-    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id_clone), state).await
+    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id_clone), Some(false), state).await
 }
 
 #[tauri::command]
@@ -1454,7 +1457,7 @@ pub async fn append_to_roll(
             let _ = std::fs::write("rolls.json", json);
         }
     }
-    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id), state).await
+    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id), Some(false), state).await
 }
 
 #[tauri::command]
