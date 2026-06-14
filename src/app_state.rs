@@ -67,7 +67,7 @@ impl Default for ToneParams {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct SprocketParams {
-    pub sprocket_target: Option<Vec<f32>>,
+    pub sprocket_uv: Option<Vec<f32>>,
     pub sprocket_tolerance: Option<f32>,
     pub sprocket_feather: Option<f32>,
 }
@@ -75,7 +75,7 @@ pub struct SprocketParams {
 impl Default for SprocketParams {
     fn default() -> Self {
         Self {
-            sprocket_target: None,
+            sprocket_uv: None,
             sprocket_tolerance: None,
             sprocket_feather: None,
         }

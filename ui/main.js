@@ -228,7 +228,7 @@ function pushUndoState() {
         exp_b: parseFloat(sliders.expb.el.value),
         highlights: parseFloat(sliders.highlights.el.value),
         shadows: parseFloat(sliders.shadows.el.value),
-        sprocket_target: Array.from(currentSprocketTarget),
+        sprocket_uv: Array.from(currentSprocketUV),
         sprocket_tolerance: currentSprocketTolerance,
         sprocket_feather: currentSprocketFeather
     };
@@ -483,7 +483,7 @@ function initWebGL() {
     uniform int u_lut_is_1d;
     
     uniform mat3 u_homography;
-    uniform vec3 u_sprocket_target;
+    uniform vec2 u_sprocket_uv;
     uniform float u_sprocket_tolerance;
     uniform float u_sprocket_feather;
     uniform vec4 u_calib_bounds;
@@ -494,23 +494,8 @@ function initWebGL() {
         0.0091, 0.0521, 0.9712
     );
 
-    vec3 rgbToHsl(vec3 c) {
-        float minC = min(min(c.r, c.g), c.b);
-        float maxC = max(max(c.r, c.g), c.b);
-        float delta = maxC - minC;
-        vec3 hsl = vec3(0.0, 0.0, (maxC + minC) / 2.0);
-        if (delta > 0.0) {
-            hsl.y = (hsl.z < 0.5) ? delta / (maxC + minC) : delta / (2.0 - maxC - minC);
-            if (maxC == c.r) {
-                hsl.x = (c.g - c.b) / delta + (c.g < c.b ? 6.0 : 0.0);
-            } else if (maxC == c.g) {
-                hsl.x = (c.b - c.r) / delta + 2.0;
-            } else {
-                hsl.x = (c.r - c.g) / delta + 4.0;
-            }
-            hsl.x /= 6.0;
-        }
-        return hsl;
+    float getLuma(vec3 c) {
+        return dot(c, vec3(0.299, 0.587, 0.114));
     }
 
     vec2 applyHomography(vec2 uv, mat3 h) {
@@ -523,6 +508,14 @@ function initWebGL() {
         if (warped_uv.x < 0.0 || warped_uv.x > 1.0 || warped_uv.y < 0.0 || warped_uv.y > 1.0) {
             outColor = vec4(0.0, 0.0, 0.0, 1.0);
             return;
+        }
+
+        float mask = 0.0;
+        if (u_sprocket_uv.x >= 0.0) {
+            vec3 raw_color = vec3(texture(u_image, warped_uv).rgb) / 65535.0;
+            vec3 raw_target = vec3(texture(u_image, u_sprocket_uv).rgb) / 65535.0;
+            float luma_diff = abs(getLuma(raw_color) - getLuma(raw_target));
+            mask = pow(1.0 - smoothstep(u_sprocket_tolerance, u_sprocket_tolerance + u_sprocket_feather + 0.0001, luma_diff), 3.0);
         }
 
         uvec4 texel = texture(u_image, warped_uv);
@@ -568,23 +561,10 @@ function initWebGL() {
             final_rgb = vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / u_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / u_gamma));
         }
 
-        if (u_sprocket_target.z >= 0.0) {
+        if (u_sprocket_uv.x >= 0.0) {
             // Spatial Masking: skip if inside calibration quad
             if (!(v_texcoord.x >= u_calib_bounds.x && v_texcoord.x <= u_calib_bounds.z && 
                   v_texcoord.y >= u_calib_bounds.y && v_texcoord.y <= u_calib_bounds.w)) {
-                
-                vec3 final_hsl = rgbToHsl(final_rgb);
-                float dh = abs(final_hsl.x - u_sprocket_target.x);
-                if (dh > 0.5) dh = 1.0 - dh;
-                
-                // Separate Luma and Chroma tolerance
-                float chroma_dist = length(vec2(dh, final_hsl.y - u_sprocket_target.y));
-                float luma_dist = abs(final_hsl.z - u_sprocket_target.z);
-                
-                float chroma_mask = 1.0 - smoothstep(u_sprocket_tolerance, u_sprocket_tolerance + u_sprocket_feather, chroma_dist);
-                float luma_mask = 1.0 - smoothstep(u_sprocket_tolerance * 1.5, u_sprocket_tolerance * 1.5 + u_sprocket_feather, luma_dist);
-                
-                float mask = min(chroma_mask, luma_mask);
                 final_rgb = mix(final_rgb, vec3(1.0), mask);
             }
         }
@@ -635,7 +615,7 @@ function initWebGL() {
     u_image_aspect_loc = gl.getUniformLocation(shaderProgram, "u_image_aspect");
     u_crop_loc = gl.getUniformLocation(shaderProgram, "u_crop");
     u_homography_loc = gl.getUniformLocation(shaderProgram, "u_homography");
-    u_sprocket_target_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_target");
+    u_sprocket_uv_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_uv");
     u_sprocket_tolerance_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_tolerance");
     u_sprocket_feather_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_feather");
     u_calib_bounds_loc = gl.getUniformLocation(shaderProgram, "u_calib_bounds");
@@ -946,7 +926,7 @@ function updateDataViz(pixels) {
     else drawHistogram(pixels);
 }
 
-let currentSprocketTarget = new Float32Array([-1.0, -1.0, -1.0]);
+let currentSprocketUV = new Float32Array([-1.0, -1.0]);
 let currentSprocketTolerance = 0.10;
 let currentSprocketFeather = 0.05;
 
@@ -1047,7 +1027,7 @@ function renderWebGL() {
     
     let homographyMat = getHomography(pts);
     gl.uniformMatrix3fv(u_homography_loc, false, homographyMat);
-    gl.uniform3fv(u_sprocket_target_loc, currentSprocketTarget);
+    gl.uniform2fv(u_sprocket_uv_loc, currentSprocketUV);
     gl.uniform1f(u_sprocket_tolerance_loc, currentSprocketTolerance);
     gl.uniform1f(u_sprocket_feather_loc, currentSprocketFeather);
     gl.uniform4f(u_calib_bounds_loc, minX, minY, maxX, maxY);
@@ -1284,7 +1264,7 @@ function updateUIFromParams(params, geom) {
     if (params.highlights !== undefined) sliders.highlights.el.value = params.highlights;
     if (params.shadows !== undefined) sliders.shadows.el.value = params.shadows;
     
-    currentSprocketTarget = params.sprocket_target ? new Float32Array(params.sprocket_target) : new Float32Array([-1.0, -1.0, -1.0]);
+    currentSprocketUV = params.sprocket_uv ? new Float32Array(params.sprocket_uv) : new Float32Array([-1.0, -1.0]);
     currentSprocketTolerance = (params.sprocket_tolerance !== undefined && params.sprocket_tolerance !== null) ? params.sprocket_tolerance : 0.10;
     currentSprocketFeather = (params.sprocket_feather !== undefined && params.sprocket_feather !== null) ? params.sprocket_feather : 0.05;
     
@@ -2386,7 +2366,7 @@ async function doAutoColor() {
     let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
     let homographyMat = getHomography(pts);
     gl.uniformMatrix3fv(u_homography_loc, false, homographyMat);
-    gl.uniform3fv(u_sprocket_target_loc, new Float32Array([-1.0, -1.0, -1.0])); // Disable target during calibration
+    gl.uniform2fv(u_sprocket_uv_loc, new Float32Array([-1.0, -1.0])); // Disable target during calibration
     gl.uniform1f(u_sprocket_tolerance_loc, 0.0);
     
     let a = current_geom.angle * Math.PI / 180.0;
@@ -3243,30 +3223,37 @@ canvasWrapper.parentElement.addEventListener('mousedown', e => {
         const x = Math.floor((e.clientX - rect.left) * scaleX);
         const y = Math.floor((rect.bottom - e.clientY) * scaleY);
         if (x >= 0 && x < previewCanvas.width && y >= 0 && y < previewCanvas.height) {
-            const pixel = new Uint8Array(4);
-            gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+            let ndc_x = (x / previewCanvas.width) * 2.0 - 1.0;
+            let ndc_y = (y / previewCanvas.height) * 2.0 - 1.0;
             
-            function rgbToHslJs(r, g, b) {
-                r /= 255; g /= 255; b /= 255;
-                let max = Math.max(r, g, b), min = Math.min(r, g, b);
-                let h, s, l = (max + min) / 2;
-                if (max == min) { h = s = 0; }
-                else {
-                    let d = max - min;
-                    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-                    switch (max) {
-                        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-                        case g: h = (b - r) / d + 2; break;
-                        case b: h = (r - g) / d + 4; break;
-                    }
-                    h /= 6;
-                }
-                return [h, s, l];
-            }
+            let aspect = previewCanvas.width / previewCanvas.height;
+            let px = ndc_x * aspect;
+            let py = ndc_y;
             
-            const hsl = rgbToHslJs(pixel[0], pixel[1], pixel[2]);
+            let a = current_geom.angle * Math.PI / 180.0;
+            if (!isCropMode && !isRotateMode) a = 0;
+            let s = Math.sin(-a), c = Math.cos(-a);
+            let rx = px * c - py * s;
+            let ry = px * s + py * c;
+            rx /= aspect;
+            
+            let base_u = (rx + 1.0) / 2.0;
+            let base_v = (ry + 1.0) / 2.0;
+            
+            let vs_base_u = base_u;
+            let vs_base_v = 1.0 - base_v;
+            
+            let tex_u = current_geom.crop_rect.x + vs_base_u * current_geom.crop_rect.width;
+            let tex_v = current_geom.crop_rect.y + vs_base_v * current_geom.crop_rect.height;
+            
+            let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
+            let hMat = getHomography(pts);
+            let w_homo = hMat[2]*tex_u + hMat[5]*tex_v + hMat[8];
+            let raw_u = (hMat[0]*tex_u + hMat[3]*tex_v + hMat[6]) / w_homo;
+            let raw_v = (hMat[1]*tex_u + hMat[4]*tex_v + hMat[7]) / w_homo;
+            
             pushUndoState();
-            currentSprocketTarget = new Float32Array(hsl);
+            currentSprocketUV = new Float32Array([raw_u, raw_v]);
             isSprocketPickerActive = false;
             canvasWrapper.parentElement.style.cursor = '';
             btnSprocketPicker.classList.remove('bg-zinc-600');
