@@ -78,7 +78,9 @@ const sliders = {
     expb: { el: document.getElementById('expb'), val: document.getElementById('val-expb') },
     highlights: { el: document.getElementById('highlights'), val: document.getElementById('val-highlights') },
     shadows: { el: document.getElementById('shadows'), val: document.getElementById('val-shadows') },
-    lutOpacity: { el: document.getElementById('lut-opacity'), val: document.getElementById('val-lut-opacity') }
+    lutOpacity: { el: document.getElementById('lut-opacity'), val: document.getElementById('val-lut-opacity') },
+    sprocketTolerance: { el: document.getElementById('sprocket-tolerance'), val: document.getElementById('val-sprocket-tolerance') },
+    sprocketFeather: { el: document.getElementById('sprocket-feather'), val: document.getElementById('val-sprocket-feather') }
 };
 
 const imageStates = new Map();
@@ -225,7 +227,10 @@ function pushUndoState() {
         exp_g: parseFloat(sliders.expg.el.value),
         exp_b: parseFloat(sliders.expb.el.value),
         highlights: parseFloat(sliders.highlights.el.value),
-        shadows: parseFloat(sliders.shadows.el.value)
+        shadows: parseFloat(sliders.shadows.el.value),
+        sprocket_target: Array.from(currentSprocketTarget),
+        sprocket_tolerance: currentSprocketTolerance,
+        sprocket_feather: currentSprocketFeather
     };
     
     const geom = JSON.parse(JSON.stringify(current_geom));
@@ -480,6 +485,8 @@ function initWebGL() {
     uniform mat3 u_homography;
     uniform vec3 u_sprocket_target;
     uniform float u_sprocket_tolerance;
+    uniform float u_sprocket_feather;
+    uniform vec4 u_calib_bounds;
 
     const mat3 STATUS_M = mat3(
         1.0197, -0.0052, 0.0131,
@@ -562,12 +569,23 @@ function initWebGL() {
         }
 
         if (u_sprocket_target.z >= 0.0) {
-            vec3 final_hsl = rgbToHsl(final_rgb);
-            float dh = abs(final_hsl.x - u_sprocket_target.x);
-            if (dh > 0.5) dh = 1.0 - dh;
-            vec3 diff = vec3(dh, final_hsl.y - u_sprocket_target.y, final_hsl.z - u_sprocket_target.z);
-            if (length(diff) < u_sprocket_tolerance) {
-                final_rgb = vec3(1.0);
+            // Spatial Masking: skip if inside calibration quad
+            if (!(v_texcoord.x >= u_calib_bounds.x && v_texcoord.x <= u_calib_bounds.z && 
+                  v_texcoord.y >= u_calib_bounds.y && v_texcoord.y <= u_calib_bounds.w)) {
+                
+                vec3 final_hsl = rgbToHsl(final_rgb);
+                float dh = abs(final_hsl.x - u_sprocket_target.x);
+                if (dh > 0.5) dh = 1.0 - dh;
+                
+                // Separate Luma and Chroma tolerance
+                float chroma_dist = length(vec2(dh, final_hsl.y - u_sprocket_target.y));
+                float luma_dist = abs(final_hsl.z - u_sprocket_target.z);
+                
+                float chroma_mask = 1.0 - smoothstep(u_sprocket_tolerance, u_sprocket_tolerance + u_sprocket_feather, chroma_dist);
+                float luma_mask = 1.0 - smoothstep(u_sprocket_tolerance * 1.5, u_sprocket_tolerance * 1.5 + u_sprocket_feather, luma_dist);
+                
+                float mask = min(chroma_mask, luma_mask);
+                final_rgb = mix(final_rgb, vec3(1.0), mask);
             }
         }
         
@@ -614,6 +632,8 @@ function initWebGL() {
     u_homography_loc = gl.getUniformLocation(shaderProgram, "u_homography");
     u_sprocket_target_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_target");
     u_sprocket_tolerance_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_tolerance");
+    u_sprocket_feather_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_feather");
+    u_calib_bounds_loc = gl.getUniformLocation(shaderProgram, "u_calib_bounds");
     
     gl.getExtension("OES_texture_float_linear");
 
@@ -922,7 +942,8 @@ function updateDataViz(pixels) {
 }
 
 let currentSprocketTarget = new Float32Array([-1.0, -1.0, -1.0]);
-let currentSprocketTolerance = 0.05;
+let currentSprocketTolerance = 0.10;
+let currentSprocketFeather = 0.05;
 
 function getHomography(pts) {
     const x0 = pts[0][0], y0 = pts[0][1];
@@ -1014,10 +1035,17 @@ function renderWebGL() {
     gl.uniform1f(u_image_aspect_loc, proxyWidth / proxyHeight);
     
     let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
+    let minX = Math.min(pts[0][0], pts[1][0], pts[2][0], pts[3][0]);
+    let maxX = Math.max(pts[0][0], pts[1][0], pts[2][0], pts[3][0]);
+    let minY = Math.min(pts[0][1], pts[1][1], pts[2][1], pts[3][1]);
+    let maxY = Math.max(pts[0][1], pts[1][1], pts[2][1], pts[3][1]);
+    
     let homographyMat = getHomography(pts);
     gl.uniformMatrix3fv(u_homography_loc, false, homographyMat);
     gl.uniform3fv(u_sprocket_target_loc, currentSprocketTarget);
     gl.uniform1f(u_sprocket_tolerance_loc, currentSprocketTolerance);
+    gl.uniform1f(u_sprocket_feather_loc, currentSprocketFeather);
+    gl.uniform4f(u_calib_bounds_loc, minX, minY, maxX, maxY);
     
     let a = current_geom.angle * Math.PI / 180.0;
     if (!isCropMode && !isRotateMode) a = 0;
@@ -1251,6 +1279,13 @@ function updateUIFromParams(params, geom) {
     if (params.highlights !== undefined) sliders.highlights.el.value = params.highlights;
     if (params.shadows !== undefined) sliders.shadows.el.value = params.shadows;
     
+    currentSprocketTarget = params.sprocket_target ? new Float32Array(params.sprocket_target) : new Float32Array([-1.0, -1.0, -1.0]);
+    currentSprocketTolerance = params.sprocket_tolerance !== undefined ? params.sprocket_tolerance : 0.10;
+    currentSprocketFeather = params.sprocket_feather !== undefined ? params.sprocket_feather : 0.05;
+    
+    sliders.sprocketTolerance.el.value = currentSprocketTolerance;
+    sliders.sprocketFeather.el.value = currentSprocketFeather;
+    
     for (const key in sliders) {
         const s = sliders[key];
         s.val.textContent = parseFloat(s.el.value).toFixed(2);
@@ -1280,6 +1315,10 @@ for (const key in sliders) {
         s.val.textContent = parseFloat(e.target.value).toFixed(key === 'angle' ? 1 : 3);
         if (key === 'angle') {
             current_geom.angle = parseFloat(e.target.value);
+        } else if (key === 'sprocketTolerance') {
+            currentSprocketTolerance = parseFloat(e.target.value);
+        } else if (key === 'sprocketFeather') {
+            currentSprocketFeather = parseFloat(e.target.value);
         }
         updateSliderTrack(e.target);
         requestRender(); // Zero latency UI!
@@ -2372,7 +2411,7 @@ async function doAutoColor() {
     gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, purePixels);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
-    let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
+    // Min/Max points computed from pts
     let minX = Math.min(pts[0][0], pts[1][0], pts[2][0], pts[3][0]);
     let maxX = Math.max(pts[0][0], pts[1][0], pts[2][0], pts[3][0]);
     let minY = Math.min(pts[0][1], pts[1][1], pts[2][1], pts[3][1]);
@@ -3040,6 +3079,9 @@ window.addEventListener('pointerup', (e) => {
         if (e.target.classList && e.target.classList.contains('calib-handle')) {
             e.target.releasePointerCapture(e.pointerId);
         }
+        pushUndoState();
+        current_geom.calibration_points = JSON.parse(JSON.stringify(calibrationPoints));
+        requestRender();
         calibrationDragIdx = -1;
     }
 });
@@ -3050,7 +3092,7 @@ window.addEventListener('resize', () => {
 
 document.getElementById('btn-confirm-calibration').addEventListener('click', async () => {
     if (!activeId) return;
-    current_geom.calibration_points = calibrationPoints;
+    current_geom.calibration_points = JSON.parse(JSON.stringify(calibrationPoints));
     saveCurrentState();
     await invoke('update_geometry', { id: activeId, geom: current_geom });
     isCalibrationMode = false;
@@ -3219,8 +3261,8 @@ canvasWrapper.parentElement.addEventListener('mousedown', e => {
             }
             
             const hsl = rgbToHslJs(pixel[0], pixel[1], pixel[2]);
+            pushUndoState();
             currentSprocketTarget = new Float32Array(hsl);
-            currentSprocketTolerance = 0.05;
             isSprocketPickerActive = false;
             canvasWrapper.parentElement.style.cursor = '';
             btnSprocketPicker.classList.remove('bg-zinc-600');

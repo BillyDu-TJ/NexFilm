@@ -66,6 +66,23 @@ impl Default for ToneParams {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SprocketParams {
+    pub sprocket_target: Option<Vec<f32>>,
+    pub sprocket_tolerance: Option<f32>,
+    pub sprocket_feather: Option<f32>,
+}
+
+impl Default for SprocketParams {
+    fn default() -> Self {
+        Self {
+            sprocket_target: None,
+            sprocket_tolerance: None,
+            sprocket_feather: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct TuningParams {
     pub film_mode: FilmMode,
     #[serde(flatten)]
@@ -74,6 +91,8 @@ pub struct TuningParams {
     pub exposure: ExposureParams,
     #[serde(flatten)]
     pub tone: ToneParams,
+    #[serde(flatten)]
+    pub sprocket: SprocketParams,
 }
 
 impl Default for TuningParams {
@@ -83,6 +102,7 @@ impl Default for TuningParams {
             density: DensityParams::default(),
             exposure: ExposureParams::default(),
             tone: ToneParams::default(),
+            sprocket: SprocketParams::default(),
         }
     }
 }

@@ -309,8 +309,30 @@
                             <button id="btn-auto-color" class="flex-[3] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>AUTO CALIBRATE</button>
                             <button id="btn-reset-color" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>RESET</button>
                         </div>
-                        <div class="flex gap-2 mb-4">
+                        <div class="flex gap-2 mb-2">
                             <button id="btn-sprocket-picker" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>SPROCKET PICKER</button>
+                        </div>
+                        <div class="space-y-4 mb-4">
+                            <div>
+                                <div class="flex justify-between mb-1.5">
+                                    <span class="text-[10px] font-bold tracking-widest uppercase text-zinc-400">Sprocket Tolerance</span>
+                                    <span id="val-sprocket-tolerance" class="text-[10px] font-mono text-zinc-500">0.10</span>
+                                </div>
+                                <div class="slider-container">
+                                    <input type="range" id="sprocket-tolerance" min="0.0" max="1.0" step="0.01" value="0.10" class="slider" disabled>
+                                    <div class="slider-track" id="track-sprocket-tolerance"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between mb-1.5">
+                                    <span class="text-[10px] font-bold tracking-widest uppercase text-zinc-400">Sprocket Feather</span>
+                                    <span id="val-sprocket-feather" class="text-[10px] font-mono text-zinc-500">0.05</span>
+                                </div>
+                                <div class="slider-container">
+                                    <input type="range" id="sprocket-feather" min="0.0" max="1.0" step="0.01" value="0.05" class="slider" disabled>
+                                    <div class="slider-track" id="track-sprocket-feather"></div>
+                                </div>
+                            </div>
                         </div>
                         <div class="flex items-center justify-between bg-[#121214] p-1 rounded-md border border-[#28282c]">
                             <button id="btn-mode-color" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all bg-[#28282c] text-zinc-100 shadow-sm disabled:opacity-50">COLOR</button>
