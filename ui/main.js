@@ -956,10 +956,20 @@ function getHomography(pts) {
         e = y3 - y0 + h * y3;
     }
 
+    let minX = Math.min(x0, x1, x2, x3);
+    let maxX = Math.max(x0, x1, x2, x3);
+    let minY = Math.min(y0, y1, y2, y3);
+    let maxY = Math.max(y0, y1, y2, y3);
+
+    let Sx = 1.0 / Math.max(0.001, maxX - minX);
+    let Sy = 1.0 / Math.max(0.001, maxY - minY);
+    let Tx = -minX * Sx;
+    let Ty = -minY * Sy;
+
     return new Float32Array([
-        a, d, g,
-        b, e, h,
-        c, f, 1.0
+        a * Sx, d * Sx, g * Sx,
+        b * Sy, e * Sy, h * Sy,
+        a * Tx + b * Ty + c, d * Tx + e * Ty + f, g * Tx + h * Ty + 1.0
     ]);
 }
 
@@ -1304,6 +1314,7 @@ function enableUI() {
 
 let allRolls = [];
 let currentRollViewId = null;
+let currentImportSessionPaths = null;
 
 async function fetchRolls() {
     try {
@@ -1435,6 +1446,12 @@ async function renderLibraryAndFilmstrip() {
                 libDiv.ondblclick = () => {
                     selectedLibraryIds.clear();
                     selectedLibraryIds.add(item.id);
+                    currentImportSessionPaths = null;
+                    if (item.roll_id && item.roll_id !== 'LOOSE_DEFAULT') {
+                        currentRollViewId = item.roll_id;
+                    } else {
+                        currentRollViewId = null;
+                    }
                     updateLibrarySelectionUI();
                     selectImage(item.id);
                     switchView('develop');
@@ -1533,6 +1550,12 @@ async function renderLibraryAndFilmstrip() {
                         libDiv.ondblclick = () => {
                             selectedLibraryIds.clear();
                             selectedLibraryIds.add(existingItem.id);
+                            currentImportSessionPaths = null;
+                            if (existingItem.roll_id && existingItem.roll_id !== 'LOOSE_DEFAULT') {
+                                currentRollViewId = existingItem.roll_id;
+                            } else {
+                                currentRollViewId = null;
+                            }
                             updateLibrarySelectionUI();
                             selectImage(existingItem.id);
                             switchView('develop');
@@ -1649,6 +1672,10 @@ async function renderLibraryAndFilmstrip() {
                 filmstripItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\/g, '/').toLowerCase()));
                 invoke('start_precache', { ids: filmstripItems.map(i => i.id) }).catch(e => console.error("Precache error", e));
             }
+        } else if (currentImportSessionPaths) {
+            filmstripItems = items.filter(item => currentImportSessionPaths.includes(item.file_path.replace(/\\/g, '/').toLowerCase()));
+        } else {
+            filmstripItems = items.filter(item => item.roll_id === null || item.roll_id === 'LOOSE_DEFAULT');
         }
         filmstripItems.forEach(item => {
             const stripDiv = document.createElement('div');
@@ -1818,6 +1845,8 @@ const doImportSingle = async () => {
         
         const paths = await invoke('open_file_dialog');
         if (paths && paths.length > 0) {
+            currentRollViewId = null;
+            currentImportSessionPaths = paths.map(p => p.replace(/\\/g, '/').toLowerCase());
             await invoke('import_images', { paths, isLoose: true, rollId: 'LOOSE_DEFAULT', isHistorical: false });
             await fetchRolls();
             await renderLibraryAndFilmstrip();
@@ -1859,7 +1888,6 @@ const doImportRoll = async () => {
         }
 
         document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
-
         btnImport.textContent = "Importing...";
         btnImport.disabled = true;
         btnImportTriggers.forEach(btn => { 
@@ -1870,6 +1898,8 @@ const doImportRoll = async () => {
         
         const paths = await invoke('open_file_dialog');
         if (paths && paths.length > 0) {
+            currentImportSessionPaths = null;
+            const newRollId = "roll_" + Date.now();
             const roll_id = `roll_${Date.now()}_${Math.floor(Math.random()*1000)}`;
             const roll = { roll_id, date, format, film_stock: film, camera, image_paths: paths };
             
@@ -2342,6 +2372,12 @@ async function doAutoColor() {
     gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, purePixels);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
+    let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
+    let minX = Math.min(pts[0][0], pts[1][0], pts[2][0], pts[3][0]);
+    let maxX = Math.max(pts[0][0], pts[1][0], pts[2][0], pts[3][0]);
+    let minY = Math.min(pts[0][1], pts[1][1], pts[2][1], pts[3][1]);
+    let maxY = Math.max(pts[0][1], pts[1][1], pts[2][1], pts[3][1]);
+
     // --- PHASE 2: Calculation ---
     let r_arr = []; let g_arr = []; let b_arr = [];
     for (let i = 0; i < purePixels.length; i += 4) {
@@ -2354,7 +2390,7 @@ async function doAutoColor() {
         let v_tex_x = current_geom.crop_rect.x + base_uv_x * current_geom.crop_rect.width;
         let v_tex_y = current_geom.crop_rect.y + base_uv_y * current_geom.crop_rect.height;
 
-        if (v_tex_x >= 0.0 && v_tex_x <= 1.0 && v_tex_y >= 0.0 && v_tex_y <= 1.0) {
+        if (v_tex_x >= minX && v_tex_x <= maxX && v_tex_y >= minY && v_tex_y <= maxY) {
             r_arr.push(purePixels[i]);
             g_arr.push(purePixels[i+1]);
             b_arr.push(purePixels[i+2]);
