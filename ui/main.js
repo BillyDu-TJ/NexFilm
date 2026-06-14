@@ -1012,23 +1012,116 @@ function renderWebGL() {
     requestAnimationFrame(() => updateDataViz(pixels));
 }
 
+const PROXY_CACHE_LIMIT = 5;
+const proxyCache = new Map(); // key: id, value: { arrayBuffer, lastUsed: Date.now() }
+
+function getFromCache(id) {
+    if (proxyCache.has(id)) {
+        const item = proxyCache.get(id);
+        item.lastUsed = Date.now();
+        return item.arrayBuffer;
+    }
+    return null;
+}
+
+function addToCache(id, arrayBuffer) {
+    if (proxyCache.has(id)) {
+        proxyCache.get(id).lastUsed = Date.now();
+        return;
+    }
+    if (proxyCache.size >= PROXY_CACHE_LIMIT) {
+        let oldestId = null;
+        let oldestTime = Infinity;
+        for (const [key, val] of proxyCache.entries()) {
+            if (val.lastUsed < oldestTime) {
+                oldestTime = val.lastUsed;
+                oldestId = key;
+            }
+        }
+        if (oldestId) {
+            proxyCache.delete(oldestId);
+        }
+    }
+    proxyCache.set(id, { arrayBuffer, lastUsed: Date.now() });
+}
+
+async function executePreload(ids) {
+    for (const id of ids) {
+        if (proxyCache.has(id)) continue;
+        try {
+            const result = await invoke('get_proxy_image_data', { id: id });
+            let arrayBuffer;
+            if (result instanceof ArrayBuffer) {
+                arrayBuffer = result;
+            } else if (result.buffer instanceof ArrayBuffer) {
+                arrayBuffer = result.buffer;
+            } else if (Array.isArray(result)) {
+                arrayBuffer = new Uint8Array(result).buffer;
+            }
+            if (arrayBuffer) {
+                addToCache(id, arrayBuffer);
+            }
+        } catch (e) {
+            console.error("Silent preload failed for " + id, e);
+        }
+    }
+}
+
+function scheduleSilentPreWarming() {
+    const items = Array.from(document.querySelectorAll('#filmstrip-container .film-item'));
+    if (items.length === 0) return;
+    const currentIndex = items.findIndex(item => item.classList.contains('active'));
+    if (currentIndex === -1) return;
+
+    const idsToPreload = [];
+    if (currentIndex > 0) idsToPreload.push(items[currentIndex - 1].dataset.id);
+    if (currentIndex < items.length - 1) idsToPreload.push(items[currentIndex + 1].dataset.id);
+
+    if (window.requestIdleCallback) {
+        requestIdleCallback(() => executePreload(idsToPreload));
+    } else {
+        setTimeout(() => executePreload(idsToPreload), 500);
+    }
+}
+
 async function loadProxyImage(token = null) {
     if (!activeId || !webGLInitialized) return;
-    try {
-        const result = await invoke('get_proxy_image_data', { id: activeId });
-        if (token !== null && token !== currentImageRequestToken) return;
-        
-        let arrayBuffer;
-        let byteOffset = 0;
-        if (result instanceof ArrayBuffer) {
-            arrayBuffer = result;
-        } else if (result.buffer instanceof ArrayBuffer) {
-            arrayBuffer = result.buffer;
-            byteOffset = result.byteOffset || 0;
-        } else if (Array.isArray(result)) {
-            arrayBuffer = new Uint8Array(result).buffer;
+    
+    let arrayBuffer = getFromCache(activeId);
+    let byteOffset = 0;
+    
+    const loadingMask = document.getElementById('loading-proxy-ui');
+    
+    if (!arrayBuffer) {
+        if (loadingMask) loadingMask.classList.remove('hidden');
+        try {
+            const result = await invoke('get_proxy_image_data', { id: activeId });
+            if (token !== null && token !== currentImageRequestToken) {
+                if (loadingMask) loadingMask.classList.add('hidden');
+                return;
+            }
+            
+            if (result instanceof ArrayBuffer) {
+                arrayBuffer = result;
+            } else if (result.buffer instanceof ArrayBuffer) {
+                arrayBuffer = result.buffer;
+                byteOffset = result.byteOffset || 0;
+            } else if (Array.isArray(result)) {
+                arrayBuffer = new Uint8Array(result).buffer;
+            }
+            
+            if (arrayBuffer) addToCache(activeId, arrayBuffer);
+        } catch(e) { 
+            console.error("Failed to load proxy", e); 
+            if (loadingMask) loadingMask.classList.add('hidden');
+            return;
         }
+        if (loadingMask) loadingMask.classList.add('hidden');
+    }
 
+    if (!arrayBuffer) return;
+
+    try {
         const dataView = new DataView(arrayBuffer, byteOffset);
         const width = dataView.getUint32(0, true);
         const height = dataView.getUint32(4, true);
@@ -1052,7 +1145,11 @@ async function loadProxyImage(token = null) {
         
         updateCanvasTransform(width, height);
         requestRender();
-    } catch(e) { console.error("Failed to load proxy", e); }
+        
+        scheduleSilentPreWarming();
+    } catch(e) {
+        console.error("Error parsing proxy buffer:", e);
+    }
 }
 
 function setMode(mode) {
