@@ -776,7 +776,8 @@ pub struct ActiveImageState {
 }
 
 #[tauri::command]
-pub async fn switch_active_image(id: String, _roll_id: String, state: State<'_, EngineState>) -> Result<ActiveImageState, String> {
+pub async fn switch_active_image(id: String, roll_id: String, state: State<'_, EngineState>) -> Result<ActiveImageState, String> {
+    let _ = roll_id; // Unused, but required for correct JSON payload mapping from JS
     let needs_load = {
         let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
         let item = item_arc.read().map_err(|e| e.to_string())?;
@@ -1068,9 +1069,10 @@ pub async fn get_proxy_image_data(
 pub async fn update_tuning_parameters(
     id: String,
     params: TuningParams,
-    _roll_id: String,
+    roll_id: String,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
+    let _ = roll_id;
     if let Some(item_arc) = state.items.get(&id) {
         let mut item = item_arc.write().map_err(|e| e.to_string())?;
         item.params = params;
@@ -1096,13 +1098,14 @@ pub async fn batch_export_images(
     export_ids: Vec<String>,
     output_dir: String,
     format: String,
-    _color_space: String,
+    color_space: String,
     resample_mode: String,
     apply_usm_flag: bool,
     naming_token: String,
     quality: u32,
     state: State<'_, EngineState>,
 ) -> Result<usize, String> {
+    let _ = color_space;
     let count = export_ids.len();
     if count == 0 {
         return Ok(0);
