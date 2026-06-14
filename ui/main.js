@@ -1316,31 +1316,40 @@ async function renderLibraryAndFilmstrip() {
                 
                 const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
                 if (currentRoll) {
-                    const unimportedPaths = [];
-                    currentRoll.image_paths.forEach(path => {
-                        const existingItem = items.find(i => i.file_path.replace(/\\/g, '/').toLowerCase() === path.replace(/\\/g, '/').toLowerCase());
-                        if (!existingItem) unimportedPaths.push(path);
-                    });
-
-                    if (unimportedPaths.length > 0) {
-                        document.getElementById('history-view-title').textContent = "LOADING ROLL...";
-                        try {
-                            await invoke('import_images', { paths: unimportedPaths, isLoose: false, inLibrary: false, rollId: currentRollViewId, isHistorical: true });
-                            // Re-fetch roll items after import
-                            const rollStrip = await invoke('get_roll_filmstrip', { rollId: currentRollViewId });
-                            const newIds = rollStrip.filter(i => unimportedPaths.includes(i.file_path)).map(i => i.id);
-                            if (newIds.length > 0) {
-                                invoke('start_precache', { ids: newIds }).catch(e => console.error("History precache error", e));
+                    try {
+                        let rollStrip = await invoke('get_roll_filmstrip', { rollId: currentRollViewId });
+                        
+                        // Check if any paths are missing from the DB (e.g. from dropped table or first load)
+                        const unimportedPaths = [];
+                        currentRoll.image_paths.forEach(path => {
+                            const found = rollStrip.find(i => i.file_path.replace(/\\/g, '/').toLowerCase() === path.replace(/\\/g, '/').toLowerCase());
+                            if (!found) unimportedPaths.push(path);
+                        });
+                        
+                        // If missing, auto-import them on the fly
+                        if (unimportedPaths.length > 0) {
+                            document.getElementById('history-view-title').textContent = "IMPORTING MISSING...";
+                            await invoke('import_images', { paths: unimportedPaths, isLoose: false, inLibrary: false, rollId: currentRollViewId, isHistorical: false });
+                            // Re-fetch roll strip after importing
+                            rollStrip = await invoke('get_roll_filmstrip', { rollId: currentRollViewId });
+                        }
+                        
+                        // Merge into local items list for rendering
+                        rollStrip.forEach(newItem => {
+                            if (!items.some(i => i.id === newItem.id)) {
+                                items.push(newItem);
                             }
-                            // Merge into local items list for rendering
-                            rollStrip.forEach(newItem => {
-                                if (!items.some(i => i.id === newItem.id)) {
-                                    items.push(newItem);
-                                }
-                            });
-                        } catch (e) { console.error("Failed to load roll", e); }
-                        document.getElementById('history-view-title').textContent = "ROLL CONTENTS";
+                        });
+                        
+                        const newIds = rollStrip.filter(i => unimportedPaths.includes(i.file_path)).map(i => i.id);
+                        if (newIds.length > 0) {
+                            invoke('start_precache', { ids: newIds }).catch(e => console.error("History precache error", e));
+                        }
+                    } catch (e) {
+                        console.error("Failed to load or import roll filmstrip", e);
                     }
+                    
+                    document.getElementById('history-view-title').textContent = "ROLL CONTENTS";
 
                     currentRoll.image_paths.forEach(path => {
                         const existingItem = items.find(i => i.file_path.replace(/\\/g, '/').toLowerCase() === path.replace(/\\/g, '/').toLowerCase());

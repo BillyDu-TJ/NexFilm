@@ -1574,12 +1574,14 @@ pub fn load_all_image_states(state: &crate::app_state::EngineState) {
                 let base_color_str: String = row.get(5)?;
                 Ok((roll_id, file_path, thumb, params_str, geom_str, base_color_str))
             }) {
-                let _order_guard = state.item_order.write().unwrap();
+                let mut _order_guard = state.item_order.write().unwrap();
                 for row_result in rows {
                     if let Ok((db_roll_id, db_path, thumb, params_str, geom_str, base_color_str)) = row_result {
                         let params = serde_json::from_str(&params_str).unwrap_or_default();
                         let geom = serde_json::from_str(&geom_str).unwrap_or_default();
                         let base_color = serde_json::from_str(&base_color_str).unwrap_or_default();
+                        
+                        let is_loose_item = db_roll_id == "LOOSE_DEFAULT";
                         
                         let img_id = format!("img_{}", crate::commands::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
                         let item = crate::app_state::FilmItem {
@@ -1593,10 +1595,11 @@ pub fn load_all_image_states(state: &crate::app_state::EngineState) {
                             base_color,
                             params,
                             geom,
-                            is_loose: false,
-                            in_library: true,
+                            is_loose: is_loose_item,
+                            in_library: is_loose_item, // By default, only loose items are in the library
                         };
                         state.items.insert(img_id.clone(), std::sync::Arc::new(std::sync::RwLock::new(item)));
+                        _order_guard.push(img_id);
                     }
                 }
             }
