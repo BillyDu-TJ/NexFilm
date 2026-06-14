@@ -362,7 +362,8 @@ function saveCurrentState() {
 function updateBackendParams() {
     const params = saveCurrentState();
     if (params && activeId) {
-        invoke('update_tuning_parameters', { id: activeId, params }).catch(console.error);
+        const roll_id = currentRollViewId || 'LOOSE_DEFAULT';
+        invoke('update_tuning_parameters', { id: activeId, params, roll_id }).catch(console.error);
     }
 }
 
@@ -1522,11 +1523,12 @@ async function selectImage(id) {
 
         let state;
         try {
+            const roll_id = currentRollViewId || 'LOOSE_DEFAULT';
             if (imageStates.has(id)) {
                 state = imageStates.get(id);
-                await invoke('switch_active_image', { id });
+                await invoke('switch_active_image', { id, roll_id });
             } else {
-                state = await invoke('switch_active_image', { id });
+                state = await invoke('switch_active_image', { id, roll_id });
                 imageStates.set(id, { params: state.params, geom: state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 } });
             }
         } catch (err) {

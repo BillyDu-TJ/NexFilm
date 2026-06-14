@@ -1,7 +1,7 @@
 use crate::app_state::{BaseColor, EngineState, FilmItem, FilmstripItem, TuningParams, FilmMode, Roll};
-use serde::{Serialize, Deserialize};
+use serde::Serialize;
 use crate::pipeline::FilmPipeline;
-use crate::geometry;
+
 use base64::{engine::general_purpose, Engine as _};
 use image::{imageops::FilterType, ImageBuffer, ImageOutputFormat, Rgb, RgbImage, GenericImageView};
 use rayon::prelude::*;
@@ -238,13 +238,13 @@ pub fn load_image_buffer(path: &str, use_half_size: bool, dcp_profile: Option<&s
 }
 
 #[tauri::command]
-pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_library: Option<bool>, state: State<'_, EngineState>) -> Result<(), String> {
+pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_library: Option<bool>, roll_id: Option<String>, state: State<'_, EngineState>) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
 
-    let dcp_profile = state.dcp_profile.read().unwrap().clone();
-    let colorspace = state.working_colorspace.read().unwrap().clone();
+    let _dcp_profile = state.dcp_profile.read().unwrap().clone();
+    let _colorspace = state.working_colorspace.read().unwrap().clone();
 
     let mut new_items = Vec::new();
     let existing_paths: std::collections::HashSet<String> = {
@@ -257,11 +257,13 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
     for chunk in paths_to_process.chunks(4) {
         let chunk_items_result: Result<Vec<FilmItem>, String> = chunk.into_par_iter().map(|path| {
             let loose = is_loose.unwrap_or(false);
+            let active_roll = roll_id.clone().unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
             if !loose {
-                if let Some((thumb, params, geom, base_color)) = load_image_state_from_db(path) {
+                if let Some((thumb, params, geom, base_color)) = load_image_state_from_db(&active_roll, path) {
                     let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
                     return Ok(FilmItem {
                         id,
+                        roll_id: active_roll,
                         file_path: path.clone(),
                         thumbnail_base64: thumb,
                         original_proxy: None,
@@ -296,11 +298,11 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                         let c_path = std::ffi::CString::new(path.as_str()).unwrap_or_default();
                         let mut opened = libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0;
                         
-                        let mut buf = Vec::new();
+                        let mut _buf = Vec::new();
                         if !opened {
                             if let Ok(b) = std::fs::read(path) {
-                                buf = b;
-                                opened = libraw_sys::libraw_open_buffer(data, buf.as_ptr() as *const _, buf.len()) == 0;
+                                _buf = b;
+                                opened = libraw_sys::libraw_open_buffer(data, _buf.as_ptr() as *const _, _buf.len()) == 0;
                             }
                         }
 
@@ -341,6 +343,7 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
 
             let item = FilmItem {
                 id,
+                roll_id: active_roll,
                 file_path: path.clone(),
                 thumbnail_base64,
                 original_proxy: None,
@@ -675,11 +678,11 @@ pub async fn get_raw_thumbnails(paths: Vec<String>) -> Result<Vec<String>, Strin
                 let c_path = std::ffi::CString::new(path.clone()).unwrap_or_default();
                 let mut opened = libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0;
                 
-                let mut buf = Vec::new();
+                let mut _buf = Vec::new();
                 if !opened {
                     if let Ok(b) = std::fs::read(&path) {
-                        buf = b;
-                        opened = libraw_sys::libraw_open_buffer(data, buf.as_ptr() as *const _, buf.len()) == 0;
+                        _buf = b;
+                        opened = libraw_sys::libraw_open_buffer(data, _buf.as_ptr() as *const _, _buf.len()) == 0;
                     }
                 }
 
@@ -770,7 +773,7 @@ pub struct ActiveImageState {
 }
 
 #[tauri::command]
-pub async fn switch_active_image(id: String, state: State<'_, EngineState>) -> Result<ActiveImageState, String> {
+pub async fn switch_active_image(id: String, _roll_id: String, state: State<'_, EngineState>) -> Result<ActiveImageState, String> {
     let needs_load = {
         let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
         let item = item_arc.read().map_err(|e| e.to_string())?;
@@ -1062,6 +1065,7 @@ pub async fn get_proxy_image_data(
 pub async fn update_tuning_parameters(
     id: String,
     params: TuningParams,
+    _roll_id: String,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
     if let Some(item_arc) = state.items.get(&id) {
@@ -1089,7 +1093,7 @@ pub async fn batch_export_images(
     export_ids: Vec<String>,
     output_dir: String,
     format: String,
-    color_space: String,
+    _color_space: String,
     resample_mode: String,
     apply_usm_flag: bool,
     naming_token: String,
@@ -1310,6 +1314,7 @@ pub async fn import_roll(
     paths: Vec<String>,
     state: State<'_, EngineState>
 ) -> Result<(), String> {
+    let roll_id_clone = roll.roll_id.clone();
     {
         let mut rolls = state.rolls.write().unwrap();
         rolls.push(roll);
@@ -1322,7 +1327,7 @@ pub async fn import_roll(
         }
     }
     
-    crate::commands::import_images(paths, Some(false), Some(true), state).await
+    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id_clone), state).await
 }
 
 #[tauri::command]
@@ -1377,8 +1382,10 @@ pub async fn delete_rolls(
         
         // Also delete from memory and DB to give it "no memory"
         if let Ok(conn) = rusqlite::Connection::open(get_db_path()) {
+            for rid in &roll_ids {
+                let _ = conn.execute("DELETE FROM image_states WHERE roll_id = ?1", [rid]);
+            }
             for path in &paths_to_delete {
-                let _ = conn.execute("DELETE FROM image_states WHERE file_path = ?1", [path]);
                 
                 // Remove from state.items
                 let mut ids_to_remove = Vec::new();
@@ -1447,7 +1454,7 @@ pub async fn append_to_roll(
             let _ = std::fs::write("rolls.json", json);
         }
     }
-    crate::commands::import_images(paths, Some(false), Some(true), state).await
+    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id), state).await
 }
 
 #[tauri::command]
@@ -1493,12 +1500,15 @@ pub fn init_db() -> rusqlite::Result<()> {
     let conn = rusqlite::Connection::open(get_db_path())?;
     conn.execute("CREATE TABLE IF NOT EXISTS user_cameras (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", [])?;
     conn.execute("CREATE TABLE IF NOT EXISTS user_films (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", [])?;
+    let _ = conn.execute("DROP TABLE IF EXISTS image_states", []);
     conn.execute("CREATE TABLE IF NOT EXISTS image_states (
-        file_path TEXT PRIMARY KEY,
+        roll_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
         thumbnail_base64 TEXT,
         params TEXT,
         geom TEXT,
-        base_color TEXT
+        base_color TEXT,
+        PRIMARY KEY (roll_id, file_path)
     )", [])?;
     Ok(())
 }
@@ -1514,23 +1524,23 @@ pub fn save_image_state_to_db(item: &crate::app_state::FilmItem) -> Result<(), S
     let base_color_str = serde_json::to_string(&item.base_color).map_err(|e| e.to_string())?;
     
     conn.execute(
-        "INSERT INTO image_states (file_path, thumbnail_base64, params, geom, base_color) 
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(file_path) DO UPDATE SET 
+        "INSERT INTO image_states (roll_id, file_path, thumbnail_base64, params, geom, base_color) 
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(roll_id, file_path) DO UPDATE SET 
          thumbnail_base64=excluded.thumbnail_base64,
          params=excluded.params, 
          geom=excluded.geom, 
          base_color=excluded.base_color",
-        rusqlite::params![item.file_path, item.thumbnail_base64, params_str, geom_str, base_color_str]
+        rusqlite::params![item.roll_id, item.file_path, item.thumbnail_base64, params_str, geom_str, base_color_str]
     ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
-pub fn load_image_state_from_db(file_path: &str) -> Option<(String, crate::app_state::TuningParams, crate::app_state::GeometryState, crate::app_state::BaseColor)> {
+pub fn load_image_state_from_db(roll_id: &str, file_path: &str) -> Option<(String, crate::app_state::TuningParams, crate::app_state::GeometryState, crate::app_state::BaseColor)> {
     let conn = rusqlite::Connection::open(get_db_path()).ok()?;
-    let mut stmt = conn.prepare("SELECT thumbnail_base64, params, geom, base_color FROM image_states WHERE file_path = ?1").ok()?;
+    let mut stmt = conn.prepare("SELECT thumbnail_base64, params, geom, base_color FROM image_states WHERE roll_id = ?1 AND file_path = ?2").ok()?;
     
-    let mut rows = stmt.query(rusqlite::params![file_path]).ok()?;
+    let mut rows = stmt.query(rusqlite::params![roll_id, file_path]).ok()?;
     if let Some(row) = rows.next().ok()? {
         let thumb: String = row.get(0).ok()?;
         let params_str: String = row.get(1).ok()?;
@@ -1548,18 +1558,19 @@ pub fn load_image_state_from_db(file_path: &str) -> Option<(String, crate::app_s
 
 pub fn load_all_image_states(state: &crate::app_state::EngineState) {
     if let Ok(conn) = rusqlite::Connection::open(get_db_path()) {
-        if let Ok(mut stmt) = conn.prepare("SELECT file_path, thumbnail_base64, params, geom, base_color FROM image_states") {
+        if let Ok(mut stmt) = conn.prepare("SELECT roll_id, file_path, thumbnail_base64, params, geom, base_color FROM image_states") {
             if let Ok(rows) = stmt.query_map([], |row| {
-                let file_path: String = row.get(0)?;
-                let thumb: String = row.get(1)?;
-                let params_str: String = row.get(2)?;
-                let geom_str: String = row.get(3)?;
-                let base_color_str: String = row.get(4)?;
-                Ok((file_path, thumb, params_str, geom_str, base_color_str))
+                let roll_id: String = row.get(0)?;
+                let file_path: String = row.get(1)?;
+                let thumb: String = row.get(2)?;
+                let params_str: String = row.get(3)?;
+                let geom_str: String = row.get(4)?;
+                let base_color_str: String = row.get(5)?;
+                Ok((roll_id, file_path, thumb, params_str, geom_str, base_color_str))
             }) {
-                let mut order_guard = state.item_order.write().unwrap();
+                let _order_guard = state.item_order.write().unwrap();
                 for row_result in rows {
-                    if let Ok((db_path, thumb, params_str, geom_str, base_color_str)) = row_result {
+                    if let Ok((db_roll_id, db_path, thumb, params_str, geom_str, base_color_str)) = row_result {
                         let params = serde_json::from_str(&params_str).unwrap_or_default();
                         let geom = serde_json::from_str(&geom_str).unwrap_or_default();
                         let base_color = serde_json::from_str(&base_color_str).unwrap_or_default();
@@ -1567,6 +1578,7 @@ pub fn load_all_image_states(state: &crate::app_state::EngineState) {
                         let img_id = format!("img_{}", crate::commands::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
                         let item = crate::app_state::FilmItem {
                             id: img_id.clone(),
+                            roll_id: db_roll_id,
                             file_path: db_path.clone(),
                             thumbnail_base64: thumb,
                             original_proxy: None,

@@ -1,24 +1,11 @@
 [
   {
-    "roll_id": "roll_1781359852197_926",
-    "date": "2026-06-13",
-    "format": "120 (6x6)",
-    "film_stock": "Kodak Gold 200",
-    "camera": "Rolleiflex 2.8E",
-    "image_paths": [
-      "G:\\DCIM\\755ND810\\_DSC7178.NEF"
-    ]
-  },
-  {
-    "roll_id": "roll_1781360063116_121",
-    "date": "2026-06-13",
+    "roll_id": "roll_1781368291651_712",
+    "date": "2026-06-14",
     "format": "135",
-    "film_stock": "Fujifilm C100",
+    "film_stock": "Kodak Ultramax 400",
     "camera": "Nikon F5",
     "image_paths": [
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\EpsonV700-Pro160NS室内外混合光源.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ektar黄昏色温挑战.tif",
-      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ektar落日大光比.tif",
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ektar室外大光比.tif",
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比.tif",
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax大光比室外.tif",
@@ -26,6 +13,27 @@
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax极暗室内.tif",
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内广告.tif",
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\Nikon5000ED-Ultramax室内外混合光源.tif"
+    ]
+  },
+  {
+    "roll_id": "roll_1781407648168_331",
+    "date": "2026-06-14",
+    "format": "120 (6x6)",
+    "film_stock": "Kodak Gold 200",
+    "camera": "Rolleiflex 2.8E",
+    "image_paths": [
+      "G:\\DCIM\\755ND810\\_DSC7125.NEF",
+      "G:\\DCIM\\755ND810\\_DSC7126.NEF",
+      "G:\\DCIM\\755ND810\\_DSC7127.NEF",
+      "G:\\DCIM\\755ND810\\_DSC7128.NEF",
+      "G:\\DCIM\\755ND810\\_DSC7129.NEF",
+      "G:\\DCIM\\755ND810\\_DSC7130.NEF",
+      "G:\\DCIM\\755ND810\\_DSC7131.NEF",
+      "G:\\DCIM\\755ND810\\_DSC7132.NEF",
+      "G:\\DCIM\\755ND810\\_DSC7133.NEF",
+      "G:\\DCIM\\755ND810\\_DSC7134.NEF",
+      "G:\\DCIM\\755ND810\\_DSC7135.NEF",
+      "G:\\DCIM\\755ND810\\_DSC7136.NEF"
     ]
   }
 ]

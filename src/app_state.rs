@@ -102,6 +102,7 @@ impl Default for BaseColor {
 
 pub struct FilmItem {
     pub id: String,
+    pub roll_id: String,
     pub file_path: String,
     pub thumbnail_base64: String,
     pub original_proxy: Option<ImageBuffer<Rgb<u16>, Vec<u16>>>,
