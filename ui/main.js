@@ -326,7 +326,16 @@ function requestThumbnailSync() {
         if (!activeId) return;
         try {
             await invoke('sync_thumbnail_buffer', { id: activeId });
-            renderLibraryAndFilmstrip();
+            allLibraryItems = await invoke('get_filmstrip');
+            const item = allLibraryItems.find(i => i.id === activeId);
+            if (item && item.thumbnail_base64 !== "FILE_MISSING") {
+                document.querySelectorAll(`img[data-img-id="${activeId}"]`).forEach(img => {
+                    img.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+                    // Reset to cover styling
+                    img.classList.remove('opacity-50', 'object-contain', 'p-4', 'p-2', 'bg-[#1C1C1E]');
+                    img.classList.add('object-cover');
+                });
+            }
         } catch(e) { console.error(e); }
     }, 250);
 }
@@ -1215,10 +1224,15 @@ function getActiveFilters() {
     return { formats, cameras, dates };
 }
 
+let renderVersion = 0;
 async function renderLibraryAndFilmstrip() {
+    renderVersion++;
+    const currentVersion = renderVersion;
     try {
         await fetchRolls();
+        if (renderVersion !== currentVersion) return;
         const items = await invoke('get_filmstrip');
+        if (renderVersion !== currentVersion) return;
         allLibraryItems = items;
         
         const libraryRollsGrid = document.getElementById('library-rolls-grid');
@@ -1295,64 +1309,88 @@ async function renderLibraryAndFilmstrip() {
                 historyInternalGrid.classList.remove('hidden');
                 btnHistoryBack.classList.remove('hidden');
                 btnExportContactSheet.classList.remove('hidden');
+                document.getElementById('btn-promote-roll').classList.remove('hidden');
+                document.getElementById('btn-delete-rolls').classList.add('hidden');
                 historyTitle.textContent = "ROLL CONTENTS";
                 
                 const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
-                const rollPaths = currentRoll ? new Set(currentRoll.image_paths.map(p => p.replace(/\\/g, '/').toLowerCase())) : new Set();
-                const rollItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\/g, '/').toLowerCase()));
-                
-                rollItems.forEach(item => {
-                    const libDiv = document.createElement('div');
-                    libDiv.className = `library-item rounded overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
-                    libDiv.dataset.id = item.id;
-                    libDiv.ondblclick = () => {
-                        selectedLibraryIds.clear();
-                        selectedLibraryIds.add(item.id);
-                        updateLibrarySelectionUI();
-                        selectImage(item.id);
-                        switchView('develop');
-                    };
-                    libDiv.onclick = (e) => {
-if (e.shiftKey && lastSelectedLibraryId) {
-                            const arr = rollItems; // Need array of currently displayed items
-                            const startIdx = arr.findIndex(i => i.id === lastSelectedLibraryId);
-                            const endIdx = arr.findIndex(i => i.id === item.id);
-                            if (startIdx !== -1 && endIdx !== -1) {
-                                const minIdx = Math.min(startIdx, endIdx);
-                                const maxIdx = Math.max(startIdx, endIdx);
-                                for (let i = minIdx; i <= maxIdx; i++) {
-                                    selectedLibraryIds.add(arr[i].id);
-                                }
+                if (currentRoll) {
+                    const unimportedPaths = [];
+                    currentRoll.image_paths.forEach(path => {
+                        const existingItem = items.find(i => i.file_path.replace(/\\/g, '/').toLowerCase() === path.replace(/\\/g, '/').toLowerCase());
+                        if (!existingItem) unimportedPaths.push(path);
+                    });
+
+                    if (unimportedPaths.length > 0) {
+                        document.getElementById('history-view-title').textContent = "LOADING ROLL...";
+                        try {
+                            await invoke('import_images', { paths: unimportedPaths, isLoose: true, inLibrary: false });
+                            // Re-fetch roll items after import
+                            const rollStrip = await invoke('get_roll_filmstrip', { rollId: currentRollViewId });
+                            const newIds = rollStrip.filter(i => unimportedPaths.includes(i.file_path)).map(i => i.id);
+                            if (newIds.length > 0) {
+                                invoke('start_precache', { ids: newIds }).catch(e => console.error("History precache error", e));
                             }
-                        } else if (e.ctrlKey || e.metaKey) {
-                            if (selectedLibraryIds.has(item.id)) selectedLibraryIds.delete(item.id);
-                            else selectedLibraryIds.add(item.id);
-                            lastSelectedLibraryId = item.id;
-                        } else {
-                            selectedLibraryIds.clear();
-                            selectedLibraryIds.add(item.id);
-                            lastSelectedLibraryId = item.id;
-                        }
-                        updateLibrarySelectionUI();
-                    };
-                    const libImg = document.createElement('img');
-                    libImg.dataset.imgId = item.id;
-                    if (item.thumbnail_base64 === "FILE_MISSING") {
-                        libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
-                        libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
-                    } else {
-                        libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
-                        libImg.className = 'w-full h-full object-cover pointer-events-none';
+                            // Merge into local items list for rendering
+                            rollStrip.forEach(newItem => {
+                                if (!items.some(i => i.id === newItem.id)) {
+                                    items.push(newItem);
+                                }
+                            });
+                        } catch (e) { console.error("Failed to load roll", e); }
+                        document.getElementById('history-view-title').textContent = "ROLL CONTENTS";
                     }
-                    libDiv.appendChild(libImg);
-                    historyInternalGrid.appendChild(libDiv);
-                });
+
+                    currentRoll.image_paths.forEach(path => {
+                        const existingItem = items.find(i => i.file_path.replace(/\\/g, '/').toLowerCase() === path.replace(/\\/g, '/').toLowerCase());
+                        if (!existingItem) return;
+
+                        const libDiv = document.createElement('div');
+                        libDiv.className = `library-item rounded overflow-hidden relative`;
+                        
+                        if (selectedLibraryIds.has(existingItem.id)) libDiv.classList.add('selected');
+                        libDiv.dataset.id = existingItem.id;
+                        libDiv.ondblclick = () => {
+                            selectedLibraryIds.clear();
+                            selectedLibraryIds.add(existingItem.id);
+                            updateLibrarySelectionUI();
+                            selectImage(existingItem.id);
+                            switchView('develop');
+                        };
+                        libDiv.onclick = (e) => {
+                            if (e.shiftKey && lastSelectedLibraryId) {
+                                selectedLibraryIds.add(existingItem.id);
+                            } else if (e.ctrlKey || e.metaKey) {
+                                if (selectedLibraryIds.has(existingItem.id)) selectedLibraryIds.delete(existingItem.id);
+                                else selectedLibraryIds.add(existingItem.id);
+                            } else {
+                                selectedLibraryIds.clear();
+                                selectedLibraryIds.add(existingItem.id);
+                                lastSelectedLibraryId = existingItem.id;
+                            }
+                            updateLibrarySelectionUI();
+                        };
+                        const libImg = document.createElement('img');
+                        libImg.dataset.imgId = existingItem.id;
+                        if (existingItem.thumbnail_base64 === "FILE_MISSING") {
+                            libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
+                            libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
+                        } else {
+                            libImg.src = `data:image/jpeg;base64,${existingItem.thumbnail_base64}`;
+                            libImg.className = 'w-full h-full object-cover pointer-events-none';
+                        }
+                        libDiv.appendChild(libImg);
+                        historyInternalGrid.appendChild(libDiv);
+                    });
+                }
             } else {
                 // Rolls Archive View
                 libraryRollsGrid.classList.remove('hidden');
                 historyInternalGrid.classList.add('hidden');
                 btnHistoryBack.classList.add('hidden');
                 btnExportContactSheet.classList.add('hidden');
+                document.getElementById('btn-promote-roll').classList.add('hidden');
+                document.getElementById('btn-delete-rolls').classList.remove('hidden');
                 historyTitle.textContent = "THE ROLL ARCHIVE";
                 
                 let filteredRolls = allRolls.filter(r => {
@@ -1369,9 +1407,11 @@ if (e.shiftKey && lastSelectedLibraryId) {
                 }
                 
                 for (const roll of filteredRolls) {
+                    if (renderVersion !== currentVersion) return;
                     let thumbSrc = '';
                     try {
                         const previews = await invoke('get_roll_previews', { rollId: roll.roll_id });
+                        if (renderVersion !== currentVersion) return;
                         if (previews && previews.length > 0) {
                             thumbSrc = `data:image/jpeg;base64,${previews[0]}`;
                         }
@@ -1396,15 +1436,6 @@ if (e.shiftKey && lastSelectedLibraryId) {
                         } else {
                             currentRollViewId = roll.roll_id;
                             selectedLibraryIds.clear();
-                            const pathsToImport = roll.image_paths.filter(p => !allLibraryItems.some(item => item.file_path.replace(/\\/g, '/').toLowerCase() === p.replace(/\\/g, '/').toLowerCase()));
-                            if (pathsToImport.length > 0) {
-                                document.getElementById('history-view-title').textContent = "LOADING ROLL...";
-                                try {
-                                    await invoke('import_images', { paths: pathsToImport });
-                                    allLibraryItems = await invoke('get_filmstrip');
-                                } catch (e) { console.error(e); }
-                                document.getElementById('history-view-title').textContent = "ROLL CONTENTS";
-                            }
                             renderLibraryAndFilmstrip();
                         }
                     };
@@ -1463,6 +1494,20 @@ if (e.shiftKey && lastSelectedLibraryId) {
         
     } catch (e) { console.error("Filmstrip error:", e); }
 }
+
+document.getElementById('btn-promote-roll').addEventListener('click', async () => {
+    if (currentRollViewId) {
+        try {
+            await invoke('promote_roll', { rollId: currentRollViewId });
+            showToast("Roll promoted to Library successfully", "success");
+            await loadLibraryItems();
+            renderLibraryAndFilmstrip();
+        } catch (e) {
+            showToast("Failed to promote roll", "error");
+            console.error(e);
+        }
+    }
+});
 
 document.getElementById('btn-history-back').addEventListener('click', () => {
     currentRollViewId = null;
@@ -1589,7 +1634,7 @@ const doImportSingle = async () => {
         
         const paths = await invoke('open_file_dialog');
         if (paths && paths.length > 0) {
-            await invoke('import_images', { paths });
+            await invoke('import_images', { paths, isLoose: true });
             await fetchRolls();
             await renderLibraryAndFilmstrip();
             
@@ -1719,7 +1764,7 @@ document.getElementById('btn-confirm-continue').addEventListener('click', async 
         if (pathsToImport.length > 0) {
             document.getElementById('history-view-title').textContent = "LOADING ROLL...";
             try {
-                await invoke('import_images', { paths: pathsToImport });
+                await invoke('import_images', { paths: pathsToImport, isLoose: false });
                 allLibraryItems = await invoke('get_filmstrip');
             } catch (e) { console.error(e); }
             document.getElementById('history-view-title').textContent = "ROLL CONTENTS";
@@ -2816,6 +2861,38 @@ window.addEventListener('DOMContentLoaded', async () => {
 
 const { listen } = window.__TAURI__.event;
 
+let precacheToast = null;
+listen('precache_progress', (event) => {
+    const { total, current } = event.payload;
+    if (total === 0) return;
+    
+    if (!precacheToast) {
+        precacheToast = document.createElement('div');
+        precacheToast.className = 'fixed bottom-4 right-4 bg-[#1C1C1E] border border-[#28282c] shadow-lg rounded p-4 z-50 flex flex-col gap-2 w-64';
+        precacheToast.innerHTML = `
+            <div class="text-[11px] font-bold tracking-wider text-zinc-300">IMPORTING ASSETS</div>
+            <div class="w-full h-1 bg-zinc-800 rounded overflow-hidden">
+                <div class="h-full bg-blue-500 transition-all duration-300" id="precache-bar" style="width: 0%"></div>
+            </div>
+            <div class="text-[10px] text-zinc-500" id="precache-text">0 / ${total}</div>
+        `;
+        document.body.appendChild(precacheToast);
+    }
+    
+    const pct = (current / total) * 100;
+    document.getElementById('precache-bar').style.width = `${pct}%`;
+    document.getElementById('precache-text').textContent = `${current} / ${total}`;
+    
+    if (current >= total) {
+        setTimeout(() => {
+            if (precacheToast) {
+                precacheToast.remove();
+                precacheToast = null;
+            }
+        }, 1000);
+    }
+});
+
 listen('thumbnail_updated', (event) => {
     const { id, thumbnail } = event.payload;
     const item = allLibraryItems.find(i => i.id === id);
@@ -2831,12 +2908,20 @@ listen('thumbnail_updated', (event) => {
 listen('tauri://file-drop-hover', (event) => {
     document.getElementById('drag-overlay').classList.remove('hidden');
 });
+listen('tauri://drag-enter', (event) => {
+    document.getElementById('drag-overlay').classList.remove('hidden');
+});
+
 listen('tauri://file-drop-cancelled', (event) => {
     document.getElementById('drag-overlay').classList.add('hidden');
 });
+listen('tauri://drag-leave', (event) => {
+    document.getElementById('drag-overlay').classList.add('hidden');
+});
 
-listen('tauri://file-drop', async (event) => {
-    const paths = event.payload;
+const handleDrop = async (event) => {
+    document.getElementById('drag-overlay').classList.add('hidden');
+    const paths = event.payload.paths || event.payload; // Tauri v2 uses payload.paths
     if (paths && paths.length > 0) {
         btnImport.textContent = 'Importing...';
         await invoke('import_images', { paths });
@@ -2845,7 +2930,10 @@ listen('tauri://file-drop', async (event) => {
         btnImport.textContent = 'Import Roll';
         showToast(`Dropped ${paths.length} file(s)`, 'success');
     }
-});
+};
+
+listen('tauri://file-drop', handleDrop);
+listen('tauri://drag-drop', handleDrop);
 
 document.getElementById('btn-export-roll').addEventListener('click', () => {
     if (!currentRollViewId) { showToast('No active roll.', 'error'); return; }

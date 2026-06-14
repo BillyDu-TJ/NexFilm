@@ -94,6 +94,12 @@ pub struct BaseColor {
     pub base_b: u16,
 }
 
+impl Default for BaseColor {
+    fn default() -> Self {
+        Self { base_r: 32768, base_g: 32768, base_b: 32768 }
+    }
+}
+
 pub struct FilmItem {
     pub id: String,
     pub file_path: String,
@@ -104,6 +110,8 @@ pub struct FilmItem {
     pub base_color: BaseColor,
     pub params: TuningParams,
     pub geom: GeometryState,
+    pub is_loose: bool,
+    pub in_library: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

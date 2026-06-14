@@ -5,6 +5,7 @@ use crate::geometry;
 use base64::{engine::general_purpose, Engine as _};
 use image::{imageops::FilterType, ImageBuffer, ImageOutputFormat, Rgb, RgbImage, GenericImageView};
 use rayon::prelude::*;
+use tauri::Emitter;
 use rfd::FileDialog;
 use std::io::Cursor;
 use tauri::State;
@@ -237,7 +238,7 @@ pub fn load_image_buffer(path: &str, use_half_size: bool, dcp_profile: Option<&s
 }
 
 #[tauri::command]
-pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) -> Result<(), String> {
+pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_library: Option<bool>, state: State<'_, EngineState>) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
@@ -248,26 +249,31 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
     let mut new_items = Vec::new();
     let existing_paths: std::collections::HashSet<String> = {
         let guard = state.items.clone();
-        guard.iter().map(|kv| kv.value().read().unwrap().file_path.clone()).collect()
+        guard.iter().map(|kv| kv.value().read().unwrap().file_path.replace("\\", "/").to_lowercase()).collect()
     };
     
-    let paths_to_process: Vec<String> = paths.into_iter().filter(|p| !existing_paths.contains(p)).collect();
+    let paths_to_process: Vec<String> = paths.clone().into_iter().filter(|p| !existing_paths.contains(&p.replace("\\", "/").to_lowercase())).collect();
 
     for chunk in paths_to_process.chunks(4) {
         let chunk_items_result: Result<Vec<FilmItem>, String> = chunk.into_par_iter().map(|path| {
-            if let Some((thumb, params, geom, base_color)) = load_image_state_from_db(path) {
-                let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
-                return Ok(FilmItem {
-                    id,
-                    file_path: path.clone(),
-                    thumbnail_base64: thumb,
-                    original_proxy: None,
-                    proxy_image: None,
-                    pristine_proxy: None,
-                    base_color,
-                    params,
-                    geom,
-                });
+            let loose = is_loose.unwrap_or(false);
+            if !loose {
+                if let Some((thumb, params, geom, base_color)) = load_image_state_from_db(path) {
+                    let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
+                    return Ok(FilmItem {
+                        id,
+                        file_path: path.clone(),
+                        thumbnail_base64: thumb,
+                        original_proxy: None,
+                        proxy_image: None,
+                        pristine_proxy: None,
+                        base_color,
+                        params,
+                        geom,
+                        is_loose: loose,
+                        in_library: in_library.unwrap_or(true),
+                    });
+                }
             }
 
             let mut thumbnail_base64 = String::new();
@@ -343,20 +349,46 @@ pub async fn import_images(paths: Vec<String>, state: State<'_, EngineState>) ->
                 base_color,
                 params: TuningParams::default(),
                 geom: crate::app_state::GeometryState::default(),
+                is_loose: loose,
+                in_library: in_library.unwrap_or(true),
             };
             
-            let _ = save_image_state_to_db(&item);
+            if !loose {
+                let _ = save_image_state_to_db(&item);
+            }
             
             Ok(item)
         }).collect();
         new_items.extend(chunk_items_result?);
     }
 
-    let mut order_guard = state.item_order.write().map_err(|e| e.to_string())?;
     for item in new_items {
         let id = item.id.clone();
         state.items.insert(id.clone(), Arc::new(RwLock::new(item)));
-        order_guard.push(id);
+    }
+
+    let loose = is_loose.unwrap_or(false);
+    if !loose {
+        let mut order_guard = state.item_order.write().map_err(|e| e.to_string())?;
+        for path in paths {
+            let id_opt = {
+                let guard = state.items.clone();
+                let mut found = None;
+                for kv in guard.iter() {
+                    let db_path = kv.value().read().unwrap().file_path.clone();
+                    if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
+                        found = Some(kv.key().clone());
+                        break;
+                    }
+                }
+                found
+            };
+            if let Some(id) = id_opt {
+                if !order_guard.contains(&id) {
+                    order_guard.push(id);
+                }
+            }
+        }
     }
 
     Ok(())
@@ -369,14 +401,41 @@ pub async fn get_filmstrip(state: State<'_, EngineState>) -> Result<Vec<Filmstri
     for id in item_order.iter() {
         if let Some(item_arc) = state.items.get(id) {
             let item = item_arc.read().map_err(|e| e.to_string())?;
-            strip.push(FilmstripItem {
-                id: item.id.clone(),
-                file_path: item.file_path.clone(),
-                thumbnail_base64: if std::fs::File::open(&item.file_path).is_ok() { item.thumbnail_base64.clone() } else { "FILE_MISSING".to_string() },
-            });
+            if item.in_library {
+                strip.push(FilmstripItem {
+                    id: item.id.clone(),
+                    file_path: item.file_path.clone(),
+                    thumbnail_base64: if std::fs::File::open(&item.file_path).is_ok() { item.thumbnail_base64.clone() } else { "FILE_MISSING".to_string() },
+                });
+            }
         }
     }
     Ok(strip)
+}
+
+#[tauri::command]
+pub async fn get_roll_filmstrip(roll_id: String, state: State<'_, EngineState>) -> Result<Vec<FilmstripItem>, String> {
+    let rolls = state.rolls.read().unwrap();
+    if let Some(roll) = rolls.iter().find(|r| r.roll_id == roll_id) {
+        let mut strip = Vec::with_capacity(roll.image_paths.len());
+        let guard = state.items.clone();
+        for path in &roll.image_paths {
+            for kv in guard.iter() {
+                let item = kv.value().read().unwrap();
+                let db_path = item.file_path.clone();
+                if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
+                    strip.push(FilmstripItem {
+                        id: item.id.clone(),
+                        file_path: item.file_path.clone(),
+                        thumbnail_base64: if std::fs::File::open(&item.file_path).is_ok() { item.thumbnail_base64.clone() } else { "FILE_MISSING".to_string() },
+                    });
+                    break;
+                }
+            }
+        }
+        return Ok(strip);
+    }
+    Ok(Vec::new())
 }
 
 #[derive(Serialize)]
@@ -579,6 +638,82 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
 }
 
 #[tauri::command]
+pub async fn get_roll_previews(roll_id: String, state: State<'_, EngineState>) -> Result<Vec<String>, String> {
+    let rolls = state.rolls.read().unwrap();
+    if let Some(roll) = rolls.iter().find(|r| r.roll_id == roll_id) {
+        let mut previews = Vec::new();
+        let guard = state.items.clone();
+        for path in roll.image_paths.iter().take(3) {
+            for kv in guard.iter() {
+                let db_path = kv.value().read().unwrap().file_path.clone();
+                if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
+                    let thumb = kv.value().read().unwrap().thumbnail_base64.clone();
+                    if thumb != "FILE_MISSING" && !thumb.is_empty() {
+                        previews.push(thumb);
+                    }
+                    break;
+                }
+            }
+        }
+        return Ok(previews);
+    }
+    Ok(Vec::new())
+}
+
+#[tauri::command]
+pub async fn get_raw_thumbnails(paths: Vec<String>) -> Result<Vec<String>, String> {
+    use base64::{Engine as _, engine::general_purpose};
+    use std::io::Cursor;
+    use image::ImageOutputFormat;
+    
+    let mut thumbs = Vec::with_capacity(paths.len());
+    for path in paths {
+        let mut thumbnail_base64 = String::from("FILE_MISSING");
+        unsafe {
+            let data = libraw_sys::libraw_init(0);
+            if !data.is_null() {
+                let c_path = std::ffi::CString::new(path.clone()).unwrap_or_default();
+                let mut opened = libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0;
+                
+                let mut buf = Vec::new();
+                if !opened {
+                    if let Ok(b) = std::fs::read(&path) {
+                        buf = b;
+                        opened = libraw_sys::libraw_open_buffer(data, buf.as_ptr() as *const _, buf.len()) == 0;
+                    }
+                }
+
+                if opened {
+                    if libraw_sys::libraw_unpack_thumb(data) == 0 {
+                        let mut err = 0;
+                        let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
+                        if !thumb.is_null() {
+                            let thumb_type = (*thumb).type_;
+                            let thumb_len = (*thumb).data_size as usize;
+                            let thumb_data = std::slice::from_raw_parts((*thumb).data.as_ptr(), thumb_len);
+                            if thumb_type == 1 { // JPEG
+                                thumbnail_base64 = general_purpose::STANDARD.encode(thumb_data);
+                            } else {
+                                if let Ok(img) = image::load_from_memory(thumb_data) {
+                                    let mut cursor = Cursor::new(Vec::new());
+                                    if img.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
+                                        thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+                                    }
+                                }
+                            }
+                            libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
+                        }
+                    }
+                }
+                libraw_sys::libraw_close(data);
+            }
+        }
+        thumbs.push(thumbnail_base64);
+    }
+    Ok(thumbs)
+}
+
+#[tauri::command]
 pub async fn load_dcp_profile(path: String, state: State<'_, EngineState>) -> Result<(), String> {
     *state.dcp_profile.write().unwrap() = Some(path.clone());
     if let Some(active_id) = state.active_id.read().unwrap().clone() {
@@ -593,9 +728,10 @@ pub async fn load_dcp_profile(path: String, state: State<'_, EngineState>) -> Re
                 let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
                 
                 item.base_color = compute_auto_base(&proxy);
-                item.pristine_proxy = Some(compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone()));
                 item.original_proxy = Some(proxy.clone());
                 item.proxy_image = Some(proxy);
+                reapply_geometry(&mut item);
+                item.pristine_proxy = Some(compute_pristine_proxy(item.proxy_image.as_ref().unwrap(), &item.base_color, item.params.film_mode.clone()));
             }
         }
     }
@@ -617,9 +753,10 @@ pub async fn set_working_colorspace(colorspace: String, state: State<'_, EngineS
                 let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
                 
                 item.base_color = compute_auto_base(&proxy);
-                item.pristine_proxy = Some(compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone()));
                 item.original_proxy = Some(proxy.clone());
                 item.proxy_image = Some(proxy);
+                reapply_geometry(&mut item);
+                item.pristine_proxy = Some(compute_pristine_proxy(item.proxy_image.as_ref().unwrap(), &item.base_color, item.params.film_mode.clone()));
             }
         }
     }
@@ -677,7 +814,7 @@ pub async fn switch_active_image(id: String, state: State<'_, EngineState>) -> R
 }
 
 #[tauri::command]
-pub async fn start_precache(ids: Vec<String>, state: State<'_, EngineState>) -> Result<(), String> {
+pub async fn start_precache(ids: Vec<String>, state: State<'_, EngineState>, app: tauri::AppHandle) -> Result<(), String> {
     let mut items_to_cache = Vec::new();
     for id in ids {
         if let Some(arc) = state.items.get(&id) {
@@ -689,32 +826,42 @@ pub async fn start_precache(ids: Vec<String>, state: State<'_, EngineState>) -> 
     let colorspace = state.working_colorspace.read().unwrap().clone();
     
     std::thread::spawn(move || {
-        for item_arc in items_to_cache {
+        let total = items_to_cache.len();
+        let _ = app.emit("precache_progress", serde_json::json!({ "total": total, "current": 0 }));
+        for (i, item_arc) in items_to_cache.into_iter().enumerate() {
             let needs_load = {
                 let item = item_arc.read().unwrap();
                 item.proxy_image.is_none()
             };
             
             if needs_load {
-                let mut item = item_arc.write().unwrap();
-                if item.proxy_image.is_none() {
-                    if let Ok(img_buffer) = load_image_buffer(&item.file_path, true, dcp.as_deref(), &colorspace) {
-                        let (width, height) = img_buffer.dimensions();
-                        let ratio_proxy = 2048.0 / (width.max(height) as f32);
-                        let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
-                        let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
-                        let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
-                        
-                        if item.base_color.base_r == 32768 && item.base_color.base_g == 32768 && item.base_color.base_b == 32768 {
-                            item.base_color = compute_auto_base(&proxy);
-                        }
-                        item.original_proxy = Some(proxy.clone());
-                        item.proxy_image = Some(proxy.clone());
-                        let pristine = compute_pristine_proxy(&proxy, &item.base_color, item.params.film_mode.clone());
-                        item.pristine_proxy = Some(pristine);
+                let file_path = { item_arc.read().unwrap().file_path.clone() };
+                if let Ok(img_buffer) = load_image_buffer(&file_path, true, dcp.as_deref(), &colorspace) {
+                    let (width, height) = img_buffer.dimensions();
+                    let ratio_proxy = 2048.0 / (width.max(height) as f32);
+                    let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
+                    let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
+                    let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
+                    
+                    let mut item = item_arc.write().unwrap();
+                    if item.base_color.base_r == 32768 && item.base_color.base_g == 32768 && item.base_color.base_b == 32768 {
+                        item.base_color = compute_auto_base(&proxy);
+                    }
+                    item.original_proxy = Some(proxy.clone());
+                    item.proxy_image = Some(proxy.clone());
+                    reapply_geometry(&mut item);
+                    let pristine = compute_pristine_proxy(item.proxy_image.as_ref().unwrap(), &item.base_color, item.params.film_mode.clone());
+                    item.pristine_proxy = Some(pristine);
+                    if let Some(new_thumb) = generate_processed_thumbnail(&item) {
+                        item.thumbnail_base64 = new_thumb.clone();
+                        let _ = app.emit("thumbnail_updated", serde_json::json!({ "id": item.id, "thumbnail": new_thumb }));
+                    }
+                    if !item.is_loose {
+                        let _ = save_image_state_to_db(&item);
                     }
                 }
             }
+            let _ = app.emit("precache_progress", serde_json::json!({ "total": total, "current": i + 1 }));
         }
     });
 
@@ -764,69 +911,13 @@ pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) ->
     if let Some(item_arc) = state.items.get(&id) {
         let new_thumbnail = {
             let item = item_arc.read().map_err(|e| e.to_string())?;
-            let params = &item.params;
-            let base_color = &item.base_color;
-            let pipeline = FilmPipeline::new(
-                [base_color.base_r, base_color.base_g, base_color.base_b],
-                [
-                    params.exposure.exposure + params.exposure.exp_r,
-                    params.exposure.exposure + params.exposure.exp_g,
-                    params.exposure.exposure + params.exposure.exp_b,
-                ],
-                params.film_mode.clone(),
-            );
-
-            let pristine = item.pristine_proxy.as_ref().unwrap();
-            let (width, height) = pristine.dimensions();
-            let mut thumb_8bit = RgbImage::new(width, height);
-            
-            let pristine_pixels: &[f32] = pristine.as_raw().as_slice();
-            let out_pixels: &mut [u8] = thumb_8bit.as_mut();
-
-            let d_min = params.density.d_min;
-            let d_max = params.density.d_max;
-            let gamma = params.density.gamma;
-
-            pristine_pixels.par_chunks(3).zip(out_pixels.par_chunks_mut(3)).for_each(|(in_px, out_px)| {
-                let true_density = [in_px[0], in_px[1], in_px[2]];
-                let density = pipeline.apply_exposure(&true_density);
-
-                let norm_r = ((density[0] - d_min[0]) / (d_max[0] - d_min[0])).clamp(0.0, 1.0);
-                let norm_g = ((density[1] - d_min[1]) / (d_max[1] - d_min[1])).clamp(0.0, 1.0);
-                let norm_b = ((density[2] - d_min[2]) / (d_max[2] - d_min[2])).clamp(0.0, 1.0);
-
-                out_px[0] = (norm_r.powf(1.0 / gamma) * 255.0) as u8;
-                out_px[1] = (norm_g.powf(1.0 / gamma) * 255.0) as u8;
-                out_px[2] = (norm_b.powf(1.0 / gamma) * 255.0) as u8;
-            });
-            
-            let (orig_width, orig_height) = (width, height);
-            let cx = (item.geom.crop_rect.x * orig_width as f32).max(0.0).min(orig_width as f32) as u32;
-            let cy = (item.geom.crop_rect.y * orig_height as f32).max(0.0).min(orig_height as f32) as u32;
-            let cw = (item.geom.crop_rect.width * orig_width as f32).max(1.0).min((orig_width - cx) as f32) as u32;
-            let ch = (item.geom.crop_rect.height * orig_height as f32).max(1.0).min((orig_height - cy) as f32) as u32;
-            
-            let mut cropped_thumb = thumb_8bit;
-            if cw < orig_width || ch < orig_height {
-                cropped_thumb = image::imageops::crop(&mut cropped_thumb, cx, cy, cw, ch).to_image();
-            }
-
-            let ratio_thumb = 1024.0 / (cw.max(ch) as f32);
-            let thumb_width = (cw as f32 * ratio_thumb).max(1.0) as u32;
-            let thumb_height = (ch as f32 * ratio_thumb).max(1.0) as u32;
-            let thumb = image::imageops::resize(&cropped_thumb, thumb_width, thumb_height, FilterType::Triangle);
-            
-            let mut cursor = Cursor::new(Vec::new());
-            let mut new_thumbnail = String::new();
-            if let Ok(_) = thumb.write_to(&mut cursor, image::ImageOutputFormat::Jpeg(70)) {
-                new_thumbnail = general_purpose::STANDARD.encode(cursor.into_inner());
-            }
-            new_thumbnail
+            generate_processed_thumbnail(&item).unwrap_or_default()
         };
         
         if !new_thumbnail.is_empty() {
             let mut item = item_arc.write().map_err(|e| e.to_string())?;
             item.thumbnail_base64 = new_thumbnail;
+            let _ = save_image_state_to_db(&item);
         }
     }
     Ok(())
@@ -1231,7 +1322,7 @@ pub async fn import_roll(
         }
     }
     
-    crate::commands::import_images(paths, state).await
+    crate::commands::import_images(paths, Some(false), Some(true), state).await
 }
 
 #[tauri::command]
@@ -1271,9 +1362,67 @@ pub async fn delete_rolls(
 ) -> Result<(), String> {
     {
         let mut rolls = state.rolls.write().unwrap();
+        
+        let mut paths_to_delete = Vec::new();
+        for r in rolls.iter() {
+            if roll_ids.contains(&r.roll_id) {
+                paths_to_delete.extend(r.image_paths.clone());
+            }
+        }
+        
         rolls.retain(|r| !roll_ids.contains(&r.roll_id));
         if let Ok(json) = serde_json::to_string_pretty(&*rolls) {
             let _ = std::fs::write("rolls.json", json);
+        }
+        
+        // Also delete from memory and DB to give it "no memory"
+        if let Ok(conn) = rusqlite::Connection::open(get_db_path()) {
+            for path in &paths_to_delete {
+                let _ = conn.execute("DELETE FROM image_states WHERE file_path = ?1", [path]);
+                
+                // Remove from state.items
+                let mut ids_to_remove = Vec::new();
+                for kv in state.items.iter() {
+                    let db_path = kv.value().read().unwrap().file_path.clone();
+                    if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
+                        ids_to_remove.push(kv.key().clone());
+                    }
+                }
+                for id in ids_to_remove {
+                    state.items.remove(&id);
+                    if let Ok(mut order) = state.item_order.write() {
+                        order.retain(|i| i != &id);
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn promote_roll(
+    roll_id: String,
+    state: State<'_, EngineState>
+) -> Result<(), String> {
+    let mut order_guard = state.item_order.write().map_err(|e| e.to_string())?;
+    let rolls = state.rolls.read().unwrap();
+    if let Some(roll) = rolls.iter().find(|r| r.roll_id == roll_id) {
+        let guard = state.items.clone();
+        for path in &roll.image_paths {
+            for kv in guard.iter() {
+                let mut item = kv.value().write().unwrap();
+                let db_path = item.file_path.clone();
+                if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
+                    item.in_library = true;
+                    item.is_loose = false;
+                    let _ = save_image_state_to_db(&item);
+                    if !order_guard.contains(&item.id) {
+                        order_guard.push(item.id.clone());
+                    }
+                    break;
+                }
+            }
         }
     }
     Ok(())
@@ -1289,7 +1438,7 @@ pub async fn append_to_roll(
         let mut rolls = state.rolls.write().unwrap();
         if let Some(roll) = rolls.iter_mut().find(|r| r.roll_id == roll_id) {
             for p in &paths {
-                if !roll.image_paths.contains(p) {
+                if !roll.image_paths.iter().any(|existing| existing.replace("\\", "/").to_lowercase() == p.replace("\\", "/").to_lowercase()) {
                     roll.image_paths.push(p.clone());
                 }
             }
@@ -1298,8 +1447,7 @@ pub async fn append_to_roll(
             let _ = std::fs::write("rolls.json", json);
         }
     }
-    
-    crate::commands::import_images(paths, state).await
+    crate::commands::import_images(paths, Some(false), Some(true), state).await
 }
 
 #[tauri::command]
@@ -1322,7 +1470,7 @@ pub async fn locate_missing_file(id: String, state: State<'_, EngineState>) -> R
             // Update rolls
             let mut rolls = state.rolls.write().unwrap();
             for roll in rolls.iter_mut() {
-                if let Some(pos) = roll.image_paths.iter().position(|p| p == &old_path) {
+                if let Some(pos) = roll.image_paths.iter().position(|p| p.replace("\\", "/").to_lowercase() == old_path.replace("\\", "/").to_lowercase()) {
                     roll.image_paths[pos] = new_path.clone();
                 }
             }
@@ -1356,6 +1504,9 @@ pub fn init_db() -> rusqlite::Result<()> {
 }
 
 pub fn save_image_state_to_db(item: &crate::app_state::FilmItem) -> Result<(), String> {
+    if item.is_loose {
+        return Ok(());
+    }
     let conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
     conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
     let params_str = serde_json::to_string(&item.params).map_err(|e| e.to_string())?;
@@ -1366,6 +1517,7 @@ pub fn save_image_state_to_db(item: &crate::app_state::FilmItem) -> Result<(), S
         "INSERT INTO image_states (file_path, thumbnail_base64, params, geom, base_color) 
          VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(file_path) DO UPDATE SET 
+         thumbnail_base64=excluded.thumbnail_base64,
          params=excluded.params, 
          geom=excluded.geom, 
          base_color=excluded.base_color",
@@ -1407,27 +1559,26 @@ pub fn load_all_image_states(state: &crate::app_state::EngineState) {
             }) {
                 let mut order_guard = state.item_order.write().unwrap();
                 for row_result in rows {
-                    if let Ok((file_path, thumb, params_str, geom_str, base_color_str)) = row_result {
-                        if let (Ok(params), Ok(geom), Ok(base_color)) = (
-                            serde_json::from_str(&params_str),
-                            serde_json::from_str(&geom_str),
-                            serde_json::from_str(&base_color_str)
-                        ) {
-                            let id = format!("img_{}", crate::commands::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
-                            let item = crate::app_state::FilmItem {
-                                id: id.clone(),
-                                file_path,
-                                thumbnail_base64: thumb,
-                                original_proxy: None,
-                                proxy_image: None,
-                                pristine_proxy: None,
-                                base_color,
-                                params,
-                                geom,
-                            };
-                            state.items.insert(id.clone(), std::sync::Arc::new(std::sync::RwLock::new(item)));
-                            order_guard.push(id);
-                        }
+                    if let Ok((db_path, thumb, params_str, geom_str, base_color_str)) = row_result {
+                        let params = serde_json::from_str(&params_str).unwrap_or_default();
+                        let geom = serde_json::from_str(&geom_str).unwrap_or_default();
+                        let base_color = serde_json::from_str(&base_color_str).unwrap_or_default();
+                        
+                        let img_id = format!("img_{}", crate::commands::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+                        let item = crate::app_state::FilmItem {
+                            id: img_id.clone(),
+                            file_path: db_path.clone(),
+                            thumbnail_base64: thumb,
+                            original_proxy: None,
+                            proxy_image: None,
+                            pristine_proxy: None,
+                            base_color,
+                            params,
+                            geom,
+                            is_loose: false,
+                            in_library: true,
+                        };
+                        state.items.insert(img_id.clone(), std::sync::Arc::new(std::sync::RwLock::new(item)));
                     }
                 }
             }
@@ -1474,3 +1625,65 @@ pub fn add_user_film(film: String) -> Result<(), String> {
     Ok(())
 }
 
+
+pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
+    if item.pristine_proxy.is_none() { return None; }
+    let params = &item.params;
+    let base_color = &item.base_color;
+    let pipeline = FilmPipeline::new(
+        [base_color.base_r, base_color.base_g, base_color.base_b],
+        [
+            params.exposure.exposure + params.exposure.exp_r,
+            params.exposure.exposure + params.exposure.exp_g,
+            params.exposure.exposure + params.exposure.exp_b,
+        ],
+        params.film_mode.clone(),
+    );
+
+    let pristine = item.pristine_proxy.as_ref().unwrap();
+    let (width, height) = pristine.dimensions();
+    let mut thumb_8bit = RgbImage::new(width, height);
+    
+    let pristine_pixels: &[f32] = pristine.as_raw().as_slice();
+    let out_pixels: &mut [u8] = thumb_8bit.as_mut();
+
+    let d_min = params.density.d_min;
+    let d_max = params.density.d_max;
+    let gamma = params.density.gamma;
+
+    pristine_pixels.par_chunks(3).zip(out_pixels.par_chunks_mut(3)).for_each(|(in_px, out_px)| {
+        let true_density = [in_px[0], in_px[1], in_px[2]];
+        let density = pipeline.apply_exposure(&true_density);
+
+        let norm_r = ((density[0] - d_min[0]) / (d_max[0] - d_min[0])).clamp(0.0, 1.0);
+        let norm_g = ((density[1] - d_min[1]) / (d_max[1] - d_min[1])).clamp(0.0, 1.0);
+        let norm_b = ((density[2] - d_min[2]) / (d_max[2] - d_min[2])).clamp(0.0, 1.0);
+
+        out_px[0] = (norm_r.powf(1.0 / gamma) * 255.0) as u8;
+        out_px[1] = (norm_g.powf(1.0 / gamma) * 255.0) as u8;
+        out_px[2] = (norm_b.powf(1.0 / gamma) * 255.0) as u8;
+    });
+    
+    let (orig_width, orig_height) = (width, height);
+    let cx = (item.geom.crop_rect.x * orig_width as f32).max(0.0).min(orig_width as f32) as u32;
+    let cy = (item.geom.crop_rect.y * orig_height as f32).max(0.0).min(orig_height as f32) as u32;
+    let cw = (item.geom.crop_rect.width * orig_width as f32).max(1.0).min((orig_width - cx) as f32) as u32;
+    let ch = (item.geom.crop_rect.height * orig_height as f32).max(1.0).min((orig_height - cy) as f32) as u32;
+    
+    let mut cropped_thumb = thumb_8bit;
+    if cw < orig_width || ch < orig_height {
+        cropped_thumb = image::imageops::crop(&mut cropped_thumb, cx, cy, cw, ch).to_image();
+    }
+
+    let ratio_thumb = 1024.0 / (cw.max(ch) as f32);
+    let thumb_width = (cw as f32 * ratio_thumb).max(1.0) as u32;
+    let thumb_height = (ch as f32 * ratio_thumb).max(1.0) as u32;
+    let thumb = image::imageops::resize(&cropped_thumb, thumb_width, thumb_height, FilterType::Triangle);
+    
+    let mut cursor = std::io::Cursor::new(Vec::new());
+    if let Ok(_) = thumb.write_to(&mut cursor, image::ImageOutputFormat::Jpeg(70)) {
+        use base64::{Engine as _, engine::general_purpose};
+        return Some(general_purpose::STANDARD.encode(cursor.into_inner()));
+    }
+    None
+}

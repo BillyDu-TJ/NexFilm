@@ -22,6 +22,9 @@ fn main() {
             nexfilm_engine::commands::select_export_dir,
             nexfilm_engine::commands::import_images,
             nexfilm_engine::commands::get_filmstrip,
+            nexfilm_engine::commands::get_roll_filmstrip,
+            nexfilm_engine::commands::get_raw_thumbnails,
+            nexfilm_engine::commands::promote_roll,
             nexfilm_engine::commands::switch_active_image,
             nexfilm_engine::commands::get_proxy_image_data,
             nexfilm_engine::commands::update_tuning_parameters,
@@ -47,7 +50,8 @@ fn main() {
             nexfilm_engine::commands::get_user_films,
             nexfilm_engine::commands::add_user_camera,
             nexfilm_engine::commands::add_user_film,
-            nexfilm_engine::commands::start_precache
+            nexfilm_engine::commands::start_precache,
+            nexfilm_engine::commands::get_roll_previews
         ])
         .plugin(tauri_plugin_dialog::init())
         .run(tauri::generate_context!())
