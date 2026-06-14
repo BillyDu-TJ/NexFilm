@@ -2072,7 +2072,7 @@ async function doAutoColor() {
     gl.bindVertexArray(vao);
     
     gl.uniform3f(u_base_density_loc, currentBaseDensity[0], currentBaseDensity[1], currentBaseDensity[2]);
-    gl.uniform3f(u_dmin_loc, 0.0, 0.0, 0.0);
+    gl.uniform3f(u_dmin_loc, -1.0, -1.0, -1.0);
     gl.uniform3f(u_dmax_loc, 3.0, 3.0, 3.0);
     gl.uniform3f(u_exposure_loc, 0.0, 0.0, 0.0);
     gl.uniform1f(u_gamma_loc, 1.0);
@@ -2153,11 +2153,12 @@ async function doAutoColor() {
     let [gStart, gEnd] = computeExtremes(g_arr);
     let [bStart, bEnd] = computeExtremes(b_arr);
 
-    // In Baseline Isolation (Dmin=0, Dmax=3.0, Gamma=1.0),
-    // norm = density / 3.0 -> screen_val = norm * 255.
-    // So to retrieve true density from screen_val: density = (val / 255.0) * 3.0
+    // In Baseline Isolation (Dmin=-1.0, Dmax=3.0, Gamma=1.0),
+    // norm = (density - (-1.0)) / (3.0 - (-1.0)) = (density + 1.0) / 4.0
+    // screen_val = norm * 255.
+    // So to retrieve true density from screen_val: density = (val / 255.0) * 4.0 - 1.0
     function toDensity(val) {
-        return (val / 255.0) * 3.0;
+        return (val / 255.0) * 4.0 - 1.0;
     }
 
     const batchState = {
