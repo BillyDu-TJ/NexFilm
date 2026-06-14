@@ -182,13 +182,13 @@ function switchView(viewName) {
     ];
 
     views.forEach(v => {
+        // 彻底清理旧的 Tailwind opacity 或 z-index 隐藏逻辑，只保留 display 切换
+        v.el.classList.remove('opacity-0', 'pointer-events-none');
         if (v.name === viewName) {
-            v.el.classList.remove('opacity-0', 'pointer-events-none');
             v.el.style.display = 'flex';
             v.nav.classList.add('text-zinc-100', 'border-zinc-100');
             v.nav.classList.remove('text-zinc-500', 'border-transparent');
         } else {
-            v.el.classList.add('opacity-0', 'pointer-events-none');
             v.el.style.display = 'none';
             v.nav.classList.remove('text-zinc-100', 'border-zinc-100');
             v.nav.classList.add('text-zinc-500', 'border-transparent'); 
@@ -991,10 +991,12 @@ function renderWebGL() {
     requestAnimationFrame(() => updateDataViz(pixels));
 }
 
-async function loadProxyImage() {
+async function loadProxyImage(token = null) {
     if (!activeId || !webGLInitialized) return;
     try {
         const result = await invoke('get_proxy_image_data', { id: activeId });
+        if (token !== null && token !== currentImageRequestToken) return;
+        
         let arrayBuffer;
         let byteOffset = 0;
         if (result instanceof ArrayBuffer) {
@@ -1525,8 +1527,11 @@ document.getElementById('btn-history-back').addEventListener('click', () => {
     renderLibraryAndFilmstrip();
 });
 
+let currentImageRequestToken = 0;
+
 async function selectImage(id) {
     if (activeId === id) return;
+    const myToken = ++currentImageRequestToken;
     try {
         saveCurrentState(); // Save current state before switching
 
@@ -1568,32 +1573,32 @@ async function selectImage(id) {
 
         renderLibraryAndFilmstrip();
 
-        document.getElementById('view-develop').style.opacity = '1';
-        document.getElementById('view-develop').style.pointerEvents = 'auto';
-
         updateSliderTrack(sliders.exposure.el);
         updateSliderTrack(sliders.gamma.el);
 
         const loadingUI = document.getElementById('loading-proxy-ui');
         const rightPanel = document.querySelector('.w-\\[340px\\]');
-        let isLoadingMaskActive = false;
-        const loadingTimeout = setTimeout(() => {
-            isLoadingMaskActive = true;
-            if(loadingUI) { loadingUI.classList.remove('hidden'); loadingUI.classList.add('flex'); }
-            if(rightPanel) rightPanel.style.pointerEvents = 'none';
-            document.getElementById('filmstrip-container').style.pointerEvents = 'none';
-        }, 100);
+        const filmstripContainer = document.getElementById('filmstrip-container');
+        
+        // Immediate blocking, no setTimeout
+        if(loadingUI) { loadingUI.classList.remove('hidden'); loadingUI.classList.add('flex'); }
+        if(rightPanel) { rightPanel.style.pointerEvents = 'none'; rightPanel.style.opacity = '0.5'; }
+        if(filmstripContainer) { filmstripContainer.style.pointerEvents = 'none'; filmstripContainer.style.opacity = '0.5'; }
 
-        await loadProxyImage();
+        await loadProxyImage(myToken);
+
+        // 卫语句：防止异步状态雪崩
+        if (myToken !== currentImageRequestToken) {
+            return;
+        }
+
         updateBackendParams();
         requestRender(); // Force uniform update
 
-        clearTimeout(loadingTimeout);
-        if(isLoadingMaskActive) {
-            if(loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
-            if(rightPanel) rightPanel.style.pointerEvents = 'auto';
-            document.getElementById('filmstrip-container').style.pointerEvents = 'auto';
-        }
+        // Restore UI
+        if(loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
+        if(rightPanel) { rightPanel.style.pointerEvents = 'auto'; rightPanel.style.opacity = '1'; }
+        if(filmstripContainer) { filmstripContainer.style.pointerEvents = 'auto'; filmstripContainer.style.opacity = '1'; }
 
         if (!current_geom.calibration_points) {
             isCalibrationMode = true;
