@@ -247,9 +247,17 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
     let _colorspace = state.working_colorspace.read().unwrap().clone();
 
     let mut new_items = Vec::new();
+    let target_roll = roll_id.clone().unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
     let existing_paths: std::collections::HashSet<String> = {
         let guard = state.items.clone();
-        guard.iter().map(|kv| kv.value().read().unwrap().file_path.replace("\\", "/").to_lowercase()).collect()
+        guard.iter().filter_map(|kv| {
+            let item = kv.value().read().unwrap();
+            if item.roll_id == target_roll {
+                Some(item.file_path.replace("\\", "/").to_lowercase())
+            } else {
+                None
+            }
+        }).collect()
     };
     
     let paths_to_process: Vec<String> = paths.clone().into_iter().filter(|p| !existing_paths.contains(&p.replace("\\", "/").to_lowercase())).collect();
@@ -282,8 +290,49 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
             }
 
             let mut thumbnail_base64 = String::new();
-            if path.to_lowercase().ends_with(".tif") || path.to_lowercase().ends_with(".tiff") {
-                if let Ok(img) = image::open(path) {
+            unsafe {
+                let data = libraw_sys::libraw_init(0);
+                if !data.is_null() {
+                    let c_path = std::ffi::CString::new(path.as_str()).unwrap_or_default();
+                    let mut opened = libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0;
+                    
+                    let mut _buf = Vec::new();
+                    if !opened {
+                        if let Ok(b) = std::fs::read(&path) {
+                            _buf = b;
+                            opened = libraw_sys::libraw_open_buffer(data, _buf.as_ptr() as *const _, _buf.len()) == 0;
+                        }
+                    }
+
+                    if opened {
+                        if libraw_sys::libraw_unpack_thumb(data) == 0 {
+                            let mut err = 0;
+                            let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
+                            if !thumb.is_null() {
+                                let thumb_type = (*thumb).type_;
+                                let thumb_len = (*thumb).data_size as usize;
+                                let thumb_data = std::slice::from_raw_parts((*thumb).data.as_ptr(), thumb_len);
+                                if thumb_type == 1 { // JPEG
+                                    thumbnail_base64 = general_purpose::STANDARD.encode(thumb_data);
+                                } else {
+                                    if let Ok(img) = image::load_from_memory(thumb_data) {
+                                        let mut cursor = Cursor::new(Vec::new());
+                                        if img.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
+                                            thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+                                        }
+                                    }
+                                }
+                                libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
+                            }
+                        }
+                    }
+                    libraw_sys::libraw_close(data);
+                }
+            }
+
+            // Fallback for non-RAW files or RAWs without thumbnails
+            if thumbnail_base64.is_empty() && (path.to_lowercase().ends_with(".tif") || path.to_lowercase().ends_with(".tiff") || path.to_lowercase().ends_with(".jpg") || path.to_lowercase().ends_with(".jpeg") || path.to_lowercase().ends_with(".png")) {
+                if let Ok(img) = image::open(&path) {
                     let (w, h) = img.dimensions();
                     let ratio = 256.0 / (w.max(h) as f32);
                     let new_w = (w as f32 * ratio).max(1.0) as u32;
@@ -292,46 +341,6 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                     let mut cursor = Cursor::new(Vec::new());
                     if thumb.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
                         thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
-                    }
-                }
-            } else {
-                unsafe {
-                    let data = libraw_sys::libraw_init(0);
-                    if !data.is_null() {
-                        let c_path = std::ffi::CString::new(path.as_str()).unwrap_or_default();
-                        let mut opened = libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0;
-                        
-                        let mut _buf = Vec::new();
-                        if !opened {
-                            if let Ok(b) = std::fs::read(path) {
-                                _buf = b;
-                                opened = libraw_sys::libraw_open_buffer(data, _buf.as_ptr() as *const _, _buf.len()) == 0;
-                            }
-                        }
-
-                        if opened {
-                            if libraw_sys::libraw_unpack_thumb(data) == 0 {
-                                let mut err = 0;
-                                let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
-                                if !thumb.is_null() {
-                                    let thumb_type = (*thumb).type_;
-                                    let thumb_len = (*thumb).data_size as usize;
-                                    let thumb_data = std::slice::from_raw_parts((*thumb).data.as_ptr(), thumb_len);
-                                    if thumb_type == 1 { // JPEG
-                                        thumbnail_base64 = general_purpose::STANDARD.encode(thumb_data);
-                                    } else {
-                                        if let Ok(img) = image::load_from_memory(thumb_data) {
-                                            let mut cursor = Cursor::new(Vec::new());
-                                            if img.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
-                                                thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
-                                            }
-                                        }
-                                    }
-                                    libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
-                                }
-                            }
-                        }
-                        libraw_sys::libraw_close(data);
                     }
                 }
             }
@@ -378,9 +387,11 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
         let id_opt = {
             let guard = state.items.clone();
             let mut found = None;
+            let target_roll = roll_id.clone().unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
             for kv in guard.iter() {
-                let db_path = kv.value().read().unwrap().file_path.clone();
-                if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
+                let item = kv.value().read().unwrap();
+                let db_path = item.file_path.clone();
+                if item.roll_id == target_roll && (db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase()) {
                     found = Some(kv.key().clone());
                     break;
                 }
@@ -426,7 +437,7 @@ pub async fn get_roll_filmstrip(roll_id: String, state: State<'_, EngineState>) 
             for kv in guard.iter() {
                 let item = kv.value().read().unwrap();
                 let db_path = item.file_path.clone();
-                if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
+                if item.roll_id == roll_id && (db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase()) {
                     strip.push(FilmstripItem {
                         id: item.id.clone(),
                         file_path: item.file_path.clone(),
@@ -1695,7 +1706,7 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     let ratio_thumb = 1024.0 / (cw.max(ch) as f32);
     let thumb_width = (cw as f32 * ratio_thumb).max(1.0) as u32;
     let thumb_height = (ch as f32 * ratio_thumb).max(1.0) as u32;
-    let thumb = image::imageops::resize(&cropped_thumb, thumb_width, thumb_height, FilterType::Triangle);
+    let thumb = image::imageops::resize(&cropped_thumb, thumb_width, thumb_height, FilterType::Nearest);
     
     let mut cursor = std::io::Cursor::new(Vec::new());
     if let Ok(_) = thumb.write_to(&mut cursor, image::ImageOutputFormat::Jpeg(70)) {

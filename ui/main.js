@@ -1495,6 +1495,10 @@ async function renderLibraryAndFilmstrip() {
                 if (item.thumbnail_base64 === "FILE_MISSING") {
                     libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
                     libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
+                } else if (!item.thumbnail_base64 || item.thumbnail_base64 === "CALCULATING") {
+                    // Skeleton loader
+                    libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
+                    libImg.className = 'w-full h-full object-cover pointer-events-none opacity-80';
                 } else {
                     libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
                     libImg.className = 'w-full h-full object-cover pointer-events-none';
@@ -1602,6 +1606,10 @@ async function renderLibraryAndFilmstrip() {
                         if (existingItem.thumbnail_base64 === "FILE_MISSING") {
                             libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
                             libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
+                        } else if (!existingItem.thumbnail_base64 || existingItem.thumbnail_base64 === "CALCULATING") {
+                            // Skeleton loader
+                            libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
+                            libImg.className = 'w-full h-full object-cover pointer-events-none opacity-80';
                         } else {
                             libImg.src = `data:image/jpeg;base64,${existingItem.thumbnail_base64}`;
                             libImg.className = 'w-full h-full object-cover pointer-events-none';
