@@ -16,19 +16,19 @@ use serde_json::Value;
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
 fn compute_auto_base(proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> BaseColor {
-    let mut r_vals: Vec<u16> = Vec::with_capacity((proxy.width() * proxy.height()) as usize);
-    let mut g_vals: Vec<u16> = Vec::with_capacity((proxy.width() * proxy.height()) as usize);
-    let mut b_vals: Vec<u16> = Vec::with_capacity((proxy.width() * proxy.height()) as usize);
+    let raw = proxy.as_raw();
+    
+    let mut r_vals: Vec<u16> = raw.par_chunks(3).map(|px| px[0]).collect();
+    let mut g_vals: Vec<u16> = raw.par_chunks(3).map(|px| px[1]).collect();
+    let mut b_vals: Vec<u16> = raw.par_chunks(3).map(|px| px[2]).collect();
 
-    for pixel in proxy.pixels() {
-        r_vals.push(pixel[0]);
-        g_vals.push(pixel[1]);
-        b_vals.push(pixel[2]);
-    }
-
-    r_vals.sort_unstable();
-    g_vals.sort_unstable();
-    b_vals.sort_unstable();
+    rayon::join(
+        || r_vals.par_sort_unstable(),
+        || rayon::join(
+            || g_vals.par_sort_unstable(),
+            || b_vals.par_sort_unstable(),
+        ),
+    );
 
     let idx = (r_vals.len() as f32 * 0.99) as usize;
     BaseColor {
@@ -222,12 +222,12 @@ pub fn load_image_buffer(path: &str, use_half_size: bool, dcp_profile: Option<&s
             let slice = std::slice::from_raw_parts((*mem_image).data.as_ptr() as *const u16, data_len / 2);
             
             let mut img_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
-            for (i, pixel) in img_buffer.pixels_mut().enumerate() {
+            img_buffer.as_mut().par_chunks_exact_mut(3).enumerate().for_each(|(i, pixel)| {
                 let idx = i * colors;
                 pixel[0] = slice.get(idx).copied().unwrap_or(0);
                 pixel[1] = slice.get(idx + 1).copied().unwrap_or(0);
                 pixel[2] = slice.get(idx + 2).copied().unwrap_or(0);
-            }
+            });
             
             libraw_sys::libraw_dcraw_clear_mem(mem_image as *mut _);
             libraw_sys::libraw_close(data);
@@ -238,15 +238,11 @@ pub fn load_image_buffer(path: &str, use_half_size: bool, dcp_profile: Option<&s
 }
 
 #[tauri::command]
-pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_library: Option<bool>, roll_id: Option<String>, is_historical: Option<bool>, state: State<'_, EngineState>) -> Result<(), String> {
+pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_library: Option<bool>, roll_id: Option<String>, is_historical: Option<bool>, state: State<'_, EngineState>, app_handle: tauri::AppHandle) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
 
-    let _dcp_profile = state.dcp_profile.read().unwrap().clone();
-    let _colorspace = state.working_colorspace.read().unwrap().clone();
-
-    let mut new_items = Vec::new();
     let target_roll = roll_id.clone().unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
     let existing_paths: std::collections::HashSet<String> = {
         let guard = state.items.clone();
@@ -262,124 +258,234 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
     
     let paths_to_process: Vec<String> = paths.clone().into_iter().filter(|p| !existing_paths.contains(&p.replace("\\", "/").to_lowercase())).collect();
 
-    for chunk in paths_to_process.chunks(4) {
-        let chunk_items_result: Result<Vec<FilmItem>, String> = chunk.into_par_iter().map(|path| {
-            let loose = is_loose.unwrap_or(false);
-            let active_roll = roll_id.clone().unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
-            if !loose {
-                if let Some((thumb, params, geom, base_color)) = load_image_state_from_db(&active_roll, path) {
-                    let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
-                    return Ok(FilmItem {
-                        id,
-                        roll_id: active_roll,
-                        file_path: path.clone(),
-                        thumbnail_base64: thumb,
-                        original_proxy: None,
-                        proxy_image: None,
-                        pristine_proxy: None,
-                        base_color,
-                        params,
-                        geom,
-                        is_loose: loose,
-                        in_library: in_library.unwrap_or(true),
-                    });
-                }
-                if is_historical.unwrap_or(false) {
-                    return Err(format!("HISTORICAL_MISS_DB: No database state found for roll {}, path: {}", active_roll, path));
-                }
-            }
+    let loose = is_loose.unwrap_or(false);
+    let active_roll = target_roll.clone();
+    let in_lib = in_library.unwrap_or(true);
+    let historical = is_historical.unwrap_or(false);
 
-            let mut thumbnail_base64 = String::new();
-            unsafe {
-                let data = libraw_sys::libraw_init(0);
-                if !data.is_null() {
-                    let c_path = std::ffi::CString::new(path.as_str()).unwrap_or_default();
-                    let mut opened = libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0;
-                    
-                    let mut _buf = Vec::new();
-                    if !opened {
-                        if let Ok(b) = std::fs::read(&path) {
-                            _buf = b;
-                            opened = libraw_sys::libraw_open_buffer(data, _buf.as_ptr() as *const _, _buf.len()) == 0;
-                        }
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    let paths_to_process_clone = paths_to_process.clone();
+    let active_roll_clone = active_roll.clone();
+
+    std::thread::spawn(move || {
+        for chunk in paths_to_process_clone.chunks(4) {
+            let results: Vec<_> = chunk.into_par_iter().filter_map(|path| {
+                if !loose {
+                    if let Some((thumb, params, geom, base_color)) = crate::commands::load_image_state_from_db(&active_roll_clone, path) {
+                        let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
+                        return Some(FilmItem {
+                            id,
+                            roll_id: active_roll_clone.clone(),
+                            file_path: path.clone(),
+                            thumbnail_base64: thumb,
+                            original_proxy: None,
+                            proxy_image: None,
+                            pristine_proxy: None,
+                            base_color,
+                            params,
+                            geom,
+                            is_loose: loose,
+                            in_library: in_lib,
+                        });
                     }
+                    if historical {
+                        return None;
+                    }
+                }
 
-                    if opened {
-                        if libraw_sys::libraw_unpack_thumb(data) == 0 {
-                            let mut err = 0;
-                            let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
-                            if !thumb.is_null() {
-                                let thumb_type = (*thumb).type_;
-                                let thumb_len = (*thumb).data_size as usize;
-                                let thumb_data = std::slice::from_raw_parts((*thumb).data.as_ptr(), thumb_len);
-                                if thumb_type == 1 { // JPEG
-                                    thumbnail_base64 = general_purpose::STANDARD.encode(thumb_data);
-                                } else {
-                                    if let Ok(img) = image::load_from_memory(thumb_data) {
-                                        let mut cursor = Cursor::new(Vec::new());
-                                        if img.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
-                                            thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+                let mut thumbnail_base64 = String::new();
+                unsafe {
+                    let data = libraw_sys::libraw_init(0);
+                    if !data.is_null() {
+                        let c_path = std::ffi::CString::new(path.as_str()).unwrap_or_default();
+                        let mut opened = libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0;
+                        
+                        let mut _buf = Vec::new();
+                        if !opened {
+                            if let Ok(b) = std::fs::read(path) {
+                                _buf = b;
+                                opened = libraw_sys::libraw_open_buffer(data, _buf.as_ptr() as *const _, _buf.len()) == 0;
+                            }
+                        }
+
+                        if opened {
+                            if libraw_sys::libraw_unpack_thumb(data) == 0 {
+                                let mut err = 0;
+                                let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
+                                if !thumb.is_null() {
+                                    let thumb_type = (*thumb).type_;
+                                    let thumb_len = (*thumb).data_size as usize;
+                                    let thumb_data = std::slice::from_raw_parts((*thumb).data.as_ptr(), thumb_len);
+                                    if thumb_type == 1 { // JPEG
+                                        thumbnail_base64 = general_purpose::STANDARD.encode(thumb_data);
+                                    } else {
+                                        if let Ok(img) = image::load_from_memory(thumb_data) {
+                                            let mut cursor = Cursor::new(Vec::new());
+                                            if img.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
+                                                thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+                                            }
+                                        }
+                                    }
+                                    libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
+                                }
+                            } else {
+                                (*data).params.half_size = 1;
+                                if libraw_sys::libraw_unpack(data) == 0 {
+                                    (*data).params.output_bps = 8;
+                                    if libraw_sys::libraw_dcraw_process(data) == 0 {
+                                        let mut err = 0;
+                                        let mem_image = libraw_sys::libraw_dcraw_make_mem_image(data, &mut err);
+                                        if !mem_image.is_null() {
+                                            let width = (*mem_image).width as u32;
+                                            let height = (*mem_image).height as u32;
+                                            let colors = (*mem_image).colors as usize;
+                                            let data_len = (*mem_image).data_size as usize;
+                                            let slice = std::slice::from_raw_parts((*mem_image).data.as_ptr() as *const u8, data_len);
+                                            
+                                            let mut img_buffer = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
+                                            img_buffer.as_mut().chunks_exact_mut(3).enumerate().for_each(|(i, pixel)| {
+                                                let idx = i * colors;
+                                                pixel[0] = slice.get(idx).copied().unwrap_or(0);
+                                                pixel[1] = slice.get(idx + 1).copied().unwrap_or(0);
+                                                pixel[2] = slice.get(idx + 2).copied().unwrap_or(0);
+                                            });
+                                            let ratio = 256.0 / (width.max(height) as f32);
+                                            let new_w = (width as f32 * ratio).max(1.0) as u32;
+                                            let new_h = (height as f32 * ratio).max(1.0) as u32;
+                                            let thumb = image::imageops::resize(&img_buffer, new_w, new_h, FilterType::Nearest);
+                                            let mut cursor = Cursor::new(Vec::new());
+                                            if thumb.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
+                                                thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+                                            }
+                                            libraw_sys::libraw_dcraw_clear_mem(mem_image as *mut _);
                                         }
                                     }
                                 }
-                                libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
                             }
                         }
-                    }
-                    libraw_sys::libraw_close(data);
-                }
-            }
-
-            // Fallback for non-RAW files or RAWs without thumbnails
-            if thumbnail_base64.is_empty() && (path.to_lowercase().ends_with(".tif") || path.to_lowercase().ends_with(".tiff") || path.to_lowercase().ends_with(".jpg") || path.to_lowercase().ends_with(".jpeg") || path.to_lowercase().ends_with(".png")) {
-                if let Ok(img) = image::open(&path) {
-                    let (w, h) = img.dimensions();
-                    let ratio = 256.0 / (w.max(h) as f32);
-                    let new_w = (w as f32 * ratio).max(1.0) as u32;
-                    let new_h = (h as f32 * ratio).max(1.0) as u32;
-                    let thumb = image::imageops::resize(&img, new_w, new_h, FilterType::Nearest);
-                    let mut cursor = Cursor::new(Vec::new());
-                    if thumb.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
-                        thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+                        libraw_sys::libraw_close(data);
                     }
                 }
-            }
 
-            if thumbnail_base64.is_empty() {
-                thumbnail_base64 = "FILE_MISSING".to_string();
-            }
+                if thumbnail_base64.is_empty() && (path.to_lowercase().ends_with(".tif") || path.to_lowercase().ends_with(".tiff") || path.to_lowercase().ends_with(".jpg") || path.to_lowercase().ends_with(".jpeg") || path.to_lowercase().ends_with(".png")) {
+                    if let Ok(img) = image::open(&path) {
+                        let (w, h) = img.dimensions();
+                        let ratio = 256.0 / (w.max(h) as f32);
+                        let new_w = (w as f32 * ratio).max(1.0) as u32;
+                        let new_h = (h as f32 * ratio).max(1.0) as u32;
+                        let thumb = image::imageops::resize(&img, new_w, new_h, FilterType::Nearest);
+                        let mut cursor = Cursor::new(Vec::new());
+                        if thumb.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
+                            thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+                        }
+                    }
+                }
 
-            let base_color = BaseColor { base_r: 32768, base_g: 32768, base_b: 32768 };
+                if thumbnail_base64.is_empty() {
+                    thumbnail_base64 = "FILE_MISSING".to_string();
+                }
 
-            let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
-
-            let item = FilmItem {
-                id,
-                roll_id: active_roll,
-                file_path: path.clone(),
-                thumbnail_base64,
-                original_proxy: None,
-                proxy_image: None,
-                pristine_proxy: None,
-                base_color,
-                params: TuningParams::default(),
-                geom: crate::app_state::GeometryState::default(),
-                is_loose: loose,
-                in_library: in_library.unwrap_or(true),
-            };
+                let base_color = BaseColor { base_r: 32768, base_g: 32768, base_b: 32768 };
+                let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
+                
+                Some(FilmItem {
+                    id,
+                    roll_id: active_roll_clone.clone(),
+                    file_path: path.clone(),
+                    thumbnail_base64,
+                    original_proxy: None,
+                    proxy_image: None,
+                    pristine_proxy: None,
+                    base_color,
+                    params: TuningParams::default(),
+                    geom: crate::app_state::GeometryState::default(),
+                    is_loose: loose,
+                    in_library: in_lib,
+                })
+            }).collect();
             
-            if !loose {
-                let _ = save_image_state_to_db(&item);
+            for item in results {
+                if tx.send(item).is_err() {
+                    return;
+                }
             }
+        }
+    });
+
+    let mut conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
+    conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
+    
+    let mut buffer = Vec::new();
+    
+    while let Ok(item) = rx.recv() {
+        buffer.push(item);
+        
+        if buffer.len() >= 10 {
+            let items_to_insert = std::mem::take(&mut buffer);
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            for item in items_to_insert.iter() {
+                if item.is_loose { continue; }
+                let params_str = serde_json::to_string(&item.params).unwrap_or_default();
+                let geom_str = serde_json::to_string(&item.geom).unwrap_or_default();
+                let base_color_str = serde_json::to_string(&item.base_color).unwrap_or_default();
+                tx.execute(
+                    "INSERT INTO image_states (roll_id, file_path, thumbnail_base64, params, geom, base_color) 
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(roll_id, file_path) DO UPDATE SET 
+                     thumbnail_base64=excluded.thumbnail_base64,
+                     params=excluded.params, 
+                     geom=excluded.geom, 
+                     base_color=excluded.base_color",
+                    rusqlite::params![item.roll_id, item.file_path, item.thumbnail_base64, params_str, geom_str, base_color_str]
+                ).map_err(|e| e.to_string())?;
+            }
+            tx.commit().map_err(|e| e.to_string())?;
             
-            Ok(item)
-        }).collect();
-        new_items.extend(chunk_items_result?);
+            for item in items_to_insert {
+                let payload = serde_json::json!({
+                    "id": item.id,
+                    "roll_id": item.roll_id,
+                    "thumbnail_base64": item.thumbnail_base64,
+                    "file_path": item.file_path,
+                });
+                state.items.insert(item.id.clone(), Arc::new(RwLock::new(item)));
+                let _ = app_handle.emit("import_progress", payload);
+            }
+        }
     }
 
-    for item in new_items {
-        let id = item.id.clone();
-        state.items.insert(id.clone(), Arc::new(RwLock::new(item)));
+    if !buffer.is_empty() {
+        let items_to_insert = std::mem::take(&mut buffer);
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        for item in items_to_insert.iter() {
+            if item.is_loose { continue; }
+            let params_str = serde_json::to_string(&item.params).unwrap_or_default();
+            let geom_str = serde_json::to_string(&item.geom).unwrap_or_default();
+            let base_color_str = serde_json::to_string(&item.base_color).unwrap_or_default();
+            tx.execute(
+                "INSERT INTO image_states (roll_id, file_path, thumbnail_base64, params, geom, base_color) 
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(roll_id, file_path) DO UPDATE SET 
+                 thumbnail_base64=excluded.thumbnail_base64,
+                 params=excluded.params, 
+                 geom=excluded.geom, 
+                 base_color=excluded.base_color",
+                rusqlite::params![item.roll_id, item.file_path, item.thumbnail_base64, params_str, geom_str, base_color_str]
+            ).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        
+        for item in items_to_insert {
+            let payload = serde_json::json!({
+                "id": item.id,
+                "roll_id": item.roll_id,
+                "thumbnail_base64": item.thumbnail_base64,
+                "file_path": item.file_path,
+            });
+            state.items.insert(item.id.clone(), Arc::new(RwLock::new(item)));
+            let _ = app_handle.emit("import_progress", payload);
+        }
     }
 
     let mut order_guard = state.item_order.write().map_err(|e| e.to_string())?;
@@ -391,7 +497,7 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
             for kv in guard.iter() {
                 let item = kv.value().read().unwrap();
                 let db_path = item.file_path.clone();
-                if item.roll_id == target_roll && (db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase()) {
+                if item.roll_id == target_roll && (db_path == path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase()) {
                     found = Some(kv.key().clone());
                     break;
                 }
@@ -843,7 +949,9 @@ pub async fn start_precache(ids: Vec<String>, state: State<'_, EngineState>, app
     std::thread::spawn(move || {
         let total = items_to_cache.len();
         let _ = app.emit("precache_progress", serde_json::json!({ "total": total, "current": 0 }));
-        for (i, item_arc) in items_to_cache.into_iter().enumerate() {
+        let current_progress = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        
+        items_to_cache.into_par_iter().for_each(|item_arc| {
             let needs_load = {
                 let item = item_arc.read().unwrap();
                 item.proxy_image.is_none()
@@ -876,8 +984,9 @@ pub async fn start_precache(ids: Vec<String>, state: State<'_, EngineState>, app
                     }
                 }
             }
-            let _ = app.emit("precache_progress", serde_json::json!({ "total": total, "current": i + 1 }));
-        }
+            let current = current_progress.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let _ = app.emit("precache_progress", serde_json::json!({ "total": total, "current": current }));
+        });
     });
 
     Ok(())
@@ -1326,7 +1435,8 @@ pub async fn get_rolls(state: State<'_, EngineState>) -> Result<Vec<Roll>, Strin
 pub async fn import_roll(
     roll: Roll,
     paths: Vec<String>,
-    state: State<'_, EngineState>
+    state: State<'_, EngineState>,
+    app_handle: tauri::AppHandle
 ) -> Result<(), String> {
     let roll_id_clone = roll.roll_id.clone();
     {
@@ -1341,7 +1451,7 @@ pub async fn import_roll(
         }
     }
     
-    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id_clone), Some(false), state).await
+    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id_clone), Some(false), state, app_handle).await
 }
 
 #[tauri::command]
@@ -1453,7 +1563,8 @@ pub async fn promote_roll(
 pub async fn append_to_roll(
     roll_id: String,
     paths: Vec<String>,
-    state: State<'_, EngineState>
+    state: State<'_, EngineState>,
+    app_handle: tauri::AppHandle
 ) -> Result<(), String> {
     {
         let mut rolls = state.rolls.write().unwrap();
@@ -1468,7 +1579,7 @@ pub async fn append_to_roll(
             let _ = std::fs::write("rolls.json", json);
         }
     }
-    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id), Some(false), state).await
+    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id), Some(false), state, app_handle).await
 }
 
 #[tauri::command]

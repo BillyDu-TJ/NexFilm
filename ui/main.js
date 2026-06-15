@@ -3245,6 +3245,27 @@ listen('thumbnail_updated', (event) => {
     });
 });
 
+listen('import_progress', (event) => {
+    const payload = event.payload;
+    const item = allLibraryItems.find(i => i.id === payload.id);
+    if (item) {
+        item.thumbnail_base64 = payload.thumbnail_base64;
+    } else {
+        allLibraryItems.push(payload);
+    }
+    document.querySelectorAll(`.film-item[data-id="${payload.id}"], .library-item[data-id="${payload.id}"]`).forEach(el => {
+        el.classList.remove('importing');
+        const img = el.querySelector('img');
+        if (img) {
+            img.src = "data:image/jpeg;base64," + payload.thumbnail_base64;
+            img.classList.remove('opacity-50', 'object-contain', 'p-4', 'p-2', 'bg-[#1C1C1E]');
+            img.classList.add('object-cover');
+        }
+    });
+    // Optional: trigger full re-render if necessary, but we can rely on incremental DOM updates
+    renderLibraryAndFilmstrip();
+});
+
 listen('tauri://file-drop-hover', (event) => {
     document.getElementById('drag-overlay').classList.remove('hidden');
 });
