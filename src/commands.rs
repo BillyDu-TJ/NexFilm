@@ -310,7 +310,8 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                         }
 
                         if opened {
-                            if libraw_sys::libraw_unpack_thumb(data) == 0 {
+                            let err_code = libraw_sys::libraw_unpack_thumb(data);
+                            if err_code == 0 {
                                 let mut err = 0;
                                 let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
                                 if !thumb.is_null() {
@@ -328,43 +329,18 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                                         }
                                     }
                                     libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
+                                } else {
+                                    eprintln!("[Import Pipeline Error] libraw_dcraw_make_mem_thumb failed for {}. Inner error code: {}", path, err);
                                 }
                             } else {
-                                (*data).params.half_size = 1;
-                                if libraw_sys::libraw_unpack(data) == 0 {
-                                    (*data).params.output_bps = 8;
-                                    if libraw_sys::libraw_dcraw_process(data) == 0 {
-                                        let mut err = 0;
-                                        let mem_image = libraw_sys::libraw_dcraw_make_mem_image(data, &mut err);
-                                        if !mem_image.is_null() {
-                                            let width = (*mem_image).width as u32;
-                                            let height = (*mem_image).height as u32;
-                                            let colors = (*mem_image).colors as usize;
-                                            let data_len = (*mem_image).data_size as usize;
-                                            let slice = std::slice::from_raw_parts((*mem_image).data.as_ptr() as *const u8, data_len);
-                                            
-                                            let mut img_buffer = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
-                                            img_buffer.as_mut().chunks_exact_mut(3).enumerate().for_each(|(i, pixel)| {
-                                                let idx = i * colors;
-                                                pixel[0] = slice.get(idx).copied().unwrap_or(0);
-                                                pixel[1] = slice.get(idx + 1).copied().unwrap_or(0);
-                                                pixel[2] = slice.get(idx + 2).copied().unwrap_or(0);
-                                            });
-                                            let ratio = 256.0 / (width.max(height) as f32);
-                                            let new_w = (width as f32 * ratio).max(1.0) as u32;
-                                            let new_h = (height as f32 * ratio).max(1.0) as u32;
-                                            let thumb = image::imageops::resize(&img_buffer, new_w, new_h, FilterType::Nearest);
-                                            let mut cursor = Cursor::new(Vec::new());
-                                            if thumb.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
-                                                thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
-                                            }
-                                            libraw_sys::libraw_dcraw_clear_mem(mem_image as *mut _);
-                                        }
-                                    }
-                                }
+                                eprintln!("[Import Pipeline Error] libraw_unpack_thumb failed for {}. Error code: {}", path, err_code);
                             }
+                        } else {
+                            eprintln!("[Import Pipeline Error] Failed to open file/buffer with libraw: {}", path);
                         }
                         libraw_sys::libraw_close(data);
+                    } else {
+                        eprintln!("[Import Pipeline Error] libraw_init(0) failed for {}", path);
                     }
                 }
 
