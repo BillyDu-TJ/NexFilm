@@ -1856,7 +1856,14 @@ async function selectImage(id) {
         if(rightPanel) { rightPanel.style.pointerEvents = 'none'; rightPanel.style.opacity = '0.5'; }
         if(filmstripContainer) { filmstripContainer.style.pointerEvents = 'none'; filmstripContainer.style.opacity = '0.5'; }
 
-        await loadProxyImage(myToken);
+        try {
+            await loadProxyImage(myToken);
+        } finally {
+            // Always restore UI whether loadProxyImage succeeds or fails!
+            if(loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
+            if(rightPanel) { rightPanel.style.pointerEvents = 'auto'; rightPanel.style.opacity = '1'; }
+            if(filmstripContainer) { filmstripContainer.style.pointerEvents = 'auto'; filmstripContainer.style.opacity = '1'; }
+        }
 
         // 卫语句：防止异步状态雪崩
         if (myToken !== currentImageRequestToken) {
@@ -1865,11 +1872,6 @@ async function selectImage(id) {
 
         updateBackendParams();
         requestRender(); // Force uniform update
-
-        // Restore UI
-        if(loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
-        if(rightPanel) { rightPanel.style.pointerEvents = 'auto'; rightPanel.style.opacity = '1'; }
-        if(filmstripContainer) { filmstripContainer.style.pointerEvents = 'auto'; filmstripContainer.style.opacity = '1'; }
 
         if (!current_geom.calibration_points) {
             isCalibrationMode = true;
@@ -3246,27 +3248,53 @@ listen('thumbnail_updated', (event) => {
 
 listen('import_progress', (event) => {
     const payload = event.payload;
-    const item = allLibraryItems.find(i => i.id === payload.id);
+    
+    // Find skeleton by matching file_path, or find real item by id
+    let item = allLibraryItems.find(i => i.status === 'importing' && i.file_path && i.file_path.replace(/\\/g, '/').toLowerCase() === payload.file_path.replace(/\\/g, '/').toLowerCase());
+    let searchId = payload.id;
+    
     if (item) {
+        searchId = item.id; // Keep track of the old skeleton id to update the DOM
+        item.id = payload.id;
         item.thumbnail_base64 = payload.thumbnail_base64;
+        item.status = 'done';
     } else {
-        allLibraryItems.push(payload);
+        item = allLibraryItems.find(i => i.id === payload.id);
+        if (item) {
+            item.thumbnail_base64 = payload.thumbnail_base64;
+        } else {
+            allLibraryItems.push(payload);
+        }
     }
-    document.querySelectorAll(`.film-item[data-id="${payload.id}"], .library-item[data-id="${payload.id}"]`).forEach(el => {
+    
+    // Update DOM matching the skeleton id (or real id)
+    document.querySelectorAll(`.film-item[data-id="${searchId}"], .library-item[data-id="${searchId}"]`).forEach(el => {
+        el.dataset.id = payload.id; // Correct the DOM id to real UUID
         el.classList.remove('importing');
+        
         const skeleton = el.querySelector('.animate-pulse');
         if (skeleton) skeleton.remove();
         
         let img = el.querySelector('img');
         if (!img) {
             img = document.createElement('img');
-            img.dataset.imgId = payload.id;
             el.appendChild(img);
         }
         
+        img.dataset.imgId = payload.id; // Correct img data-id
         img.src = "data:image/jpeg;base64," + payload.thumbnail_base64;
         img.classList.remove('opacity-50', 'object-contain', 'p-4', 'p-2', 'bg-[#1C1C1E]');
         img.classList.add('object-cover');
+        
+        // Ensure onclick uses the real ID now
+        if (el.classList.contains('film-item')) {
+            el.onclick = () => {
+                selectImage(payload.id);
+                selectedLibraryIds.clear();
+                selectedLibraryIds.add(payload.id);
+                updateLibrarySelectionUI();
+            };
+        }
     });
     
     currentImportCount++;
@@ -3284,6 +3312,7 @@ listen('import_progress', (event) => {
                     precacheToast = null;
                 }
                 btnImport.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>IMPORT`;
+                renderLibraryAndFilmstrip(false); // Clean up DOM and fetch real UUIDs consistently once import is fully done
             }, 1000);
         }
     }
