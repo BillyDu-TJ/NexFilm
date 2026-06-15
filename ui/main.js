@@ -1578,11 +1578,6 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                                 items.push(newItem);
                             }
                         });
-                        
-                        const newIds = rollStrip.filter(i => unimportedPaths.includes(i.file_path)).map(i => i.id);
-                        if (newIds.length > 0) {
-                            invoke('start_precache', { ids: newIds }).catch(e => console.error("History precache error", e));
-                        }
                     } catch (e) {
                         console.error("Failed to load or import roll filmstrip", e);
                     }
@@ -1929,6 +1924,8 @@ const doImportSingle = async () => {
             currentRollViewId = null;
             currentImportSessionPaths = paths.map(p => p.replace(/\\/g, '/').toLowerCase());
             
+            initImportToast(paths.length);
+            
             const tempItems = paths.map((p, idx) => ({
                 id: 'temp_import_' + Date.now() + '_' + idx,
                 file_path: p,
@@ -1988,6 +1985,7 @@ const doImportRoll = async () => {
         
         const paths = await invoke('open_file_dialog');
         if (paths && paths.length > 0) {
+            initImportToast(paths.length);
             currentImportSessionPaths = null;
             const newRollId = "roll_" + Date.now();
             const roll_id = `roll_${Date.now()}_${Math.floor(Math.random()*1000)}`;
@@ -2068,6 +2066,7 @@ document.getElementById('btn-confirm-continue').addEventListener('click', async 
         if (pathsToImport.length > 0) {
             document.getElementById('history-view-title').textContent = "LOADING ROLL...";
             try {
+                initImportToast(pathsToImport.length);
                 const tempItems = pathsToImport.map((p, idx) => ({
                     id: 'temp_import_' + Date.now() + '_' + idx,
                     file_path: p,
@@ -3255,15 +3254,39 @@ listen('import_progress', (event) => {
     }
     document.querySelectorAll(`.film-item[data-id="${payload.id}"], .library-item[data-id="${payload.id}"]`).forEach(el => {
         el.classList.remove('importing');
-        const img = el.querySelector('img');
-        if (img) {
-            img.src = "data:image/jpeg;base64," + payload.thumbnail_base64;
-            img.classList.remove('opacity-50', 'object-contain', 'p-4', 'p-2', 'bg-[#1C1C1E]');
-            img.classList.add('object-cover');
+        const skeleton = el.querySelector('.animate-pulse');
+        if (skeleton) skeleton.remove();
+        
+        let img = el.querySelector('img');
+        if (!img) {
+            img = document.createElement('img');
+            img.dataset.imgId = payload.id;
+            el.appendChild(img);
         }
+        
+        img.src = "data:image/jpeg;base64," + payload.thumbnail_base64;
+        img.classList.remove('opacity-50', 'object-contain', 'p-4', 'p-2', 'bg-[#1C1C1E]');
+        img.classList.add('object-cover');
     });
-    // Optional: trigger full re-render if necessary, but we can rely on incremental DOM updates
-    renderLibraryAndFilmstrip();
+    
+    currentImportCount++;
+    if (precacheToast && totalImportCount > 0) {
+        const pct = (currentImportCount / totalImportCount) * 100;
+        const bar = document.getElementById('precache-bar');
+        const txt = document.getElementById('precache-text');
+        if (bar) bar.style.width = `${pct}%`;
+        if (txt) txt.textContent = `${currentImportCount} / ${totalImportCount}`;
+        
+        if (currentImportCount >= totalImportCount) {
+            setTimeout(() => {
+                if (precacheToast) {
+                    precacheToast.remove();
+                    precacheToast = null;
+                }
+                btnImport.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>IMPORT`;
+            }, 1000);
+        }
+    }
 });
 
 listen('tauri://file-drop-hover', (event) => {
@@ -3280,11 +3303,32 @@ listen('tauri://drag-leave', (event) => {
     document.getElementById('drag-overlay').classList.add('hidden');
 });
 
+let totalImportCount = 0;
+let currentImportCount = 0;
+
+function initImportToast(count) {
+    totalImportCount = count;
+    currentImportCount = 0;
+    if (!precacheToast) {
+        precacheToast = document.createElement('div');
+        precacheToast.className = 'fixed bottom-4 right-4 bg-[#1C1C1E] border border-[#28282c] shadow-lg rounded p-4 z-50 flex flex-col gap-2 w-64';
+        precacheToast.innerHTML = `
+            <div class="text-[11px] font-bold tracking-wider text-zinc-300">IMPORTING ASSETS</div>
+            <div class="w-full h-1 bg-zinc-800 rounded overflow-hidden">
+                <div class="h-full bg-blue-500 transition-all duration-300" id="precache-bar" style="width: 0%"></div>
+            </div>
+            <div class="text-[10px] text-zinc-500" id="precache-text">0 / ${totalImportCount}</div>
+        `;
+        document.body.appendChild(precacheToast);
+    }
+}
+
 const handleDrop = async (event) => {
     document.getElementById('drag-overlay').classList.add('hidden');
     const paths = event.payload.paths || event.payload; // Tauri v2 uses payload.paths
     if (paths && paths.length > 0) {
         btnImport.textContent = 'Importing...';
+        initImportToast(paths.length);
         
         currentRollViewId = null;
         currentImportSessionPaths = paths.map(p => p.replace(/\\/g, '/').toLowerCase());

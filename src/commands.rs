@@ -1202,8 +1202,11 @@ pub async fn get_proxy_image_data(
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
     let item = item_arc.read().map_err(|e| e.to_string())?;
     
-    let proxy = item.proxy_image.as_ref().unwrap();
-    let (width, height) = proxy.dimensions();
+    let dcp_profile = state.dcp_profile.read().unwrap().clone();
+    let working_colorspace = state.working_colorspace.read().unwrap().clone();
+    
+    let img_buffer = load_image_buffer(&item.file_path, true, dcp_profile.as_deref(), &working_colorspace)?;
+    let (width, height) = img_buffer.dimensions();
     let base_color = &item.base_color;
     
     // Calculate base_density
@@ -1223,9 +1226,10 @@ pub async fn get_proxy_image_data(
     out_buffer[12..16].copy_from_slice(&bd_g.to_le_bytes());
     out_buffer[16..20].copy_from_slice(&bd_b.to_le_bytes());
     
-    let raw_pixels: &[u16] = proxy.as_raw().as_slice();
+    let raw_pixels: &[u16] = img_buffer.as_raw().as_slice();
     let out_slice = &mut out_buffer[20..];
     
+    use rayon::prelude::*;
     raw_pixels.par_chunks(3).zip(out_slice.par_chunks_mut(8)).for_each(|(chunk, out_chunk)| {
         out_chunk[0..2].copy_from_slice(&chunk[0].to_le_bytes());
         out_chunk[2..4].copy_from_slice(&chunk[1].to_le_bytes());
