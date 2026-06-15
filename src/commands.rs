@@ -296,6 +296,7 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
 
                 let mut thumbnail_base64 = String::new();
                 unsafe {
+                    let t0 = std::time::Instant::now();
                     let data = libraw_sys::libraw_init(0);
                     if !data.is_null() {
                         let c_path = std::ffi::CString::new(path.as_str()).unwrap_or_default();
@@ -308,16 +309,22 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                                 opened = libraw_sys::libraw_open_buffer(data, _buf.as_ptr() as *const _, _buf.len()) == 0;
                             }
                         }
+                        println!("[Probe] LibRaw Init & Open File 耗时: {} ms", t0.elapsed().as_millis());
 
                         if opened {
+                            let t1 = std::time::Instant::now();
                             let err_code = libraw_sys::libraw_unpack_thumb(data);
+                            println!("[Probe] Unpack Thumb 耗时: {} ms", t1.elapsed().as_millis());
+
                             if err_code == 0 {
                                 let mut err = 0;
                                 let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
                                 if !thumb.is_null() {
                                     let thumb_type = (*thumb).type_;
                                     let thumb_len = (*thumb).data_size as usize;
+                                    println!("[Probe] 提取的 Thumb 内存块大小 (Bytes): {}", thumb_len);
                                     let thumb_data = std::slice::from_raw_parts((*thumb).data.as_ptr(), thumb_len);
+                                    let t2 = std::time::Instant::now();
                                     if thumb_type == 1 { // JPEG
                                         thumbnail_base64 = general_purpose::STANDARD.encode(thumb_data);
                                     } else {
@@ -328,6 +335,9 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                                             }
                                         }
                                     }
+                                    println!("[Probe] Base64 Encode 耗时: {} ms", t2.elapsed().as_millis());
+                                    println!("[Probe] 生成的 Base64 字符串长度 (Bytes): {}", thumbnail_base64.len());
+
                                     libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
                                 } else {
                                     eprintln!("[Import Pipeline Error] libraw_dcraw_make_mem_thumb failed for {}. Inner error code: {}", path, err);
@@ -402,6 +412,7 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
             let tx = conn.transaction().map_err(|e| e.to_string())?;
             for item in items_to_insert.iter() {
                 if item.is_loose { continue; }
+                let t_sqlite = std::time::Instant::now();
                 let params_str = serde_json::to_string(&item.params).unwrap_or_default();
                 let geom_str = serde_json::to_string(&item.geom).unwrap_or_default();
                 let base_color_str = serde_json::to_string(&item.base_color).unwrap_or_default();
@@ -415,6 +426,7 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                      base_color=excluded.base_color",
                     rusqlite::params![item.roll_id, item.file_path, item.thumbnail_base64, params_str, geom_str, base_color_str]
                 ).map_err(|e| e.to_string())?;
+                println!("[Probe] SQLite 单次 Insert 耗时: {} ms", t_sqlite.elapsed().as_millis());
             }
             tx.commit().map_err(|e| e.to_string())?;
             
@@ -436,6 +448,7 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         for item in items_to_insert.iter() {
             if item.is_loose { continue; }
+            let t_sqlite = std::time::Instant::now();
             let params_str = serde_json::to_string(&item.params).unwrap_or_default();
             let geom_str = serde_json::to_string(&item.geom).unwrap_or_default();
             let base_color_str = serde_json::to_string(&item.base_color).unwrap_or_default();
@@ -449,6 +462,7 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                  base_color=excluded.base_color",
                 rusqlite::params![item.roll_id, item.file_path, item.thumbnail_base64, params_str, geom_str, base_color_str]
             ).map_err(|e| e.to_string())?;
+            println!("[Probe] SQLite 单次 Insert 耗时: {} ms", t_sqlite.elapsed().as_millis());
         }
         tx.commit().map_err(|e| e.to_string())?;
         
