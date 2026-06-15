@@ -980,6 +980,33 @@ function getHomography(pts) {
     ]);
 }
 
+// CSS Hack for Thumbnail Sync
+function syncThumbnailVisuals(id, geom, params) {
+    if (!id || !geom) return;
+    const els = document.querySelectorAll(`img[data-img-id="${id}"]`);
+    els.forEach(img => {
+        if (!img.parentElement.classList.contains('library-item') && !img.parentElement.classList.contains('film-item')) return;
+        
+        const { x, y, width, height } = geom.crop_rect;
+        const scaleX = 1 / Math.max(width, 0.001);
+        const scaleY = 1 / Math.max(height, 0.001);
+        
+        let transformStr = `scaleX(${scaleX}) scaleY(${scaleY}) translateX(-${x * 100}%) translateY(-${y * 100}%) translateZ(0)`;
+        
+        let filterStr = '';
+        if (params && params.film_mode === 'Color') {
+            filterStr = `invert(1) hue-rotate(180deg) brightness(${1.0 + (params.exposure / 5.0)})`;
+        } else if (params && params.film_mode === 'BW') {
+            filterStr = `invert(1) grayscale(100%) brightness(${1.0 + (params.exposure / 5.0)})`;
+        }
+        
+        img.style.objectFit = 'fill';
+        img.style.transformOrigin = 'top left';
+        img.style.transform = transformStr;
+        if (filterStr) img.style.filter = filterStr;
+    });
+}
+
 function requestRender() {
     if (!webGLInitialized || renderRequested) return;
     renderRequested = true;
@@ -1094,6 +1121,13 @@ function renderWebGL() {
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     requestAnimationFrame(() => updateDataViz(pixels));
+    
+    // CSS Hardware Acceleration Hack for Thumbnails
+    syncThumbnailVisuals(activeId, current_geom, { 
+        exposure: parseFloat(sliders.exposure.el.value),
+        gamma: parseFloat(sliders.gamma.el.value),
+        film_mode: btnModeColor.classList.contains('bg-[#28282c]') ? 'Color' : 'BW'
+    });
 }
 
 const PROXY_CACHE_LIMIT = 5;
@@ -1853,16 +1887,12 @@ async function selectImage(id) {
         
         // Immediate blocking, no setTimeout
         if(loadingUI) { loadingUI.classList.remove('hidden'); loadingUI.classList.add('flex'); }
-        if(rightPanel) { rightPanel.style.pointerEvents = 'none'; rightPanel.style.opacity = '0.5'; }
-        if(filmstripContainer) { filmstripContainer.style.pointerEvents = 'none'; filmstripContainer.style.opacity = '0.5'; }
 
         try {
             await loadProxyImage(myToken);
         } finally {
             // Always restore UI whether loadProxyImage succeeds or fails!
             if(loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
-            if(rightPanel) { rightPanel.style.pointerEvents = 'auto'; rightPanel.style.opacity = '1'; }
-            if(filmstripContainer) { filmstripContainer.style.pointerEvents = 'auto'; filmstripContainer.style.opacity = '1'; }
         }
 
         // 卫语句：防止异步状态雪崩
@@ -2080,10 +2110,11 @@ document.getElementById('btn-confirm-continue').addEventListener('click', async 
                 
                 await invoke('import_images', { paths: pathsToImport, isLoose: false, inLibrary: false, rollId: currentRollViewId, isHistorical: true });
                 allLibraryItems = await invoke('get_filmstrip');
-            } catch (e) { console.error(e); }
-            document.getElementById('history-view-title').textContent = "ROLL CONTENTS";
         }
     }
+    
+    // Phase 7.0.9 修复：确保拉取历史卷后显式赋值给全局的图片列表状态
+    allLibraryItems = await invoke('get_filmstrip');
     
     await renderLibraryAndFilmstrip();
     switchView('history');
