@@ -15,6 +15,27 @@ use serde_json::Value;
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 
+const FALLBACK_THUMB: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mM8c+bMfwAIGwK9t856VAAAAABJRU5ErkJggg==";
+
+struct LibrawGuard(*mut libraw_sys::libraw_data_t);
+impl Drop for LibrawGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { libraw_sys::libraw_close(self.0) };
+        }
+    }
+}
+
+struct LibrawMemGuard(*mut libraw_sys::libraw_processed_image_t);
+impl Drop for LibrawMemGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { libraw_sys::libraw_dcraw_clear_mem(self.0 as *mut _) };
+        }
+    }
+}
+
+
 fn compute_auto_base(proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> BaseColor {
     let raw = proxy.as_raw();
     
@@ -299,6 +320,7 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                     let t0 = std::time::Instant::now();
                     let data = libraw_sys::libraw_init(0);
                     if !data.is_null() {
+                        let _data_guard = LibrawGuard(data);
                         let c_path = std::ffi::CString::new(path.as_str()).unwrap_or_default();
                         let mut opened = libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0;
                         
@@ -320,6 +342,7 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                                 let mut err = 0;
                                 let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
                                 if !thumb.is_null() {
+                                    let _thumb_guard = LibrawMemGuard(thumb);
                                     let thumb_type = (*thumb).type_;
                                     let thumb_len = (*thumb).data_size as usize;
                                     println!("[Probe] 提取的 Thumb 内存块大小 (Bytes): {}", thumb_len);
@@ -327,6 +350,29 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                                     let t2 = std::time::Instant::now();
                                     if thumb_type == 1 { // JPEG
                                         thumbnail_base64 = general_purpose::STANDARD.encode(thumb_data);
+                                    } else if thumb_type == 2 { // LIBRAW_IMAGE_BITMAP
+                                        let width = (*thumb).width as u32;
+                                        let height = (*thumb).height as u32;
+                                        let colors = (*thumb).colors;
+                                        let bits = (*thumb).bits;
+                                        if colors == 3 && bits == 8 {
+                                            if let Some(img) = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(width, height, thumb_data.to_vec()) {
+                                                let mut dynamic_img = image::DynamicImage::ImageRgb8(img);
+                                                let (w, h) = dynamic_img.dimensions();
+                                                if w.max(h) > 256 {
+                                                    let ratio = 256.0 / (w.max(h) as f32);
+                                                    let new_w = (w as f32 * ratio).max(1.0) as u32;
+                                                    let new_h = (h as f32 * ratio).max(1.0) as u32;
+                                                    dynamic_img = dynamic_img.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle);
+                                                }
+                                                let mut cursor = Cursor::new(Vec::new());
+                                                if dynamic_img.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
+                                                    thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+                                                }
+                                            }
+                                        } else {
+                                            eprintln!("[Import Pipeline Error] Unsupported thumb bitmap format: colors={}, bits={}", colors, bits);
+                                        }
                                     } else {
                                         if let Ok(img) = image::load_from_memory(thumb_data) {
                                             let mut cursor = Cursor::new(Vec::new());
@@ -337,8 +383,6 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                                     }
                                     println!("[Probe] Base64 Encode 耗时: {} ms", t2.elapsed().as_millis());
                                     println!("[Probe] 生成的 Base64 字符串长度 (Bytes): {}", thumbnail_base64.len());
-
-                                    libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
                                 } else {
                                     eprintln!("[Import Pipeline Error] libraw_dcraw_make_mem_thumb failed for {}. Inner error code: {}", path, err);
                                 }
@@ -348,7 +392,6 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                         } else {
                             eprintln!("[Import Pipeline Error] Failed to open file/buffer with libraw: {}", path);
                         }
-                        libraw_sys::libraw_close(data);
                     } else {
                         eprintln!("[Import Pipeline Error] libraw_init(0) failed for {}", path);
                     }
@@ -369,7 +412,7 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                 }
 
                 if thumbnail_base64.is_empty() {
-                    thumbnail_base64 = "FILE_MISSING".to_string();
+                    thumbnail_base64 = FALLBACK_THUMB.to_string();
                 }
 
                 let base_color = BaseColor { base_r: 32768, base_g: 32768, base_b: 32768 };
@@ -778,10 +821,11 @@ pub async fn get_raw_thumbnails(paths: Vec<String>) -> Result<Vec<String>, Strin
     
     let mut thumbs = Vec::with_capacity(paths.len());
     for path in paths {
-        let mut thumbnail_base64 = String::from("FILE_MISSING");
+        let mut thumbnail_base64 = String::from(FALLBACK_THUMB);
         unsafe {
             let data = libraw_sys::libraw_init(0);
             if !data.is_null() {
+                let _data_guard = LibrawGuard(data);
                 let c_path = std::ffi::CString::new(path.clone()).unwrap_or_default();
                 let mut opened = libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0;
                 
@@ -798,11 +842,33 @@ pub async fn get_raw_thumbnails(paths: Vec<String>) -> Result<Vec<String>, Strin
                         let mut err = 0;
                         let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
                         if !thumb.is_null() {
+                            let _thumb_guard = LibrawMemGuard(thumb);
                             let thumb_type = (*thumb).type_;
                             let thumb_len = (*thumb).data_size as usize;
                             let thumb_data = std::slice::from_raw_parts((*thumb).data.as_ptr(), thumb_len);
                             if thumb_type == 1 { // JPEG
                                 thumbnail_base64 = general_purpose::STANDARD.encode(thumb_data);
+                            } else if thumb_type == 2 { // LIBRAW_IMAGE_BITMAP
+                                let width = (*thumb).width as u32;
+                                let height = (*thumb).height as u32;
+                                let colors = (*thumb).colors;
+                                let bits = (*thumb).bits;
+                                if colors == 3 && bits == 8 {
+                                    if let Some(img) = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(width, height, thumb_data.to_vec()) {
+                                        let mut dynamic_img = image::DynamicImage::ImageRgb8(img);
+                                        let (w, h) = dynamic_img.dimensions();
+                                        if w.max(h) > 256 {
+                                            let ratio = 256.0 / (w.max(h) as f32);
+                                            let new_w = (w as f32 * ratio).max(1.0) as u32;
+                                            let new_h = (h as f32 * ratio).max(1.0) as u32;
+                                            dynamic_img = dynamic_img.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle);
+                                        }
+                                        let mut cursor = Cursor::new(Vec::new());
+                                        if dynamic_img.write_to(&mut cursor, ImageOutputFormat::Jpeg(70)).is_ok() {
+                                            thumbnail_base64 = general_purpose::STANDARD.encode(cursor.into_inner());
+                                        }
+                                    }
+                                }
                             } else {
                                 if let Ok(img) = image::load_from_memory(thumb_data) {
                                     let mut cursor = Cursor::new(Vec::new());
@@ -811,11 +877,9 @@ pub async fn get_raw_thumbnails(paths: Vec<String>) -> Result<Vec<String>, Strin
                                     }
                                 }
                             }
-                            libraw_sys::libraw_dcraw_clear_mem(thumb as *mut _);
                         }
                     }
                 }
-                libraw_sys::libraw_close(data);
             }
         }
         thumbs.push(thumbnail_base64);

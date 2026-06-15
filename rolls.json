@@ -61,5 +61,23 @@
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\C20250306CAMCN400AMD\\raw0037.dng",
       "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\C20250306CAMCN400AMD\\raw0038.dng"
     ]
+  },
+  {
+    "roll_id": "roll_1781490992421_21",
+    "date": "2026-06-15",
+    "format": "135",
+    "film_stock": "Cinestill 800T",
+    "camera": "Leica M3",
+    "image_paths": [
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\C20250306CAMCN400AMD\\raw0019.dng",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\C20250306CAMCN400AMD\\raw0020.dng",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\C20250306CAMCN400AMD\\raw0021.dng",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\C20250306CAMCN400AMD\\raw0022.dng",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\C20250306CAMCN400AMD\\raw0023.dng",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\C20250306CAMCN400AMD\\raw0024.dng",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\C20250306CAMCN400AMD\\raw0025.dng",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\C20250306CAMCN400AMD\\raw0026.dng",
+      "E:\\Code\\NegativeConverter\\reference_divere\\test_scans\\C20250306CAMCN400AMD\\raw0027.dng"
+    ]
   }
 ]
