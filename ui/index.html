@@ -186,7 +186,7 @@
                 <div class="h-[48px] border-b border-[#28282c] flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm bg-[#1C1C1E]">
                     <div class="flex space-x-2">
                         <button id="btn-crop-mode" class="toolbar-btn" disabled>CROP</button>
-                        <button id="btn-recalibrate" class="toolbar-btn" disabled>RE-CALIBRATE</button>
+                        <button id="btn-recalibrate" class="toolbar-btn" disabled>SET FILM AREA</button>
                         <button id="btn-reset-crop" class="toolbar-btn" disabled>RESET CROP</button>
                         <button id="btn-rotate-mode" class="toolbar-btn" disabled>ROTATE</button>
                     </div>
@@ -200,9 +200,9 @@
 
                 <!-- Main Preview -->
                 <div class="flex-1 w-full h-full p-8 flex items-center justify-center overflow-hidden bg-black relative">
-                    <div id="canvas-wrapper" class="relative shrink-0" style="display: none;">
+                    <div id="canvas-wrapper" class="relative shrink-0" style="display: none; contain: layout style paint;">
                         <canvas id="dummy-pusher" class="block" style="max-width: 100%; max-height: 100%; object-fit: contain; visibility: hidden; pointer-events: none;"></canvas>
-                        <canvas id="preview-canvas" class="absolute top-0 left-0 w-full h-full" style="object-fit: fill;"></canvas>
+                        <canvas id="preview-canvas" class="absolute top-0 left-0 w-full h-full" style="object-fit: fill; will-change: contents;"></canvas>
                         
                         <!-- Missing File UI -->
                         <div id="missing-file-ui" class="absolute inset-0 bg-[#121214] flex-col items-center justify-center hidden z-40">
@@ -218,7 +218,7 @@
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                             </svg>
-                            <div class="text-orange-400 font-bold uppercase tracking-widest text-[12px] animate-pulse">LOADING HIGH-RES PROXY...</div>
+                            <div class="text-orange-400 font-bold uppercase tracking-widest text-[12px] animate-pulse">PROCESSING RAW...</div>
                         </div>
 
                         <!-- Calibration Mode Overlay -->
@@ -279,9 +279,9 @@
             <div class="w-[340px] h-full border-l border-[#28282c] shrink-0 flex flex-col shadow-2xl overflow-y-auto custom-scrollbar z-10 bg-[#1C1C1E] relative">
                 
                 <div id="right-panel-blocker" class="absolute inset-0 z-50 bg-[#1C1C1E]/80 backdrop-blur-[4px] hidden flex flex-col items-center justify-center p-6 text-center">
-                    <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Calibration Mode</h3>
-                    <p class="text-xs leading-relaxed text-zinc-300 mb-6">请拖动四角，将选框严格贴合胶片实际成像区域（排除所有黑色边框与齿孔）。此步骤仅用于精确色彩解码，不影响最终带边框导出。</p>
-                    <button id="btn-confirm-calibration" class="w-full py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg pointer-events-auto">CONFIRM</button>
+                    <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Film Area</h3>
+                    <p class="text-xs leading-relaxed text-zinc-300 mb-6">请先拖动四角，框定胶片实际成像区域。完成后再运行自动反相与校色。</p>
+                    <button id="btn-confirm-calibration" class="w-full py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg pointer-events-auto">SAVE AREA</button>
                 </div>
                 
                 <!-- Histogram / Waveform Area -->
@@ -306,7 +306,7 @@
                     <!-- Mode Toggle -->
                     <div class="control-group">
                         <div class="flex gap-2 mb-4">
-                            <button id="btn-auto-color" class="flex-[3] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>AUTO CALIBRATE</button>
+                            <button id="btn-auto-color" class="flex-[3] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>AUTO INVERT</button>
                             <button id="btn-reset-color" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>RESET</button>
                         </div>
                         <div class="flex gap-2 mb-2">

@@ -1,6 +1,11 @@
 use image::{ImageBuffer, Rgb};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::sync::RwLock;
+
+/// Hard limit: at most 8 high-res proxy images kept in memory.
+/// Exceeding this triggers physical drop of the oldest proxy data.
+pub const MAX_PROXY_CACHE: usize = 8;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FilmMode {
@@ -182,6 +187,7 @@ pub struct AutoAlignResult {
 #[derive(Debug, Clone, Serialize)]
 pub struct FilmstripItem {
     pub id: String,
+    pub roll_id: String,
     pub file_path: String,
     pub thumbnail_base64: String,
 }
@@ -204,6 +210,9 @@ pub struct EngineState {
     pub dcp_profile: RwLock<Option<String>>,
     pub working_colorspace: RwLock<String>,
     pub rolls: RwLock<Vec<Roll>>,
+    /// LRU order of images whose high-res proxy data is loaded in memory.
+    /// Front = oldest, back = newest. Capacity enforced at MAX_PROXY_CACHE.
+    pub proxy_loaded_order: RwLock<VecDeque<String>>,
 }
 
 impl EngineState {
@@ -215,6 +224,7 @@ impl EngineState {
             dcp_profile: RwLock::new(None),
             working_colorspace: RwLock::new("rec2020".to_string()),
             rolls: RwLock::new(Vec::new()),
+            proxy_loaded_order: RwLock::new(VecDeque::new()),
         }
     }
 }

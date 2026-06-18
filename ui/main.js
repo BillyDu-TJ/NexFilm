@@ -91,6 +91,8 @@ let activeId = null;
 let proxyPixels = null;
 let proxyWidth = 0;
 let proxyHeight = 0;
+let activeProxyIsFull = false;
+let hasProcessedActiveImage = false;
 
 let lastHistPixels = null;
 let current_geom = { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
@@ -132,8 +134,80 @@ const HIST_H = 256;
 
 // Library Multi-Selection State
 let allLibraryItems = [];
+const itemIndex = new Map();
 let selectedLibraryIds = new Set();
 let lastSelectedLibraryId = null;
+
+function normalizePath(path) {
+    return (path || '').replace(/\\/g, '/').toLowerCase();
+}
+
+function rememberItem(item) {
+    if (!item || !item.id) return item;
+    const previous = itemIndex.get(item.id) || {};
+    const merged = { ...previous, ...item };
+    itemIndex.set(merged.id, merged);
+    return merged;
+}
+
+function rememberItems(items) {
+    (items || []).forEach(rememberItem);
+}
+
+function findKnownItem(id) {
+    return itemIndex.get(id) || allLibraryItems.find(i => i.id === id) || null;
+}
+
+function upsertLibraryItem(item) {
+    if (!item || !item.id) return;
+    const known = rememberItem(item);
+    const knownPath = normalizePath(known.file_path);
+    const idx = allLibraryItems.findIndex(i => i.id === known.id || (knownPath && normalizePath(i.file_path) === knownPath));
+    if (idx >= 0) {
+        if (allLibraryItems[idx].id && allLibraryItems[idx].id !== known.id) {
+            itemIndex.delete(allLibraryItems[idx].id);
+        }
+        allLibraryItems[idx] = { ...allLibraryItems[idx], ...known };
+    } else {
+        allLibraryItems.push(known);
+    }
+}
+
+function uniqueItemsByPath(items) {
+    const byPath = new Map();
+    const noPath = [];
+    (items || []).forEach(item => {
+        const key = normalizePath(item.file_path);
+        if (!key) {
+            noPath.push(item);
+            return;
+        }
+        const existing = byPath.get(key);
+        if (!existing) {
+            byPath.set(key, item);
+            return;
+        }
+        const preferNew =
+            existing.status === 'importing' ||
+            (!!existing.transient_edit && !item.transient_edit) ||
+            (!!item.thumbnail_base64 && !existing.thumbnail_base64);
+        byPath.set(key, preferNew ? { ...existing, ...item } : { ...item, ...existing });
+    });
+    return [...byPath.values(), ...noPath];
+}
+
+async function mergeRollIntoWorkingSet(rollId) {
+    if (!rollId) return;
+    try {
+        const rollStrip = await invoke('get_roll_filmstrip', { rollId });
+        rollStrip.forEach(item => {
+            upsertLibraryItem({ ...item, in_working_set: true });
+        });
+        allLibraryItems = uniqueItemsByPath(allLibraryItems);
+    } catch (e) {
+        console.error("Failed to merge roll into working set", e);
+    }
+}
 
 // Delete Mode State
 let isDeleteMode = false;
@@ -179,7 +253,10 @@ btnDeselectAll.addEventListener('click', () => {
 
 
 // Routing
+let currentView = 'library'; // Tracks active view: 'library' | 'develop' | 'history'
+
 function switchView(viewName) {
+    currentView = viewName;
     const views = [
         { name: 'history', nav: navHistory, el: viewHistory },
         { name: 'library', nav: navLibrary, el: viewLibrary },
@@ -202,7 +279,15 @@ function switchView(viewName) {
     });
 
     if (viewName === 'develop') { document.getElementById('btn-export-roll').classList.remove('hidden');
+        // Re-enable UI if there's an active image (e.g., user switched away and came back)
+        if (activeId) {
+            enableUI();
+        }
         requestRender();
+    } else {
+        // When leaving develop view, disable all tuning UI to prevent
+        // orphaned slider event handlers from firing on stale state.
+        disableUI();
     }
 }
 
@@ -261,11 +346,11 @@ window.addEventListener('keydown', async (e) => {
         const oldGeomAngle = current_geom.angle;
         current_geom = JSON.parse(JSON.stringify(prevState.geom));
         
-        await invoke('update_geometry', { id: activeId, geom: current_geom });
+        await invoke('update_geometry', { id: activeId, geom: JSON.parse(JSON.stringify(current_geom)) });
         updateBackendParams();
         
         if (oldGeomAngle !== current_geom.angle || prevState.geom.flip_h !== current_geom.flip_h || prevState.geom.flip_v !== current_geom.flip_v || prevState.geom.rotate_90_count !== current_geom.rotate_90_count) {
-            await loadProxyImage();
+            if (hasProcessedActiveImage) await runAutoInvert();
         } else {
             requestRender();
         }
@@ -349,24 +434,72 @@ function updateSliderTrack(el) {
 }
 
 let thumbnailSyncTimeout = null;
+let thumbnailCaptureRAF = null;
+let lastThumbnailCaptureAt = 0;
+let thumbnailPersistTimeout = null;
+
+function captureActiveCanvasThumbnail() {
+    if (!activeId || !previewCanvas || !activeProxyIsFull) return;
+    try {
+        const maxEdge = 640;
+        const scale = Math.min(1, maxEdge / Math.max(previewCanvas.width || 1, previewCanvas.height || 1));
+        const thumbCanvas = document.createElement('canvas');
+        thumbCanvas.width = Math.max(1, Math.round((previewCanvas.width || 1) * scale));
+        thumbCanvas.height = Math.max(1, Math.round((previewCanvas.height || 1) * scale));
+        const ctx = thumbCanvas.getContext('2d', { alpha: false });
+        ctx.drawImage(previewCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+        const dataUrl = thumbCanvas.toDataURL('image/jpeg', 0.72);
+        const persistId = activeId;
+        const item = allLibraryItems.find(i => i.id === activeId);
+        if (item) {
+            item.thumbnail_base64 = dataUrl;
+        }
+        document.querySelectorAll(`img[data-img-id="${activeId}"]`).forEach(img => {
+            img.src = dataUrl;
+            img.style.transform = '';
+            img.style.objectFit = 'cover';
+            img.classList.remove('opacity-50', 'object-contain', 'p-4', 'p-2', 'bg-[#1C1C1E]');
+            img.classList.add('object-cover');
+        });
+        if (thumbnailPersistTimeout) clearTimeout(thumbnailPersistTimeout);
+        thumbnailPersistTimeout = setTimeout(() => {
+            const b64 = dataUrl.startsWith('data:') ? dataUrl.split(',')[1] : dataUrl;
+            invoke('set_thumbnail_data', { id: persistId, thumbnail: b64 }).catch(() => {});
+        }, 1000);
+    } catch (e) {
+        console.error('thumbnail canvas capture failed', e);
+    }
+}
+
+function scheduleInstantThumbnailUpdate() {
+    if (!activeId || !activeProxyIsFull || thumbnailCaptureRAF) return;
+    const now = performance.now();
+    if (now - lastThumbnailCaptureAt < 180) return;
+    lastThumbnailCaptureAt = now;
+    thumbnailCaptureRAF = requestAnimationFrame(() => {
+        thumbnailCaptureRAF = null;
+        captureActiveCanvasThumbnail();
+    });
+}
+
 function requestThumbnailSync() {
+    scheduleInstantThumbnailUpdate();
+    if (activeProxyIsFull) return;
     if (thumbnailSyncTimeout) clearTimeout(thumbnailSyncTimeout);
     thumbnailSyncTimeout = setTimeout(async () => {
         if (!activeId) return;
         try {
             await invoke('sync_thumbnail_buffer', { id: activeId });
             allLibraryItems = await invoke('get_filmstrip');
-            const item = allLibraryItems.find(i => i.id === activeId);
+            rememberItems(allLibraryItems);
+            const item = findKnownItem(activeId);
             if (item && item.thumbnail_base64 !== "FILE_MISSING") {
                 document.querySelectorAll(`img[data-img-id="${activeId}"]`).forEach(img => {
-                    img.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
-                    // Reset to cover styling
-                    img.classList.remove('opacity-50', 'object-contain', 'p-4', 'p-2', 'bg-[#1C1C1E]');
-                    img.classList.add('object-cover');
+                    setImageElementThumbnail(img, item.thumbnail_base64);
                 });
             }
         } catch(e) { console.error(e); }
-    }, 250);
+    }, 300);
 }
 
 function saveCurrentState() {
@@ -388,11 +521,12 @@ function saveCurrentState() {
     return params;
 }
 
-function updateBackendParams() {
+async function updateBackendParams() {
     const params = saveCurrentState();
     if (params && activeId) {
         const rollId = currentRollViewId || 'LOOSE_DEFAULT';
-        invoke('update_tuning_parameters', { id: activeId, params, rollId }).catch(console.error);
+        await invoke('update_tuning_parameters', { id: activeId, params, rollId });
+        // Note: caller (scheduleBackendSync) handles requestThumbnailSync after this completes
     }
 }
 
@@ -676,7 +810,12 @@ btnLoadDCP.addEventListener('click', async () => {
         if (path) {
             await invoke('load_dcp_profile', { path });
             showToast("DCP Profile loaded.", "success");
-            if (activeId) await loadProxyImage();
+            if (activeId) {
+                proxyCache.delete(activeId);
+                readyProxyIds.delete(activeId);
+                activeProxyIsFull = false;
+                if (hasProcessedActiveImage) await runAutoInvert();
+            }
         }
     } catch(e) {
         showToast("Failed to load DCP", "error");
@@ -686,7 +825,12 @@ btnLoadDCP.addEventListener('click', async () => {
 selectColorspace.addEventListener('change', async (e) => {
     try {
         await invoke('set_working_colorspace', { colorspace: e.target.value });
-        if (activeId) await loadProxyImage();
+        if (activeId) {
+            proxyCache.delete(activeId);
+            readyProxyIds.delete(activeId);
+            activeProxyIsFull = false;
+            if (hasProcessedActiveImage) await runAutoInvert();
+        }
     } catch(e) { console.error(e); }
 });
 
@@ -725,7 +869,12 @@ selectBuiltinDcp.addEventListener('change', async (e) => {
     try {
         await invoke('load_dcp_profile', { path: e.target.value });
         showToast("Built-in DCP Profile loaded.", "success");
-        if (activeId) await loadProxyImage();
+        if (activeId) {
+            proxyCache.delete(activeId);
+            readyProxyIds.delete(activeId);
+            activeProxyIsFull = false;
+            if (hasProcessedActiveImage) await runAutoInvert();
+        }
     } catch(err) {
         showToast("Failed to load DCP", "error");
     }
@@ -759,12 +908,14 @@ async function applyLUT(lutData) {
     sliders.lutOpacity.el.disabled = false;
     showToast(is1DLUT ? "1D LUT loaded." : "3D LUT loaded.", "success");
     requestRender();
+    requestThumbnailSync();
 }
 
 selectBuiltinLut.addEventListener('change', async (e) => {
     if (!e.target.value) {
         hasLUT = false;
         requestRender();
+        requestThumbnailSync();
         return;
     }
     try {
@@ -993,17 +1144,10 @@ function syncThumbnailVisuals(id, geom, params) {
         
         let transformStr = `scaleX(${scaleX}) scaleY(${scaleY}) translateX(-${x * 100}%) translateY(-${y * 100}%) translateZ(0)`;
         
-        let filterStr = '';
-        if (params && params.film_mode === 'Color') {
-            filterStr = `invert(1) hue-rotate(180deg) brightness(${1.0 + (params.exposure / 5.0)})`;
-        } else if (params && params.film_mode === 'BW') {
-            filterStr = `invert(1) grayscale(100%) brightness(${1.0 + (params.exposure / 5.0)})`;
-        }
-        
         img.style.objectFit = 'fill';
         img.style.transformOrigin = 'top left';
         img.style.transform = transformStr;
-        if (filterStr) img.style.filter = filterStr;
+        img.style.filter = '';
     });
 }
 
@@ -1016,6 +1160,7 @@ function requestRender() {
 function renderWebGL() {
     renderRequested = false;
     if (!gl || !activeId) return;
+    if (!activeProxyIsFull || !proxyPixels || proxyWidth <= 0 || proxyHeight <= 0) return;
 
     gl.useProgram(shaderProgram);
     gl.bindVertexArray(vao);
@@ -1128,14 +1273,37 @@ function renderWebGL() {
         gamma: parseFloat(sliders.gamma.el.value),
         film_mode: btnModeColor.classList.contains('bg-[#28282c]') ? 'Color' : 'BW'
     });
+    scheduleInstantThumbnailUpdate();
 }
 
-const PROXY_CACHE_LIMIT = 5;
-const proxyCache = new Map(); // key: id, value: { arrayBuffer, lastUsed: Date.now() }
+const PROXY_CACHE_LIMIT = 8; // Matches backend MAX_PROXY_CACHE
+const proxyCache = new Map(); // key: id, value: { arrayBuffer, geomKey, lastUsed: Date.now() }
+const readyProxyIds = new Set();
+
+function getProxyGeomKey(geom = current_geom) {
+    if (!geom) return '';
+    const rect = geom.crop_rect || { x: 0, y: 0, width: 1, height: 1 };
+    const points = geom.calibration_points || null;
+    return JSON.stringify({
+        x: Number(rect.x || 0).toFixed(6),
+        y: Number(rect.y || 0).toFixed(6),
+        width: Number(rect.width || 1).toFixed(6),
+        height: Number(rect.height || 1).toFixed(6),
+        angle: Number(geom.angle || 0).toFixed(4),
+        flip_h: !!geom.flip_h,
+        flip_v: !!geom.flip_v,
+        rotate_90_count: Number(geom.rotate_90_count || 0),
+        calibration_points: points,
+    });
+}
 
 function getFromCache(id) {
     if (proxyCache.has(id)) {
         const item = proxyCache.get(id);
+        if (item.geomKey !== getProxyGeomKey()) {
+            proxyCache.delete(id);
+            return null;
+        }
         item.lastUsed = Date.now();
         return item.arrayBuffer;
     }
@@ -1144,7 +1312,10 @@ function getFromCache(id) {
 
 function addToCache(id, arrayBuffer) {
     if (proxyCache.has(id)) {
-        proxyCache.get(id).lastUsed = Date.now();
+        const item = proxyCache.get(id);
+        item.geomKey = getProxyGeomKey();
+        item.lastUsed = Date.now();
+        item.arrayBuffer = arrayBuffer;
         return;
     }
     if (proxyCache.size >= PROXY_CACHE_LIMIT) {
@@ -1160,58 +1331,19 @@ function addToCache(id, arrayBuffer) {
             proxyCache.delete(oldestId);
         }
     }
-    proxyCache.set(id, { arrayBuffer, lastUsed: Date.now() });
-}
-
-async function executePreload(ids) {
-    for (const id of ids) {
-        if (proxyCache.has(id)) continue;
-        try {
-            const result = await invoke('get_proxy_image_data', { id: id });
-            let arrayBuffer;
-            if (result instanceof ArrayBuffer) {
-                arrayBuffer = result;
-            } else if (result.buffer instanceof ArrayBuffer) {
-                arrayBuffer = result.buffer;
-            } else if (Array.isArray(result)) {
-                arrayBuffer = new Uint8Array(result).buffer;
-            }
-            if (arrayBuffer) {
-                addToCache(id, arrayBuffer);
-            }
-        } catch (e) {
-            console.error("Silent preload failed for " + id, e);
-        }
-    }
-}
-
-function scheduleSilentPreWarming() {
-    const items = Array.from(document.querySelectorAll('#filmstrip-container .film-item'));
-    if (items.length === 0) return;
-    const currentIndex = items.findIndex(item => item.classList.contains('active'));
-    if (currentIndex === -1) return;
-
-    const idsToPreload = [];
-    if (currentIndex > 0) idsToPreload.push(items[currentIndex - 1].dataset.id);
-    if (currentIndex < items.length - 1) idsToPreload.push(items[currentIndex + 1].dataset.id);
-
-    if (window.requestIdleCallback) {
-        requestIdleCallback(() => executePreload(idsToPreload));
-    } else {
-        setTimeout(() => executePreload(idsToPreload), 500);
-    }
+    proxyCache.set(id, { arrayBuffer, geomKey: getProxyGeomKey(), lastUsed: Date.now() });
 }
 
 async function loadProxyImage(token = null) {
     if (!activeId || !webGLInitialized) return;
     
+    const requestedId = activeId;
     let arrayBuffer = getFromCache(activeId);
     let byteOffset = 0;
     
     const loadingMask = document.getElementById('loading-proxy-ui');
     
     if (!arrayBuffer) {
-        if (loadingMask) loadingMask.classList.remove('hidden');
         try {
             const result = await invoke('get_proxy_image_data', { id: activeId });
             if (token !== null && token !== currentImageRequestToken) {
@@ -1222,17 +1354,23 @@ async function loadProxyImage(token = null) {
             if (result instanceof ArrayBuffer) {
                 arrayBuffer = result;
             } else if (result.buffer instanceof ArrayBuffer) {
-                arrayBuffer = result.buffer;
-                byteOffset = result.byteOffset || 0;
+                const resultOffset = result.byteOffset || 0;
+                const resultLength = result.byteLength || result.length || result.buffer.byteLength;
+                arrayBuffer = result.buffer.slice(resultOffset, resultOffset + resultLength);
+                byteOffset = 0;
             } else if (Array.isArray(result)) {
                 arrayBuffer = new Uint8Array(result).buffer;
             }
-            
-            if (arrayBuffer) addToCache(activeId, arrayBuffer);
-        } catch(e) { 
+        } catch(e) {
+            if (e === "PROXY_NOT_READY") {
+                activeProxyIsFull = false;
+                readyProxyIds.delete(requestedId);
+                if (loadingMask) loadingMask.classList.add('hidden');
+                return false;
+            }
             console.error("Failed to load proxy", e); 
             if (loadingMask) loadingMask.classList.add('hidden');
-            return;
+            return false;
         }
         if (loadingMask) loadingMask.classList.add('hidden');
     }
@@ -1243,15 +1381,27 @@ async function loadProxyImage(token = null) {
         const dataView = new DataView(arrayBuffer, byteOffset);
         const width = dataView.getUint32(0, true);
         const height = dataView.getUint32(4, true);
+        const isFullProxy = dataView.byteLength >= 24 ? dataView.getUint32(20, true) === 1 : true;
+
+        if (!isFullProxy) {
+            activeProxyIsFull = false;
+            readyProxyIds.delete(requestedId);
+            const loadingMask = document.getElementById('loading-proxy-ui');
+            if (loadingMask) loadingMask.classList.add('hidden');
+            return false;
+        }
         
         currentBaseDensity[0] = dataView.getFloat32(8, true);
         currentBaseDensity[1] = dataView.getFloat32(12, true);
         currentBaseDensity[2] = dataView.getFloat32(16, true);
         
-        const pixels = new Uint16Array(arrayBuffer, byteOffset + 20, width * height * 4);
+        const pixels = new Uint16Array(arrayBuffer, byteOffset + 24, width * height * 4);
         proxyPixels = pixels;
         proxyWidth = width;
         proxyHeight = height;
+        activeProxyIsFull = true;
+        readyProxyIds.add(requestedId);
+        addToCache(requestedId, arrayBuffer);
         
         current_loaded_geom = JSON.parse(JSON.stringify(current_geom));
         
@@ -1265,10 +1415,13 @@ async function loadProxyImage(token = null) {
         
         updateCanvasTransform(width, height);
         requestRender();
-        
-        scheduleSilentPreWarming();
+
+        // Backend sliding-window pre-fetch handles N+1 prefetch now.
+        // No more frontend-driven preload storms (8 parallel requests in v2.0).
+        return true;
     } catch(e) {
         console.error("Error parsing proxy buffer:", e);
+        return false;
     }
 }
 
@@ -1332,13 +1485,13 @@ function scheduleBackendSync(key) {
     if (backendSyncTimeout) clearTimeout(backendSyncTimeout);
     backendSyncTimeout = setTimeout(async () => {
         if (key === 'angle' && activeId) {
-            await invoke('update_geometry', { id: activeId, geom: current_geom });
-            await loadProxyImage();
+            await invoke('update_geometry', { id: activeId, geom: JSON.parse(JSON.stringify(current_geom)) });
+            if (hasProcessedActiveImage) await runAutoInvert();
         } else {
-            updateBackendParams();
+            await updateBackendParams(); // Await to ensure params are saved before thumbnail sync
         }
         requestThumbnailSync();
-    }, 100);
+    }, 50); // Reduced from 100ms for faster thumbnail feedback
 }
 
 for (const key in sliders) {
@@ -1376,16 +1529,42 @@ function enableUI() {
     btnRotateRight.disabled = false;
     btnFlipH.disabled = false;
     btnFlipV.disabled = false;
-    
+
     document.getElementById('btn-copy-settings').disabled = false;
     if (copiedSettings) document.getElementById('btn-paste-settings').disabled = false;
     document.getElementById('btn-wb-eyedropper').disabled = false;
-    
+
     canvasWrapper.style.display = 'block';
+    // CSS containment: prevent layout reflow when WebGL canvas dimensions change
+    canvasWrapper.style.contain = 'layout style paint';
+    previewCanvas.style.willChange = 'contents';
+}
+
+function disableUI() {
+    for (const key in sliders) {
+        sliders[key].el.disabled = true;
+    }
+    sliders.lutOpacity.el.disabled = true;
+    btnCropMode.disabled = true;
+    btnRotateMode.disabled = true;
+    document.getElementById('btn-recalibrate').disabled = true;
+    btnResetCrop.disabled = true;
+    btnAutoColor.disabled = true;
+    btnSprocketPicker.disabled = true;
+    btnResetColor.disabled = true;
+    btnRotateLeft.disabled = true;
+    btnRotateRight.disabled = true;
+    btnFlipH.disabled = true;
+    btnFlipV.disabled = true;
+
+    document.getElementById('btn-copy-settings').disabled = true;
+    document.getElementById('btn-paste-settings').disabled = true;
+    document.getElementById('btn-wb-eyedropper').disabled = true;
 }
 
 let allRolls = [];
 let currentRollViewId = null;
+let isRollEditing = false; // true only when Continue Editing (explicitly imported for editing), false for History preview
 let currentImportSessionPaths = null;
 
 async function fetchRolls() {
@@ -1483,14 +1662,20 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
     renderVersion++;
     const currentVersion = renderVersion;
     try {
-        let items = allLibraryItems;
+        let items = [...allLibraryItems];
         if (!skipFetch) {
             await fetchRolls();
             if (renderVersion !== currentVersion) return;
+            const transientItems = allLibraryItems.filter(item => item.transient_edit || item.status === 'importing' || item.in_working_set);
             items = await invoke('get_filmstrip');
             if (renderVersion !== currentVersion) return;
-            allLibraryItems = items;
+            const fetchedIds = new Set(items.map(item => item.id));
+            const fetchedPaths = new Set(items.map(item => normalizePath(item.file_path)));
+            const stillTransient = transientItems.filter(item => !fetchedIds.has(item.id) && !fetchedPaths.has(normalizePath(item.file_path)));
+            allLibraryItems = uniqueItemsByPath([...items, ...stillTransient]);
+            items = [...allLibraryItems];
         }
+        rememberItems(items);
         
         const libraryRollsGrid = document.getElementById('library-rolls-grid');
         const historyInternalGrid = document.getElementById('history-internal-grid');
@@ -1505,7 +1690,8 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
         filmstripContainer.innerHTML = '';
         
         // --- Populate LIBRARY View (All Images) ---
-        if (items.length === 0) {
+        const libraryItems = uniqueItemsByPath(allLibraryItems);
+        if (libraryItems.length === 0) {
             libraryEmpty.classList.remove('hidden');
             libraryGrid.classList.add('hidden');
             btnSelectAll.classList.add('hidden');
@@ -1513,8 +1699,8 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
             libraryEmpty.classList.add('hidden');
             libraryGrid.classList.remove('hidden');
             btnSelectAll.classList.remove('hidden');
-            
-            items.forEach(item => {
+
+            libraryItems.forEach(item => {
                 const libDiv = document.createElement('div');
                 libDiv.className = `library-item rounded overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
                 libDiv.dataset.id = item.id;
@@ -1526,6 +1712,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                         currentRollViewId = item.roll_id;
                     } else {
                         currentRollViewId = null;
+                        isRollEditing = false;
                     }
                     updateLibrarySelectionUI();
                     selectImage(item.id);
@@ -1556,7 +1743,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                         libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
                         libImg.className = 'w-full h-full object-cover pointer-events-none opacity-80';
                     } else {
-                        libImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+                        libImg.src = getThumbnailSrc(item.id) || '';
                         libImg.className = 'w-full h-full object-cover pointer-events-none';
                     }
                     libDiv.appendChild(libImg);
@@ -1566,7 +1753,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
         }
         
         // --- Populate HISTORY FILMS View ---
-        if (items.length === 0 && allRolls.length === 0) {
+        if (allRolls.length === 0) {
             historyEmpty.classList.remove('hidden');
             libraryRollsGrid.classList.add('hidden');
             historyInternalGrid.classList.add('hidden');
@@ -1590,28 +1777,20 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 if (currentRoll) {
                     try {
                         let rollStrip = await invoke('get_roll_filmstrip', { rollId: currentRollViewId });
-                        
-                        // Check if any paths are missing from the DB (e.g. from dropped table or first load)
-                        const unimportedPaths = [];
-                        currentRoll.image_paths.forEach(path => {
-                            const found = rollStrip.find(i => i.file_path.replace(/\\/g, '/').toLowerCase() === path.replace(/\\/g, '/').toLowerCase());
-                            if (!found) unimportedPaths.push(path);
-                        });
-                        
-                        // If missing, auto-import them on the fly
-                        if (unimportedPaths.length > 0) {
-                            document.getElementById('history-view-title').textContent = "IMPORTING MISSING...";
-                            await invoke('import_images', { paths: unimportedPaths, isLoose: false, inLibrary: false, rollId: currentRollViewId, isHistorical: false });
-                            // Re-fetch roll strip after importing
-                            rollStrip = await invoke('get_roll_filmstrip', { rollId: currentRollViewId });
-                        }
-                        
-                        // Merge into local items list for rendering
+
+                        // History Films is preview-only — never trigger import.
+                        // If items are missing from state, the grid simply shows what's available.
+                        // The user must use "Continue Editing Roll" to explicitly import.
+
+                        // Merge into local items list for the history grid rendering only
                         rollStrip.forEach(newItem => {
-                            if (!items.some(i => i.id === newItem.id)) {
+                            rememberItem(newItem);
+                            if (!items.some(i => i.id === newItem.id || normalizePath(i.file_path) === normalizePath(newItem.file_path))) {
                                 items.push(newItem);
                             }
                         });
+                        items = uniqueItemsByPath(items);
+                        allLibraryItems = uniqueItemsByPath(allLibraryItems);
                     } catch (e) {
                         console.error("Failed to load or import roll filmstrip", e);
                     }
@@ -1630,15 +1809,13 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                         libDiv.ondblclick = () => {
                             selectedLibraryIds.clear();
                             selectedLibraryIds.add(existingItem.id);
-                            currentImportSessionPaths = null;
-                            if (existingItem.roll_id && existingItem.roll_id !== 'LOOSE_DEFAULT') {
-                                currentRollViewId = existingItem.roll_id;
-                            } else {
-                                currentRollViewId = null;
-                            }
                             updateLibrarySelectionUI();
-                            selectImage(existingItem.id);
-                            switchView('develop');
+                            // State 3 (Continue Editing / Import by Roll): allow switching to develop
+                            // State 4 (History preview): selection only, no develop switching
+                            if (isRollEditing) {
+                                selectImage(existingItem.id);
+                                switchView('develop');
+                            }
                         };
                         libDiv.onclick = (e) => {
                             if (e.shiftKey && lastSelectedLibraryId) {
@@ -1668,7 +1845,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                                 libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
                                 libImg.className = 'w-full h-full object-cover pointer-events-none opacity-80';
                             } else {
-                                libImg.src = `data:image/jpeg;base64,${existingItem.thumbnail_base64}`;
+                                libImg.src = existingItem.thumbnail_base64.startsWith('data:') ? existingItem.thumbnail_base64 : `data:image/jpeg;base64,${existingItem.thumbnail_base64}`;
                                 libImg.className = 'w-full h-full object-cover pointer-events-none';
                             }
                             libDiv.appendChild(libImg);
@@ -1728,6 +1905,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                             renderLibraryAndFilmstrip();
                         } else {
                             currentRollViewId = roll.roll_id;
+                            isRollEditing = false; // History preview only — not editing
                             selectedLibraryIds.clear();
                             renderLibraryAndFilmstrip();
                         }
@@ -1755,17 +1933,20 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
         
         // --- Populate DEVELOP Filmstrip ---
         let filmstripItems = items;
-        if (currentRollViewId) {
+        if (currentRollViewId && isRollEditing) {
+            // Only show roll items in filmstrip when explicitly imported for editing (Continue Editing).
+            // History Films preview mode does NOT populate the filmstrip with roll items.
             const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
             if (currentRoll) {
-                const rollPaths = new Set(currentRoll.image_paths.map(p => p.replace(/\\/g, '/').toLowerCase()));
-                filmstripItems = items.filter(item => rollPaths.has(item.file_path.replace(/\\/g, '/').toLowerCase()));
-                invoke('start_precache', { ids: filmstripItems.map(i => i.id) }).catch(e => console.error("Precache error", e));
+                const rollPaths = new Set(currentRoll.image_paths.map(normalizePath));
+                filmstripItems = uniqueItemsByPath(items.filter(item => rollPaths.has(normalizePath(item.file_path))));
+            } else {
+                filmstripItems = uniqueItemsByPath(items.filter(item => item.roll_id === currentRollViewId));
             }
         } else if (currentImportSessionPaths) {
-            filmstripItems = items.filter(item => currentImportSessionPaths.includes(item.file_path.replace(/\\/g, '/').toLowerCase()));
+            filmstripItems = uniqueItemsByPath(items.filter(item => currentImportSessionPaths.includes(normalizePath(item.file_path))));
         } else {
-            filmstripItems = items.filter(item => item.roll_id === null || item.roll_id === 'LOOSE_DEFAULT');
+            filmstripItems = uniqueItemsByPath(items.filter(item => item.roll_id === null || item.roll_id === 'LOOSE_DEFAULT'));
         }
         filmstripItems.forEach(item => {
             const stripDiv = document.createElement('div');
@@ -1793,7 +1974,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                     stripImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
                     stripImg.className = 'w-full h-full object-cover rounded-[2px] pointer-events-none opacity-80';
                 } else {
-                    stripImg.src = `data:image/jpeg;base64,${item.thumbnail_base64}`;
+                    stripImg.src = getThumbnailSrc(item.id) || '';
                     stripImg.className = 'w-full h-full object-cover rounded-[2px] pointer-events-none';
                 }
                 stripDiv.appendChild(stripImg);
@@ -1809,7 +1990,6 @@ document.getElementById('btn-promote-roll').addEventListener('click', async () =
         try {
             await invoke('promote_roll', { rollId: currentRollViewId });
             showToast("Roll promoted to Library successfully", "success");
-            await loadLibraryItems();
             renderLibraryAndFilmstrip();
         } catch (e) {
             showToast("Failed to promote roll", "error");
@@ -1820,15 +2000,122 @@ document.getElementById('btn-promote-roll').addEventListener('click', async () =
 
 document.getElementById('btn-history-back').addEventListener('click', () => {
     currentRollViewId = null;
+    isRollEditing = false;
     selectedLibraryIds.clear();
     renderLibraryAndFilmstrip();
 });
 
 let currentImageRequestToken = 0;
 
+// ═══════════════════════════════════════════════════════════════════
+//  Optimistic UI: thumbnail placeholder ("李代桃僵")
+//  Shows instantly (<16ms) while the 16-bit proxy loads in background.
+// ═══════════════════════════════════════════════════════════════════
+
+function showThumbnailPlaceholder(thumbBase64) {
+    if (!thumbBase64) {
+        hideThumbnailPlaceholder();
+        return;
+    }
+    let placeholder = document.getElementById('thumbnail-placeholder');
+    if (!placeholder) {
+        placeholder = document.createElement('img');
+        placeholder.id = 'thumbnail-placeholder';
+        placeholder.className = 'absolute inset-0 w-full h-full object-contain z-10';
+        placeholder.style.filter = 'saturate(0.96) brightness(0.92)';
+        placeholder.style.transition = 'opacity 0.15s ease';
+        placeholder.style.willChange = 'opacity';
+        placeholder.style.contain = 'layout style paint';
+        placeholder.style.background = '#050506';
+        const canvasWrapper = document.getElementById('canvas-wrapper');
+        if (canvasWrapper) {
+            canvasWrapper.style.position = 'relative';
+            canvasWrapper.appendChild(placeholder);
+        }
+    }
+    placeholder.src = thumbBase64;
+    placeholder.onload = () => {
+        if (!activeProxyIsFull && placeholder.naturalWidth && placeholder.naturalHeight) {
+            updateCanvasTransform(placeholder.naturalWidth, placeholder.naturalHeight);
+            if (isCalibrationMode) requestAnimationFrame(updateCalibrationPolygon);
+        }
+    };
+    placeholder.style.opacity = '1';
+    placeholder.style.display = 'block';
+}
+
+function hideThumbnailPlaceholder() {
+    const placeholder = document.getElementById('thumbnail-placeholder');
+    if (placeholder) {
+        // Instant hide — no setTimeout. The WebGL canvas is already rendered
+        // by the time this is called, so there's no flicker.
+        placeholder.style.opacity = '0';
+        placeholder.style.display = 'none';
+    }
+}
+
+function getThumbnailSrc(id) {
+    const item = findKnownItem(id);
+    if (item && item.thumbnail_base64 && item.thumbnail_base64 !== 'FILE_MISSING') {
+        if (item.thumbnail_base64.startsWith('data:')) {
+            return item.thumbnail_base64;
+        }
+        return 'data:image/jpeg;base64,' + item.thumbnail_base64;
+    }
+    const img = document.querySelector(`img[data-img-id="${id}"]`);
+    if (img && img.src && img.src.startsWith('data:')) {
+        return img.src;
+    }
+    return null;
+}
+
+async function showEmbeddedDevelopPreview(id, token) {
+    const fallback = getThumbnailSrc(id);
+    showThumbnailPlaceholder(fallback);
+
+    try {
+        const preview = await invoke('get_embedded_preview', { id });
+        if (token !== currentImageRequestToken || id !== activeId) return;
+        showThumbnailPlaceholder(preview.startsWith('data:') ? preview : `data:image/jpeg;base64,${preview}`);
+    } catch (e) {
+        if (e === "FILE_MISSING") throw e;
+        console.error('Failed to load embedded preview', e);
+    }
+}
+
+function setImageElementThumbnail(img, thumbnail) {
+    if (!img || !thumbnail || thumbnail === 'FILE_MISSING') return;
+    img.src = thumbnail.startsWith('data:') ? thumbnail : `data:image/jpeg;base64,${thumbnail}`;
+    img.style.transform = '';
+    img.style.objectFit = 'cover';
+    img.classList.remove('opacity-50', 'object-contain', 'p-4', 'p-2', 'bg-[#1C1C1E]');
+    img.classList.add('object-cover');
+}
+
+/// Front-end hinting: backend owns bounded proxy concurrency and de-duplication.
+let _prefetchTimer = null;
+let _prefetchTimer2 = null;
+function triggerPrefetch(currentId) {
+    if (_prefetchTimer) { clearTimeout(_prefetchTimer); _prefetchTimer = null; }
+    if (_prefetchTimer2) { clearTimeout(_prefetchTimer2); _prefetchTimer2 = null; }
+}
+
 async function selectImage(id) {
-    if (activeId === id) return;
+    if (activeId === id && hasProcessedActiveImage && !isCalibrationMode) return;
     const myToken = ++currentImageRequestToken;
+
+    // Phase 1: show the embedded negative preview immediately.
+    const thumbSrc = getThumbnailSrc(id);
+    showThumbnailPlaceholder(thumbSrc);
+    const loadingUI = document.getElementById('loading-proxy-ui');
+    if (loadingUI) {
+        loadingUI.classList.add('hidden');
+        loadingUI.classList.remove('flex');
+    }
+    isCalibrationMode = false;
+    document.getElementById('calibration-overlay').classList.add('hidden');
+    document.getElementById('right-panel-blocker').classList.add('hidden');
+
     try {
         saveCurrentState(); // Save current state before switching
 
@@ -1836,15 +2123,33 @@ async function selectImage(id) {
         try {
             const rollId = currentRollViewId || 'LOOSE_DEFAULT';
             if (imageStates.has(id)) {
+                // We already have params/geom — apply them immediately.
                 state = imageStates.get(id);
-                await invoke('switch_active_image', { id, rollId });
+                try {
+                    await invoke('switch_active_image', { id, rollId });
+                } catch(e) {
+                    console.error("switch_active_image bg error", e);
+                }
             } else {
+                // Need to fetch params/geom from backend (first visit).
+                // The thumbnail is already visible, so the wait is masked.
                 state = await invoke('switch_active_image', { id, rollId });
-                imageStates.set(id, { params: state.params, geom: state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 } });
+                if (myToken !== currentImageRequestToken) {
+                    hideThumbnailPlaceholder();
+                    if (loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
+                    return;
+                }
+                imageStates.set(id, {
+                    params: state.params,
+                    geom: state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 }
+                });
             }
         } catch (err) {
             if (err === "FILE_MISSING") {
+                hideThumbnailPlaceholder();
+                if (loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
                 missingFileId = id;
+                disableUI(); // No image to edit — lock all tuning controls
                 document.getElementById('missing-file-ui').classList.remove('hidden');
                 document.getElementById('missing-file-ui').classList.add('flex');
                 document.getElementById('preview-canvas').style.display = 'none';
@@ -1855,6 +2160,8 @@ async function selectImage(id) {
                 renderLibraryAndFilmstrip();
                 return;
             }
+            hideThumbnailPlaceholder();
+            if (loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
             throw err;
         }
 
@@ -1863,10 +2170,21 @@ async function selectImage(id) {
         document.getElementById('preview-canvas').style.display = 'block';
 
         activeId = id;
+        activeProxyIsFull = false;
+        hasProcessedActiveImage = false;
+        proxyPixels = null;
+        proxyWidth = 0;
+        proxyHeight = 0;
+        readyProxyIds.delete(id);
         enableUI();
         current_geom = JSON.parse(JSON.stringify(state.geom));
         updateUIFromParams(state.params, current_geom);
-        updateCropOverlay();
+
+        if (previewCanvas) {
+            previewCanvas.style.display = 'none';
+            previewCanvas.width = 1;
+            previewCanvas.height = 1;
+        }
 
         const filmItems = document.querySelectorAll('#filmstrip-container .film-item');
         filmItems.forEach(item => {
@@ -1881,52 +2199,44 @@ async function selectImage(id) {
         updateSliderTrack(sliders.exposure.el);
         updateSliderTrack(sliders.gamma.el);
 
-        const loadingUI = document.getElementById('loading-proxy-ui');
-        const rightPanel = document.querySelector('.w-\\[340px\\]');
-        const filmstripContainer = document.getElementById('filmstrip-container');
-        
-        // Immediate blocking, no setTimeout
-        if(loadingUI) { loadingUI.classList.remove('hidden'); loadingUI.classList.add('flex'); }
-
-        try {
-            await loadProxyImage(myToken);
-        } finally {
-            // Always restore UI whether loadProxyImage succeeds or fails!
-            if(loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
-        }
-
-        // 卫语句：防止异步状态雪崩
         if (myToken !== currentImageRequestToken) {
             return;
         }
 
         updateBackendParams();
-        requestRender(); // Force uniform update
+        await showEmbeddedDevelopPreview(id, myToken);
+        if (myToken !== currentImageRequestToken) return;
 
-        if (!current_geom.calibration_points) {
-            isCalibrationMode = true;
-            document.getElementById('calibration-overlay').classList.remove('hidden');
-            document.getElementById('right-panel-blocker').classList.remove('hidden');
-            
-            calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-            requestAnimationFrame(updateCalibrationPolygon);
+        canvasWrapper.style.display = 'block';
+        updateCanvasTransform();
+        if (current_geom.calibration_points) {
+            calibrationPoints = JSON.parse(JSON.stringify(current_geom.calibration_points));
         } else {
-            isCalibrationMode = false;
-            document.getElementById('calibration-overlay').classList.add('hidden');
-            document.getElementById('right-panel-blocker').classList.add('hidden');
+            calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         }
+        isCalibrationMode = true;
+        document.getElementById('calibration-overlay').classList.remove('hidden');
+        document.getElementById('right-panel-blocker').classList.remove('hidden');
+        requestAnimationFrame(updateCalibrationPolygon);
 
-        
-    } catch(e) { console.error(e); }
+
+    } catch(e) {
+        hideThumbnailPlaceholder();
+        const lu = document.getElementById('loading-proxy-ui');
+        if (lu) { lu.classList.add('hidden'); lu.classList.remove('flex'); }
+        console.error(e);
+    }
 }
 
 btnModeColor.addEventListener('click', async () => {
     if (!activeId) return;
     pushUndoState();
     setMode('Color');
-    await invoke('set_film_mode', { id: activeId, mode: 'Color' });
     updateBackendParams();
-    requestRender();
+    if (hasProcessedActiveImage) {
+        await invoke('set_film_mode', { id: activeId, mode: 'Color' });
+        requestRender();
+    }
     requestThumbnailSync();
 });
 
@@ -1934,14 +2244,17 @@ btnModeBw.addEventListener('click', async () => {
     if (!activeId) return;
     pushUndoState();
     setMode('BW');
-    await invoke('set_film_mode', { id: activeId, mode: 'B&W' });
     updateBackendParams();
-    requestRender();
+    if (hasProcessedActiveImage) {
+        await invoke('set_film_mode', { id: activeId, mode: 'B&W' });
+        requestRender();
+    }
     requestThumbnailSync();
 });
 
 const doImportSingle = async () => {
     document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
+    let importStarted = false;
     try {
         btnImport.textContent = "Importing...";
         btnImport.disabled = true;
@@ -1960,37 +2273,26 @@ const doImportSingle = async () => {
             
             const tempItems = paths.map((p, idx) => ({
                 id: 'temp_import_' + Date.now() + '_' + idx,
+                roll_id: 'LOOSE_DEFAULT',
                 file_path: p,
                 thumbnail_base64: '',
                 status: 'importing'
             }));
+            rememberItems(tempItems);
             allLibraryItems = [...allLibraryItems, ...tempItems];
             await renderLibraryAndFilmstrip(true);
             
+            importStarted = true;
             await invoke('import_images', { paths, isLoose: true, rollId: 'LOOSE_DEFAULT', isHistorical: false });
-            await renderLibraryAndFilmstrip();
-            
-            if (allLibraryItems && allLibraryItems.length > 0) {
-                const newPath = paths[0];
-                const newPhoto = allLibraryItems.find(i => i.file_path === newPath || i.file_path.replace(/\\/g, '/') === newPath);
-                if (newPhoto) {
-                    await selectImage(newPhoto.id);
-                    switchView('develop');
-                }
-            }
         }
     } catch (e) { showToast("Import failed: " + e, "error"); }
     finally {
-        btnImport.textContent = "Import Roll";
-        btnImport.disabled = false;
-        btnImportTriggers.forEach(btn => { 
-            btn.textContent = btn.dataset.originalText || "Import Roll"; 
-            btn.disabled = false; 
-        });
+        if (!importStarted) restoreImportButtons();
     }
 };
 
 const doImportRoll = async () => {
+    let importStarted = false;
     try {
         const format = document.getElementById('roll-format').value;
         const date = document.getElementById('roll-date').value;
@@ -2018,11 +2320,24 @@ const doImportRoll = async () => {
         const paths = await invoke('open_file_dialog');
         if (paths && paths.length > 0) {
             initImportToast(paths.length);
-            currentImportSessionPaths = null;
-            const newRollId = "roll_" + Date.now();
+            currentImportSessionPaths = paths.map(normalizePath);
             const roll_id = `roll_${Date.now()}_${Math.floor(Math.random()*1000)}`;
             const roll = { roll_id, date, format, film_stock: film, camera, image_paths: paths };
+            const tempItems = paths.map((p, idx) => ({
+                id: 'temp_import_' + Date.now() + '_' + idx,
+                roll_id,
+                file_path: p,
+                thumbnail_base64: '',
+                status: 'importing',
+                in_working_set: true
+            }));
+            rememberItems(tempItems);
+            allLibraryItems = [...allLibraryItems, ...tempItems];
+            currentRollViewId = roll_id;
+            isRollEditing = true; // Fresh roll import — editing mode active
+            await renderLibraryAndFilmstrip(true);
             
+            importStarted = true;
             await invoke('import_roll', { roll, paths });
             
             // Persist Camera and Film
@@ -2033,27 +2348,10 @@ const doImportRoll = async () => {
                 try { await invoke('add_user_film', { film }); } catch(e) {}
             }
             
-            await fetchRolls(); // Fetch rolls so the newly imported roll is available for filtering
-            await renderLibraryAndFilmstrip();
-            
-            if (allLibraryItems && allLibraryItems.length > 0) {
-                const newPath = paths[0];
-                const newPhoto = allLibraryItems.find(i => i.file_path === newPath || i.file_path.replace(/\\\\/g, '/') === newPath);
-                if (newPhoto) {
-                    currentRollViewId = roll_id;
-                    await selectImage(newPhoto.id);
-                    switchView('develop');
-                }
-            }
         }
     } catch (e) { showToast("Import failed: " + e, "error"); }
     finally {
-        btnImport.textContent = "Import Roll";
-        btnImport.disabled = false;
-        btnImportTriggers.forEach(btn => { 
-            btn.textContent = btn.dataset.originalText || "Import Roll"; 
-            btn.disabled = false; 
-        });
+        if (!importStarted) restoreImportButtons();
         document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
     }
 };
@@ -2090,32 +2388,37 @@ document.getElementById('btn-confirm-continue').addEventListener('click', async 
     document.getElementById('continue-roll-modal').classList.add('opacity-0', 'pointer-events-none');
     
     currentRollViewId = rollId;
+    isRollEditing = true; // Explicitly imported for editing — filmstrip will show roll items
     selectedLibraryIds.clear();
     
     const roll = allRolls.find(r => r.roll_id === rollId);
     if (roll) {
-        const pathsToImport = roll.image_paths.filter(p => !allLibraryItems.some(item => item.file_path.replace(/\\/g, '/').toLowerCase() === p.replace(/\\/g, '/').toLowerCase()));
+        await mergeRollIntoWorkingSet(rollId);
+        const knownPaths = new Set(Array.from(itemIndex.values()).map(item => normalizePath(item.file_path)));
+        const pathsToImport = roll.image_paths.filter(p => !knownPaths.has(normalizePath(p)));
         if (pathsToImport.length > 0) {
             document.getElementById('history-view-title').textContent = "LOADING ROLL...";
             try {
                 initImportToast(pathsToImport.length);
                 const tempItems = pathsToImport.map((p, idx) => ({
                     id: 'temp_import_' + Date.now() + '_' + idx,
+                    roll_id: currentRollViewId,
                     file_path: p,
                     thumbnail_base64: '',
-                    status: 'importing'
+                    status: 'importing',
+                    in_working_set: true
                 }));
+                rememberItems(tempItems);
                 allLibraryItems = [...allLibraryItems, ...tempItems];
                 await renderLibraryAndFilmstrip(true);
                 
-                await invoke('import_images', { paths: pathsToImport, isLoose: false, inLibrary: false, rollId: currentRollViewId, isHistorical: true });
-                allLibraryItems = await invoke('get_filmstrip');
+                await invoke('import_images', { paths: pathsToImport, isLoose: false, inLibrary: true, rollId: currentRollViewId, isHistorical: true });
+            } catch (error) {
+                console.error("Error continuing roll:", error);
+            }
         }
     }
-    
-    // Phase 7.0.9 修复：确保拉取历史卷后显式赋值给全局的图片列表状态
-    allLibraryItems = await invoke('get_filmstrip');
-    
+
     await renderLibraryAndFilmstrip();
     switchView('history');
 });
@@ -2359,7 +2662,7 @@ btnCropMode.addEventListener('click', () => {
     }
     updateCanvasTransform();
     if (!isCropMode) {
-        loadProxyImage();
+        if (hasProcessedActiveImage) runAutoInvert();
     } else {
         requestRender();
     }
@@ -2382,7 +2685,7 @@ btnRotateMode.addEventListener('click', () => {
     }
     updateCanvasTransform();
     if (!isRotateMode) {
-        loadProxyImage();
+        if (hasProcessedActiveImage) runAutoInvert();
     } else {
         requestRender();
     }
@@ -2412,17 +2715,22 @@ function updateCropRectForRotation(rect, isCW, flipH, flipV) {
 
 let geomSyncId = 0;
 function sendGeometrySync() {
+    if (!activeId) return;
+    const targetId = activeId;
+    const geomSnapshot = JSON.parse(JSON.stringify(current_geom));
     geomSyncId++;
     const currentSyncId = geomSyncId;
     
     updateCanvasTransform();
     requestRender();
     
-    invoke('update_geometry', { id: activeId, geom: current_geom }).then(() => {
+    invoke('update_geometry', { id: targetId, geom: geomSnapshot }).then(async () => {
         if (geomSyncId !== currentSyncId) return;
-        loadProxyImage().then(() => {
+        if (hasProcessedActiveImage) {
+            runAutoInvert();
+        } else {
             requestThumbnailSync();
-        });
+        }
     });
 }
 
@@ -2594,6 +2902,45 @@ async function doAutoColor() {
     renderWebGL();
 }
 
+async function runAutoInvert() {
+    if (!activeId) return;
+    const targetId = activeId;
+    const geomSnapshot = JSON.parse(JSON.stringify(current_geom));
+    const token = currentImageRequestToken;
+    const loadingUI = document.getElementById('loading-proxy-ui');
+    if (loadingUI) {
+        loadingUI.classList.remove('hidden');
+        loadingUI.classList.add('flex');
+    }
+
+    try {
+        await invoke('update_geometry', { id: targetId, geom: geomSnapshot });
+        proxyCache.delete(targetId);
+        readyProxyIds.delete(targetId);
+        await invoke('prepare_proxy', { id: targetId });
+        if (token !== currentImageRequestToken) return;
+        const loadedFullProxy = await loadProxyImage(token);
+        if (!loadedFullProxy) {
+            showToast("RAW processing is not ready yet.", "error");
+            return;
+        }
+
+        previewCanvas.style.display = 'block';
+        hideThumbnailPlaceholder();
+        hasProcessedActiveImage = true;
+        await doAutoColor();
+        requestThumbnailSync();
+    } catch (e) {
+        console.error(e);
+        showToast("Auto invert failed: " + e, "error");
+    } finally {
+        if (loadingUI) {
+            loadingUI.classList.add('hidden');
+            loadingUI.classList.remove('flex');
+        }
+    }
+}
+
 document.getElementById('btn-reset-crop').addEventListener('click', async () => {
     if (!activeId) return; pushUndoState();
     current_geom.crop_rect = { x: 0, y: 0, width: 1, height: 1 };
@@ -2602,8 +2949,8 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
     current_geom.flip_v = false;
     current_geom.rotate_90_count = 0;
     if (isCropMode) updateCropOverlay();
-    await invoke('update_geometry', { id: activeId, geom: current_geom });
-    await loadProxyImage();
+    await invoke('update_geometry', { id: activeId, geom: JSON.parse(JSON.stringify(current_geom)) });
+    if (hasProcessedActiveImage) await runAutoInvert();
     requestThumbnailSync();
 });
 
@@ -2623,8 +2970,7 @@ document.getElementById('btn-recalibrate').addEventListener('click', () => {
 
 btnAutoColor.addEventListener('click', async () => {
     pushUndoState();
-    await doAutoColor();
-    requestThumbnailSync();
+    await runAutoInvert();
 });
 
 btnSprocketPicker.addEventListener('click', () => {
@@ -2793,8 +3139,7 @@ window.addEventListener('mouseup', async () => {
         isDraggingCrop = false; cropGrid.style.opacity = '0';
         if (activeId) {
             try {
-                await invoke('update_geometry', { id: activeId, geom: current_geom });
-                requestThumbnailSync();
+                sendGeometrySync();
             } catch (err) { showToast("Crop failed: " + err, "error"); }
         }
     }
@@ -3186,13 +3531,18 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
     if (!activeId) return;
     pushUndoState();
     current_geom.calibration_points = JSON.parse(JSON.stringify(calibrationPoints));
-    requestRender();
+    if (activeProxyIsFull) requestRender();
     saveCurrentState();
-    await invoke('update_geometry', { id: activeId, geom: current_geom });
-    isCalibrationMode = false;
-    document.getElementById('calibration-overlay').classList.add('hidden');
-    document.getElementById('right-panel-blocker').classList.add('hidden');
-    showToast("Calibration applied.", "success");
+    try {
+        await invoke('update_geometry', { id: activeId, geom: JSON.parse(JSON.stringify(current_geom)) });
+        isCalibrationMode = false;
+        document.getElementById('calibration-overlay').classList.add('hidden');
+        document.getElementById('right-panel-blocker').classList.add('hidden');
+        showToast("Film area saved. Run Auto Invert when ready.", "success");
+    } catch (e) {
+        console.error("Calibration failed", e);
+        showToast("Failed to save film area.", "error");
+    }
 });
 
 document.getElementById('btn-locate-file').addEventListener('click', async () => {
@@ -3224,6 +3574,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     try {
         allRolls = await invoke('get_rolls');
         allLibraryItems = await invoke('get_filmstrip');
+        rememberItems(allLibraryItems);
         await updateFilterSidebar();
     } catch(e) { console.error("Init Error", e); }
 
@@ -3267,37 +3618,82 @@ listen('precache_progress', (event) => {
 
 listen('thumbnail_updated', (event) => {
     const { id, thumbnail } = event.payload;
-    const item = allLibraryItems.find(i => i.id === id);
+    const item = findKnownItem(id);
     if (item) {
         item.thumbnail_base64 = thumbnail;
+        rememberItem(item);
     }
     // Update any img elements showing this thumbnail
     document.querySelectorAll(`img[data-img-id="${id}"]`).forEach(img => {
-        img.src = "data:image/jpeg;base64," + thumbnail;
+        setImageElementThumbnail(img, thumbnail);
     });
+    if (id === activeId && !activeProxyIsFull) {
+        showThumbnailPlaceholder(thumbnail.startsWith('data:') ? thumbnail : "data:image/jpeg;base64," + thumbnail);
+    }
+});
+
+listen('proxy_ready', async (event) => {
+    const { id } = event.payload;
+    readyProxyIds.add(id);
+    proxyCache.delete(id);
 });
 
 listen('import_progress', (event) => {
     const payload = event.payload;
-    
+
+    // Handle initial "start" phase event from the backend
+    if (payload.phase === 'start') {
+        if (payload.total > 0) {
+            totalImportCount = payload.total;
+            currentImportCount = 0;
+            if (!precacheToast) {
+                initImportToast(payload.total);
+            }
+            const bar = document.getElementById('precache-bar');
+            const txt = document.getElementById('precache-text');
+            if (bar) bar.style.width = '0%';
+            if (txt) txt.textContent = `0 / ${payload.total}`;
+        }
+        return;
+    }
+
     // Find skeleton by matching file_path, or find real item by id
-    let item = allLibraryItems.find(i => i.status === 'importing' && i.file_path && i.file_path.replace(/\\/g, '/').toLowerCase() === payload.file_path.replace(/\\/g, '/').toLowerCase());
+    let item = allLibraryItems.find(i => i.status === 'importing' && i.file_path && normalizePath(i.file_path) === normalizePath(payload.file_path));
     let searchId = payload.id;
     
     if (item) {
         searchId = item.id; // Keep track of the old skeleton id to update the DOM
+        if (searchId !== payload.id) {
+            itemIndex.delete(searchId);
+        }
         item.id = payload.id;
+        item.roll_id = payload.roll_id;
         item.thumbnail_base64 = payload.thumbnail_base64;
+        item.file_path = payload.file_path;
         item.status = 'done';
+        if (payload.roll_id && payload.roll_id === currentRollViewId && isRollEditing) {
+            item.in_working_set = true;
+        }
     } else {
         item = allLibraryItems.find(i => i.id === payload.id);
         if (item) {
             item.thumbnail_base64 = payload.thumbnail_base64;
+            item.roll_id = payload.roll_id;
+            item.file_path = payload.file_path;
+            if (payload.roll_id && payload.roll_id === currentRollViewId && isRollEditing) {
+                item.in_working_set = true;
+            }
         } else {
+            if (payload.roll_id && payload.roll_id === currentRollViewId && isRollEditing) {
+                payload.in_working_set = true;
+            }
             allLibraryItems.push(payload);
+            item = payload;
         }
     }
-    
+    rememberItem(item);
+    allLibraryItems = uniqueItemsByPath(allLibraryItems);
+
     // Update DOM matching the skeleton id (or real id)
     document.querySelectorAll(`.film-item[data-id="${searchId}"], .library-item[data-id="${searchId}"]`).forEach(el => {
         el.dataset.id = payload.id; // Correct the DOM id to real UUID
@@ -3313,9 +3709,7 @@ listen('import_progress', (event) => {
         }
         
         img.dataset.imgId = payload.id; // Correct img data-id
-        img.src = "data:image/jpeg;base64," + payload.thumbnail_base64;
-        img.classList.remove('opacity-50', 'object-contain', 'p-4', 'p-2', 'bg-[#1C1C1E]');
-        img.classList.add('object-cover');
+        setImageElementThumbnail(img, payload.thumbnail_base64);
         
         // Ensure onclick uses the real ID now
         if (el.classList.contains('film-item')) {
@@ -3328,24 +3722,42 @@ listen('import_progress', (event) => {
         }
     });
     
-    currentImportCount++;
-    if (precacheToast && totalImportCount > 0) {
-        const pct = (currentImportCount / totalImportCount) * 100;
+    if (Number.isFinite(payload.total) && payload.total > 0) {
+        totalImportCount = payload.total;
+    }
+    if (Number.isFinite(payload.processed)) {
+        currentImportCount = Math.max(currentImportCount, payload.processed);
         const bar = document.getElementById('precache-bar');
         const txt = document.getElementById('precache-text');
+        const pct = totalImportCount > 0 ? (currentImportCount / totalImportCount) * 100 : 0;
         if (bar) bar.style.width = `${pct}%`;
         if (txt) txt.textContent = `${currentImportCount} / ${totalImportCount}`;
-        
-        if (currentImportCount >= totalImportCount) {
-            setTimeout(() => {
-                if (precacheToast) {
-                    precacheToast.remove();
-                    precacheToast = null;
-                }
-                btnImport.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>IMPORT`;
-                renderLibraryAndFilmstrip(false); // Clean up DOM and fetch real UUIDs consistently once import is fully done
-            }, 1000);
-        }
+    }
+});
+
+listen('import_complete', async (event) => {
+    try {
+        await fetchRolls();
+    } catch (e) {
+        console.error(e);
+    }
+    if (precacheToast) {
+        const bar = document.getElementById('precache-bar');
+        const txt = document.getElementById('precache-text');
+        if (bar) bar.style.width = '100%';
+        if (txt) txt.textContent = `${totalImportCount} / ${totalImportCount}`;
+        setTimeout(() => {
+            if (precacheToast) {
+                precacheToast.remove();
+                precacheToast = null;
+            }
+            restoreImportButtons();
+        }, 800);
+    } else {
+        restoreImportButtons();
+    }
+    if (currentView !== 'develop') {
+        renderLibraryAndFilmstrip(false);
     }
 });
 
@@ -3366,6 +3778,15 @@ listen('tauri://drag-leave', (event) => {
 let totalImportCount = 0;
 let currentImportCount = 0;
 
+function restoreImportButtons() {
+    btnImport.textContent = "Import Roll";
+    btnImport.disabled = false;
+    btnImportTriggers.forEach(btn => {
+        btn.textContent = btn.dataset.originalText || "Import Roll";
+        btn.disabled = false;
+    });
+}
+
 function initImportToast(count) {
     totalImportCount = count;
     currentImportCount = 0;
@@ -3377,7 +3798,7 @@ function initImportToast(count) {
             <div class="w-full h-1 bg-zinc-800 rounded overflow-hidden">
                 <div class="h-full bg-blue-500 transition-all duration-300" id="precache-bar" style="width: 0%"></div>
             </div>
-            <div class="text-[10px] text-zinc-500" id="precache-text">0 / ${totalImportCount}</div>
+            <div class="text-[10px] text-zinc-500" id="precache-text">Scanning files...</div>
         `;
         document.body.appendChild(precacheToast);
     }
@@ -3388,6 +3809,7 @@ const handleDrop = async (event) => {
     const paths = event.payload.paths || event.payload; // Tauri v2 uses payload.paths
     if (paths && paths.length > 0) {
         btnImport.textContent = 'Importing...';
+        btnImport.disabled = true;
         initImportToast(paths.length);
         
         currentRollViewId = null;
@@ -3395,17 +3817,16 @@ const handleDrop = async (event) => {
         
         const tempItems = paths.map((p, idx) => ({
             id: 'temp_import_' + Date.now() + '_' + idx,
+            roll_id: 'LOOSE_DEFAULT',
             file_path: p,
             thumbnail_base64: '',
             status: 'importing'
         }));
+        rememberItems(tempItems);
         allLibraryItems = [...allLibraryItems, ...tempItems];
         await renderLibraryAndFilmstrip(true);
         
         await invoke('import_images', { paths, isLoose: true, rollId: 'LOOSE_DEFAULT', isHistorical: false });
-        allLibraryItems = await invoke('get_filmstrip');
-        renderLibraryAndFilmstrip();
-        btnImport.textContent = 'Import Roll';
         showToast(`Dropped ${paths.length} file(s)`, 'success');
     }
 };
