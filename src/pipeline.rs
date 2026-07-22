@@ -1,5 +1,5 @@
-use nalgebra::{Matrix3, Vector3};
 use crate::core_math::status_m_crosstalk_matrix;
+use nalgebra::{Matrix3, Vector3};
 
 use crate::app_state::FilmMode;
 
@@ -29,17 +29,13 @@ impl FilmPipeline {
     /// 完整构建 Pipeline
     pub fn new(base_rgb: [u16; 3], exp_offset: [f32; 3], mode: FilmMode) -> Self {
         let epsilon = 1e-6_f32;
-        
+
         // 解析基础透射率 (T_base)
         let t_r = (base_rgb[0] as f32 / 65535.0).max(epsilon);
         let t_g = (base_rgb[1] as f32 / 65535.0).max(epsilon);
         let t_b = (base_rgb[2] as f32 / 65535.0).max(epsilon);
 
-        let base_density = Vector3::new(
-            -t_r.log10(),
-            -t_g.log10(),
-            -t_b.log10(),
-        );
+        let base_density = Vector3::new(-t_r.log10(), -t_g.log10(), -t_b.log10());
 
         Self {
             crosstalk_matrix: status_m_crosstalk_matrix(),
@@ -62,17 +58,11 @@ impl FilmPipeline {
         let t_g = linear_rgb[1].max(self.epsilon);
         let t_b = linear_rgb[2].max(self.epsilon);
 
-        let d_raw = Vector3::new(
-            -t_r.log10(),
-            -t_g.log10(),
-            -t_b.log10(),
-        );
+        let d_raw = Vector3::new(-t_r.log10(), -t_g.log10(), -t_b.log10());
 
-        let delta_d = Vector3::new(
-            (d_raw.x - self.base_density.x).max(0.0),
-            (d_raw.y - self.base_density.y).max(0.0),
-            (d_raw.z - self.base_density.z).max(0.0),
-        );
+        // Match the WebGL shader: base subtraction is allowed to produce
+        // negative density and is normalized later by D-min/D-max.
+        let delta_d = d_raw - self.base_density;
 
         match self.mode {
             FilmMode::Color => {
@@ -92,14 +82,14 @@ impl FilmPipeline {
     pub fn apply_exposure(&self, true_density: &[f32; 3]) -> [f32; 3] {
         match self.mode {
             FilmMode::Color => {
-                let final_r = (true_density[0] + self.exposure_offset.x).max(0.0);
-                let final_g = (true_density[1] + self.exposure_offset.y).max(0.0);
-                let final_b = (true_density[2] + self.exposure_offset.z).max(0.0);
+                let final_r = true_density[0] + self.exposure_offset.x;
+                let final_g = true_density[1] + self.exposure_offset.y;
+                let final_b = true_density[2] + self.exposure_offset.z;
                 [final_r, final_g, final_b]
             }
             FilmMode::BW => {
                 // 黑白模式下旁路偏色设置，仅应用基础曝光补偿（取第一通道偏移量或者忽略偏色）
-                let final_gray = (true_density[0] + self.exposure_offset.x).max(0.0);
+                let final_gray = true_density[0] + self.exposure_offset.x;
                 [final_gray, final_gray, final_gray]
             }
         }

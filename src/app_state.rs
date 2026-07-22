@@ -19,7 +19,7 @@ impl Default for FilmMode {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct DensityParams {
     pub d_min: [f32; 3],
     pub d_max: [f32; 3],
@@ -36,7 +36,7 @@ impl Default for DensityParams {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ExposureParams {
     pub exposure: f32,
     pub exp_r: f32,
@@ -55,7 +55,7 @@ impl Default for ExposureParams {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct ToneParams {
     pub highlights: f32,
     pub shadows: f32,
@@ -70,7 +70,7 @@ impl Default for ToneParams {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct SprocketParams {
     pub sprocket_uv: Option<Vec<f32>>,
     pub sprocket_tolerance: Option<f32>,
@@ -87,7 +87,46 @@ impl Default for SprocketParams {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct LutParams {
+    #[serde(default)]
+    pub lut_path: Option<String>,
+    #[serde(default = "default_lut_opacity")]
+    pub lut_opacity: f32,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct RawDecodeParams {
+    #[serde(default = "default_working_colorspace")]
+    pub working_colorspace: String,
+}
+
+fn default_working_colorspace() -> String {
+    "linear-srgb".to_string()
+}
+
+impl Default for RawDecodeParams {
+    fn default() -> Self {
+        Self {
+            working_colorspace: default_working_colorspace(),
+        }
+    }
+}
+
+fn default_lut_opacity() -> f32 {
+    1.0
+}
+
+impl Default for LutParams {
+    fn default() -> Self {
+        Self {
+            lut_path: None,
+            lut_opacity: 1.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct TuningParams {
     pub film_mode: FilmMode,
     #[serde(flatten)]
@@ -98,6 +137,10 @@ pub struct TuningParams {
     pub tone: ToneParams,
     #[serde(flatten)]
     pub sprocket: SprocketParams,
+    #[serde(flatten)]
+    pub lut: LutParams,
+    #[serde(flatten)]
+    pub raw_decode: RawDecodeParams,
 }
 
 impl Default for TuningParams {
@@ -108,11 +151,13 @@ impl Default for TuningParams {
             exposure: ExposureParams::default(),
             tone: ToneParams::default(),
             sprocket: SprocketParams::default(),
+            lut: LutParams::default(),
+            raw_decode: RawDecodeParams::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BaseColor {
     pub base_r: u16,
     pub base_g: u16,
@@ -121,7 +166,11 @@ pub struct BaseColor {
 
 impl Default for BaseColor {
     fn default() -> Self {
-        Self { base_r: 32768, base_g: 32768, base_b: 32768 }
+        Self {
+            base_r: 32768,
+            base_g: 32768,
+            base_b: 32768,
+        }
     }
 }
 
@@ -129,7 +178,10 @@ pub struct FilmItem {
     pub id: String,
     pub roll_id: String,
     pub file_path: String,
-    pub thumbnail_base64: String,
+    /// Import-stage preview. Develop rendering must never overwrite it.
+    pub embedded_thumbnail_base64: String,
+    /// Last rendered positive preview, if this frame has been developed.
+    pub rendered_thumbnail_base64: Option<String>,
     pub original_proxy: Option<ImageBuffer<Rgb<u16>, Vec<u16>>>,
     pub proxy_image: Option<ImageBuffer<Rgb<u16>, Vec<u16>>>,
     pub pristine_proxy: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
@@ -140,7 +192,28 @@ pub struct FilmItem {
     pub in_library: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+impl FilmItem {
+    pub fn preferred_thumbnail(&self) -> &str {
+        self.rendered_thumbnail_base64
+            .as_deref()
+            .filter(|thumbnail| !thumbnail.is_empty())
+            .unwrap_or(&self.embedded_thumbnail_base64)
+    }
+
+    pub fn thumbnail_kind(&self) -> &'static str {
+        if self
+            .rendered_thumbnail_base64
+            .as_deref()
+            .is_some_and(|thumbnail| !thumbnail.is_empty())
+        {
+            "rendered"
+        } else {
+            "embedded"
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GeometryState {
     pub crop_rect: CropRect,
     pub angle: f32,
@@ -164,7 +237,7 @@ impl Default for GeometryState {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CropRect {
     pub x: f32,
     pub y: f32,
@@ -174,7 +247,12 @@ pub struct CropRect {
 
 impl Default for CropRect {
     fn default() -> Self {
-        CropRect { x: 0.0, y: 0.0, width: 1.0, height: 1.0 }
+        CropRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1.0,
+            height: 1.0,
+        }
     }
 }
 
@@ -189,10 +267,16 @@ pub struct FilmstripItem {
     pub id: String,
     pub roll_id: String,
     pub file_path: String,
+    /// Preferred thumbnail retained for compatibility with the current UI.
     pub thumbnail_base64: String,
+    pub embedded_thumbnail_base64: String,
+    pub rendered_thumbnail_base64: Option<String>,
+    pub thumbnail_kind: String,
+    pub state_available: bool,
+    pub file_missing: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Roll {
     pub roll_id: String,
     pub date: String,
@@ -202,13 +286,10 @@ pub struct Roll {
     pub image_paths: Vec<String>,
 }
 
-
 pub struct EngineState {
     pub items: dashmap::DashMap<String, std::sync::Arc<std::sync::RwLock<FilmItem>>>,
     pub item_order: RwLock<Vec<String>>,
     pub active_id: RwLock<Option<String>>,
-    pub dcp_profile: RwLock<Option<String>>,
-    pub working_colorspace: RwLock<String>,
     pub rolls: RwLock<Vec<Roll>>,
     /// LRU order of images whose high-res proxy data is loaded in memory.
     /// Front = oldest, back = newest. Capacity enforced at MAX_PROXY_CACHE.
@@ -221,8 +302,6 @@ impl EngineState {
             items: dashmap::DashMap::new(),
             item_order: RwLock::new(Vec::new()),
             active_id: RwLock::new(None),
-            dcp_profile: RwLock::new(None),
-            working_colorspace: RwLock::new("rec2020".to_string()),
             rolls: RwLock::new(Vec::new()),
             proxy_loaded_order: RwLock::new(VecDeque::new()),
         }

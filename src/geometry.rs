@@ -1,7 +1,7 @@
-use image::{ImageBuffer, Rgb, GrayImage, Luma};
+use image::{GrayImage, ImageBuffer, Luma, Rgb};
+use imageproc::edges::canny;
 use imageproc::filter::gaussian_blur_f32;
 use imageproc::hough::{detect_lines, LineDetectionOptions};
-use imageproc::edges::canny;
 
 /// 旋转 90 度
 pub fn rotate_90(img: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
@@ -9,16 +9,22 @@ pub fn rotate_90(img: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> ImageBuffer<Rgb<u16>,
 }
 
 /// 手动自由裁切功能
-pub fn crop(img: &mut ImageBuffer<Rgb<u16>, Vec<u16>>, x: u32, y: u32, width: u32, height: u32) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+pub fn crop(
+    img: &mut ImageBuffer<Rgb<u16>, Vec<u16>>,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
     image::imageops::crop(img, x, y, width, height).to_image()
 }
 
-use crate::app_state::{CropRect, AutoAlignResult};
+use crate::app_state::{AutoAlignResult, CropRect};
 
 /// 基于边缘内容自动算出内部有效区域的边界
 pub fn auto_crop_rect(img: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> Result<AutoAlignResult, String> {
     let (width, height) = img.dimensions();
-    
+
     // 1. 转为灰度图像
     let mut gray = GrayImage::new(width, height);
     for y in 0..height {
@@ -89,21 +95,49 @@ pub fn auto_crop_rect(img: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> Result<AutoAlign
     }
 
     // 如果未检测到，使用安全的保底裁切
-    let final_x = if best_left > 0.0 { best_left / width as f32 } else { 0.05 };
-    let final_y = if best_top > 0.0 { best_top / height as f32 } else { 0.05 };
-    let final_r = if best_right < width as f32 { best_right / width as f32 } else { 0.95 };
-    let final_b = if best_bottom < height as f32 { best_bottom / height as f32 } else { 0.95 };
+    let final_x = if best_left > 0.0 {
+        best_left / width as f32
+    } else {
+        0.05
+    };
+    let final_y = if best_top > 0.0 {
+        best_top / height as f32
+    } else {
+        0.05
+    };
+    let final_r = if best_right < width as f32 {
+        best_right / width as f32
+    } else {
+        0.95
+    };
+    let final_b = if best_bottom < height as f32 {
+        best_bottom / height as f32
+    } else {
+        0.95
+    };
 
     let mut angles = Vec::new();
-    if best_top > 0.0 { angles.push(best_top_deg as i32 - 90); }
-    if best_bottom < height as f32 { angles.push(best_bottom_deg as i32 - 90); }
-    if best_left > 0.0 { 
-        let d = if best_left_deg > 90 { best_left_deg as i32 - 180 } else { best_left_deg as i32 };
-        angles.push(d); 
+    if best_top > 0.0 {
+        angles.push(best_top_deg as i32 - 90);
     }
-    if best_right < width as f32 { 
-        let d = if best_right_deg > 90 { best_right_deg as i32 - 180 } else { best_right_deg as i32 };
-        angles.push(d); 
+    if best_bottom < height as f32 {
+        angles.push(best_bottom_deg as i32 - 90);
+    }
+    if best_left > 0.0 {
+        let d = if best_left_deg > 90 {
+            best_left_deg as i32 - 180
+        } else {
+            best_left_deg as i32
+        };
+        angles.push(d);
+    }
+    if best_right < width as f32 {
+        let d = if best_right_deg > 90 {
+            best_right_deg as i32 - 180
+        } else {
+            best_right_deg as i32
+        };
+        angles.push(d);
     }
 
     let avg_angle = if !angles.is_empty() {

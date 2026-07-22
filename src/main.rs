@@ -2,19 +2,13 @@
 
 use nexfilm_engine::app_state::EngineState;
 
-
 fn main() {
-    let _ = nexfilm_engine::commands::init_db();
+    nexfilm_engine::commands::init_db().expect("failed to initialize NexFilm database");
     nexfilm_engine::commands::init_background_limits();
-    
+
     let state = EngineState::new();
     nexfilm_engine::commands::load_all_image_states(&state);
-
-    if let Ok(json) = std::fs::read_to_string("rolls.json") {
-        if let Ok(rolls) = serde_json::from_str(&json) {
-            *state.rolls.write().unwrap() = rolls;
-        }
-    }
+    nexfilm_engine::commands::load_all_rolls(&state).expect("failed to load NexFilm roll metadata");
 
     tauri::Builder::default()
         .manage(state)
@@ -30,22 +24,15 @@ fn main() {
             nexfilm_engine::commands::switch_active_image,
             nexfilm_engine::commands::prepare_proxy,
             nexfilm_engine::commands::get_proxy_image_data,
-            nexfilm_engine::commands::is_proxy_ready,
-            nexfilm_engine::commands::prefetch_proxy,
             nexfilm_engine::commands::update_tuning_parameters,
             nexfilm_engine::commands::batch_export_images,
-            nexfilm_engine::commands::set_film_mode,
             nexfilm_engine::commands::sync_thumbnail_buffer,
             nexfilm_engine::commands::set_thumbnail_data,
             nexfilm_engine::commands::update_geometry,
             nexfilm_engine::commands::geometry_auto_align,
             nexfilm_engine::commands::load_3d_lut,
-            nexfilm_engine::commands::load_dcp_profile,
-            nexfilm_engine::commands::set_working_colorspace,
             nexfilm_engine::commands::open_lut_dialog,
-            nexfilm_engine::commands::open_dcp_dialog,
             nexfilm_engine::commands::get_builtin_luts,
-            nexfilm_engine::commands::get_builtin_dcps,
             nexfilm_engine::commands::get_rolls,
             nexfilm_engine::commands::import_roll,
             nexfilm_engine::commands::delete_rolls,

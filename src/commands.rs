@@ -1,26 +1,35 @@
-use crate::app_state::{BaseColor, EngineState, FilmItem, FilmstripItem, TuningParams, FilmMode, Roll};
-use serde::Serialize;
+use crate::app_state::{
+    BaseColor, EngineState, FilmItem, FilmMode, FilmstripItem, GeometryState, Roll, TuningParams,
+};
+use crate::core_math::{
+    apply_homography, normalize_density_channel, shader_homography, sprocket_white_mask,
+    tone_density_channel,
+};
+use crate::persistence::{self, MATH_VERSION, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
+use serde::Serialize;
 
 use base64::{engine::general_purpose, Engine as _};
-use image::{imageops::FilterType, ImageBuffer, ImageOutputFormat, Rgb, RgbImage, GenericImageView};
+use image::{
+    imageops::FilterType, GenericImageView, ImageBuffer, ImageOutputFormat, Rgb, RgbImage,
+};
 use rayon::prelude::*;
-use tauri::{Emitter, Manager};
 use rfd::FileDialog;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
-use tauri::State;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use serde_json::Value;
-use std::collections::{HashSet, VecDeque};
 use std::sync::{MutexGuard, RwLockReadGuard, RwLockWriteGuard};
+use tauri::State;
+use tauri::{Emitter, Manager};
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
-static PREFETCH_ACTIVE_WORKERS: AtomicUsize = AtomicUsize::new(0);
-static PREFETCH_HIGH_PRIORITY_WORKERS: AtomicUsize = AtomicUsize::new(0);
 static RAYON_INIT: OnceLock<()> = OnceLock::new();
+static EXPORT_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 const FALLBACK_THUMB: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mM8c+bMfwAIGwK9t856VAAAAABJRU5ErkJggg==";
+const IMPORT_PREVIEW_LONG_EDGE: u32 = 256;
 const PROXY_LONG_EDGE: f32 = 2560.0;
 
 struct LibrawGuard(*mut libraw_sys::libraw_data_t);
@@ -41,6 +50,34 @@ impl Drop for LibrawMemGuard {
     }
 }
 
+#[cfg(windows)]
+unsafe extern "C" {
+    fn libraw_open_wfile(
+        data: *mut libraw_sys::libraw_data_t,
+        path: *const u16,
+    ) -> std::os::raw::c_int;
+}
+
+fn libraw_open_path(data: *mut libraw_sys::libraw_data_t, path: &str) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide_path: Vec<u16> = std::ffi::OsStr::new(path)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        return unsafe { libraw_open_wfile(data, wide_path.as_ptr()) == 0 };
+    }
+
+    #[cfg(not(windows))]
+    {
+        let Ok(c_path) = std::ffi::CString::new(path) else {
+            return false;
+        };
+        unsafe { libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0 }
+    }
+}
+
 fn resize_preview_image(mut img: image::DynamicImage, max_edge: u32) -> image::DynamicImage {
     let (w, h) = img.dimensions();
     if w.max(h) > max_edge {
@@ -54,11 +91,16 @@ fn resize_preview_image(mut img: image::DynamicImage, max_edge: u32) -> image::D
 
 fn write_jpeg_base64(img: image::DynamicImage, quality: u8) -> Option<String> {
     let mut cursor = Cursor::new(Vec::new());
-    img.write_to(&mut cursor, ImageOutputFormat::Jpeg(quality)).ok()?;
+    img.write_to(&mut cursor, ImageOutputFormat::Jpeg(quality))
+        .ok()?;
     Some(general_purpose::STANDARD.encode(cursor.into_inner()))
 }
 
-fn encode_preview_jpeg_base64(img: image::DynamicImage, max_edge: u32, quality: u8) -> Option<String> {
+fn encode_preview_jpeg_base64(
+    img: image::DynamicImage,
+    max_edge: u32,
+    quality: u8,
+) -> Option<String> {
     write_jpeg_base64(resize_preview_image(img, max_edge), quality)
 }
 
@@ -85,7 +127,11 @@ fn percentile_from_histogram(hist: &[u32], rank: u64) -> u16 {
     u16::MAX
 }
 
-fn encode_stretched_preview_jpeg_base64(img: image::DynamicImage, max_edge: u32, quality: u8) -> Option<String> {
+fn encode_stretched_preview_jpeg_base64(
+    img: image::DynamicImage,
+    max_edge: u32,
+    quality: u8,
+) -> Option<String> {
     let img = resize_preview_image(img, max_edge);
     let rgb16 = img.to_rgb16();
     let (width, height) = rgb16.dimensions();
@@ -139,10 +185,36 @@ fn is_raw_extension(path: &str) -> bool {
             .map(|ext| ext.to_ascii_lowercase())
             .as_deref(),
         Some(
-            "dng" | "nef" | "cr2" | "cr3" | "arw" | "raf" | "rw2" | "orf" | "srw" | "raw"
-                | "3fr" | "erf" | "kdc" | "iiq" | "mos" | "mrw" | "pef" | "x3f"
+            "dng"
+                | "nef"
+                | "nrw"
+                | "cr2"
+                | "cr3"
+                | "arw"
+                | "srf"
+                | "sr2"
+                | "raf"
+                | "rw2"
+                | "orf"
+                | "ori"
+                | "srw"
+                | "raw"
+                | "3fr"
+                | "erf"
+                | "kdc"
+                | "dcr"
+                | "iiq"
+                | "mos"
+                | "mrw"
+                | "pef"
+                | "x3f"
+                | "rwl"
         )
     )
+}
+
+fn normalize_path(path: &str) -> String {
+    path.replace('\\', "/").to_lowercase()
 }
 
 fn is_direct_image_extension(path: &str) -> bool {
@@ -156,6 +228,17 @@ fn is_direct_image_extension(path: &str) -> bool {
     )
 }
 
+fn is_lightweight_direct_preview(path: &str) -> bool {
+    matches!(
+        std::path::Path::new(path)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| ext.to_ascii_lowercase())
+            .as_deref(),
+        Some("jpg" | "jpeg" | "png")
+    )
+}
+
 fn is_tiff_extension(path: &str) -> bool {
     matches!(
         std::path::Path::new(path)
@@ -165,6 +248,16 @@ fn is_tiff_extension(path: &str) -> bool {
             .as_deref(),
         Some("tif" | "tiff")
     )
+}
+
+fn bundled_asset_dir(app_handle: &tauri::AppHandle, kind: &str) -> std::path::PathBuf {
+    if let Ok(resource_dir) = app_handle.path().resource_dir() {
+        let bundled = resource_dir.join("assets").join(kind);
+        if bundled.is_dir() {
+            return bundled;
+        }
+    }
+    std::path::Path::new("assets").join(kind)
 }
 
 fn decode_direct_image_preview_base64(path: &str, max_edge: u32) -> Option<String> {
@@ -183,20 +276,7 @@ fn extract_embedded_preview_base64(path: &str, max_edge: u32) -> Option<String> 
             return None;
         }
         let _data_guard = LibrawGuard(data);
-        let c_path = std::ffi::CString::new(path).ok()?;
-        let mut opened = libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0;
-
-        let mut _buf = Vec::new();
-        if !opened {
-            if let Ok(b) = std::fs::read(path) {
-                _buf = b;
-                opened = libraw_sys::libraw_open_buffer(
-                    data,
-                    _buf.as_ptr() as *const _,
-                    _buf.len(),
-                ) == 0;
-            }
-        }
+        let opened = libraw_open_path(data, path);
 
         if opened && libraw_sys::libraw_unpack_thumb(data) == 0 {
             let mut err = 0;
@@ -235,12 +315,15 @@ fn extract_embedded_preview_base64(path: &str, max_edge: u32) -> Option<String> 
                             thumb_len / 2,
                         );
                         let mut img = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
-                        img.as_mut().par_chunks_exact_mut(3).enumerate().for_each(|(i, pixel)| {
-                            let idx = i * 3;
-                            pixel[0] = slice.get(idx).copied().unwrap_or(0);
-                            pixel[1] = slice.get(idx + 1).copied().unwrap_or(0);
-                            pixel[2] = slice.get(idx + 2).copied().unwrap_or(0);
-                        });
+                        img.as_mut()
+                            .par_chunks_exact_mut(3)
+                            .enumerate()
+                            .for_each(|(i, pixel)| {
+                                let idx = i * 3;
+                                pixel[0] = slice.get(idx).copied().unwrap_or(0);
+                                pixel[1] = slice.get(idx + 1).copied().unwrap_or(0);
+                                pixel[2] = slice.get(idx + 2).copied().unwrap_or(0);
+                            });
                         return encode_stretched_preview_jpeg_base64(
                             image::DynamicImage::ImageRgb16(img),
                             max_edge,
@@ -257,19 +340,21 @@ fn extract_embedded_preview_base64(path: &str, max_edge: u32) -> Option<String> 
     None
 }
 
-fn decode_preview_base64(path: &str, max_edge: u32) -> Option<String> {
-    if is_direct_image_extension(path) {
+/// Import-stage decoder. Camera RAW is always embedded-preview-only. TIFF first
+/// uses an embedded preview, then falls back to a background downscaled decode
+/// because many scanner TIFFs contain no thumbnail IFD.
+fn decode_import_preview_base64(path: &str, max_edge: u32) -> Option<String> {
+    if is_lightweight_direct_preview(path) {
         return decode_direct_image_preview_base64(path, max_edge);
     }
 
-    if let Some(preview) = extract_embedded_preview_base64(path, max_edge) {
-        return Some(preview);
+    if is_raw_extension(path) {
+        return extract_embedded_preview_base64(path, max_edge);
     }
-
-    if !is_raw_extension(path) {
-        return decode_direct_image_preview_base64(path, max_edge);
+    if is_tiff_extension(path) {
+        return extract_embedded_preview_base64(path, max_edge)
+            .or_else(|| decode_direct_image_preview_base64(path, max_edge));
     }
-
     None
 }
 
@@ -277,10 +362,16 @@ fn decode_develop_preview_base64(path: &str, max_edge: u32) -> Option<String> {
     if is_direct_image_extension(path) {
         return decode_direct_image_preview_base64(path, max_edge);
     }
-    decode_preview_base64(path, max_edge)
+    extract_embedded_preview_base64(path, max_edge)
 }
 
-fn build_response_buffer(width: u32, height: u32, base_color: &BaseColor, pixels: &[u16], is_full_proxy: bool) -> Vec<u8> {
+fn build_response_buffer(
+    width: u32,
+    height: u32,
+    base_color: &BaseColor,
+    pixels: &[u16],
+    is_full_proxy: bool,
+) -> Vec<u8> {
     let epsilon = 1e-6_f32;
     let t_r = (base_color.base_r as f32 / 65535.0).max(epsilon);
     let t_g = (base_color.base_g as f32 / 65535.0).max(epsilon);
@@ -298,12 +389,15 @@ fn build_response_buffer(width: u32, height: u32, base_color: &BaseColor, pixels
     out_buffer[20..24].copy_from_slice(&(if is_full_proxy { 1u32 } else { 0u32 }).to_le_bytes());
 
     let out_slice = &mut out_buffer[24..];
-    pixels.par_chunks(3).zip(out_slice.par_chunks_mut(8)).for_each(|(chunk, out_chunk)| {
-        out_chunk[0..2].copy_from_slice(&chunk[0].to_le_bytes());
-        out_chunk[2..4].copy_from_slice(&chunk[1].to_le_bytes());
-        out_chunk[4..6].copy_from_slice(&chunk[2].to_le_bytes());
-        out_chunk[6..8].copy_from_slice(&65535u16.to_le_bytes());
-    });
+    pixels
+        .par_chunks(3)
+        .zip(out_slice.par_chunks_mut(8))
+        .for_each(|(chunk, out_chunk)| {
+            out_chunk[0..2].copy_from_slice(&chunk[0].to_le_bytes());
+            out_chunk[2..4].copy_from_slice(&chunk[1].to_le_bytes());
+            out_chunk[4..6].copy_from_slice(&chunk[2].to_le_bytes());
+            out_chunk[6..8].copy_from_slice(&65535u16.to_le_bytes());
+        });
     out_buffer
 }
 
@@ -313,7 +407,13 @@ fn build_response_buffer_from_proxy(
     is_full_proxy: bool,
 ) -> Vec<u8> {
     let (width, height) = proxy.dimensions();
-    build_response_buffer(width, height, base_color, proxy.as_raw().as_slice(), is_full_proxy)
+    build_response_buffer(
+        width,
+        height,
+        base_color,
+        proxy.as_raw().as_slice(),
+        is_full_proxy,
+    )
 }
 
 fn lock_mutex<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -340,224 +440,13 @@ pub fn init_background_limits() {
     });
 }
 
-#[derive(Clone)]
-struct ProxyPrefetchJob {
-    id: String,
-    high_priority: bool,
-    attempts: u8,
-}
+struct ExportActiveGuard;
 
-static PREFETCH_QUEUE: OnceLock<Mutex<VecDeque<ProxyPrefetchJob>>> = OnceLock::new();
-static PREFETCH_IN_FLIGHT: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-
-fn proxy_worker_limit(has_high_priority: bool) -> usize {
-    if !has_high_priority {
-        return 1;
-    }
-    std::thread::available_parallelism()
-        .map(|n| if n.get() >= 4 { 2 } else { 1 })
-        .unwrap_or(1)
-}
-
-fn prefetch_queue() -> &'static Mutex<VecDeque<ProxyPrefetchJob>> {
-    PREFETCH_QUEUE.get_or_init(|| Mutex::new(VecDeque::new()))
-}
-
-fn prefetch_in_flight() -> &'static Mutex<HashSet<String>> {
-    PREFETCH_IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
-}
-
-struct ProxyInFlightGuard {
-    id: String,
-}
-
-impl Drop for ProxyInFlightGuard {
+impl Drop for ExportActiveGuard {
     fn drop(&mut self) {
-        lock_mutex(prefetch_in_flight()).remove(&self.id);
+        EXPORT_ACTIVE.store(false, Ordering::SeqCst);
     }
 }
-
-fn enqueue_proxy_job(app_handle: tauri::AppHandle, id: String, high_priority: bool) {
-    {
-        let mut queue = lock_mutex(prefetch_queue());
-        if let Some(existing) = queue.iter_mut().find(|job| job.id == id) {
-            if high_priority && !existing.high_priority {
-                existing.high_priority = true;
-                if let Some(pos) = queue.iter().position(|job| job.id == id) {
-                    if let Some(job) = queue.remove(pos) {
-                        queue.push_front(job);
-                    }
-                }
-            }
-            return;
-        }
-        let job = ProxyPrefetchJob { id, high_priority, attempts: 0 };
-        if high_priority {
-            queue.push_front(job);
-        } else {
-            queue.push_back(job);
-        }
-    }
-
-    spawn_proxy_workers(app_handle);
-}
-
-fn spawn_proxy_workers(app_handle: tauri::AppHandle) {
-    loop {
-        let has_high_priority = {
-            let queue = lock_mutex(prefetch_queue());
-            queue.iter().any(|job| job.high_priority)
-        };
-        let active = PREFETCH_ACTIVE_WORKERS.load(Ordering::SeqCst);
-        if active >= proxy_worker_limit(has_high_priority) {
-            break;
-        }
-
-        if PREFETCH_ACTIVE_WORKERS
-            .compare_exchange(active, active + 1, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            let app_for_worker = app_handle.clone();
-            std::thread::spawn(move || {
-                run_proxy_prefetch_worker(app_for_worker.clone());
-                PREFETCH_ACTIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
-                if !lock_mutex(prefetch_queue()).is_empty() {
-                    spawn_proxy_workers(app_for_worker);
-                }
-            });
-        }
-    }
-}
-
-fn run_proxy_prefetch_worker(app_handle: tauri::AppHandle) {
-    loop {
-        let job = {
-            let mut queue = lock_mutex(prefetch_queue());
-            queue.pop_front()
-        };
-
-        let Some(job) = job else { break; };
-
-        let already_processing = {
-            let mut in_flight = lock_mutex(prefetch_in_flight());
-            !in_flight.insert(job.id.clone())
-        };
-        if already_processing {
-            continue;
-        }
-        let _in_flight_guard = ProxyInFlightGuard { id: job.id.clone() };
-        let _priority_guard = if job.high_priority {
-            PREFETCH_HIGH_PRIORITY_WORKERS.fetch_add(1, Ordering::SeqCst);
-            Some(HighPriorityWorkerGuard)
-        } else {
-            None
-        };
-
-        let state = app_handle.state::<EngineState>();
-        let item_arc = match state.items.get(&job.id) {
-            Some(item) => item,
-            None => {
-                if job.attempts < 5 {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                    let mut queue = lock_mutex(prefetch_queue());
-                    queue.push_back(ProxyPrefetchJob {
-                        id: job.id,
-                        high_priority: job.high_priority,
-                        attempts: job.attempts + 1,
-                    });
-                }
-                continue;
-            }
-        };
-
-        let (file_path, needs_base_color, existing_base_color, film_mode, has_proxy, has_pristine, dcp_profile, colorspace) = {
-            let item = match item_arc.read() {
-                Ok(item) => item,
-                Err(e) => e.into_inner(),
-            };
-            let needs = item.base_color.base_r == 32768
-                && item.base_color.base_g == 32768
-                && item.base_color.base_b == 32768;
-            (
-                item.file_path.clone(),
-                needs,
-                item.base_color.clone(),
-                item.params.film_mode.clone(),
-                item.proxy_image.is_some(),
-                item.pristine_proxy.is_some(),
-                read_lock(&state.dcp_profile).clone(),
-                read_lock(&state.working_colorspace).clone(),
-            )
-        };
-
-        let result = if has_proxy && has_pristine {
-            Ok(None)
-        } else {
-            let loaded = load_image_buffer(&file_path, true, dcp_profile.as_deref(), &colorspace);
-            match loaded {
-                Ok(img_buffer) => {
-                    let (width, height) = img_buffer.dimensions();
-                    let ratio_proxy = PROXY_LONG_EDGE / (width.max(height) as f32);
-                    let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
-                    let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
-                    let proxy = image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle);
-                    let bc = if needs_base_color {
-                        compute_auto_base(&proxy)
-                    } else {
-                        existing_base_color.clone()
-                    };
-                    let pristine = compute_pristine_proxy(&proxy, &bc, film_mode);
-                    Ok(Some((proxy, bc, pristine)))
-                }
-                Err(e) => Err(e),
-            }
-        };
-
-        match result {
-            Ok(Some((proxy, bc, pristine))) => {
-                if let Some(item_arc) = state.items.get(&job.id) {
-                    let mut item = write_lock(&item_arc);
-                    if item.proxy_image.is_none() {
-                        item.original_proxy = Some(proxy.clone());
-                        item.proxy_image = Some(proxy);
-                        if needs_base_color {
-                            item.base_color = bc;
-                        }
-                    }
-                    if item.pristine_proxy.is_none() {
-                        item.pristine_proxy = Some(pristine);
-                    }
-                    if !item.is_loose {
-                        let _ = save_image_state_to_db(&item);
-                    }
-                }
-                track_proxy_loaded(&state, &job.id);
-                let _ = app_handle.emit("proxy_ready", serde_json::json!({
-                    "id": job.id,
-                    "priority": if job.high_priority { "high" } else { "low" }
-                }));
-            }
-            Ok(None) => {
-                let _ = app_handle.emit("proxy_ready", serde_json::json!({
-                    "id": job.id,
-                    "priority": if job.high_priority { "high" } else { "low" }
-                }));
-            }
-            Err(e) => {
-                eprintln!("[Prefetch] FAILED to load {}: {}", job.id, e);
-            }
-        }
-    }
-}
-
-struct HighPriorityWorkerGuard;
-
-impl Drop for HighPriorityWorkerGuard {
-    fn drop(&mut self) {
-        PREFETCH_HIGH_PRIORITY_WORKERS.fetch_sub(1, Ordering::SeqCst);
-    }
-}
-
 
 fn compute_auto_base(proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> BaseColor {
     let raw = proxy.as_raw();
@@ -609,22 +498,25 @@ fn compute_pristine_proxy(
     );
     let (width, height) = proxy.dimensions();
     let mut pristine = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(width, height);
-    
+
     let raw_pixels: &[u16] = proxy.as_raw().as_slice();
     let out_pixels: &mut [f32] = pristine.as_mut();
-    
-    raw_pixels.par_chunks(3).zip(out_pixels.par_chunks_mut(3)).for_each(|(in_px, out_px)| {
-        let linear_rgb = [
-            (in_px[0] as f32) / 65535.0,
-            (in_px[1] as f32) / 65535.0,
-            (in_px[2] as f32) / 65535.0,
-        ];
-        let true_density = pipeline.compute_true_density(&linear_rgb);
-        out_px[0] = true_density[0];
-        out_px[1] = true_density[1];
-        out_px[2] = true_density[2];
-    });
-    
+
+    raw_pixels
+        .par_chunks(3)
+        .zip(out_pixels.par_chunks_mut(3))
+        .for_each(|(in_px, out_px)| {
+            let linear_rgb = [
+                (in_px[0] as f32) / 65535.0,
+                (in_px[1] as f32) / 65535.0,
+                (in_px[2] as f32) / 65535.0,
+            ];
+            let true_density = pipeline.compute_true_density(&linear_rgb);
+            out_px[0] = true_density[0];
+            out_px[1] = true_density[1];
+            out_px[2] = true_density[2];
+        });
+
     pristine
 }
 
@@ -632,12 +524,24 @@ fn compute_pristine_proxy(
 pub async fn open_file_dialog() -> Result<Vec<String>, String> {
     let file_paths = tauri::async_runtime::spawn_blocking(|| {
         FileDialog::new()
-            .add_filter("RAW Images", &["dng", "nef", "cr2", "cr3", "arw", "raf", "tiff", "tif"])
+            .add_filter(
+                "Film Scans",
+                &[
+                    "dng", "nef", "nrw", "cr2", "cr3", "arw", "srf", "sr2", "raf", "rw2", "orf",
+                    "ori", "srw", "pef", "3fr", "erf", "kdc", "dcr", "iiq", "mos", "mrw", "x3f",
+                    "rwl", "raw", "tiff", "tif", "jpg", "jpeg", "png",
+                ],
+            )
             .pick_files()
-    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
-    
+    })
+    .await
+    .map_err(|e| format!("Dialog error: {:?}", e))?;
+
     if let Some(paths) = file_paths {
-        Ok(paths.into_iter().map(|p| p.to_string_lossy().to_string()).collect())
+        Ok(paths
+            .into_iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect())
     } else {
         Ok(Vec::new())
     }
@@ -645,22 +549,11 @@ pub async fn open_file_dialog() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub async fn select_export_dir() -> Result<Option<String>, String> {
-    let dir_path = tauri::async_runtime::spawn_blocking(|| {
-        FileDialog::new().pick_folder()
-    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
-    
-    Ok(dir_path.map(|p| p.to_string_lossy().to_string()))
-}
+    let dir_path = tauri::async_runtime::spawn_blocking(|| FileDialog::new().pick_folder())
+        .await
+        .map_err(|e| format!("Dialog error: {:?}", e))?;
 
-#[tauri::command]
-pub async fn open_dcp_dialog() -> Result<Option<String>, String> {
-    let file_path = tauri::async_runtime::spawn_blocking(|| {
-        FileDialog::new()
-            .add_filter("DCP Profile / JSON Config", &["dcp", "json"])
-            .pick_file()
-    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
-    
-    Ok(file_path.map(|p| p.to_string_lossy().to_string()))
+    Ok(dir_path.map(|p| p.to_string_lossy().to_string()))
 }
 
 #[tauri::command]
@@ -669,15 +562,17 @@ pub async fn open_lut_dialog() -> Result<Option<String>, String> {
         FileDialog::new()
             .add_filter("3D LUT / JSON Config", &["cube", "json", "3dl"])
             .pick_file()
-    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
-    
+    })
+    .await
+    .map_err(|e| format!("Dialog error: {:?}", e))?;
+
     Ok(file_path.map(|p| p.to_string_lossy().to_string()))
 }
 
 #[tauri::command]
-pub async fn get_builtin_luts() -> Result<Vec<String>, String> {
+pub async fn get_builtin_luts(app_handle: tauri::AppHandle) -> Result<Vec<String>, String> {
     let mut luts = Vec::new();
-    if let Ok(entries) = std::fs::read_dir("assets/luts") {
+    if let Ok(entries) = std::fs::read_dir(bundled_asset_dir(&app_handle, "luts")) {
         for entry in entries.filter_map(Result::ok) {
             if let Ok(file_type) = entry.file_type() {
                 if file_type.is_file() {
@@ -695,117 +590,185 @@ pub async fn get_builtin_luts() -> Result<Vec<String>, String> {
     Ok(luts)
 }
 
-#[tauri::command]
-pub async fn get_builtin_dcps() -> Result<Vec<String>, String> {
-    let mut dcps = Vec::new();
-    if let Ok(entries) = std::fs::read_dir("assets/dcps") {
-        for entry in entries.filter_map(Result::ok) {
-            if let Ok(file_type) = entry.file_type() {
-                if file_type.is_file() {
-                    let path = entry.path();
-                    if path.extension().and_then(|e| e.to_str()) == Some("dcp") {
-                        if let Some(path_str) = path.to_str() {
-                            dcps.push(path_str.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(dcps)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DecodeMode {
+    DevelopProxy,
+    ExportFull,
 }
 
-pub fn load_image_buffer(path: &str, use_half_size: bool, dcp_profile: Option<&str>, colorspace: &str) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
-    if path.to_lowercase().ends_with(".tif") || path.to_lowercase().ends_with(".tiff") {
-        let img = image::open(path).map(|i| i.into_rgb16()).map_err(|e| format!("TIFF读取失败: {:?}", e))?;
-        if use_half_size {
-            let (w, h) = img.dimensions();
-            Ok(image::imageops::resize(&img, w / 2, h / 2, FilterType::Triangle))
-        } else {
-            Ok(img)
+fn libraw_output_color(colorspace: &str) -> Result<i32, String> {
+    match colorspace {
+        "linear-srgb" => Ok(1),
+        "aces" => Ok(6),
+        other => Err(format!("Unsupported RAW working color space: {other}")),
+    }
+}
+
+fn decode_image_buffer(
+    path: &str,
+    mode: DecodeMode,
+    colorspace: &str,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    if is_direct_image_extension(path) {
+        return image::open(path)
+            .map(|image| image.into_rgb16())
+            .map_err(|error| format!("Image decode failed for {path}: {error:?}"));
+    }
+
+    unsafe {
+        let data = libraw_sys::libraw_init(0);
+        if data.is_null() {
+            return Err("Failed to initialize LibRaw".to_string());
         }
-    } else {
-        let buf = std::fs::read(path).map_err(|e| format!("RAW文件读取失败: {:?}", e))?;
-        unsafe {
-            let data = libraw_sys::libraw_init(0);
-            if data.is_null() {
-                return Err("Failed to init libraw".to_string());
-            }
+        let _data_guard = LibrawGuard(data);
 
-            (*data).params.use_camera_wb = 1;
-            (*data).params.use_camera_matrix = 1;
-            (*data).params.output_color = if colorspace == "aces" { 6 } else { 1 }; // sRGB
-            (*data).params.gamm[0] = 1.0;
-            (*data).params.gamm[1] = 1.0;
-            
-            let mut _c_dcp: Option<std::ffi::CString> = None;
-            if let Some(dcp) = dcp_profile {
-                if let Ok(c_str) = std::ffi::CString::new(dcp) {
-                    (*data).params.camera_profile = c_str.as_ptr() as *mut std::os::raw::c_char;
-                    _c_dcp = Some(c_str);
-                }
-            }
-            
-            if use_half_size {
-                (*data).params.half_size = 1;
-            }
+        // RAW_DECODE_VERSION 3 contract: 16-bit, gamma 1.0, fixed brightness,
+        // camera matrix enabled, no automatic brightness normalization, and
+        // no external camera profile until the decoder has real profile support.
+        (*data).params.use_auto_wb = 0;
+        (*data).params.use_camera_wb = 1;
+        (*data).params.use_camera_matrix = 1;
+        (*data).params.output_color = libraw_output_color(colorspace)?;
+        (*data).params.output_bps = 16;
+        (*data).params.gamm[0] = 1.0;
+        (*data).params.gamm[1] = 1.0;
+        (*data).params.no_auto_bright = 1;
+        (*data).params.bright = 1.0;
+        (*data).params.highlight = 0;
+        (*data).params.half_size = i32::from(mode == DecodeMode::DevelopProxy);
 
-            if libraw_sys::libraw_open_buffer(data, buf.as_ptr() as *const _, buf.len()) != 0 {
-                libraw_sys::libraw_close(data);
-                return Err("Failed to open RAW buffer".to_string());
-            }
-            if libraw_sys::libraw_unpack(data) != 0 {
-                libraw_sys::libraw_close(data);
-                return Err("Failed to unpack RAW".to_string());
-            }
+        if !libraw_open_path(data, path) {
+            return Err(format!("LibRaw cannot open this camera RAW: {path}"));
+        }
+        if libraw_sys::libraw_unpack(data) != 0 {
+            return Err(format!("LibRaw cannot unpack this camera RAW: {path}"));
+        }
+        if libraw_sys::libraw_dcraw_process(data) != 0 {
+            return Err(format!("LibRaw cannot process this camera RAW: {path}"));
+        }
 
-            (*data).params.output_bps = 16;
-            
-            if libraw_sys::libraw_dcraw_process(data) != 0 {
-                libraw_sys::libraw_close(data);
-                return Err("Failed to process RAW".to_string());
-            }
+        let mut error_code = 0;
+        let memory_image = libraw_sys::libraw_dcraw_make_mem_image(data, &mut error_code);
+        if memory_image.is_null() {
+            return Err(format!(
+                "LibRaw failed to create a 16-bit image ({error_code})"
+            ));
+        }
+        let _memory_guard = LibrawMemGuard(memory_image);
 
-            let mut err = 0;
-            let mem_image = libraw_sys::libraw_dcraw_make_mem_image(data, &mut err);
-            if mem_image.is_null() {
-                libraw_sys::libraw_close(data);
-                return Err("Failed to create mem image".to_string());
-            }
+        let width = (*memory_image).width as u32;
+        let height = (*memory_image).height as u32;
+        let colors = (*memory_image).colors as usize;
+        let bits = (*memory_image).bits;
+        let data_len = (*memory_image).data_size as usize;
+        if colors < 3 || bits != 16 {
+            return Err(format!(
+                "Unexpected LibRaw output: {colors} channels at {bits} bits"
+            ));
+        }
 
-            let width = (*mem_image).width as u32;
-            let height = (*mem_image).height as u32;
-            let colors = (*mem_image).colors as usize;
-            let data_len = (*mem_image).data_size as usize;
-            
-            let slice = std::slice::from_raw_parts((*mem_image).data.as_ptr() as *const u16, data_len / 2);
-            
-            let mut img_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
-            img_buffer.as_mut().par_chunks_exact_mut(3).enumerate().for_each(|(i, pixel)| {
-                let idx = i * colors;
-                pixel[0] = slice.get(idx).copied().unwrap_or(0);
-                pixel[1] = slice.get(idx + 1).copied().unwrap_or(0);
-                pixel[2] = slice.get(idx + 2).copied().unwrap_or(0);
+        let samples = std::slice::from_raw_parts(
+            (*memory_image).data.as_ptr() as *const u16,
+            data_len / std::mem::size_of::<u16>(),
+        );
+        let required_samples = width as usize * height as usize * colors;
+        if samples.len() < required_samples {
+            return Err("LibRaw returned a truncated image buffer".to_string());
+        }
+
+        let mut image_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
+        image_buffer
+            .as_mut()
+            .par_chunks_exact_mut(3)
+            .enumerate()
+            .for_each(|(index, pixel)| {
+                let source = index * colors;
+                pixel.copy_from_slice(&samples[source..source + 3]);
             });
-            
-            libraw_sys::libraw_dcraw_clear_mem(mem_image as *mut _);
-            libraw_sys::libraw_close(data);
-
-            Ok(img_buffer)
-        }
+        Ok(image_buffer)
     }
 }
 
+fn persist_import_batch(
+    connection: &mut rusqlite::Connection,
+    items: &[FilmItem],
+) -> Result<(), String> {
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("Failed to begin import transaction: {error}"))?;
+    for item in items {
+        let params_str = serde_json::to_string(&item.params)
+            .map_err(|error| format!("Failed to serialize tuning state: {error}"))?;
+        let geom_str = serde_json::to_string(&item.geom)
+            .map_err(|error| format!("Failed to serialize geometry state: {error}"))?;
+        let base_color_str = serde_json::to_string(&item.base_color)
+            .map_err(|error| format!("Failed to serialize base color: {error}"))?;
+        transaction
+            .execute(
+                "INSERT INTO image_states (
+                     roll_id, file_path, thumbnail_base64, embedded_thumb_base64,
+                     rendered_thumb_base64, params, geom, base_color,
+                     math_version, raw_decode_version, updated_at
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 ON CONFLICT(roll_id, file_path) DO UPDATE SET
+                 thumbnail_base64=excluded.thumbnail_base64,
+                 embedded_thumb_base64=excluded.embedded_thumb_base64,
+                 rendered_thumb_base64=COALESCE(excluded.rendered_thumb_base64, image_states.rendered_thumb_base64),
+                 params=excluded.params,
+                 geom=excluded.geom,
+                 base_color=excluded.base_color,
+                 math_version=excluded.math_version,
+                 raw_decode_version=excluded.raw_decode_version,
+                 updated_at=excluded.updated_at",
+                rusqlite::params![
+                    item.roll_id,
+                    item.file_path,
+                    item.preferred_thumbnail(),
+                    item.embedded_thumbnail_base64,
+                    item.rendered_thumbnail_base64,
+                    params_str,
+                    geom_str,
+                    base_color_str,
+                    MATH_VERSION,
+                    RAW_DECODE_VERSION,
+                    persistence::now_timestamp(),
+                ],
+            )
+            .map_err(|error| {
+                format!("Failed to persist imported image {}: {error}", item.file_path)
+            })?;
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("Failed to commit imported images: {error}"))
+}
+
 #[tauri::command]
-pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_library: Option<bool>, roll_id: Option<String>, is_historical: Option<bool>, _state: State<'_, EngineState>, app_handle: tauri::AppHandle) -> Result<(), String> {
+pub async fn import_images(
+    paths: Vec<String>,
+    is_loose: Option<bool>,
+    in_library: Option<bool>,
+    roll_id: Option<String>,
+    is_historical: Option<bool>,
+    _state: State<'_, EngineState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
 
-    let target_roll = roll_id.clone().unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
+    let target_roll = roll_id
+        .clone()
+        .unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
     let loose = is_loose.unwrap_or(false);
     let in_lib = in_library.unwrap_or(true);
     let historical = is_historical.unwrap_or(false);
+    if historical {
+        return Err(
+            "Historical rolls must be resumed from persisted state, not re-imported".into(),
+        );
+    }
 
     // ═══════════════════════════════════════════════════════════════════
     //  STEP 1: Create the MPSC channel — the SINGLE data pipe.
@@ -824,13 +787,31 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
     let import_total_consumer = import_total.clone();
 
     std::thread::spawn(move || {
-        let mut conn = match rusqlite::Connection::open(get_db_path()) {
+        let mut conn = match persistence::open_connection() {
             Ok(c) => {
                 c.busy_timeout(std::time::Duration::from_secs(5)).ok();
                 c
             }
             Err(e) => {
-                eprintln!("[Import Consumer] Failed to open DB: {}", e);
+                let message = format!("Failed to open import database: {e}");
+                eprintln!("[Import Consumer] {message}");
+                let _ = app_handle_consumer.emit(
+                    "import_error",
+                    serde_json::json!({
+                        "message": message,
+                        "file_paths": paths_consumer,
+                        "roll_id": roll_id_consumer,
+                        "processed": 0,
+                        "total": import_total_consumer.load(Ordering::SeqCst),
+                    }),
+                );
+                let _ = app_handle_consumer.emit(
+                    "import_complete",
+                    serde_json::json!({
+                        "total": 0,
+                        "failed": import_total_consumer.load(Ordering::SeqCst),
+                    }),
+                );
                 return;
             }
         };
@@ -838,66 +819,45 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
         let state = app_handle_consumer.state::<EngineState>();
         let mut buffer: Vec<FilmItem> = Vec::new();
         let mut total_processed: usize = 0;
+        let mut total_failed: usize = 0;
+        let mut failed_roll_paths = HashSet::new();
         let total_for_progress = import_total_consumer.clone();
 
         // ── Helper: flush a batch to SQLite + emit events ──
         let flush_batch = |batch: &mut Vec<FilmItem>,
-                            conn: &mut rusqlite::Connection,
-                            state: &EngineState,
-                            app: &tauri::AppHandle,
-                            processed: &mut usize,
-                            total_for_progress: &Arc<AtomicUsize>| {
+                           conn: &mut rusqlite::Connection,
+                           state: &EngineState,
+                           app: &tauri::AppHandle,
+                           processed: &mut usize,
+                           failed: &mut usize,
+                           failed_paths: &mut HashSet<String>,
+                           total_for_progress: &Arc<AtomicUsize>| {
             if batch.is_empty() {
                 return;
             }
             let items = std::mem::take(batch);
+            let persistence_result = persist_import_batch(conn, &items);
 
-            // Single transaction for the entire batch
-            let tx = match conn.transaction() {
-                Ok(t) => t,
-                Err(e) => {
-                    eprintln!("[Import Consumer] Transaction begin failed: {}", e);
-                    // Still emit events so the frontend isn't starved
-                    for item in items {
-                        let payload = serde_json::json!({
-                            "id": item.id.clone(),
-                            "roll_id": item.roll_id.clone(),
-                            "thumbnail_base64": item.thumbnail_base64.clone(),
-                            "file_path": item.file_path.clone(),
-                            "processed": *processed + 1,
-                            "total": total_for_progress.load(Ordering::SeqCst),
-                        });
-                        state.items.insert(item.id.clone(), Arc::new(RwLock::new(item)));
-                        let _ = app.emit("import_progress", payload);
-                        *processed += 1;
-                    }
-                    return;
+            if let Err(message) = persistence_result {
+                eprintln!("[Import Consumer] {message}");
+                let failed_batch_paths: Vec<&str> =
+                    items.iter().map(|item| item.file_path.as_str()).collect();
+                for path in &failed_batch_paths {
+                    failed_paths.insert(normalize_path(path));
                 }
-            };
-
-            for item in items.iter() {
-                if item.is_loose {
-                    continue;
-                }
-                let params_str = serde_json::to_string(&item.params).unwrap_or_default();
-                let geom_str = serde_json::to_string(&item.geom).unwrap_or_default();
-                let base_color_str = serde_json::to_string(&item.base_color).unwrap_or_default();
-                if let Err(e) = tx.execute(
-                    "INSERT INTO image_states (roll_id, file_path, thumbnail_base64, params, geom, base_color)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                     ON CONFLICT(roll_id, file_path) DO UPDATE SET
-                     thumbnail_base64=excluded.thumbnail_base64,
-                     params=excluded.params,
-                     geom=excluded.geom,
-                     base_color=excluded.base_color",
-                    rusqlite::params![item.roll_id, item.file_path, item.thumbnail_base64, params_str, geom_str, base_color_str],
-                ) {
-                    eprintln!("[Import Consumer] SQLite insert failed: {}", e);
-                }
-            }
-
-            if let Err(e) = tx.commit() {
-                eprintln!("[Import Consumer] Transaction commit failed: {}", e);
+                *processed += items.len();
+                *failed += items.len();
+                let _ = app.emit(
+                    "import_error",
+                    serde_json::json!({
+                        "message": message,
+                        "file_paths": failed_batch_paths,
+                        "roll_id": items.first().map(|item| item.roll_id.as_str()),
+                        "processed": *processed,
+                        "total": total_for_progress.load(Ordering::SeqCst),
+                    }),
+                );
+                return;
             }
 
             // Emit events AFTER commit so frontend sees consistent state
@@ -905,12 +865,17 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                 let payload = serde_json::json!({
                     "id": item.id.clone(),
                     "roll_id": item.roll_id.clone(),
-                    "thumbnail_base64": item.thumbnail_base64.clone(),
+                    "thumbnail_base64": item.preferred_thumbnail(),
+                    "embedded_thumbnail_base64": item.embedded_thumbnail_base64.clone(),
+                    "rendered_thumbnail_base64": item.rendered_thumbnail_base64.clone(),
+                    "thumbnail_kind": item.thumbnail_kind(),
                     "file_path": item.file_path.clone(),
                     "processed": *processed + 1,
                     "total": total_for_progress.load(Ordering::SeqCst),
                 });
-                state.items.insert(item.id.clone(), Arc::new(RwLock::new(item)));
+                state
+                    .items
+                    .insert(item.id.clone(), Arc::new(RwLock::new(item)));
                 let _ = app.emit("import_progress", payload);
                 *processed += 1;
             }
@@ -930,6 +895,8 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                     &state,
                     &app_handle_consumer,
                     &mut total_processed,
+                    &mut total_failed,
+                    &mut failed_roll_paths,
                     &total_for_progress,
                 );
             }
@@ -942,8 +909,42 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
             &state,
             &app_handle_consumer,
             &mut total_processed,
+            &mut total_failed,
+            &mut failed_roll_paths,
             &total_for_progress,
         );
+
+        if let Some(roll_id) = roll_id_consumer.as_deref() {
+            if !failed_roll_paths.is_empty() {
+                let cleanup = (|| -> Result<Option<Vec<Roll>>, String> {
+                    let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
+                    let mut updated = rolls.clone();
+                    if !remove_failed_roll_paths(&mut updated, roll_id, &failed_roll_paths) {
+                        return Ok(None);
+                    }
+                    persist_roll_snapshot(&updated)?;
+                    *rolls = updated.clone();
+                    Ok(Some(updated))
+                })();
+                match cleanup {
+                    Ok(Some(updated)) => update_rolls_compatibility_mirror(&updated),
+                    Ok(None) => {}
+                    Err(error) => {
+                        eprintln!("[Import Consumer] Failed to reconcile roll metadata: {error}");
+                        let _ = app_handle_consumer.emit(
+                            "import_error",
+                            serde_json::json!({
+                                "message": format!("Failed to reconcile roll metadata: {error}"),
+                                "file_paths": [],
+                                "roll_id": roll_id,
+                                "processed": total_processed,
+                                "total": total_for_progress.load(Ordering::SeqCst),
+                            }),
+                        );
+                    }
+                }
+            }
+        }
 
         // ── Update item_order for filmstrip ordering ──
         {
@@ -952,7 +953,9 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                     let id_opt = {
                         let guard = state.items.clone();
                         let mut found = None;
-                        let target = roll_id_consumer.clone().unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
+                        let target = roll_id_consumer
+                            .clone()
+                            .unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
                         for kv in guard.iter() {
                             let item = kv.value().read().unwrap();
                             let db_path = item.file_path.clone();
@@ -977,7 +980,10 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
         }
 
         // ── Emit completion event ──
-        let _ = app_handle_consumer.emit("import_complete", serde_json::json!({ "total": total_processed }));
+        let _ = app_handle_consumer.emit(
+            "import_complete",
+            serde_json::json!({ "total": total_processed, "failed": total_failed }),
+        );
     });
 
     // ═══════════════════════════════════════════════════════════════════
@@ -993,31 +999,25 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
         let state = app_handle_producer.state::<EngineState>();
         let existing_items_by_path: std::collections::HashMap<String, String> = {
             let guard = state.items.clone();
-            guard.iter().filter_map(|kv| {
-                let item = kv.value().read().unwrap();
-                if item.roll_id == target_roll_producer {
-                    Some((item.file_path.replace("\\", "/").to_lowercase(), kv.key().clone()))
-                } else {
-                    None
-                }
-            }).collect()
+            guard
+                .iter()
+                .filter_map(|kv| {
+                    let item = kv.value().read().unwrap();
+                    if item.roll_id == target_roll_producer {
+                        Some((
+                            item.file_path.replace("\\", "/").to_lowercase(),
+                            kv.key().clone(),
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
         };
 
         let selected_paths = paths;
-        let paths_to_refresh: Vec<(String, String)> = selected_paths
-            .iter()
-            .filter_map(|path| {
-                let normalized = path.replace("\\", "/").to_lowercase();
-                if is_direct_image_extension(path) {
-                    existing_items_by_path
-                        .get(&normalized)
-                        .map(|id| (path.clone(), id.clone()))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let paths_to_process: Vec<String> = selected_paths.into_iter()
+        let paths_to_process: Vec<String> = selected_paths
+            .into_iter()
             .filter(|p| !existing_items_by_path.contains_key(&p.replace("\\", "/").to_lowercase()))
             .collect();
 
@@ -1025,46 +1025,13 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
         import_total.store(total, Ordering::SeqCst);
 
         // ── Emit initial progress so frontend knows import started ──
-        let _ = app_handle_producer.emit("import_progress", serde_json::json!({
-            "phase": "start",
-            "total": total,
-        }));
-
-        for (path, id) in paths_to_refresh {
-            if let Some(thumbnail) = decode_preview_base64(&path, 256) {
-                if let Some(item_arc) = state.items.get(&id) {
-                    let (roll_id, file_path, params_str, geom_str, base_color_str) = {
-                        let mut item = write_lock(&item_arc);
-                        item.thumbnail_base64 = thumbnail.clone();
-                        (
-                            item.roll_id.clone(),
-                            item.file_path.clone(),
-                            serde_json::to_string(&item.params).unwrap_or_default(),
-                            serde_json::to_string(&item.geom).unwrap_or_default(),
-                            serde_json::to_string(&item.base_color).unwrap_or_default(),
-                        )
-                    };
-
-                    if !loose {
-                        if let Ok(conn) = rusqlite::Connection::open(get_db_path()) {
-                            conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
-                            let _ = conn.execute(
-                                "INSERT INTO image_states (roll_id, file_path, thumbnail_base64, params, geom, base_color)
-                                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                                 ON CONFLICT(roll_id, file_path) DO UPDATE SET
-                                 thumbnail_base64=excluded.thumbnail_base64",
-                                rusqlite::params![roll_id, file_path, thumbnail, params_str, geom_str, base_color_str],
-                            );
-                        }
-                    }
-
-                    let _ = app_handle_producer.emit("thumbnail_updated", serde_json::json!({
-                        "id": id,
-                        "thumbnail": thumbnail,
-                    }));
-                }
-            }
-        }
+        let _ = app_handle_producer.emit(
+            "import_progress",
+            serde_json::json!({
+                "phase": "start",
+                "total": total,
+            }),
+        );
 
         if total == 0 {
             // tx drops when this closure returns → consumer recv() returns Err →
@@ -1075,25 +1042,39 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
         // ── Phase 2: Build DB cache for instant re-import of already-processed images ──
         let db_cache: std::collections::HashMap<
             String,
-            (String, TuningParams, crate::app_state::GeometryState, BaseColor),
-        > = if !loose {
+            (
+                String,
+                Option<String>,
+                TuningParams,
+                crate::app_state::GeometryState,
+                BaseColor,
+            ),
+        > = {
             let mut cache = std::collections::HashMap::new();
-            if let Ok(conn) = rusqlite::Connection::open(get_db_path()) {
+            if let Ok(conn) = persistence::open_connection() {
                 conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
                 if let Ok(mut stmt) = conn.prepare(
-                    "SELECT file_path, thumbnail_base64, params, geom, base_color FROM image_states WHERE roll_id = ?1",
+                    "SELECT file_path,
+                            COALESCE(embedded_thumb_base64, thumbnail_base64),
+                            rendered_thumb_base64,
+                            params, geom, base_color
+                     FROM image_states WHERE roll_id = ?1",
                 ) {
-                    if let Ok(rows) = stmt.query_map(rusqlite::params![&target_roll_producer], |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, String>(3)?,
-                            row.get::<_, String>(4)?,
-                        ))
-                    }) {
+                    if let Ok(rows) =
+                        stmt.query_map(rusqlite::params![&target_roll_producer], |row| {
+                            Ok((
+                                row.get::<_, String>(0)?,
+                                row.get::<_, String>(1)?,
+                                row.get::<_, Option<String>>(2)?,
+                                row.get::<_, String>(3)?,
+                                row.get::<_, String>(4)?,
+                                row.get::<_, String>(5)?,
+                            ))
+                        })
+                    {
                         for row in rows.flatten() {
-                            let (fp, thumb, params_str, geom_str, bc_str) = row;
+                            let (fp, embedded_thumb, rendered_thumb, params_str, geom_str, bc_str) =
+                                row;
                             if let (Ok(params), Ok(geom), Ok(bc)) = (
                                 serde_json::from_str(&params_str),
                                 serde_json::from_str(&geom_str),
@@ -1101,7 +1082,7 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                             ) {
                                 cache.insert(
                                     fp.replace("\\", "/").to_lowercase(),
-                                    (thumb, params, geom, bc),
+                                    (embedded_thumb, rendered_thumb, params, geom, bc),
                                 );
                             }
                         }
@@ -1109,8 +1090,6 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                 }
             }
             cache
-        } else {
-            std::collections::HashMap::new()
         };
 
         // ── Helper: process a single path into a FilmItem ──
@@ -1118,57 +1097,30 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
         // All captures are immutable references → safe for parallel invocation.
         let process_path = |path: &String| -> FilmItem {
             // ── Fast path: hit the DB cache (no libraw decoding needed) ──
-            if !loose {
-                if let Some((thumb, params, geom, base_color)) =
-                    db_cache.get(&path.replace("\\", "/").to_lowercase())
-                {
-                    let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
-                    let thumbnail_base64 = if is_direct_image_extension(path) {
-                        decode_preview_base64(path, 256).unwrap_or_else(|| thumb.clone())
-                    } else {
-                        thumb.clone()
-                    };
-                    return FilmItem {
-                        id,
-                        roll_id: target_roll_producer.clone(),
-                        file_path: path.clone(),
-                        thumbnail_base64,
-                        original_proxy: None,
-                        proxy_image: None,
-                        pristine_proxy: None,
-                        base_color: base_color.clone(),
-                        params: params.clone(),
-                        geom: geom.clone(),
-                        is_loose: loose,
-                        in_library: in_lib,
-                    };
-                }
-                // Historical mode: skip items not already in DB
-                if historical {
-                    let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
-                    return FilmItem {
-                        id,
-                        roll_id: target_roll_producer.clone(),
-                        file_path: path.clone(),
-                        thumbnail_base64: FALLBACK_THUMB.to_string(),
-                        original_proxy: None,
-                        proxy_image: None,
-                        pristine_proxy: None,
-                        base_color: BaseColor {
-                            base_r: 32768,
-                            base_g: 32768,
-                            base_b: 32768,
-                        },
-                        params: TuningParams::default(),
-                        geom: crate::app_state::GeometryState::default(),
-                        is_loose: loose,
-                        in_library: in_lib,
-                    };
-                }
+            if let Some((embedded_thumb, rendered_thumb, params, geom, base_color)) =
+                db_cache.get(&path.replace("\\", "/").to_lowercase())
+            {
+                let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
+                return FilmItem {
+                    id,
+                    roll_id: target_roll_producer.clone(),
+                    file_path: path.clone(),
+                    embedded_thumbnail_base64: embedded_thumb.clone(),
+                    rendered_thumbnail_base64: rendered_thumb.clone(),
+                    original_proxy: None,
+                    proxy_image: None,
+                    pristine_proxy: None,
+                    base_color: base_color.clone(),
+                    params: params.clone(),
+                    geom: geom.clone(),
+                    is_loose: loose,
+                    in_library: in_lib,
+                };
             }
 
-            let thumbnail_base64 = decode_preview_base64(path, 256)
-                .unwrap_or_else(|| FALLBACK_THUMB.to_string());
+            let embedded_thumbnail_base64 =
+                decode_import_preview_base64(path, IMPORT_PREVIEW_LONG_EDGE)
+                    .unwrap_or_else(|| FALLBACK_THUMB.to_string());
             let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
             let params = TuningParams::default();
 
@@ -1176,7 +1128,8 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
                 id,
                 roll_id: target_roll_producer.clone(),
                 file_path: path.clone(),
-                thumbnail_base64,
+                embedded_thumbnail_base64,
+                rendered_thumbnail_base64: None,
                 original_proxy: None,
                 proxy_image: None,
                 pristine_proxy: None,
@@ -1188,18 +1141,28 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
             }
         };
 
-        // ═══════════════════════════════════════════════════════
-        //  Phase 3: SERIAL for loop — ultra-safe for OS.
-        //  NO Rayon, NO parallel disk I/O. One file at a time.
-        //  Each item is sent immediately via channel for micro-batch consumption.
-        //  A roll of film is at most ~40 frames; serial processing takes
-        //  seconds, not minutes, and keeps the OS completely responsive.
-        // ═══════════════════════════════════════════════════════
-        for path in &paths_to_process {
-            let item = process_path(path);
-            if tx.send(item).is_err() {
-                break;
-            }
+        // Thumbnail extraction gets a short-lived pool so it is not throttled by
+        // the four-worker pool used by longer Develop/export work.
+        let preview_threads = std::thread::available_parallelism()
+            .map(|count| count.get().clamp(1, 8))
+            .unwrap_or(4)
+            .min(total);
+        let preview_pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(preview_threads)
+            .thread_name(|i| format!("nexfilm-import-preview-{i}"))
+            .build();
+
+        let process_previews = || {
+            paths_to_process
+                .par_iter()
+                .map(process_path)
+                .for_each_with(tx, |sender, item| {
+                    let _ = sender.send(item);
+                });
+        };
+        match preview_pool {
+            Ok(pool) => pool.install(process_previews),
+            Err(_) => process_previews(),
         }
         // tx drops here → consumer's rx.recv() returns Err →
         // consumer flushes remaining buffer and emits import_complete
@@ -1212,6 +1175,21 @@ pub async fn import_images(paths: Vec<String>, is_loose: Option<bool>, in_librar
     // ═══════════════════════════════════════════════════════════════════
     Ok(())
 }
+fn filmstrip_item(item: &FilmItem) -> FilmstripItem {
+    let file_missing = std::fs::File::open(&item.file_path).is_err();
+    FilmstripItem {
+        id: item.id.clone(),
+        roll_id: item.roll_id.clone(),
+        file_path: item.file_path.clone(),
+        thumbnail_base64: item.preferred_thumbnail().to_string(),
+        embedded_thumbnail_base64: item.embedded_thumbnail_base64.clone(),
+        rendered_thumbnail_base64: item.rendered_thumbnail_base64.clone(),
+        thumbnail_kind: item.thumbnail_kind().to_string(),
+        state_available: true,
+        file_missing,
+    }
+}
+
 #[tauri::command]
 pub async fn get_filmstrip(state: State<'_, EngineState>) -> Result<Vec<FilmstripItem>, String> {
     let item_order = state.item_order.read().map_err(|e| e.to_string())?;
@@ -1220,12 +1198,7 @@ pub async fn get_filmstrip(state: State<'_, EngineState>) -> Result<Vec<Filmstri
         if let Some(item_arc) = state.items.get(id) {
             let item = item_arc.read().map_err(|e| e.to_string())?;
             if item.in_library {
-                strip.push(FilmstripItem {
-                    id: item.id.clone(),
-                    roll_id: item.roll_id.clone(),
-                    file_path: item.file_path.clone(),
-                    thumbnail_base64: if std::fs::File::open(&item.file_path).is_ok() { item.thumbnail_base64.clone() } else { "FILE_MISSING".to_string() },
-                });
+                strip.push(filmstrip_item(&item));
             }
         }
     }
@@ -1233,29 +1206,54 @@ pub async fn get_filmstrip(state: State<'_, EngineState>) -> Result<Vec<Filmstri
 }
 
 #[tauri::command]
-pub async fn get_roll_filmstrip(roll_id: String, state: State<'_, EngineState>) -> Result<Vec<FilmstripItem>, String> {
-    let rolls = state.rolls.read().unwrap();
-    if let Some(roll) = rolls.iter().find(|r| r.roll_id == roll_id) {
-        let mut strip = Vec::with_capacity(roll.image_paths.len());
-        let guard = state.items.clone();
-        for path in &roll.image_paths {
-            for kv in guard.iter() {
-                let item = kv.value().read().unwrap();
-                let db_path = item.file_path.clone();
-                if item.roll_id == roll_id && (db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase()) {
-                    strip.push(FilmstripItem {
-                        id: item.id.clone(),
-                        roll_id: item.roll_id.clone(),
-                        file_path: item.file_path.clone(),
-                        thumbnail_base64: if std::fs::File::open(&item.file_path).is_ok() { item.thumbnail_base64.clone() } else { "FILE_MISSING".to_string() },
-                    });
-                    break;
-                }
+pub async fn get_roll_filmstrip(
+    roll_id: String,
+    state: State<'_, EngineState>,
+) -> Result<Vec<FilmstripItem>, String> {
+    let roll = state
+        .rolls
+        .read()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .find(|roll| roll.roll_id == roll_id)
+        .cloned()
+        .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
+    let mut strip = Vec::with_capacity(roll.image_paths.len());
+    let guard = state.items.clone();
+    for path in &roll.image_paths {
+        let mut found = false;
+        for kv in guard.iter() {
+            let item = kv.value().read().unwrap();
+            let db_path = item.file_path.clone();
+            if item.roll_id == roll_id
+                && (db_path == *path
+                    || db_path.replace("\\", "/").to_lowercase()
+                        == path.replace("\\", "/").to_lowercase())
+            {
+                strip.push(filmstrip_item(&item));
+                found = true;
+                break;
             }
         }
-        return Ok(strip);
+        if !found {
+            strip.push(FilmstripItem {
+                id: format!("archive_missing_{}_{}", roll_id, strip.len()),
+                roll_id: roll_id.clone(),
+                file_path: path.clone(),
+                thumbnail_base64: if std::fs::File::open(path).is_ok() {
+                    FALLBACK_THUMB.to_string()
+                } else {
+                    "FILE_MISSING".to_string()
+                },
+                embedded_thumbnail_base64: FALLBACK_THUMB.to_string(),
+                rendered_thumbnail_base64: None,
+                thumbnail_kind: "embedded".to_string(),
+                state_available: false,
+                file_missing: std::fs::File::open(path).is_err(),
+            });
+        }
     }
-    Ok(Vec::new())
+    Ok(strip)
 }
 
 #[derive(Serialize)]
@@ -1263,6 +1261,97 @@ pub struct LutData {
     pub size: u32,
     pub data: Vec<u8>,
     pub is_1d: bool,
+}
+
+#[derive(Clone, Debug)]
+struct ParsedLut {
+    size: usize,
+    rgba: Vec<f32>,
+    is_1d: bool,
+}
+
+impl ParsedLut {
+    fn into_ipc(self) -> LutData {
+        let data = unsafe {
+            std::slice::from_raw_parts(
+                self.rgba.as_ptr() as *const u8,
+                self.rgba.len() * std::mem::size_of::<f32>(),
+            )
+        }
+        .to_vec();
+        LutData {
+            size: self.size as u32,
+            data,
+            is_1d: self.is_1d,
+        }
+    }
+
+    fn sample(&self, rgb: [f32; 3]) -> [f32; 3] {
+        if self.size < 2 || self.rgba.len() < self.size * 4 {
+            return rgb;
+        }
+        if self.is_1d {
+            return [
+                self.sample_1d(rgb[0], 0),
+                self.sample_1d(rgb[1], 1),
+                self.sample_1d(rgb[2], 2),
+            ];
+        }
+        self.sample_3d(rgb)
+    }
+
+    fn sample_1d(&self, value: f32, channel: usize) -> f32 {
+        let position = value.clamp(0.0, 1.0) * (self.size - 1) as f32;
+        let low = position.floor() as usize;
+        let high = (low + 1).min(self.size - 1);
+        let fraction = position - low as f32;
+        let a = self.rgba[low * 4 + channel];
+        let b = self.rgba[high * 4 + channel];
+        a + (b - a) * fraction
+    }
+
+    fn sample_3d(&self, rgb: [f32; 3]) -> [f32; 3] {
+        let position = rgb.map(|value| value.clamp(0.0, 1.0) * (self.size - 1) as f32);
+        let low = position.map(|value| value.floor() as usize);
+        let high = low.map(|value| (value + 1).min(self.size - 1));
+        let fraction = [
+            position[0] - low[0] as f32,
+            position[1] - low[1] as f32,
+            position[2] - low[2] as f32,
+        ];
+        let mut output = [0.0; 3];
+        for z in 0..=1 {
+            for y in 0..=1 {
+                for x in 0..=1 {
+                    let coordinates = [
+                        if x == 0 { low[0] } else { high[0] },
+                        if y == 0 { low[1] } else { high[1] },
+                        if z == 0 { low[2] } else { high[2] },
+                    ];
+                    let weight = if x == 0 {
+                        1.0 - fraction[0]
+                    } else {
+                        fraction[0]
+                    } * if y == 0 {
+                        1.0 - fraction[1]
+                    } else {
+                        fraction[1]
+                    } * if z == 0 {
+                        1.0 - fraction[2]
+                    } else {
+                        fraction[2]
+                    };
+                    let index = ((coordinates[2] * self.size + coordinates[1]) * self.size
+                        + coordinates[0])
+                        * 4;
+                    for channel in 0..3 {
+                        output[channel] += self.rgba[index + channel] * weight;
+                    }
+                }
+            }
+        }
+        output
+    }
 }
 
 fn extract_points(v: &Value, channel: &str) -> Vec<[f32; 2]> {
@@ -1273,7 +1362,8 @@ fn extract_points(v: &Value, channel: &str) -> Vec<[f32; 2]> {
 
     macro_rules! find_channel {
         ($obj:expr) => {
-            $obj.get(&channel_upper).or_else(|| $obj.get(&channel_lower))
+            $obj.get(&channel_upper)
+                .or_else(|| $obj.get(&channel_lower))
         };
     }
 
@@ -1312,9 +1402,15 @@ fn extract_points(v: &Value, channel: &str) -> Vec<[f32; 2]> {
 }
 
 fn interpolate(x: f32, points: &[[f32; 2]]) -> f32 {
-    if points.is_empty() { return x; }
-    if x <= points[0][0] { return points[0][1]; }
-    if x >= points[points.len() - 1][0] { return points[points.len() - 1][1]; }
+    if points.is_empty() {
+        return x;
+    }
+    if x <= points[0][0] {
+        return points[0][1];
+    }
+    if x >= points[points.len() - 1][0] {
+        return points[points.len() - 1][1];
+    }
     for i in 0..points.len() - 1 {
         let p0 = points[i];
         let p1 = points[i + 1];
@@ -1329,20 +1425,26 @@ fn interpolate(x: f32, points: &[[f32; 2]]) -> f32 {
     x
 }
 
-#[tauri::command]
-pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
-    let content = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+fn parse_lut(path: &str) -> Result<ParsedLut, String> {
+    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
 
     if path.to_lowercase().ends_with(".json") {
-        let v: Value = serde_json::from_str(&content).map_err(|e| format!("Invalid JSON: {}", e))?;
+        let v: Value =
+            serde_json::from_str(&content).map_err(|e| format!("Invalid JSON: {}", e))?;
         let mut r_points = extract_points(&v, "r");
         let mut g_points = extract_points(&v, "g");
         let mut b_points = extract_points(&v, "b");
         let rgb_points = extract_points(&v, "rgb");
-        
-        if r_points.is_empty() { r_points = rgb_points.clone(); }
-        if g_points.is_empty() { g_points = rgb_points.clone(); }
-        if b_points.is_empty() { b_points = rgb_points.clone(); }
+
+        if r_points.is_empty() {
+            r_points = rgb_points.clone();
+        }
+        if g_points.is_empty() {
+            g_points = rgb_points.clone();
+        }
+        if b_points.is_empty() {
+            b_points = rgb_points.clone();
+        }
 
         if r_points.is_empty() {
             return Err("No valid curve points found in JSON".to_string());
@@ -1365,16 +1467,9 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
             data_floats.push(1.0); // Alpha
         }
 
-        let data_bytes = unsafe {
-            std::slice::from_raw_parts(
-                data_floats.as_ptr() as *const u8,
-                data_floats.len() * std::mem::size_of::<f32>()
-            )
-        }.to_vec();
-
-        return Ok(LutData {
-            size: size as u32,
-            data: data_bytes,
+        return Ok(ParsedLut {
+            size,
+            rgba: data_floats,
             is_1d: true,
         });
     }
@@ -1382,7 +1477,7 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
     let mut size_3d = 0;
     let mut size_1d = 0;
     let mut data_floats: Vec<f32> = Vec::new();
-    
+
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -1390,16 +1485,27 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
         }
         if line.starts_with("LUT_3D_SIZE") {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() == 2 { size_3d = parts[1].parse().unwrap_or(0); }
+            if parts.len() == 2 {
+                size_3d = parts[1].parse().unwrap_or(0);
+            }
         } else if line.starts_with("LUT_1D_SIZE") {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() == 2 { size_1d = parts[1].parse().unwrap_or(0); }
-        } else if line.starts_with("DOMAIN_MIN") || line.starts_with("DOMAIN_MAX") || line.starts_with("TITLE") {
+            if parts.len() == 2 {
+                size_1d = parts[1].parse().unwrap_or(0);
+            }
+        } else if line.starts_with("DOMAIN_MIN")
+            || line.starts_with("DOMAIN_MAX")
+            || line.starts_with("TITLE")
+        {
             continue;
         } else {
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() == 3 {
-                if let (Ok(r), Ok(g), Ok(b)) = (parts[0].parse::<f32>(), parts[1].parse::<f32>(), parts[2].parse::<f32>()) {
+                if let (Ok(r), Ok(g), Ok(b)) = (
+                    parts[0].parse::<f32>(),
+                    parts[1].parse::<f32>(),
+                    parts[2].parse::<f32>(),
+                ) {
                     data_floats.push(r);
                     data_floats.push(g);
                     data_floats.push(b);
@@ -1407,7 +1513,7 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
             }
         }
     }
-    
+
     if (size_3d == 0 && size_1d == 0) || data_floats.is_empty() {
         return Err("Invalid LUT file".into());
     }
@@ -1423,7 +1529,7 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
             *v /= 1023.0;
         }
     }
-    
+
     let mut final_size = size_3d;
     let mut is_1d = false;
 
@@ -1431,7 +1537,10 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
         final_size = size_1d;
         is_1d = true;
     }
-    
+    if final_size < 2 {
+        return Err("LUT size must be at least 2".into());
+    }
+
     // Force RGB data to RGBA (Alpha = 1.0)
     let mut rgba_floats = Vec::with_capacity((data_floats.len() / 3) * 4);
     for chunk in data_floats.chunks(3) {
@@ -1442,42 +1551,244 @@ pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
             rgba_floats.push(1.0);
         }
     }
-    
-    let data_bytes = unsafe {
-        std::slice::from_raw_parts(
-            rgba_floats.as_ptr() as *const u8,
-            rgba_floats.len() * std::mem::size_of::<f32>()
-        )
-    }.to_vec();
-    
-    Ok(LutData {
-        size: final_size as u32,
-        data: data_bytes,
+
+    let expected_values = if is_1d {
+        final_size * 4
+    } else {
+        final_size * final_size * final_size * 4
+    };
+    if rgba_floats.len() < expected_values {
+        return Err(format!(
+            "LUT declares size {final_size} but contains only {} RGB entries",
+            rgba_floats.len() / 4
+        ));
+    }
+
+    Ok(ParsedLut {
+        size: final_size,
+        rgba: rgba_floats,
         is_1d,
     })
 }
 
-#[tauri::command]
-pub async fn get_roll_previews(roll_id: String, state: State<'_, EngineState>) -> Result<Vec<String>, String> {
-    let rolls = state.rolls.read().unwrap();
-    if let Some(roll) = rolls.iter().find(|r| r.roll_id == roll_id) {
-        let mut previews = Vec::new();
-        let guard = state.items.clone();
-        for path in roll.image_paths.iter().take(3) {
-            for kv in guard.iter() {
-                let db_path = kv.value().read().unwrap().file_path.clone();
-                if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
-                    let thumb = kv.value().read().unwrap().thumbnail_base64.clone();
-                    if thumb != "FILE_MISSING" && !thumb.is_empty() {
-                        previews.push(thumb);
-                    }
-                    break;
+fn validate_export_color_space(color_space: &str) -> Result<&str, String> {
+    match color_space.to_ascii_lowercase().as_str() {
+        "srgb" => Ok("srgb"),
+        other => Err(format!(
+            "Export color space '{other}' is not available yet because NexFilm cannot embed the required ICC profile. Use sRGB."
+        )),
+    }
+}
+
+#[cfg(test)]
+mod lut_tests {
+    use super::ParsedLut;
+
+    #[test]
+    fn identity_1d_lut_preserves_rgb() {
+        let lut = ParsedLut {
+            size: 2,
+            rgba: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            is_1d: true,
+        };
+
+        let input = [0.2, 0.5, 0.8];
+        let output = lut.sample(input);
+        for channel in 0..3 {
+            assert!((output[channel] - input[channel]).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn identity_3d_lut_uses_opengl_texture_order() {
+        let mut rgba = Vec::with_capacity(2 * 2 * 2 * 4);
+        for blue in 0..=1 {
+            for green in 0..=1 {
+                for red in 0..=1 {
+                    rgba.extend_from_slice(&[red as f32, green as f32, blue as f32, 1.0]);
                 }
             }
         }
-        return Ok(previews);
+        let lut = ParsedLut {
+            size: 2,
+            rgba,
+            is_1d: false,
+        };
+
+        let input = [0.2, 0.5, 0.8];
+        let output = lut.sample(input);
+        for channel in 0..3 {
+            assert!((output[channel] - input[channel]).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn frontend_lut_sampling_uses_texel_center_coordinates() {
+        let frontend = include_str!("../ui/main.js");
+        assert!(frontend.contains("(clamp(value, 0.0, 1.0) * (size - 1.0) + 0.5) / size"));
+
+        for size in [2.0_f32, 17.0, 33.0, 65.0] {
+            for value in [0.0_f32, 0.2, 0.5, 0.8, 1.0] {
+                let texture_coordinate = (value * (size - 1.0) + 0.5) / size;
+                let texture_grid_position = texture_coordinate * size - 0.5;
+                let cpu_grid_position = value * (size - 1.0);
+                assert!((texture_grid_position - cpu_grid_position).abs() < 1e-6);
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
+    parse_lut(&path).map(ParsedLut::into_ipc)
+}
+
+#[tauri::command]
+pub async fn get_roll_previews(
+    roll_id: String,
+    state: State<'_, EngineState>,
+) -> Result<Vec<String>, String> {
+    let rolls = state.rolls.read().unwrap();
+    if let Some(roll) = rolls.iter().find(|r| r.roll_id == roll_id) {
+        return Ok(collect_rendered_roll_previews(roll, &state, 3));
     }
     Ok(Vec::new())
+}
+
+fn collect_rendered_roll_previews(roll: &Roll, state: &EngineState, limit: usize) -> Vec<String> {
+    let mut previews = Vec::with_capacity(limit.min(roll.image_paths.len()));
+    for path in &roll.image_paths {
+        for entry in state.items.iter() {
+            let item = read_lock(entry.value());
+            if item.roll_id == roll.roll_id
+                && normalize_path(&item.file_path) == normalize_path(path)
+            {
+                if let Some(thumbnail) = item
+                    .rendered_thumbnail_base64
+                    .as_deref()
+                    .filter(|thumbnail| !thumbnail.is_empty())
+                {
+                    previews.push(thumbnail.to_string());
+                }
+                break;
+            }
+        }
+        if previews.len() == limit {
+            break;
+        }
+    }
+    previews
+}
+
+#[cfg(test)]
+mod history_contract_tests {
+    use super::*;
+    use crate::app_state::GeometryState;
+
+    fn insert_history_item(
+        state: &EngineState,
+        id: &str,
+        roll_id: &str,
+        path: &str,
+        rendered_thumbnail: Option<&str>,
+    ) {
+        state.items.insert(
+            id.to_string(),
+            Arc::new(RwLock::new(FilmItem {
+                id: id.to_string(),
+                roll_id: roll_id.to_string(),
+                file_path: path.to_string(),
+                embedded_thumbnail_base64: format!("orange-{id}"),
+                rendered_thumbnail_base64: rendered_thumbnail.map(str::to_string),
+                original_proxy: None,
+                proxy_image: None,
+                pristine_proxy: None,
+                base_color: BaseColor::default(),
+                params: TuningParams::default(),
+                geom: GeometryState::default(),
+                is_loose: false,
+                in_library: false,
+            })),
+        );
+    }
+
+    #[test]
+    fn roll_card_skips_orange_thumbs_and_finds_later_rendered_frames() {
+        let state = EngineState::new();
+        let roll = Roll {
+            roll_id: "roll-a".into(),
+            date: String::new(),
+            format: "135".into(),
+            film_stock: String::new(),
+            camera: String::new(),
+            image_paths: vec!["first.dng".into(), "second.dng".into(), "third.dng".into()],
+        };
+        insert_history_item(&state, "first", "roll-a", "first.dng", None);
+        insert_history_item(
+            &state,
+            "wrong-roll",
+            "roll-b",
+            "second.dng",
+            Some("wrong-positive"),
+        );
+        insert_history_item(
+            &state,
+            "second",
+            "roll-a",
+            "second.dng",
+            Some("positive-second"),
+        );
+        insert_history_item(
+            &state,
+            "third",
+            "roll-a",
+            "third.dng",
+            Some("positive-third"),
+        );
+
+        assert_eq!(
+            collect_rendered_roll_previews(&roll, &state, 3),
+            vec!["positive-second", "positive-third"]
+        );
+    }
+
+    #[test]
+    fn failed_import_paths_are_removed_only_from_the_owning_roll() {
+        let mut rolls = vec![
+            Roll {
+                roll_id: "roll-a".into(),
+                date: String::new(),
+                format: "135".into(),
+                film_stock: String::new(),
+                camera: String::new(),
+                image_paths: vec!["A\\First.DNG".into(), "A\\Second.DNG".into()],
+            },
+            Roll {
+                roll_id: "roll-b".into(),
+                date: String::new(),
+                format: "135".into(),
+                film_stock: String::new(),
+                camera: String::new(),
+                image_paths: vec!["A\\First.DNG".into()],
+            },
+        ];
+
+        assert!(remove_failed_roll_paths(
+            &mut rolls,
+            "roll-a",
+            &HashSet::from(["a/first.dng".to_string()]),
+        ));
+        assert_eq!(rolls[0].image_paths, vec!["A\\Second.DNG"]);
+        assert_eq!(rolls[1].image_paths, vec!["A\\First.DNG"]);
+
+        assert!(remove_failed_roll_paths(
+            &mut rolls,
+            "roll-a",
+            &HashSet::from(["a/second.dng".to_string()]),
+        ));
+        assert_eq!(rolls.len(), 1);
+        assert_eq!(rolls[0].roll_id, "roll-b");
+    }
 }
 
 #[tauri::command]
@@ -1485,7 +1796,7 @@ pub async fn get_raw_thumbnails(paths: Vec<String>) -> Result<Vec<String>, Strin
     let mut thumbs = Vec::with_capacity(paths.len());
     for path in paths {
         thumbs.push(
-            decode_preview_base64(&path, 256)
+            decode_import_preview_base64(&path, IMPORT_PREVIEW_LONG_EDGE)
                 .unwrap_or_else(|| FALLBACK_THUMB.to_string()),
         );
     }
@@ -1493,7 +1804,10 @@ pub async fn get_raw_thumbnails(paths: Vec<String>) -> Result<Vec<String>, Strin
 }
 
 #[tauri::command]
-pub async fn get_embedded_preview(id: String, state: State<'_, EngineState>) -> Result<String, String> {
+pub async fn get_embedded_preview(
+    id: String,
+    state: State<'_, EngineState>,
+) -> Result<String, String> {
     let file_path = {
         let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
         let item = read_lock(&item_arc);
@@ -1509,34 +1823,6 @@ pub async fn get_embedded_preview(id: String, state: State<'_, EngineState>) -> 
     })
     .await
     .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-pub async fn load_dcp_profile(path: String, state: State<'_, EngineState>) -> Result<(), String> {
-    *write_lock(&state.dcp_profile) = Some(path.clone());
-    if let Some(active_id) = read_lock(&state.active_id).clone() {
-        if let Some(item_arc) = state.items.get(&active_id) {
-            let mut item = write_lock(&item_arc);
-            item.original_proxy = None;
-            item.proxy_image = None;
-            item.pristine_proxy = None;
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn set_working_colorspace(colorspace: String, state: State<'_, EngineState>) -> Result<(), String> {
-    *write_lock(&state.working_colorspace) = colorspace.clone();
-    if let Some(active_id) = read_lock(&state.active_id).clone() {
-        if let Some(item_arc) = state.items.get(&active_id) {
-            let mut item = write_lock(&item_arc);
-            item.original_proxy = None;
-            item.proxy_image = None;
-            item.pristine_proxy = None;
-        }
-    }
-    Ok(())
 }
 
 #[derive(serde::Serialize)]
@@ -1570,10 +1856,10 @@ fn evict_proxy_if_needed(state: &EngineState) {
     };
     let mut order = write_lock(&state.proxy_loaded_order);
     while order.len() > crate::app_state::MAX_PROXY_CACHE {
-        let victim_pos = order
-            .iter()
-            .position(|id| !protected_ids.contains(id));
-        let Some(victim_pos) = victim_pos else { break; };
+        let victim_pos = order.iter().position(|id| !protected_ids.contains(id));
+        let Some(victim_pos) = victim_pos else {
+            break;
+        };
         if let Some(oldest_id) = order.remove(victim_pos) {
             if let Some(item_arc) = state.items.get(&oldest_id) {
                 let mut item = write_lock(&item_arc);
@@ -1596,13 +1882,19 @@ fn track_proxy_loaded(state: &EngineState, id: &str) {
 }
 
 #[tauri::command]
-pub async fn switch_active_image(id: String, roll_id: String, state: State<'_, EngineState>, _app_handle: tauri::AppHandle) -> Result<ActiveImageState, String> {
-    let _ = roll_id; // Unused, but required for correct JSON payload mapping from JS
-
+pub async fn switch_active_image(
+    id: String,
+    roll_id: String,
+    state: State<'_, EngineState>,
+    _app_handle: tauri::AppHandle,
+) -> Result<ActiveImageState, String> {
     // Pure state switch: never trigger RAW unpack/demosaic here.
     {
         let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
         let item = item_arc.read().map_err(|e| e.to_string())?;
+        if item.roll_id != roll_id {
+            return Err("Image does not belong to the requested roll".into());
+        }
         if std::fs::File::open(&item.file_path).is_err() {
             return Err("FILE_MISSING".into());
         }
@@ -1621,7 +1913,7 @@ pub async fn switch_active_image(id: String, roll_id: String, state: State<'_, E
 pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<(), String> {
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
 
-    let (file_path, needs_base_color, existing_base_color, has_proxy, dcp_profile, colorspace) = {
+    let (file_path, needs_base_color, existing_base_color, has_proxy, colorspace) = {
         let item = read_lock(&item_arc);
         if std::fs::File::open(&item.file_path).is_err() {
             return Err("FILE_MISSING".into());
@@ -1634,8 +1926,7 @@ pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<
             needs,
             item.base_color.clone(),
             item.proxy_image.is_some(),
-            read_lock(&state.dcp_profile).clone(),
-            read_lock(&state.working_colorspace).clone(),
+            item.params.raw_decode.working_colorspace.clone(),
         )
     };
 
@@ -1645,7 +1936,7 @@ pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<
     }
 
     let loaded = tokio::task::spawn_blocking(move || -> Result<_, String> {
-        let img_buffer = load_image_buffer(&file_path, true, dcp_profile.as_deref(), &colorspace)?;
+        let img_buffer = decode_image_buffer(&file_path, DecodeMode::DevelopProxy, &colorspace)?;
         let (width, height) = img_buffer.dimensions();
         let ratio_proxy = (PROXY_LONG_EDGE / (width.max(height) as f32)).min(1.0);
         let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
@@ -1667,6 +1958,7 @@ pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<
 
     {
         let mut item = write_lock(&item_arc);
+        let previous_base_color = item.base_color.clone();
         let original_proxy = loaded.0;
         if needs_base_color {
             item.base_color = loaded.1;
@@ -1690,7 +1982,13 @@ pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<
             item.proxy_image = Some(original_proxy);
             item.pristine_proxy = None;
         }
-        let _ = save_image_state_to_db(&item);
+        if let Err(error) = save_image_state_to_db(&item) {
+            item.base_color = previous_base_color;
+            item.original_proxy = None;
+            item.proxy_image = None;
+            item.pristine_proxy = None;
+            return Err(error);
+        }
     }
 
     track_proxy_loaded(&state, &id);
@@ -1698,93 +1996,79 @@ pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<
 }
 
 #[tauri::command]
-pub async fn set_film_mode(id: String, mode: String, state: State<'_, EngineState>) -> Result<(), String> {
-    if let Some(item_arc) = state.items.get(&id) {
-        let mut item = write_lock(&item_arc);
-        let new_mode = if mode == "B&W" { FilmMode::BW } else { FilmMode::Color };
-        if item.params.film_mode != new_mode {
-            item.params.film_mode = new_mode.clone();
-            let pipeline = FilmPipeline::new(
-                [item.base_color.base_r, item.base_color.base_g, item.base_color.base_b],
-                [0.0, 0.0, 0.0],
-                new_mode,
-            );
-            
-            let Some(proxy) = item.proxy_image.as_ref() else {
-                return Err("PROXY_NOT_READY".into());
-            };
-            let (width, height) = proxy.dimensions();
-            let mut pristine = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(width, height);
-            
-            let raw_pixels: &[u16] = proxy.as_raw().as_slice();
-            let out_pixels: &mut [f32] = pristine.as_mut();
-            
-            raw_pixels.par_chunks(3).zip(out_pixels.par_chunks_mut(3)).for_each(|(in_px, out_px)| {
-                let linear_rgb = [
-                    (in_px[0] as f32) / 65535.0,
-                    (in_px[1] as f32) / 65535.0,
-                    (in_px[2] as f32) / 65535.0,
-                ];
-                let true_density = pipeline.compute_true_density(&linear_rgb);
-                out_px[0] = true_density[0];
-                out_px[1] = true_density[1];
-                out_px[2] = true_density[2];
-            });
-            item.pristine_proxy = Some(pristine);
-        }
-    }
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn sync_thumbnail_buffer(id: String, state: State<'_, EngineState>) -> Result<(), String> {
-    // Removed new_thumbnail variable hoisting
-    if let Some(item_arc) = state.items.get(&id) {
-        {
-            let mut item = item_arc.write().map_err(|e| e.to_string())?;
-            if item.pristine_proxy.is_none() {
-                if let Some(proxy) = item.proxy_image.as_ref() {
-                    item.pristine_proxy = Some(compute_pristine_proxy(
-                        proxy,
-                        &item.base_color,
-                        item.params.film_mode.clone(),
-                    ));
-                }
+pub async fn sync_thumbnail_buffer(
+    id: String,
+    state: State<'_, EngineState>,
+) -> Result<(), String> {
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+    {
+        let mut item = item_arc.write().map_err(|e| e.to_string())?;
+        if item.pristine_proxy.is_none() {
+            if let Some(proxy) = item.proxy_image.as_ref() {
+                item.pristine_proxy = Some(compute_pristine_proxy(
+                    proxy,
+                    &item.base_color,
+                    item.params.film_mode.clone(),
+                ));
             }
         }
-        let new_thumbnail = {
-            let item = item_arc.read().map_err(|e| e.to_string())?;
-            generate_processed_thumbnail(&item).unwrap_or_default()
-        };
-        
-        if !new_thumbnail.is_empty() {
-            let mut item = item_arc.write().map_err(|e| e.to_string())?;
-            item.thumbnail_base64 = new_thumbnail;
-            let _ = save_image_state_to_db(&item);
+    }
+    let new_thumbnail = {
+        let item = item_arc.read().map_err(|e| e.to_string())?;
+        generate_processed_thumbnail(&item).unwrap_or_default()
+    };
+
+    if !new_thumbnail.is_empty() {
+        let mut item = item_arc.write().map_err(|e| e.to_string())?;
+        let previous_thumbnail = item.rendered_thumbnail_base64.replace(new_thumbnail);
+        if let Err(error) = save_image_state_to_db(&item) {
+            item.rendered_thumbnail_base64 = previous_thumbnail;
+            return Err(error);
         }
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn set_thumbnail_data(id: String, thumbnail: String, state: State<'_, EngineState>) -> Result<(), String> {
-    if let Some(item_arc) = state.items.get(&id) {
-        let mut item = write_lock(&item_arc);
-        item.thumbnail_base64 = thumbnail;
-        let _ = save_image_state_to_db(&item);
+pub async fn set_thumbnail_data(
+    id: String,
+    thumbnail: String,
+    state: State<'_, EngineState>,
+) -> Result<(), String> {
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
+    let mut item = write_lock(&item_arc);
+    let previous_thumbnail = item.rendered_thumbnail_base64.replace(thumbnail);
+    if let Err(error) = save_image_state_to_db(&item) {
+        item.rendered_thumbnail_base64 = previous_thumbnail;
+        return Err(error);
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn update_geometry(id: String, geom: crate::app_state::GeometryState, state: State<'_, EngineState>) -> Result<(), String> {
-    if let Some(item_arc) = state.items.get(&id) {
-        let mut item = write_lock(&item_arc);
-        item.geom = geom;
-        if item.original_proxy.is_some() {
-            reapply_geometry(&mut item)?;
+pub async fn update_geometry(
+    id: String,
+    geom: crate::app_state::GeometryState,
+    state: State<'_, EngineState>,
+) -> Result<(), String> {
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
+    let mut item = write_lock(&item_arc);
+    let previous_geom = std::mem::replace(&mut item.geom, geom);
+    let previous_proxy = item.proxy_image.take();
+    let previous_pristine = item.pristine_proxy.take();
+    if item.original_proxy.is_some() {
+        if let Err(error) = reapply_geometry(&mut item) {
+            item.geom = previous_geom;
+            item.proxy_image = previous_proxy;
+            item.pristine_proxy = previous_pristine;
+            return Err(error);
         }
-        let _ = save_image_state_to_db(&item);
+    }
+    if let Err(error) = save_image_state_to_db(&item) {
+        item.geom = previous_geom;
+        item.proxy_image = previous_proxy;
+        item.pristine_proxy = previous_pristine;
+        return Err(error);
     }
     Ok(())
 }
@@ -1811,7 +2095,10 @@ fn compute_geometry_and_pristine(
     geom: &crate::app_state::GeometryState,
     base_color: &BaseColor,
     film_mode: FilmMode,
-) -> (ImageBuffer<Rgb<u16>, Vec<u16>>, ImageBuffer<Rgb<f32>, Vec<f32>>) {
+) -> (
+    ImageBuffer<Rgb<u16>, Vec<u16>>,
+    ImageBuffer<Rgb<f32>, Vec<f32>>,
+) {
     let mut current = original_proxy.clone();
 
     if geom.angle.abs() > 0.01 {
@@ -1861,36 +2148,42 @@ fn compute_geometry_and_pristine(
 }
 
 #[tauri::command]
-pub async fn geometry_auto_align(id: String, state: State<'_, EngineState>) -> Result<crate::app_state::AutoAlignResult, String> {
+pub async fn geometry_auto_align(
+    id: String,
+    state: State<'_, EngineState>,
+) -> Result<crate::app_state::AutoAlignResult, String> {
     let item_arc = state.items.get(&id).ok_or("Image not found")?.clone();
-    
+
     let (crop_rect, angle) = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let original_proxy = {
             let item = read_lock(&item_arc);
-            item.original_proxy.clone().ok_or_else(|| "PROXY_NOT_READY".to_string())?
+            item.original_proxy
+                .clone()
+                .ok_or_else(|| "PROXY_NOT_READY".to_string())?
         };
-        
+
         let first_result = crate::geometry::auto_crop_rect(&original_proxy)?;
-        
+
         let proxy_image = {
             let mut item = write_lock(&item_arc);
             item.geom.angle = first_result.angle;
             reapply_geometry(&mut item)?;
-            item.proxy_image.clone().ok_or_else(|| "PROXY_NOT_READY".to_string())?
+            item.proxy_image
+                .clone()
+                .ok_or_else(|| "PROXY_NOT_READY".to_string())?
         };
-        
+
         let second_result = crate::geometry::auto_crop_rect(&proxy_image)?;
-        
+
         let mut item = write_lock(&item_arc);
         item.geom.crop_rect = second_result.crop_rect.clone();
-        
-        Ok((item.geom.crop_rect.clone(), item.geom.angle))
-    }).await.map_err(|e| e.to_string())??;
 
-    Ok(crate::app_state::AutoAlignResult {
-        crop_rect,
-        angle,
+        Ok((item.geom.crop_rect.clone(), item.geom.angle))
     })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    Ok(crate::app_state::AutoAlignResult { crop_rect, angle })
 }
 
 #[tauri::command]
@@ -1903,7 +2196,11 @@ pub async fn get_proxy_image_data(
         let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
         let item = read_lock(&item_arc);
         if let Some(proxy) = item.proxy_image.as_ref() {
-            Some(build_response_buffer_from_proxy(proxy, &item.base_color, true))
+            Some(build_response_buffer_from_proxy(
+                proxy,
+                &item.base_color,
+                true,
+            ))
         } else {
             None
         }
@@ -1920,49 +2217,246 @@ pub async fn get_proxy_image_data(
 }
 
 #[tauri::command]
-pub async fn is_proxy_ready(id: String, state: State<'_, EngineState>) -> Result<bool, String> {
-    let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
-    let item = read_lock(&item_arc);
-    Ok(item.original_proxy.is_some() && item.proxy_image.is_some())
-}
-
-/// Front-end-driven pre-fetch command.
-/// Called by the JS after it finishes rendering image N, with the IDs of N+1 and N-1.
-/// This is the Lr-class strategy: the frontend knows exactly which image is "next"
-/// in the user's navigation flow, and triggers pre-loading at the lowest priority.
-#[tauri::command]
-pub async fn prefetch_proxy(id: String, app_handle: tauri::AppHandle) -> Result<(), String> {
-    eprintln!("[Prefetch] Frontend requested prefetch of {}", id);
-    enqueue_proxy_job(app_handle, id, false);
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn update_tuning_parameters(
     id: String,
     params: TuningParams,
     roll_id: String,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
-    let _ = roll_id;
-    if let Some(item_arc) = state.items.get(&id) {
-        let mut item = item_arc.write().map_err(|e| e.to_string())?;
-        item.params = params;
-        let _ = save_image_state_to_db(&item);
+    libraw_output_color(&params.raw_decode.working_colorspace)?;
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
+    let mut item = item_arc.write().map_err(|e| e.to_string())?;
+    if item.roll_id != roll_id {
+        return Err("Image does not belong to the requested roll".into());
+    }
+
+    let previous_params = item.params.clone();
+    let raw_decode_changed = previous_params.raw_decode != params.raw_decode;
+    let film_mode_changed = previous_params.film_mode != params.film_mode;
+    let previous_base_color = item.base_color.clone();
+    let previous_rendered_thumbnail = item.rendered_thumbnail_base64.clone();
+    let previous_original = raw_decode_changed
+        .then(|| item.original_proxy.take())
+        .flatten();
+    let previous_proxy = raw_decode_changed
+        .then(|| item.proxy_image.take())
+        .flatten();
+    let previous_pristine = (raw_decode_changed || film_mode_changed)
+        .then(|| item.pristine_proxy.take())
+        .flatten();
+
+    item.params = params;
+    if raw_decode_changed {
+        item.base_color = BaseColor::default();
+        item.rendered_thumbnail_base64 = None;
+    }
+    if film_mode_changed && !raw_decode_changed {
+        if let Some(proxy) = item.proxy_image.as_ref() {
+            item.pristine_proxy = Some(compute_pristine_proxy(
+                proxy,
+                &item.base_color,
+                item.params.film_mode.clone(),
+            ));
+        }
+    }
+
+    if let Err(error) = save_image_state_to_db(&item) {
+        item.params = previous_params;
+        if raw_decode_changed {
+            item.original_proxy = previous_original;
+            item.proxy_image = previous_proxy;
+            item.base_color = previous_base_color;
+            item.rendered_thumbnail_base64 = previous_rendered_thumbnail;
+        }
+        if raw_decode_changed || film_mode_changed {
+            item.pristine_proxy = previous_pristine;
+        }
+        return Err(error);
     }
     Ok(())
 }
 
 fn apply_usm(buffer: &mut ImageBuffer<Rgb<u16>, Vec<u16>>, sigma: f32, amount: f32) {
     let blurred = imageproc::filter::gaussian_blur_f32(buffer, sigma);
-    buffer.pixels_mut().zip(blurred.pixels()).for_each(|(p, b)| {
-        for i in 0..3 {
-            let orig = p[i] as f32;
-            let blur = b[i] as f32;
-            let usm = orig + (orig - blur) * amount;
-            p[i] = usm.clamp(0.0, 65535.0) as u16;
-        }
-    });
+    buffer
+        .pixels_mut()
+        .zip(blurred.pixels())
+        .for_each(|(p, b)| {
+            for i in 0..3 {
+                let orig = p[i] as f32;
+                let blur = b[i] as f32;
+                let usm = orig + (orig - blur) * amount;
+                p[i] = usm.clamp(0.0, 65535.0) as u16;
+            }
+        });
+}
+
+#[inline]
+fn sample_rgb16_nearest(image: &ImageBuffer<Rgb<u16>, Vec<u16>>, uv: [f32; 2]) -> Option<[u16; 3]> {
+    if !uv[0].is_finite()
+        || !uv[1].is_finite()
+        || uv[0] < 0.0
+        || uv[0] > 1.0
+        || uv[1] < 0.0
+        || uv[1] > 1.0
+    {
+        return None;
+    }
+    let (width, height) = image.dimensions();
+    let x = (uv[0] * width as f32).floor().min((width - 1) as f32) as u32;
+    let y = (uv[1] * height as f32).floor().min((height - 1) as f32) as u32;
+    let pixel = image.get_pixel(x, y);
+    Some([pixel[0], pixel[1], pixel[2]])
+}
+
+fn render_shader_equivalent(
+    source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+    params: &TuningParams,
+    geom: &crate::app_state::GeometryState,
+    base_color: &BaseColor,
+    lut: Option<&ParsedLut>,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    let (source_width, source_height) = source.dimensions();
+    let crop = &geom.crop_rect;
+    let output_width = (source_width as f32 * crop.width.clamp(0.0, 1.0))
+        .round()
+        .max(1.0) as u32;
+    let output_height = (source_height as f32 * crop.height.clamp(0.0, 1.0))
+        .round()
+        .max(1.0) as u32;
+    let points =
+        geom.calibration_points
+            .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+    let homography = shader_homography(points);
+    let min_x = points
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::INFINITY, f32::min);
+    let max_x = points
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::INFINITY, f32::min);
+    let max_y = points
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let sprocket_uv = params
+        .sprocket
+        .sprocket_uv
+        .as_deref()
+        .filter(|uv| uv.len() >= 2 && uv[0] >= 0.0)
+        .map(|uv| [uv[0], uv[1]]);
+    let sprocket_target = sprocket_uv.and_then(|uv| sample_rgb16_nearest(source, uv));
+    let tolerance = params.sprocket.sprocket_tolerance.unwrap_or(0.10);
+    let feather = params.sprocket.sprocket_feather.unwrap_or(0.05);
+    let lut_opacity = params.lut.lut_opacity.clamp(0.0, 1.0);
+    let pipeline = FilmPipeline::new(
+        [base_color.base_r, base_color.base_g, base_color.base_b],
+        [
+            params.exposure.exposure + params.exposure.exp_r,
+            params.exposure.exposure + params.exposure.exp_g,
+            params.exposure.exposure + params.exposure.exp_b,
+        ],
+        params.film_mode.clone(),
+    );
+
+    let mut output = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(output_width, output_height);
+    output
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .enumerate()
+        .for_each(|(index, out_pixel)| {
+            let x = (index % output_width as usize) as u32;
+            let y = (index / output_width as usize) as u32;
+            let crop_uv = [
+                crop.x + (x as f32 + 0.5) / output_width as f32 * crop.width,
+                crop.y + (y as f32 + 0.5) / output_height as f32 * crop.height,
+            ];
+            let Some(warped_uv) = apply_homography(&homography, crop_uv) else {
+                return;
+            };
+            let Some(raw) = sample_rgb16_nearest(source, warped_uv) else {
+                return;
+            };
+            let linear_rgb = [
+                raw[0] as f32 / 65535.0,
+                raw[1] as f32 / 65535.0,
+                raw[2] as f32 / 65535.0,
+            ];
+            let density = pipeline.process_pixel(&linear_rgb);
+            let toned = [
+                tone_density_channel(
+                    density[0],
+                    params.density.d_min[0],
+                    params.density.d_max[0],
+                    params.tone.highlights,
+                    params.tone.shadows,
+                ),
+                tone_density_channel(
+                    density[1],
+                    params.density.d_min[1],
+                    params.density.d_max[1],
+                    params.tone.highlights,
+                    params.tone.shadows,
+                ),
+                tone_density_channel(
+                    density[2],
+                    params.density.d_min[2],
+                    params.density.d_max[2],
+                    params.tone.highlights,
+                    params.tone.shadows,
+                ),
+            ];
+            let baseline = toned.map(|value| value.powf(1.0 / params.density.gamma.max(1e-6)));
+            let mut rendered = if let Some(lut) = lut {
+                let mapped = lut.sample(toned);
+                [
+                    baseline[0] + (mapped[0] - baseline[0]) * lut_opacity,
+                    baseline[1] + (mapped[1] - baseline[1]) * lut_opacity,
+                    baseline[2] + (mapped[2] - baseline[2]) * lut_opacity,
+                ]
+            } else {
+                baseline
+            };
+
+            if let Some(target) = sprocket_target {
+                let raw_luma =
+                    0.299 * linear_rgb[0] + 0.587 * linear_rgb[1] + 0.114 * linear_rgb[2];
+                let target_luma = (0.299 * target[0] as f32
+                    + 0.587 * target[1] as f32
+                    + 0.114 * target[2] as f32)
+                    / 65535.0;
+                let outside_calibration = crop_uv[0] < min_x
+                    || crop_uv[0] > max_x
+                    || crop_uv[1] < min_y
+                    || crop_uv[1] > max_y;
+                if outside_calibration {
+                    let mask = sprocket_white_mask(raw_luma - target_luma, tolerance, feather);
+                    for channel in &mut rendered {
+                        *channel += (1.0 - *channel) * mask;
+                    }
+                }
+            }
+
+            for channel in 0..3 {
+                out_pixel[channel] = (rendered[channel] * 65535.0).clamp(0.0, 65535.0) as u16;
+            }
+        });
+    output
+}
+
+#[derive(Clone)]
+struct ExportItemSnapshot {
+    id: String,
+    file_path: String,
+    roll_id: String,
+    params: TuningParams,
+    geom: GeometryState,
+    base_color: BaseColor,
 }
 
 #[tauri::command]
@@ -1976,208 +2470,312 @@ pub async fn batch_export_images(
     naming_token: String,
     quality: u32,
     state: State<'_, EngineState>,
+    app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
-    let _ = color_space;
+    validate_export_color_space(&color_space)?;
+    if !std::path::Path::new(&output_dir).is_dir() {
+        return Err(format!("Export directory does not exist: {output_dir}"));
+    }
+    if !matches!(
+        format.as_str(),
+        "jpeg100" | "png" | "tiff8" | "tiff16_uncompressed"
+    ) {
+        return Err(format!("Unsupported export format: {format}"));
+    }
     let count = export_ids.len();
     if count == 0 {
         return Ok(0);
     }
+    if EXPORT_ACTIVE.swap(true, Ordering::SeqCst) {
+        return Err("Another export is already running".to_string());
+    }
+    let _active_guard = ExportActiveGuard;
 
-    let success_count = std::sync::atomic::AtomicUsize::new(0);
-
-    let dcp_profile = state.dcp_profile.read().unwrap().clone();
-    let working_colorspace = state.working_colorspace.read().unwrap().clone();
     let rolls = state.rolls.read().unwrap().clone();
+    let progress_app = app_handle.clone();
 
-    export_ids.par_iter().enumerate().for_each(|(seq_idx, id)| {
-        if let Some(item_arc) = state.items.get(id) {
-            let item = item_arc.read().unwrap();
-            if let Ok(original) = load_image_buffer(&item.file_path, false, dcp_profile.as_deref(), &working_colorspace) {
-                let params = &item.params;
-                let base_color = &item.base_color;
+    // Freeze every roll-backed edit in one SQLite read transaction. The user can
+    // continue editing after this point without changing the running export.
+    let export_snapshots = {
+        let mut connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open export database: {error}"))?;
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|error| format!("Failed to configure export database: {error}"))?;
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("Failed to start export snapshot: {error}"))?;
+        let mut snapshots = Vec::with_capacity(export_ids.len());
 
-                let pipeline = FilmPipeline::new(
-                    [base_color.base_r, base_color.base_g, base_color.base_b],
-                    [
-                        params.exposure.exposure + params.exposure.exp_r,
-                        params.exposure.exposure + params.exposure.exp_g,
-                        params.exposure.exposure + params.exposure.exp_b,
-                    ],
-                    params.film_mode.clone(),
-                );
+        for id in &export_ids {
+            let item_arc = state
+                .items
+                .get(id)
+                .ok_or_else(|| format!("Image is no longer available for export: {id}"))?;
+            let item = item_arc.read().map_err(|error| error.to_string())?;
+            let file_path = item.file_path.clone();
+            let roll_id = item.roll_id.clone();
+            let (params, geom, base_color) =
+                load_image_state_from_connection(&transaction, &roll_id, &file_path)?
+                    .map(|(_, params, geom, base_color)| (params, geom, base_color))
+                    .ok_or_else(|| {
+                        format!(
+                            "Persisted edit state is missing for {} image {}",
+                            roll_id, file_path
+                        )
+                    })?;
+            snapshots.push(ExportItemSnapshot {
+                id: id.clone(),
+                file_path,
+                roll_id,
+                params,
+                geom,
+                base_color,
+            });
+        }
 
-                let mut transformed = original;
-                
-                if item.geom.angle.abs() > 0.01 {
-                    let angle_rad = item.geom.angle.to_radians();
-                    let (w, h) = transformed.dimensions();
-                    
-                    let cos_a = angle_rad.cos();
-                    let sin_a = angle_rad.sin();
-                    
-                    let new_w = (w as f32 * cos_a.abs() + h as f32 * sin_a.abs()).ceil() as u32;
-                    let new_h = (w as f32 * sin_a.abs() + h as f32 * cos_a.abs()).ceil() as u32;
-                    
-                    let diag = ((w as f32).hypot(h as f32)).ceil() as u32;
-                    let mut expanded = ImageBuffer::from_pixel(diag, diag, image::Rgb([0, 0, 0]));
-                    let offset_x = (diag as i64 - w as i64) / 2;
-                    let offset_y = (diag as i64 - h as i64) / 2;
-                    image::imageops::overlay(&mut expanded, &transformed, offset_x, offset_y);
-                    
-                    let rotated = imageproc::geometric_transformations::rotate_about_center(
-                        &expanded,
-                        angle_rad,
-                        imageproc::geometric_transformations::Interpolation::Bicubic,
-                        image::Rgb([0, 0, 0]),
-                    );
-                    
-                    let crop_x = (diag.saturating_sub(new_w)) / 2;
-                    let crop_y = (diag.saturating_sub(new_h)) / 2;
-                    transformed = image::imageops::crop_imm(&rotated, crop_x, crop_y, new_w, new_h).to_image();
-                }
+        transaction
+            .commit()
+            .map_err(|error| format!("Failed to finalize export snapshot: {error}"))?;
+        snapshots
+    };
 
-                match item.geom.rotate_90_count.rem_euclid(4) {
-                    1 => transformed = image::imageops::rotate90(&transformed),
-                    2 => transformed = image::imageops::rotate180(&transformed),
-                    3 => transformed = image::imageops::rotate270(&transformed),
-                    _ => {}
-                }
-                
-                if item.geom.flip_h {
-                    transformed = image::imageops::flip_horizontal(&transformed);
-                }
-                if item.geom.flip_v {
-                    transformed = image::imageops::flip_vertical(&transformed);
-                }
-
-                let (orig_width, orig_height) = transformed.dimensions();
-                let cx = (item.geom.crop_rect.x * orig_width as f32).max(0.0).min(orig_width as f32) as u32;
-                let cy = (item.geom.crop_rect.y * orig_height as f32).max(0.0).min(orig_height as f32) as u32;
-                let cw = (item.geom.crop_rect.width * orig_width as f32).max(1.0).min((orig_width - cx) as f32) as u32;
-                let ch = (item.geom.crop_rect.height * orig_height as f32).max(1.0).min((orig_height - cy) as f32) as u32;
-                
-                if cw < orig_width || ch < orig_height {
-                    transformed = image::imageops::crop(&mut transformed, cx, cy, cw, ch).to_image();
-                }
-
-                if resample_mode == "long_edge_2048" {
-                    let (tw, th) = transformed.dimensions();
-                    let long_edge = tw.max(th);
-                    if long_edge > 2048 {
-                        let scale = 2048.0 / long_edge as f32;
-                        let nw = (tw as f32 * scale).ceil() as u32;
-                        let nh = (th as f32 * scale).ceil() as u32;
-                        transformed = image::imageops::resize(&transformed, nw, nh, image::imageops::FilterType::Lanczos3);
-                    }
-                }
-                
-                let scale = quality as f32 / 100.0;
-                if scale < 0.99 {
-                    let (tw, th) = transformed.dimensions();
-                    let nw = (tw as f32 * scale).max(1.0) as u32;
-                    let nh = (th as f32 * scale).max(1.0) as u32;
-                    transformed = image::imageops::resize(&transformed, nw, nh, image::imageops::FilterType::Lanczos3);
-                }
-
-                let (width, height) = transformed.dimensions();
-                let mut out_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
-                let raw_pixels: &[u16] = transformed.as_raw().as_slice();
-                let out_pixels: &mut [u16] = out_buffer.as_mut();
-
-                let d_min = params.density.d_min;
-                let d_max = params.density.d_max;
-                let gamma = params.density.gamma;
-
-                raw_pixels.par_chunks(3).zip(out_pixels.par_chunks_mut(3)).for_each(|(in_px, out_px)| {
-                    let linear_rgb = [
-                        (in_px[0] as f32) / 65535.0,
-                        (in_px[1] as f32) / 65535.0,
-                        (in_px[2] as f32) / 65535.0,
-                    ];
-                    let density = pipeline.process_pixel(&linear_rgb);
-                    let norm_r = ((density[0] - d_min[0]) / (d_max[0] - d_min[0])).clamp(0.0, 1.0);
-                    let norm_g = ((density[1] - d_min[1]) / (d_max[1] - d_min[1])).clamp(0.0, 1.0);
-                    let norm_b = ((density[2] - d_min[2]) / (d_max[2] - d_min[2])).clamp(0.0, 1.0);
-                    out_px[0] = (norm_r.powf(1.0 / gamma) * 65535.0) as u16;
-                    out_px[1] = (norm_g.powf(1.0 / gamma) * 65535.0) as u16;
-                    out_px[2] = (norm_b.powf(1.0 / gamma) * 65535.0) as u16;
-                });
-
-                if apply_usm_flag && !format.starts_with("tiff16") {
-                    apply_usm(&mut out_buffer, 1.0, 0.5);
-                }
-
-                let file_stem = std::path::Path::new(&item.file_path)
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                    
-                let roll = rolls.iter().find(|r| r.image_paths.contains(&item.file_path));
-                let roll_name = roll.map(|r| r.roll_id.clone()).unwrap_or_else(|| "Roll".to_string());
-                let camera_name = roll.map(|r| r.camera.clone()).unwrap_or_else(|| "Camera".to_string());
-                let seq_str = format!("{:03}", seq_idx + 1);
-                
-                let mut final_name = naming_token.clone();
-                final_name = final_name.replace("{Roll}", &roll_name);
-                final_name = final_name.replace("{Camera}", &camera_name);
-                final_name = final_name.replace("{Seq}", &seq_str);
-                
-                if final_name.trim().is_empty() {
-                    final_name = file_stem;
-                }
-                let file_stem = final_name;
-                
-                let out_path = match format.as_str() {
-                    "jpeg100" => {
-                        // JPEG is 8-bit, we must convert
-                        let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
-                        for (in_p, out_p) in out_buffer.pixels().zip(out8.pixels_mut()) {
-                            out_p[0] = (in_p[0] >> 8) as u8;
-                            out_p[1] = (in_p[1] >> 8) as u8;
-                            out_p[2] = (in_p[2] >> 8) as u8;
-                        }
-                        let path = std::path::Path::new(&output_dir).join(format!("{}.jpg", file_stem));
-                        
-                        let mut cursor = std::io::Cursor::new(Vec::new());
-                        let jpeg_quality = quality.clamp(1, 100) as u8;
-                        if image::DynamicImage::ImageRgb8(out8.clone()).write_to(&mut cursor, image::ImageOutputFormat::Jpeg(jpeg_quality)).is_ok() {
-                            std::fs::write(&path, cursor.into_inner())
-                                .map(|_| path)
-                                .map_err(|e| image::ImageError::IoError(e))
-                        } else {
-                            Err(image::ImageError::IoError(std::io::Error::new(std::io::ErrorKind::Other, "JPEG Encoding Error")))
-                        }
-                    },
-                    "png" => {
-                        let path = std::path::Path::new(&output_dir).join(format!("{}.png", file_stem));
-                        out_buffer.save(&path).map(|_| path)
-                    },
-                    "tiff8" => {
-                        let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
-                        for (in_p, out_p) in out_buffer.pixels().zip(out8.pixels_mut()) {
-                            out_p[0] = (in_p[0] >> 8) as u8;
-                            out_p[1] = (in_p[1] >> 8) as u8;
-                            out_p[2] = (in_p[2] >> 8) as u8;
-                        }
-                        let path = std::path::Path::new(&output_dir).join(format!("{}_8bit.tiff", file_stem));
-                        out8.save(&path).map(|_| path)
-                    },
-                    _ => {
-                        // tiff16_uncompressed or tiff16_lzw
-                        let path = std::path::Path::new(&output_dir).join(format!("{}_16bit.tiff", file_stem));
-                        out_buffer.save(&path).map(|_| path)
-                    }
-                };
-                
-                if out_path.is_ok() {
-                    success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                }
+    // Parse every referenced LUT before starting any writes. A bad or missing
+    // LUT must fail the export rather than silently changing the appearance.
+    let mut parsed_luts = HashMap::new();
+    for snapshot in &export_snapshots {
+        if let Some(path) = snapshot.params.lut.lut_path.as_deref() {
+            if !parsed_luts.contains_key(path) {
+                let lut = parse_lut(path).map_err(|error| {
+                    format!("Cannot load LUT for {}: {error}", snapshot.file_path)
+                })?;
+                parsed_luts.insert(path.to_string(), lut);
             }
         }
-    });
+    }
 
-    Ok(success_count.into_inner())
+    let exported =
+        tokio::task::spawn_blocking(move || {
+            let success_count = std::sync::atomic::AtomicUsize::new(0);
+            let failures = Mutex::new(Vec::<String>::new());
+            let _ = progress_app.emit(
+                "export_progress",
+                serde_json::json!({ "processed": 0, "total": count }),
+            );
+            let processed_count = std::sync::atomic::AtomicUsize::new(0);
+
+            export_snapshots
+                .par_iter()
+                .enumerate()
+                .for_each(|(seq_idx, snapshot)| {
+                let file_path = snapshot.file_path.clone();
+                let roll_id = snapshot.roll_id.clone();
+                let params_owned = snapshot.params.clone();
+                let geom_owned = snapshot.geom.clone();
+                let base_color_owned = snapshot.base_color.clone();
+                match decode_image_buffer(
+                    &file_path,
+                    DecodeMode::ExportFull,
+                    &params_owned.raw_decode.working_colorspace,
+                ) {
+                    Ok(original) => {
+                    let params = &params_owned;
+                    let base_color = &base_color_owned;
+
+                    let mut transformed = original;
+
+                    if geom_owned.angle.abs() > 0.01 {
+                        let angle_rad = geom_owned.angle.to_radians();
+                        let (w, h) = transformed.dimensions();
+
+                        let cos_a = angle_rad.cos();
+                        let sin_a = angle_rad.sin();
+
+                        let new_w = (w as f32 * cos_a.abs() + h as f32 * sin_a.abs()).ceil() as u32;
+                        let new_h = (w as f32 * sin_a.abs() + h as f32 * cos_a.abs()).ceil() as u32;
+
+                        let diag = ((w as f32).hypot(h as f32)).ceil() as u32;
+                        let mut expanded =
+                            ImageBuffer::from_pixel(diag, diag, image::Rgb([0, 0, 0]));
+                        let offset_x = (diag as i64 - w as i64) / 2;
+                        let offset_y = (diag as i64 - h as i64) / 2;
+                        image::imageops::overlay(&mut expanded, &transformed, offset_x, offset_y);
+
+                        let rotated = imageproc::geometric_transformations::rotate_about_center(
+                            &expanded,
+                            angle_rad,
+                            imageproc::geometric_transformations::Interpolation::Bicubic,
+                            image::Rgb([0, 0, 0]),
+                        );
+
+                        let crop_x = (diag.saturating_sub(new_w)) / 2;
+                        let crop_y = (diag.saturating_sub(new_h)) / 2;
+                        transformed =
+                            image::imageops::crop_imm(&rotated, crop_x, crop_y, new_w, new_h)
+                                .to_image();
+                    }
+
+                    match geom_owned.rotate_90_count.rem_euclid(4) {
+                        1 => transformed = image::imageops::rotate90(&transformed),
+                        2 => transformed = image::imageops::rotate180(&transformed),
+                        3 => transformed = image::imageops::rotate270(&transformed),
+                        _ => {}
+                    }
+
+                    if geom_owned.flip_h {
+                        transformed = image::imageops::flip_horizontal(&transformed);
+                    }
+                    if geom_owned.flip_v {
+                        transformed = image::imageops::flip_vertical(&transformed);
+                    }
+
+                    let export_lut = params
+                        .lut
+                        .lut_path
+                        .as_deref()
+                        .and_then(|path| parsed_luts.get(path));
+                    let mut out_buffer = render_shader_equivalent(
+                        &transformed,
+                        params,
+                        &geom_owned,
+                        base_color,
+                        export_lut,
+                    );
+
+                    if resample_mode == "long_edge_2048" {
+                        let (tw, th) = out_buffer.dimensions();
+                        let long_edge = tw.max(th);
+                        if long_edge > 2048 {
+                            let scale = 2048.0 / long_edge as f32;
+                            let nw = (tw as f32 * scale).ceil() as u32;
+                            let nh = (th as f32 * scale).ceil() as u32;
+                            out_buffer = image::imageops::resize(
+                                &out_buffer,
+                                nw,
+                                nh,
+                                image::imageops::FilterType::Lanczos3,
+                            );
+                        }
+                    }
+                    let (width, height) = out_buffer.dimensions();
+
+                    if apply_usm_flag && !format.starts_with("tiff16") {
+                        apply_usm(&mut out_buffer, 1.0, 0.5);
+                    }
+
+                    let file_stem = std::path::Path::new(&file_path)
+                        .file_stem()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
+
+                    let roll = rolls.iter().find(|roll| roll.roll_id == roll_id);
+                    let roll_name = roll
+                        .map(|r| r.roll_id.clone())
+                        .unwrap_or_else(|| "Roll".to_string());
+                    let camera_name = roll
+                        .map(|r| r.camera.clone())
+                        .unwrap_or_else(|| "Camera".to_string());
+                    let seq_str = format!("{:03}", seq_idx + 1);
+
+                    let mut final_name = naming_token.clone();
+                    final_name = final_name.replace("{Roll}", &roll_name);
+                    final_name = final_name.replace("{Camera}", &camera_name);
+                    final_name = final_name.replace("{Seq}", &seq_str);
+
+                    if final_name.trim().is_empty() {
+                        final_name = file_stem;
+                    }
+                    let file_stem = final_name;
+
+                    let out_path = match format.as_str() {
+                        "jpeg100" => {
+                            // JPEG is 8-bit, we must convert
+                            let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
+                            for (in_p, out_p) in out_buffer.pixels().zip(out8.pixels_mut()) {
+                                out_p[0] = (in_p[0] >> 8) as u8;
+                                out_p[1] = (in_p[1] >> 8) as u8;
+                                out_p[2] = (in_p[2] >> 8) as u8;
+                            }
+                            let path = std::path::Path::new(&output_dir)
+                                .join(format!("{}.jpg", file_stem));
+
+                            let mut cursor = std::io::Cursor::new(Vec::new());
+                            let jpeg_quality = quality.clamp(1, 100) as u8;
+                            if image::DynamicImage::ImageRgb8(out8.clone())
+                                .write_to(&mut cursor, image::ImageOutputFormat::Jpeg(jpeg_quality))
+                                .is_ok()
+                            {
+                                std::fs::write(&path, cursor.into_inner())
+                                    .map(|_| path)
+                                    .map_err(|e| image::ImageError::IoError(e))
+                            } else {
+                                Err(image::ImageError::IoError(std::io::Error::new(
+                                    std::io::ErrorKind::Other,
+                                    "JPEG Encoding Error",
+                                )))
+                            }
+                        }
+                        "png" => {
+                            let path = std::path::Path::new(&output_dir)
+                                .join(format!("{}.png", file_stem));
+                            out_buffer.save(&path).map(|_| path)
+                        }
+                        "tiff8" => {
+                            let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
+                            for (in_p, out_p) in out_buffer.pixels().zip(out8.pixels_mut()) {
+                                out_p[0] = (in_p[0] >> 8) as u8;
+                                out_p[1] = (in_p[1] >> 8) as u8;
+                                out_p[2] = (in_p[2] >> 8) as u8;
+                            }
+                            let path = std::path::Path::new(&output_dir)
+                                .join(format!("{}_8bit.tiff", file_stem));
+                            out8.save(&path).map(|_| path)
+                        }
+                        _ => {
+                            // tiff16_uncompressed or tiff16_lzw
+                            let path = std::path::Path::new(&output_dir)
+                                .join(format!("{}_16bit.tiff", file_stem));
+                            out_buffer.save(&path).map(|_| path)
+                        }
+                    };
+
+                    match out_path {
+                        Ok(_) => {
+                            success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        }
+                        Err(error) => lock_mutex(&failures).push(format!(
+                            "Failed to write {}: {error}",
+                            file_path
+                        )),
+                    }
+                    }
+                    Err(error) => lock_mutex(&failures).push(format!(
+                        "Failed to decode {}: {error}",
+                        file_path
+                    )),
+                }
+                let processed =
+                    processed_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                let _ = progress_app.emit(
+                    "export_progress",
+                    serde_json::json!({ "processed": processed, "total": count, "id": snapshot.id }),
+                );
+        });
+
+            let failures = failures
+                .into_inner()
+                .unwrap_or_else(|error| error.into_inner());
+            if failures.is_empty() {
+                Ok(success_count.into_inner())
+            } else {
+                Err(failures.join("\n"))
+            }
+        })
+        .await
+        .map_err(|error| format!("Export worker failed: {error}"))??;
+
+    Ok(exported)
 }
 
 #[tauri::command]
@@ -2186,31 +2784,82 @@ pub async fn get_rolls(state: State<'_, EngineState>) -> Result<Vec<Roll>, Strin
     Ok(rolls.clone())
 }
 
+fn persist_roll_snapshot(rolls: &[Roll]) -> Result<(), String> {
+    let mut connection = persistence::open_connection()
+        .map_err(|error| format!("Failed to open roll database: {error}"))?;
+    persistence::save_rolls(&mut connection, rolls)
+        .map_err(|error| format!("Failed to save roll metadata: {error}"))
+}
+
+fn update_rolls_compatibility_mirror(rolls: &[Roll]) {
+    if let Err(error) = persistence::write_rolls_compatibility_mirror(rolls) {
+        eprintln!("[Roll Persistence] {error}");
+    }
+}
+
+fn remove_failed_roll_paths(
+    rolls: &mut Vec<Roll>,
+    roll_id: &str,
+    failed_paths: &HashSet<String>,
+) -> bool {
+    let Some(index) = rolls.iter().position(|roll| roll.roll_id == roll_id) else {
+        return false;
+    };
+    let original_len = rolls[index].image_paths.len();
+    rolls[index]
+        .image_paths
+        .retain(|path| !failed_paths.contains(&normalize_path(path)));
+    if rolls[index].image_paths.len() == original_len {
+        return false;
+    }
+    if rolls[index].image_paths.is_empty() {
+        rolls.remove(index);
+    }
+    true
+}
+
 #[tauri::command]
 pub async fn import_roll(
     roll: Roll,
     paths: Vec<String>,
     state: State<'_, EngineState>,
-    app_handle: tauri::AppHandle
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let roll_id_clone = roll.roll_id.clone();
-    {
-        let mut rolls = state.rolls.write().unwrap();
-        rolls.push(roll);
-    }
-    
-    {
-        let rolls = state.rolls.read().unwrap();
-        if let Ok(json) = serde_json::to_string_pretty(&*rolls) {
-            let _ = std::fs::write("rolls.json", json);
+    let updated_rolls = {
+        let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
+        let mut updated = rolls.clone();
+        if let Some(existing) = updated
+            .iter_mut()
+            .find(|existing| existing.roll_id == roll.roll_id)
+        {
+            *existing = roll;
+        } else {
+            updated.push(roll);
         }
-    }
-    
-    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id_clone), Some(false), state, app_handle).await
+        persist_roll_snapshot(&updated)?;
+        *rolls = updated.clone();
+        updated
+    };
+    update_rolls_compatibility_mirror(&updated_rolls);
+
+    crate::commands::import_images(
+        paths,
+        Some(false),
+        Some(true),
+        Some(roll_id_clone),
+        Some(false),
+        state,
+        app_handle,
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn save_contact_sheet(data_url: String, filename: Option<String>) -> Result<String, String> {
+pub async fn save_contact_sheet(
+    data_url: String,
+    filename: Option<String>,
+) -> Result<String, String> {
     let b64_data = if data_url.starts_with("data:image/") {
         if let Some(idx) = data_url.find("base64,") {
             &data_url[idx + 7..]
@@ -2220,17 +2869,21 @@ pub async fn save_contact_sheet(data_url: String, filename: Option<String>) -> R
     } else {
         &data_url
     };
-    
-    let image_data = general_purpose::STANDARD.decode(b64_data).map_err(|e| format!("Base64 decode failed: {:?}", e))?;
+
+    let image_data = general_purpose::STANDARD
+        .decode(b64_data)
+        .map_err(|e| format!("Base64 decode failed: {:?}", e))?;
     let default_name = filename.unwrap_or_else(|| "contact_sheet.jpg".to_string());
-    
+
     let file_path = tauri::async_runtime::spawn_blocking(move || {
         FileDialog::new()
             .set_file_name(&default_name)
             .add_filter("JPEG Image", &["jpg", "jpeg"])
             .save_file()
-    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
-    
+    })
+    .await
+    .map_err(|e| format!("Dialog error: {:?}", e))?;
+
     if let Some(path) = file_path {
         std::fs::write(&path, image_data).map_err(|e| format!("Save error: {:?}", e))?;
         Ok(path.to_string_lossy().to_string())
@@ -2242,73 +2895,92 @@ pub async fn save_contact_sheet(data_url: String, filename: Option<String>) -> R
 #[tauri::command]
 pub async fn delete_rolls(
     roll_ids: Vec<String>,
-    state: State<'_, EngineState>
+    state: State<'_, EngineState>,
 ) -> Result<(), String> {
+    if roll_ids.is_empty() {
+        return Ok(());
+    }
+
+    let deleted_roll_ids: HashSet<&str> = roll_ids.iter().map(String::as_str).collect();
+    let remaining_rolls = {
+        let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
+        let remaining: Vec<Roll> = rolls
+            .iter()
+            .filter(|roll| !deleted_roll_ids.contains(roll.roll_id.as_str()))
+            .cloned()
+            .collect();
+        let mut connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open roll database: {error}"))?;
+        persistence::delete_rolls_and_states(&mut connection, &roll_ids, &remaining)
+            .map_err(|error| format!("Failed to delete rolls: {error}"))?;
+        *rolls = remaining.clone();
+        remaining
+    };
+    update_rolls_compatibility_mirror(&remaining_rolls);
+
+    let ids_to_remove: Vec<String> = state
+        .items
+        .iter()
+        .filter_map(|entry| {
+            let item = entry.value().read().ok()?;
+            deleted_roll_ids
+                .contains(item.roll_id.as_str())
+                .then(|| entry.key().clone())
+        })
+        .collect();
+    let removed_ids: HashSet<String> = ids_to_remove.iter().cloned().collect();
+    for id in ids_to_remove {
+        state.items.remove(&id);
+    }
+    state
+        .item_order
+        .write()
+        .map_err(|error| error.to_string())?
+        .retain(|id| !removed_ids.contains(id));
+    state
+        .proxy_loaded_order
+        .write()
+        .map_err(|error| error.to_string())?
+        .retain(|id| !removed_ids.contains(id));
+    let mut active_id = state.active_id.write().map_err(|error| error.to_string())?;
+    if active_id
+        .as_ref()
+        .is_some_and(|id| removed_ids.contains(id))
     {
-        let mut rolls = state.rolls.write().unwrap();
-        
-        let mut paths_to_delete = Vec::new();
-        for r in rolls.iter() {
-            if roll_ids.contains(&r.roll_id) {
-                paths_to_delete.extend(r.image_paths.clone());
-            }
-        }
-        
-        rolls.retain(|r| !roll_ids.contains(&r.roll_id));
-        if let Ok(json) = serde_json::to_string_pretty(&*rolls) {
-            let _ = std::fs::write("rolls.json", json);
-        }
-        
-        // Also delete from memory and DB to give it "no memory"
-        if let Ok(conn) = rusqlite::Connection::open(get_db_path()) {
-            for rid in &roll_ids {
-                let _ = conn.execute("DELETE FROM image_states WHERE roll_id = ?1", [rid]);
-            }
-            for path in &paths_to_delete {
-                
-                // Remove from state.items
-                let mut ids_to_remove = Vec::new();
-                for kv in state.items.iter() {
-                    let db_path = kv.value().read().unwrap().file_path.clone();
-                    if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
-                        ids_to_remove.push(kv.key().clone());
-                    }
-                }
-                for id in ids_to_remove {
-                    state.items.remove(&id);
-                    if let Ok(mut order) = state.item_order.write() {
-                        order.retain(|i| i != &id);
-                    }
-                }
-            }
-        }
+        *active_id = None;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub async fn promote_roll(
-    roll_id: String,
-    state: State<'_, EngineState>
-) -> Result<(), String> {
-    let mut order_guard = state.item_order.write().map_err(|e| e.to_string())?;
-    let rolls = state.rolls.read().unwrap();
-    if let Some(roll) = rolls.iter().find(|r| r.roll_id == roll_id) {
-        let guard = state.items.clone();
-        for path in &roll.image_paths {
-            for kv in guard.iter() {
-                let mut item = kv.value().write().unwrap();
-                let db_path = item.file_path.clone();
-                if db_path == *path || db_path.replace("\\", "/").to_lowercase() == path.replace("\\", "/").to_lowercase() {
-                    item.in_library = true;
-                    item.is_loose = false;
-                    let _ = save_image_state_to_db(&item);
-                    if !order_guard.contains(&item.id) {
-                        order_guard.push(item.id.clone());
-                    }
-                    break;
-                }
+pub async fn promote_roll(roll_id: String, state: State<'_, EngineState>) -> Result<(), String> {
+    let roll = state
+        .rolls
+        .read()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .find(|roll| roll.roll_id == roll_id)
+        .cloned()
+        .ok_or("Roll not found")?;
+    let mut promoted_ids = Vec::new();
+    for path in &roll.image_paths {
+        for entry in state.items.iter() {
+            let mut item = write_lock(entry.value());
+            if item.roll_id == roll_id && normalize_path(&item.file_path) == normalize_path(path) {
+                item.in_library = true;
+                item.is_loose = false;
+                promoted_ids.push(item.id.clone());
+                break;
             }
+        }
+    }
+    let mut order = state
+        .item_order
+        .write()
+        .map_err(|error| error.to_string())?;
+    for id in promoted_ids {
+        if !order.contains(&id) {
+            order.push(id);
         }
     }
     Ok(())
@@ -2319,151 +2991,279 @@ pub async fn append_to_roll(
     roll_id: String,
     paths: Vec<String>,
     state: State<'_, EngineState>,
-    app_handle: tauri::AppHandle
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    {
-        let mut rolls = state.rolls.write().unwrap();
-        if let Some(roll) = rolls.iter_mut().find(|r| r.roll_id == roll_id) {
-            for p in &paths {
-                if !roll.image_paths.iter().any(|existing| existing.replace("\\", "/").to_lowercase() == p.replace("\\", "/").to_lowercase()) {
-                    roll.image_paths.push(p.clone());
-                }
+    let updated_rolls = {
+        let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
+        let mut updated = rolls.clone();
+        let roll = updated
+            .iter_mut()
+            .find(|roll| roll.roll_id == roll_id)
+            .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
+        for path in &paths {
+            if !roll
+                .image_paths
+                .iter()
+                .any(|existing| normalize_path(existing) == normalize_path(path))
+            {
+                roll.image_paths.push(path.clone());
             }
         }
-        if let Ok(json) = serde_json::to_string_pretty(&*rolls) {
-            let _ = std::fs::write("rolls.json", json);
-        }
-    }
-    crate::commands::import_images(paths, Some(false), Some(true), Some(roll_id), Some(false), state, app_handle).await
+        persist_roll_snapshot(&updated)?;
+        *rolls = updated.clone();
+        updated
+    };
+    update_rolls_compatibility_mirror(&updated_rolls);
+    crate::commands::import_images(
+        paths,
+        Some(false),
+        Some(true),
+        Some(roll_id),
+        Some(false),
+        state,
+        app_handle,
+    )
+    .await
 }
 
 #[tauri::command]
-pub async fn locate_missing_file(id: String, state: State<'_, EngineState>) -> Result<String, String> {
+pub async fn locate_missing_file(
+    id: String,
+    state: State<'_, EngineState>,
+) -> Result<String, String> {
     let file_path = tauri::async_runtime::spawn_blocking(|| {
         FileDialog::new()
             .set_title("Locate Missing File")
             .pick_file()
-    }).await.map_err(|e| format!("Dialog error: {:?}", e))?;
-    
+    })
+    .await
+    .map_err(|e| format!("Dialog error: {:?}", e))?;
+
     if let Some(path) = file_path {
         let new_path = path.to_string_lossy().to_string();
-        
-        // Update items
-        if let Some(item_arc) = state.items.get(&id) {
-            let mut item = item_arc.write().unwrap();
-            let old_path = item.file_path.clone();
+        let item_arc = state
+            .items
+            .get(&id)
+            .map(|entry| entry.value().clone())
+            .ok_or_else(|| format!("Image not found: {id}"))?;
+        let (old_path, roll_id, is_loose) = {
+            let item = item_arc.read().map_err(|error| error.to_string())?;
+            (item.file_path.clone(), item.roll_id.clone(), item.is_loose)
+        };
+
+        if is_loose {
+            let mut item = item_arc.write().map_err(|error| error.to_string())?;
+            if item.file_path != old_path || item.roll_id != roll_id {
+                return Err("Image changed while it was being relocated".to_string());
+            }
+            let connection = persistence::open_connection()
+                .map_err(|error| format!("Failed to open state database: {error}"))?;
+            let updated =
+                persistence::relocate_image_state(&connection, &roll_id, &old_path, &new_path)
+                    .map_err(|error| format!("Failed to relocate image state: {error}"))?;
+            if updated != 1 {
+                return Err("Persisted loose image state was not found".to_string());
+            }
             item.file_path = new_path.clone();
-            
-            // Update rolls
-            let mut rolls = state.rolls.write().unwrap();
-            for roll in rolls.iter_mut() {
-                if let Some(pos) = roll.image_paths.iter().position(|p| p.replace("\\", "/").to_lowercase() == old_path.replace("\\", "/").to_lowercase()) {
-                    roll.image_paths[pos] = new_path.clone();
-                }
-            }
-            if let Ok(json) = serde_json::to_string_pretty(&*rolls) {
-                let _ = std::fs::write("rolls.json", json);
-            }
+            return Ok(new_path);
         }
+
+        let updated_rolls = {
+            let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
+            let mut updated = rolls.clone();
+            let roll = updated
+                .iter_mut()
+                .find(|roll| roll.roll_id == roll_id)
+                .ok_or_else(|| format!("Owning roll not found: {roll_id}"))?;
+            let position = roll
+                .image_paths
+                .iter()
+                .position(|path| normalize_path(path) == normalize_path(&old_path))
+                .ok_or_else(|| format!("Image is not registered in roll {roll_id}"))?;
+            roll.image_paths[position] = new_path.clone();
+
+            let mut item = item_arc.write().map_err(|error| error.to_string())?;
+            if item.file_path != old_path || item.roll_id != roll_id {
+                return Err("Image changed while it was being relocated".to_string());
+            }
+            let mut connection = persistence::open_connection()
+                .map_err(|error| format!("Failed to open state database: {error}"))?;
+            persistence::relocate_roll_image(
+                &mut connection,
+                &roll_id,
+                &old_path,
+                &new_path,
+                &updated,
+            )
+            .map_err(|error| format!("Failed to relocate image state: {error}"))?;
+            item.file_path = new_path.clone();
+            *rolls = updated.clone();
+            updated
+        };
+        update_rolls_compatibility_mirror(&updated_rolls);
         Ok(new_path)
     } else {
         Err("Cancelled".into())
     }
 }
 
-// SQLite Metadata Decoupling
-fn get_db_path() -> String {
-    "nexfilm_user.db".to_string()
-}
-
 pub fn init_db() -> rusqlite::Result<()> {
-    let conn = rusqlite::Connection::open(get_db_path())?;
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
-    conn.execute("CREATE TABLE IF NOT EXISTS user_cameras (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", [])?;
-    conn.execute("CREATE TABLE IF NOT EXISTS user_films (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE)", [])?;
-    conn.execute("CREATE TABLE IF NOT EXISTS image_states (
-        roll_id TEXT NOT NULL,
-        file_path TEXT NOT NULL,
-        thumbnail_base64 TEXT,
-        params TEXT,
-        geom TEXT,
-        base_color TEXT,
-        PRIMARY KEY (roll_id, file_path)
-    )", [])?;
-    Ok(())
+    let conn = persistence::open_connection()?;
+    persistence::init_schema(&conn)
 }
 
 pub fn save_image_state_to_db(item: &crate::app_state::FilmItem) -> Result<(), String> {
-    if item.is_loose {
-        return Ok(());
-    }
-    let conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
+    let conn = persistence::open_connection().map_err(|e| e.to_string())?;
     conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
     let params_str = serde_json::to_string(&item.params).map_err(|e| e.to_string())?;
     let geom_str = serde_json::to_string(&item.geom).map_err(|e| e.to_string())?;
     let base_color_str = serde_json::to_string(&item.base_color).map_err(|e| e.to_string())?;
-    
+
     conn.execute(
-        "INSERT INTO image_states (roll_id, file_path, thumbnail_base64, params, geom, base_color) 
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO image_states (
+             roll_id, file_path, thumbnail_base64, embedded_thumb_base64,
+             rendered_thumb_base64, params, geom, base_color,
+             math_version, raw_decode_version, updated_at
+         )
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(roll_id, file_path) DO UPDATE SET 
          thumbnail_base64=excluded.thumbnail_base64,
-         params=excluded.params, 
-         geom=excluded.geom, 
-         base_color=excluded.base_color",
-        rusqlite::params![item.roll_id, item.file_path, item.thumbnail_base64, params_str, geom_str, base_color_str]
-    ).map_err(|e| e.to_string())?;
+         embedded_thumb_base64=excluded.embedded_thumb_base64,
+         rendered_thumb_base64=excluded.rendered_thumb_base64,
+         params=excluded.params,
+         geom=excluded.geom,
+         base_color=excluded.base_color,
+         math_version=excluded.math_version,
+         raw_decode_version=excluded.raw_decode_version,
+         updated_at=excluded.updated_at",
+        rusqlite::params![
+            item.roll_id,
+            item.file_path,
+            item.preferred_thumbnail(),
+            item.embedded_thumbnail_base64,
+            item.rendered_thumbnail_base64,
+            params_str,
+            geom_str,
+            base_color_str,
+            MATH_VERSION,
+            RAW_DECODE_VERSION,
+            persistence::now_timestamp(),
+        ],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-pub fn load_image_state_from_db(roll_id: &str, file_path: &str) -> Option<(String, crate::app_state::TuningParams, crate::app_state::GeometryState, crate::app_state::BaseColor)> {
-    let conn = rusqlite::Connection::open(get_db_path()).ok()?;
-    conn.busy_timeout(std::time::Duration::from_secs(5)).ok();
-    let mut stmt = conn.prepare("SELECT thumbnail_base64, params, geom, base_color FROM image_states WHERE roll_id = ?1 AND file_path = ?2").ok()?;
-    
-    let mut rows = stmt.query(rusqlite::params![roll_id, file_path]).ok()?;
-    if let Some(row) = rows.next().ok()? {
-        let thumb: String = row.get(0).ok()?;
-        let params_str: String = row.get(1).ok()?;
-        let geom_str: String = row.get(2).ok()?;
-        let base_color_str: String = row.get(3).ok()?;
-        
-        let params = serde_json::from_str(&params_str).ok()?;
-        let geom = serde_json::from_str(&geom_str).ok()?;
-        let base_color = serde_json::from_str(&base_color_str).ok()?;
-        
-        return Some((thumb, params, geom, base_color));
+type PersistedImageState = (
+    String,
+    crate::app_state::TuningParams,
+    crate::app_state::GeometryState,
+    crate::app_state::BaseColor,
+);
+
+fn load_image_state_from_connection(
+    connection: &rusqlite::Connection,
+    roll_id: &str,
+    file_path: &str,
+) -> Result<Option<PersistedImageState>, String> {
+    let mut stmt = connection
+        .prepare(
+            "SELECT COALESCE(rendered_thumb_base64, embedded_thumb_base64, thumbnail_base64),
+                params, geom, base_color
+         FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
+        )
+        .map_err(|error| format!("Failed to prepare image-state read: {error}"))?;
+
+    let mut rows = stmt
+        .query(rusqlite::params![roll_id, file_path])
+        .map_err(|error| format!("Failed to query image state: {error}"))?;
+    if let Some(row) = rows
+        .next()
+        .map_err(|error| format!("Failed to read image state: {error}"))?
+    {
+        let thumb: String = row.get(0).map_err(|error| error.to_string())?;
+        let params_str: String = row.get(1).map_err(|error| error.to_string())?;
+        let geom_str: String = row.get(2).map_err(|error| error.to_string())?;
+        let base_color_str: String = row.get(3).map_err(|error| error.to_string())?;
+
+        let params = serde_json::from_str(&params_str)
+            .map_err(|error| format!("Invalid persisted tuning parameters: {error}"))?;
+        let geom = serde_json::from_str(&geom_str)
+            .map_err(|error| format!("Invalid persisted geometry: {error}"))?;
+        let base_color = serde_json::from_str(&base_color_str)
+            .map_err(|error| format!("Invalid persisted base color: {error}"))?;
+
+        return Ok(Some((thumb, params, geom, base_color)));
     }
-    None
+    Ok(None)
+}
+
+pub fn load_image_state_from_db(roll_id: &str, file_path: &str) -> Option<PersistedImageState> {
+    let connection = persistence::open_connection().ok()?;
+    connection
+        .busy_timeout(std::time::Duration::from_secs(5))
+        .ok()?;
+    load_image_state_from_connection(&connection, roll_id, file_path)
+        .ok()
+        .flatten()
 }
 
 pub fn load_all_image_states(state: &crate::app_state::EngineState) {
-    if let Ok(conn) = rusqlite::Connection::open(get_db_path()) {
-        if let Ok(mut stmt) = conn.prepare("SELECT roll_id, file_path, thumbnail_base64, params, geom, base_color FROM image_states") {
+    if let Ok(conn) = persistence::open_connection() {
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT roll_id, file_path,
+                    COALESCE(embedded_thumb_base64, thumbnail_base64),
+                    rendered_thumb_base64,
+                    params, geom, base_color
+             FROM image_states",
+        ) {
             if let Ok(rows) = stmt.query_map([], |row| {
                 let roll_id: String = row.get(0)?;
                 let file_path: String = row.get(1)?;
-                let thumb: String = row.get(2)?;
-                let params_str: String = row.get(3)?;
-                let geom_str: String = row.get(4)?;
-                let base_color_str: String = row.get(5)?;
-                Ok((roll_id, file_path, thumb, params_str, geom_str, base_color_str))
+                let embedded_thumb: String = row.get(2)?;
+                let rendered_thumb: Option<String> = row.get(3)?;
+                let params_str: String = row.get(4)?;
+                let geom_str: String = row.get(5)?;
+                let base_color_str: String = row.get(6)?;
+                Ok((
+                    roll_id,
+                    file_path,
+                    embedded_thumb,
+                    rendered_thumb,
+                    params_str,
+                    geom_str,
+                    base_color_str,
+                ))
             }) {
                 let mut _order_guard = state.item_order.write().unwrap();
                 for row_result in rows {
-                    if let Ok((db_roll_id, db_path, thumb, params_str, geom_str, base_color_str)) = row_result {
+                    if let Ok((
+                        db_roll_id,
+                        db_path,
+                        embedded_thumb,
+                        rendered_thumb,
+                        params_str,
+                        geom_str,
+                        base_color_str,
+                    )) = row_result
+                    {
                         let params = serde_json::from_str(&params_str).unwrap_or_default();
                         let geom = serde_json::from_str(&geom_str).unwrap_or_default();
                         let base_color = serde_json::from_str(&base_color_str).unwrap_or_default();
-                        
+
                         let is_loose_item = db_roll_id == "LOOSE_DEFAULT";
-                        
-                        let img_id = format!("img_{}", crate::commands::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst));
+
+                        let img_id = format!(
+                            "img_{}",
+                            crate::commands::NEXT_ID
+                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        );
                         let item = crate::app_state::FilmItem {
                             id: img_id.clone(),
                             roll_id: db_roll_id,
                             file_path: db_path.clone(),
-                            thumbnail_base64: thumb,
+                            embedded_thumbnail_base64: embedded_thumb,
+                            rendered_thumbnail_base64: rendered_thumb,
                             original_proxy: None,
                             proxy_image: None,
                             pristine_proxy: None,
@@ -2473,7 +3273,10 @@ pub fn load_all_image_states(state: &crate::app_state::EngineState) {
                             is_loose: is_loose_item,
                             in_library: is_loose_item, // Only loose items appear in Library; roll items are viewed via History Films
                         };
-                        state.items.insert(img_id.clone(), std::sync::Arc::new(std::sync::RwLock::new(item)));
+                        state.items.insert(
+                            img_id.clone(),
+                            std::sync::Arc::new(std::sync::RwLock::new(item)),
+                        );
                         _order_guard.push(img_id);
                     }
                 }
@@ -2482,12 +3285,38 @@ pub fn load_all_image_states(state: &crate::app_state::EngineState) {
     }
 }
 
+pub fn load_all_rolls(state: &crate::app_state::EngineState) -> Result<(), String> {
+    let mut connection = persistence::open_connection()
+        .map_err(|error| format!("Failed to open roll database: {error}"))?;
+    let legacy_path = persistence::data_file("rolls.json");
+    let legacy_rolls = match std::fs::read_to_string(&legacy_path) {
+        Ok(json) => serde_json::from_str::<Vec<Roll>>(&json)
+            .map_err(|error| format!("Failed to parse {}: {error}", legacy_path.display()))?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            return Err(format!(
+                "Failed to read legacy roll metadata from {}: {error}",
+                legacy_path.display()
+            ))
+        }
+    };
+    persistence::migrate_legacy_rolls_if_empty(&mut connection, &legacy_rolls)
+        .map_err(|error| format!("Failed to migrate legacy roll metadata: {error}"))?;
+    let rolls = persistence::load_rolls(&connection)
+        .map_err(|error| format!("Failed to load roll metadata: {error}"))?;
+    *state.rolls.write().map_err(|error| error.to_string())? = rolls;
+    Ok(())
+}
 
 #[tauri::command]
 pub fn get_user_cameras() -> Result<Vec<String>, String> {
-    let conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT name FROM user_cameras ORDER BY name").map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let conn = persistence::open_connection().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT name FROM user_cameras ORDER BY name")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
     let mut cameras = Vec::new();
     for name_result in rows {
         cameras.push(name_result.map_err(|e| e.to_string())?);
@@ -2497,9 +3326,13 @@ pub fn get_user_cameras() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub fn get_user_films() -> Result<Vec<String>, String> {
-    let conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT name FROM user_films ORDER BY name").map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let conn = persistence::open_connection().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT name FROM user_films ORDER BY name")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
     let mut films = Vec::new();
     for name_result in rows {
         films.push(name_result.map_err(|e| e.to_string())?);
@@ -2509,21 +3342,30 @@ pub fn get_user_films() -> Result<Vec<String>, String> {
 
 #[tauri::command]
 pub fn add_user_camera(camera: String) -> Result<(), String> {
-    let conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
-    conn.execute("INSERT OR IGNORE INTO user_cameras (name) VALUES (?1)", rusqlite::params![camera]).map_err(|e| e.to_string())?;
+    let conn = persistence::open_connection().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO user_cameras (name) VALUES (?1)",
+        rusqlite::params![camera],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 pub fn add_user_film(film: String) -> Result<(), String> {
-    let conn = rusqlite::Connection::open(get_db_path()).map_err(|e| e.to_string())?;
-    conn.execute("INSERT OR IGNORE INTO user_films (name) VALUES (?1)", rusqlite::params![film]).map_err(|e| e.to_string())?;
+    let conn = persistence::open_connection().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO user_films (name) VALUES (?1)",
+        rusqlite::params![film],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-
 pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
-    if item.pristine_proxy.is_none() { return None; }
+    if item.pristine_proxy.is_none() {
+        return None;
+    }
     let params = &item.params;
     let base_color = &item.base_color;
     let pipeline = FilmPipeline::new(
@@ -2539,7 +3381,7 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     let pristine = item.pristine_proxy.as_ref().unwrap();
     let (width, height) = pristine.dimensions();
     let mut thumb_8bit = RgbImage::new(width, height);
-    
+
     let pristine_pixels: &[f32] = pristine.as_raw().as_slice();
     let out_pixels: &mut [u8] = thumb_8bit.as_mut();
 
@@ -2549,41 +3391,42 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     let highlights = params.tone.highlights;
     let shadows = params.tone.shadows;
 
-    pristine_pixels.par_chunks(3).zip(out_pixels.par_chunks_mut(3)).for_each(|(in_px, out_px)| {
-        let true_density = [in_px[0], in_px[1], in_px[2]];
-        let density = pipeline.apply_exposure(&true_density);
+    pristine_pixels
+        .par_chunks(3)
+        .zip(out_pixels.par_chunks_mut(3))
+        .for_each(|(in_px, out_px)| {
+            let true_density = [in_px[0], in_px[1], in_px[2]];
+            let density = pipeline.apply_exposure(&true_density);
 
-        // Normalize with NaN protection (d_max == d_min → division by zero)
-        let eps = 1e-6_f32;
-        let norm_r = if (d_max[0] - d_min[0]).abs() > eps {
-            ((density[0] - d_min[0]) / (d_max[0] - d_min[0])).clamp(0.0, 1.0)
-        } else { 0.5 };
-        let norm_g = if (d_max[1] - d_min[1]).abs() > eps {
-            ((density[1] - d_min[1]) / (d_max[1] - d_min[1])).clamp(0.0, 1.0)
-        } else { 0.5 };
-        let norm_b = if (d_max[2] - d_min[2]).abs() > eps {
-            ((density[2] - d_min[2]) / (d_max[2] - d_min[2])).clamp(0.0, 1.0)
-        } else { 0.5 };
+            let final_r = normalize_density_channel(
+                density[0], d_min[0], d_max[0], highlights, shadows, gamma,
+            );
+            let final_g = normalize_density_channel(
+                density[1], d_min[1], d_max[1], highlights, shadows, gamma,
+            );
+            let final_b = normalize_density_channel(
+                density[2], d_min[2], d_max[2], highlights, shadows, gamma,
+            );
 
-        // ── Apply highlights/shadows (same formula as WebGL shader) ──
-        let n_r = norm_r.clamp(0.0, 1.0);
-        let n_g = norm_g.clamp(0.0, 1.0);
-        let n_b = norm_b.clamp(0.0, 1.0);
-        let final_r = n_r + shadows * (1.0 - n_r).powi(2) * n_r + highlights * n_r.powi(2) * (1.0 - n_r);
-        let final_g = n_g + shadows * (1.0 - n_g).powi(2) * n_g + highlights * n_g.powi(2) * (1.0 - n_g);
-        let final_b = n_b + shadows * (1.0 - n_b).powi(2) * n_b + highlights * n_b.powi(2) * (1.0 - n_b);
+            out_px[0] = (final_r * 255.0).clamp(0.0, 255.0) as u8;
+            out_px[1] = (final_g * 255.0).clamp(0.0, 255.0) as u8;
+            out_px[2] = (final_b * 255.0).clamp(0.0, 255.0) as u8;
+        });
 
-        out_px[0] = (final_r.powf(1.0 / gamma) * 255.0) as u8;
-        out_px[1] = (final_g.powf(1.0 / gamma) * 255.0) as u8;
-        out_px[2] = (final_b.powf(1.0 / gamma) * 255.0) as u8;
-    });
-    
     let (orig_width, orig_height) = (width, height);
-    let cx = (item.geom.crop_rect.x * orig_width as f32).max(0.0).min(orig_width as f32) as u32;
-    let cy = (item.geom.crop_rect.y * orig_height as f32).max(0.0).min(orig_height as f32) as u32;
-    let cw = (item.geom.crop_rect.width * orig_width as f32).max(1.0).min((orig_width - cx) as f32) as u32;
-    let ch = (item.geom.crop_rect.height * orig_height as f32).max(1.0).min((orig_height - cy) as f32) as u32;
-    
+    let cx = (item.geom.crop_rect.x * orig_width as f32)
+        .max(0.0)
+        .min(orig_width as f32) as u32;
+    let cy = (item.geom.crop_rect.y * orig_height as f32)
+        .max(0.0)
+        .min(orig_height as f32) as u32;
+    let cw = (item.geom.crop_rect.width * orig_width as f32)
+        .max(1.0)
+        .min((orig_width - cx) as f32) as u32;
+    let ch = (item.geom.crop_rect.height * orig_height as f32)
+        .max(1.0)
+        .min((orig_height - cy) as f32) as u32;
+
     let mut cropped_thumb = thumb_8bit;
     if cw < orig_width || ch < orig_height {
         cropped_thumb = image::imageops::crop(&mut cropped_thumb, cx, cy, cw, ch).to_image();
@@ -2592,12 +3435,175 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     let ratio_thumb = 1024.0 / (cw.max(ch) as f32);
     let thumb_width = (cw as f32 * ratio_thumb).max(1.0) as u32;
     let thumb_height = (ch as f32 * ratio_thumb).max(1.0) as u32;
-    let thumb = image::imageops::resize(&cropped_thumb, thumb_width, thumb_height, FilterType::Nearest);
-    
+    let thumb = image::imageops::resize(
+        &cropped_thumb,
+        thumb_width,
+        thumb_height,
+        FilterType::Nearest,
+    );
+
     let mut cursor = std::io::Cursor::new(Vec::new());
     if let Ok(_) = thumb.write_to(&mut cursor, image::ImageOutputFormat::Jpeg(70)) {
-        use base64::{Engine as _, engine::general_purpose};
+        use base64::{engine::general_purpose, Engine as _};
         return Some(general_purpose::STANDARD.encode(cursor.into_inner()));
     }
     None
+}
+
+#[cfg(test)]
+mod import_contract_tests {
+    use super::{
+        decode_import_preview_base64, is_lightweight_direct_preview, is_raw_extension,
+        is_tiff_extension, persist_import_batch,
+    };
+    use crate::app_state::{BaseColor, FilmItem, GeometryState, TuningParams};
+
+    #[test]
+    fn import_only_directly_decodes_small_encoded_images() {
+        assert!(is_lightweight_direct_preview("frame.jpg"));
+        assert!(is_lightweight_direct_preview("frame.PNG"));
+        assert!(!is_lightweight_direct_preview("frame.tiff"));
+        assert!(!is_lightweight_direct_preview("frame.dng"));
+    }
+
+    #[test]
+    fn camera_raw_and_tiff_formats_use_deferred_import_preview_paths() {
+        for path in [
+            "a.dng", "a.nef", "a.nrw", "a.cr3", "a.arw", "a.raf", "a.rw2", "a.orf", "a.srw",
+            "a.pef", "a.3fr", "a.iiq", "a.x3f",
+        ] {
+            assert!(
+                is_raw_extension(path),
+                "{path} must be recognized as camera RAW"
+            );
+        }
+        assert!(is_tiff_extension("scan.tif"));
+        assert!(is_tiff_extension("scan.TIFF"));
+    }
+
+    #[test]
+    fn tracked_tiff_fixture_has_an_import_stage_preview() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("output_portra400_log.tif");
+        let preview = decode_import_preview_base64(path.to_string_lossy().as_ref(), 256);
+        assert!(
+            preview.is_some(),
+            "tracked TIFF fixture has no import preview"
+        );
+    }
+
+    #[test]
+    fn loose_images_use_the_same_sqlite_contract_as_roll_images() {
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persistence::init_schema(&connection).unwrap();
+        let item = FilmItem {
+            id: "loose-id".into(),
+            roll_id: "LOOSE_DEFAULT".into(),
+            file_path: "loose.dng".into(),
+            embedded_thumbnail_base64: "orange".into(),
+            rendered_thumbnail_base64: None,
+            original_proxy: None,
+            proxy_image: None,
+            pristine_proxy: None,
+            base_color: BaseColor::default(),
+            params: TuningParams::default(),
+            geom: GeometryState::default(),
+            is_loose: true,
+            in_library: true,
+        };
+
+        persist_import_batch(&mut connection, &[item]).unwrap();
+        assert!(crate::persistence::row_exists(&connection, "LOOSE_DEFAULT", "loose.dng").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod export_contract_tests {
+    use super::{
+        compute_auto_base, decode_image_buffer, render_shader_equivalent,
+        validate_export_color_space, DecodeMode,
+    };
+    use crate::app_state::{BaseColor, FilmMode, GeometryState, TuningParams};
+    use image::{ImageBuffer, Rgb};
+
+    fn neutral_params() -> TuningParams {
+        let mut params = TuningParams::default();
+        params.film_mode = FilmMode::BW;
+        params.density.d_min = [0.0; 3];
+        params.density.d_max = [2.0; 3];
+        params.density.gamma = 1.0;
+        params
+    }
+
+    fn white_base() -> BaseColor {
+        BaseColor {
+            base_r: u16::MAX,
+            base_g: u16::MAX,
+            base_b: u16::MAX,
+        }
+    }
+
+    #[test]
+    fn shader_equivalent_export_applies_crop_without_using_quality_as_scale() {
+        let source = ImageBuffer::from_pixel(4, 4, Rgb([6554, 6554, 6554]));
+        let mut geom = GeometryState::default();
+        geom.crop_rect.x = 0.25;
+        geom.crop_rect.y = 0.25;
+        geom.crop_rect.width = 0.5;
+        geom.crop_rect.height = 0.5;
+
+        let output =
+            render_shader_equivalent(&source, &neutral_params(), &geom, &white_base(), None);
+        assert_eq!(output.dimensions(), (2, 2));
+        assert!((32000..=33500).contains(&output.get_pixel(0, 0)[0]));
+    }
+
+    #[test]
+    fn shader_equivalent_export_applies_sprocket_mask_only_outside_calibration_bounds() {
+        let source = ImageBuffer::from_pixel(4, 4, Rgb([6554, 6554, 6554]));
+        let mut params = neutral_params();
+        params.sprocket.sprocket_uv = Some(vec![0.5, 0.5]);
+        params.sprocket.sprocket_tolerance = Some(0.1);
+        params.sprocket.sprocket_feather = Some(0.05);
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]);
+
+        let output = render_shader_equivalent(&source, &params, &geom, &white_base(), None);
+        assert_eq!(output.get_pixel(0, 0)[0], u16::MAX);
+        assert!(output.get_pixel(1, 1)[0] < 40000);
+    }
+
+    #[test]
+    fn export_rejects_unprofiled_wide_gamut_choices() {
+        assert_eq!(validate_export_color_space("srgb").unwrap(), "srgb");
+        assert!(validate_export_color_space("rec2020").is_err());
+        assert!(validate_export_color_space("prophoto").is_err());
+    }
+
+    #[test]
+    fn tracked_tiff_fixture_completes_develop_and_export_math_path() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("output_portra400_log.tif");
+        let decoded = decode_image_buffer(
+            path.to_string_lossy().as_ref(),
+            DecodeMode::DevelopProxy,
+            "linear-srgb",
+        )
+        .unwrap();
+        assert_eq!(decoded.dimensions(), (1597, 2000));
+        assert!(decoded.as_raw().iter().any(|sample| *sample > 255));
+
+        let proxy =
+            image::imageops::resize(&decoded, 52, 64, image::imageops::FilterType::Triangle);
+        let base_color = compute_auto_base(&proxy);
+        let rendered = render_shader_equivalent(
+            &proxy,
+            &TuningParams::default(),
+            &GeometryState::default(),
+            &base_color,
+            None,
+        );
+        assert_eq!(rendered.dimensions(), proxy.dimensions());
+        assert!(rendered.as_raw().iter().any(|sample| *sample > 0));
+    }
 }

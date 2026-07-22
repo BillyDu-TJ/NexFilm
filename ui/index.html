@@ -462,17 +462,11 @@
                             Input Color Science
                         </h3>
                         <div class="flex flex-col gap-5">
-                            <div class="flex flex-col gap-2">
-                                <select id="select-builtin-dcp" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
-                                    <option value="">No Built-in DCP</option>
-                                </select>
-                                <button id="btn-load-dcp" class="w-full px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Load Custom DCP</button>
-                            </div>
                             <div class="flex items-center justify-between">
                                 <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Working Space</label>
                                 <select id="select-colorspace" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
-                                    <option value="rec2020">Rec.2020</option>
-                                    <option value="aces">ACES-AP1</option>
+                                    <option value="linear-srgb">Linear sRGB</option>
+                                    <option value="aces">Linear ACES (LibRaw)</option>
                                 </select>
                             </div>
                         </div>
@@ -693,7 +687,6 @@
                         <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Format</label>
                         <select id="export-format" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
                             <option value="tiff16_uncompressed">16-bit TIFF (Uncompressed)</option>
-                            <option value="tiff16_lzw">16-bit TIFF (ZIP/LZW Compression)</option>
                             <option value="tiff8">8-bit TIFF</option>
                             <option value="jpeg100">JPEG (Quality 100)</option>
                             <option value="png">PNG</option>
@@ -703,16 +696,12 @@
                         <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Color Space</label>
                         <select id="export-colorspace" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
                             <option value="srgb">sRGB IEC61966-2.1</option>
-                            <option value="adobergb">Adobe RGB (1998)</option>
-                            <option value="rec2020">Rec.2020</option>
-                            <option value="prophoto">ProPhoto RGB</option>
-                            <option value="aces">ACES-AP1</option>
                         </select>
                     </div>
                     
                     <div class="flex flex-col gap-2 mt-2">
                         <div class="flex items-center justify-between">
-                            <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Quality / Size</label>
+                            <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">JPEG Quality</label>
                             <span id="export-quality-val" class="text-[12px] text-zinc-300">100</span>
                         </div>
                         <input type="range" id="export-quality" min="1" max="100" value="100" class="w-full accent-zinc-500" oninput="document.getElementById('export-quality-val').textContent = this.value">
@@ -743,6 +732,7 @@
         </div>
     </div>
 
+    <script src="geometry.js"></script>
     <script src="main.js"></script>
 </body>
 </html>
