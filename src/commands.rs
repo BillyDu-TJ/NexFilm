@@ -17,7 +17,7 @@ use rayon::prelude::*;
 use rfd::FileDialog;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::io::Cursor;
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::sync::{MutexGuard, RwLockReadGuard, RwLockWriteGuard};
@@ -102,6 +102,230 @@ fn encode_preview_jpeg_base64(
     quality: u8,
 ) -> Option<String> {
     write_jpeg_base64(resize_preview_image(img, max_edge), quality)
+}
+
+/// Locate the largest JPEG preview advertised by a TIFF/NEF directory. Nikon
+/// files usually contain a small thumbnail and a much larger embedded preview;
+/// reading the IFD and JPEG segment avoids LibRaw's full RAW metadata path.
+fn extract_tiff_jpeg_preview(path: &str) -> Option<Vec<u8>> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let file_len = file.metadata().ok()?.len();
+    if file_len < 8 {
+        return None;
+    }
+    let mut header = [0u8; 8];
+    file.read_exact(&mut header).ok()?;
+    let little_endian = &header[0..2] == b"II";
+    if !little_endian && &header[0..2] != b"MM" {
+        return None;
+    }
+    let read_u16 = |bytes: &[u8]| -> u16 {
+        if little_endian {
+            u16::from_le_bytes([bytes[0], bytes[1]])
+        } else {
+            u16::from_be_bytes([bytes[0], bytes[1]])
+        }
+    };
+    let read_u32 = |bytes: &[u8]| -> u32 {
+        if little_endian {
+            u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+        } else {
+            u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+        }
+    };
+    if read_u16(&header[2..4]) != 42 {
+        return None;
+    }
+
+    let read_at = |file: &mut std::fs::File, offset: u64, size: usize| -> Option<Vec<u8>> {
+        if offset.checked_add(size as u64)? > file_len {
+            return None;
+        }
+        file.seek(SeekFrom::Start(offset)).ok()?;
+        let mut bytes = vec![0u8; size];
+        file.read_exact(&mut bytes).ok()?;
+        Some(bytes)
+    };
+    let probe_len = file_len.min(512 * 1024) as usize;
+    let mut probe_best: Option<(usize, u32, u32, usize)> = None;
+    if let Some(prefix) = read_at(&mut file, 0, probe_len) {
+        let mut cursor = 0usize;
+        while cursor + 4 <= prefix.len() {
+            if prefix[cursor..cursor + 2] != [0xff, 0xd8] {
+                cursor += 1;
+                continue;
+            }
+            if let Some((width, height)) = jpeg_dimensions(&prefix[cursor..]) {
+                if let Some(end_rel) = prefix[cursor + 2..]
+                    .windows(2)
+                    .position(|window| window == [0xff, 0xd9])
+                {
+                    let end = cursor + 2 + end_rel + 2;
+                    let edge = width.max(height);
+                    if edge <= 1000
+                        && probe_best.is_none_or(|(_, current_width, current_height, _)| {
+                            edge < current_width.max(current_height)
+                        })
+                    {
+                        probe_best = Some((cursor, width, height, end));
+                    }
+                }
+            }
+            cursor += 2;
+        }
+        if let Some((offset, width, height, end)) = probe_best {
+            let bytes = &prefix[offset..end];
+            if width.max(height) <= 256 {
+                return Some(bytes.to_vec());
+            }
+            if let Ok(image) = image::load_from_memory(bytes) {
+                if let Some(encoded) = encode_preview_jpeg_base64(image, 256, 86) {
+                    return Some(general_purpose::STANDARD.decode(encoded).ok()?);
+                }
+            }
+        }
+    }
+    let type_size = |kind: u16| -> Option<usize> {
+        Some(match kind {
+            1 | 2 | 6 | 7 => 1,
+            3 | 8 => 2,
+            4 | 9 | 11 => 4,
+            5 | 10 | 12 => 8,
+            _ => return None,
+        })
+    };
+    let value_bytes =
+        |file: &mut std::fs::File, entry: &[u8], kind: u16, count: u32| -> Option<Vec<u8>> {
+            let size = type_size(kind)?.checked_mul(count as usize)?;
+            if size <= 4 {
+                Some(entry[8..8 + size].to_vec())
+            } else {
+                let offset = read_u32(&entry[8..12]) as u64;
+                read_at(file, offset, size)
+            }
+        };
+
+    let mut pending = vec![read_u32(&header[4..8]) as u64];
+    let mut visited = HashSet::new();
+    // Prefer a camera preview-sized JPEG. Some NEFs contain a very large
+    // embedded JPEG (or JPEG-like maker-note payload); decoding that during
+    // import defeats the instant-placeholder path.
+    let mut best: Option<(u64, u64, u64)> = None;
+    while let Some(ifd_offset) = pending.pop() {
+        if visited.len() >= 32
+            || ifd_offset == 0
+            || !visited.insert(ifd_offset)
+            || ifd_offset + 2 > file_len
+        {
+            continue;
+        }
+        let Some(count_bytes) = read_at(&mut file, ifd_offset, 2) else {
+            continue;
+        };
+        let count = (read_u16(&count_bytes) as usize).min(4096);
+        let Some(entries) = read_at(&mut file, ifd_offset + 2, count.saturating_mul(12) + 4) else {
+            continue;
+        };
+        let mut jpeg_offset = None;
+        let mut jpeg_length = None;
+        for index in 0..count {
+            let entry = &entries[index * 12..index * 12 + 12];
+            let tag = read_u16(&entry[0..2]);
+            let kind = read_u16(&entry[2..4]);
+            let item_count = read_u32(&entry[4..8]);
+            let Some(bytes) = value_bytes(&mut file, entry, kind, item_count) else {
+                continue;
+            };
+            if (tag == 0x0201 || tag == 0x0111) && item_count >= 1 && bytes.len() >= 4 {
+                jpeg_offset = Some(read_u32(&bytes[0..4]) as u64);
+            } else if (tag == 0x0202 || tag == 0x0117) && item_count >= 1 && bytes.len() >= 4 {
+                jpeg_length = Some(read_u32(&bytes[0..4]) as u64);
+            } else if tag == 0x014a && bytes.len() >= 4 {
+                for chunk in bytes.chunks_exact(4) {
+                    pending.push(read_u32(chunk) as u64);
+                }
+            } else if tag == 0x8769 && bytes.len() >= 4 {
+                pending.push(read_u32(&bytes[0..4]) as u64);
+            }
+        }
+        if let (Some(offset), Some(length)) = (jpeg_offset, jpeg_length) {
+            if length >= 4
+                && offset
+                    .checked_add(length)
+                    .is_some_and(|end| end <= file_len)
+            {
+                if let Some(signature) = read_at(&mut file, offset, 2) {
+                    if signature == [0xff, 0xd8] {
+                        let prefix = read_at(&mut file, offset, length.min(64 * 1024) as usize)?;
+                        let (width, height) = jpeg_dimensions(&prefix).unwrap_or((0, 0));
+                        if width == 0 || height == 0 {
+                            continue;
+                        }
+                        let area = width as u64 * height as u64;
+                        // The first small camera JPEG is enough for the
+                        // library placeholder; do not decode a multi-megapixel
+                        // preview just to shrink it to 256 px.
+                        let bounded = width.max(height) <= 1000;
+                        let score = if bounded { area + 1_000_000_000 } else { area };
+                        if bounded {
+                            return read_at(&mut file, offset, length as usize);
+                        }
+                        if best.is_none_or(|(_, _, current_score)| score > current_score) {
+                            best = Some((offset, length, score));
+                        }
+                    }
+                }
+            }
+        }
+        let next_offset = ifd_offset + 2 + count as u64 * 12;
+        if let Some(next) = read_at(&mut file, next_offset, 4) {
+            let next = read_u32(&next) as u64;
+            if next != 0 {
+                pending.push(next);
+            }
+        }
+    }
+    let (offset, length, _) = best?;
+    read_at(&mut file, offset, length as usize)
+}
+
+fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    if bytes.len() < 4 || bytes[0..2] != [0xff, 0xd8] {
+        return None;
+    }
+    let mut cursor = 2usize;
+    while cursor + 4 <= bytes.len() {
+        if bytes[cursor] != 0xff {
+            cursor += 1;
+            continue;
+        }
+        while cursor < bytes.len() && bytes[cursor] == 0xff {
+            cursor += 1;
+        }
+        if cursor >= bytes.len() {
+            break;
+        }
+        let marker = bytes[cursor];
+        cursor += 1;
+        if marker == 0xd8 || marker == 0xd9 {
+            continue;
+        }
+        if cursor + 2 > bytes.len() {
+            break;
+        }
+        let segment_len = u16::from_be_bytes([bytes[cursor], bytes[cursor + 1]]) as usize;
+        if segment_len < 2 || cursor + segment_len > bytes.len() {
+            break;
+        }
+        let is_sof = matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf);
+        if is_sof && segment_len >= 7 {
+            let height = u16::from_be_bytes([bytes[cursor + 3], bytes[cursor + 4]]) as u32;
+            let width = u16::from_be_bytes([bytes[cursor + 5], bytes[cursor + 6]]) as u32;
+            return Some((width, height));
+        }
+        cursor += segment_len;
+    }
+    None
 }
 
 fn preview_image_needs_stretch(img: &image::DynamicImage) -> bool {
@@ -270,6 +494,17 @@ fn decode_direct_image_preview_base64(path: &str, max_edge: u32) -> Option<Strin
 }
 
 fn extract_embedded_preview_base64(path: &str, max_edge: u32) -> Option<String> {
+    if let Some(bytes) = extract_tiff_jpeg_preview(path) {
+        // The camera preview is already a display-ready JPEG. Keep the
+        // smallest embedded stream untouched so import never pays a decode /
+        // resize cost; CSS/WebGL scales it to the library tile size.
+        if bytes.len() <= 256 * 1024 {
+            return Some(general_purpose::STANDARD.encode(bytes));
+        }
+        if let Ok(image) = image::load_from_memory(&bytes) {
+            return encode_preview_jpeg_base64(image, max_edge, 86);
+        }
+    }
     unsafe {
         let data = libraw_sys::libraw_init(0);
         if data.is_null() {
@@ -886,20 +1121,18 @@ pub async fn import_images(
         // ensures the frontend grid updates like water flowing, eliminating 0% deadlock.
         while let Ok(item) = rx.recv() {
             buffer.push(item);
-
-            let flush_threshold = if total_processed <= 2 { 1 } else { 3 };
-            if buffer.len() >= flush_threshold {
-                flush_batch(
-                    &mut buffer,
-                    &mut conn,
-                    &state,
-                    &app_handle_consumer,
-                    &mut total_processed,
-                    &mut total_failed,
-                    &mut failed_roll_paths,
-                    &total_for_progress,
-                );
-            }
+            // Each embedded preview is tiny. Commit and emit it immediately so
+            // completed frames never wait behind a slower earlier decode.
+            flush_batch(
+                &mut buffer,
+                &mut conn,
+                &state,
+                &app_handle_consumer,
+                &mut total_processed,
+                &mut total_failed,
+                &mut failed_roll_paths,
+                &total_for_progress,
+            );
         }
 
         // ── Flush remaining items after channel closes ──
@@ -1095,74 +1328,99 @@ pub async fn import_images(
         // ── Helper: process a single path into a FilmItem ──
         // ONLY uses libraw_unpack_thumb (lazy demosaicing) — never full unpack.
         // All captures are immutable references → safe for parallel invocation.
-        let process_path = |path: &String| -> FilmItem {
-            // ── Fast path: hit the DB cache (no libraw decoding needed) ──
-            if let Some((embedded_thumb, rendered_thumb, params, geom, base_color)) =
-                db_cache.get(&path.replace("\\", "/").to_lowercase())
-            {
+        let process_path: Arc<dyn Fn(&String) -> FilmItem + Send + Sync> =
+            Arc::new(move |path: &String| -> FilmItem {
+                // ── Fast path: hit the DB cache (no libraw decoding needed) ──
+                if let Some((embedded_thumb, rendered_thumb, params, geom, base_color)) =
+                    db_cache.get(&path.replace("\\", "/").to_lowercase())
+                {
+                    let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
+                    return FilmItem {
+                        id,
+                        roll_id: target_roll_producer.clone(),
+                        file_path: path.clone(),
+                        embedded_thumbnail_base64: embedded_thumb.clone(),
+                        rendered_thumbnail_base64: rendered_thumb.clone(),
+                        original_proxy: None,
+                        proxy_image: None,
+                        pristine_proxy: None,
+                        base_color: base_color.clone(),
+                        params: params.clone(),
+                        geom: geom.clone(),
+                        is_loose: loose,
+                        in_library: in_lib,
+                    };
+                }
+
+                let embedded_thumbnail_base64 =
+                    decode_import_preview_base64(path, IMPORT_PREVIEW_LONG_EDGE)
+                        .unwrap_or_else(|| FALLBACK_THUMB.to_string());
                 let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
-                return FilmItem {
+                let params = TuningParams::default();
+
+                FilmItem {
                     id,
                     roll_id: target_roll_producer.clone(),
                     file_path: path.clone(),
-                    embedded_thumbnail_base64: embedded_thumb.clone(),
-                    rendered_thumbnail_base64: rendered_thumb.clone(),
+                    embedded_thumbnail_base64,
+                    rendered_thumbnail_base64: None,
                     original_proxy: None,
                     proxy_image: None,
                     pristine_proxy: None,
-                    base_color: base_color.clone(),
-                    params: params.clone(),
-                    geom: geom.clone(),
+                    base_color: BaseColor::default(),
+                    params,
+                    geom: crate::app_state::GeometryState::default(),
                     is_loose: loose,
                     in_library: in_lib,
-                };
-            }
+                }
+            });
 
-            let embedded_thumbnail_base64 =
-                decode_import_preview_base64(path, IMPORT_PREVIEW_LONG_EDGE)
-                    .unwrap_or_else(|| FALLBACK_THUMB.to_string());
-            let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
-            let params = TuningParams::default();
-
-            FilmItem {
-                id,
-                roll_id: target_roll_producer.clone(),
-                file_path: path.clone(),
-                embedded_thumbnail_base64,
-                rendered_thumbnail_base64: None,
-                original_proxy: None,
-                proxy_image: None,
-                pristine_proxy: None,
-                base_color: BaseColor::default(),
-                params,
-                geom: crate::app_state::GeometryState::default(),
-                is_loose: loose,
-                in_library: in_lib,
-            }
+        // Give the first selected frame exclusive I/O priority. Continue in
+        // selection order so the filmstrip never appears as a staircase when
+        // later files happen to finish before earlier ones.
+        let Some((first_path, remaining_paths)) = paths_to_process.split_first() else {
+            return;
         };
-
-        // Thumbnail extraction gets a short-lived pool so it is not throttled by
-        // the four-worker pool used by longer Develop/export work.
-        let preview_threads = std::thread::available_parallelism()
-            .map(|count| count.get().clamp(1, 8))
-            .unwrap_or(4)
-            .min(total);
+        if tx.send(process_path(first_path)).is_err() {
+            return;
+        }
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<FilmItem>();
         let preview_pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(preview_threads)
-            .thread_name(|i| format!("nexfilm-import-preview-{i}"))
-            .build();
-
-        let process_previews = || {
-            paths_to_process
+            .num_threads(
+                std::thread::available_parallelism()
+                    .map(|n| n.get().clamp(2, 8))
+                    .unwrap_or(4),
+            )
+            .thread_name(|index| format!("nexfilm-import-preview-{index}"))
+            .build()
+            .ok();
+        let queued_paths = remaining_paths.to_vec();
+        let process_path_for_workers = process_path.clone();
+        let result_tx_for_workers = result_tx.clone();
+        let run_workers = move || {
+            queued_paths
                 .par_iter()
-                .map(process_path)
-                .for_each_with(tx, |sender, item| {
-                    let _ = sender.send(item);
+                .for_each_with(result_tx_for_workers, |sender, path| {
+                    let _ = sender.send(process_path_for_workers(path));
                 });
         };
-        match preview_pool {
-            Ok(pool) => pool.install(process_previews),
-            Err(_) => process_previews(),
+        // Keep the pool alive until the result channel closes. Dropping a
+        // detached pool immediately can terminate workers before all previews
+        // have been delivered.
+        if let Some(pool) = preview_pool.as_ref() {
+            pool.spawn(run_workers);
+        } else {
+            std::thread::spawn(run_workers);
+        }
+        drop(result_tx);
+        // Deliver previews as soon as each worker finishes.  The frontend
+        // already owns the selection-order skeleton, so completion order does
+        // not change layout while avoiding a slow first frame blocking every
+        // later preview.
+        while let Ok(item) = result_rx.recv() {
+            if tx.send(item).is_err() {
+                return;
+            }
         }
         // tx drops here → consumer's rx.recv() returns Err →
         // consumer flushes remaining buffer and emits import_complete
@@ -1829,10 +2087,11 @@ pub async fn get_embedded_preview(
 pub struct ActiveImageState {
     pub params: TuningParams,
     pub geom: crate::app_state::GeometryState,
+    pub base_analyzed: bool,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  LRU Proxy Cache — strict capacity enforcement (max 3 proxies in memory)
+//  LRU Proxy Cache — strict bounded-capacity enforcement
 // ═══════════════════════════════════════════════════════════════════════════
 
 /// Evict the oldest proxy data from memory if the LRU cache exceeds MAX_PROXY_CACHE.
@@ -1906,6 +2165,7 @@ pub async fn switch_active_image(
     Ok(ActiveImageState {
         params: item.params.clone(),
         geom: item.geom.clone(),
+        base_analyzed: item.base_color != BaseColor::default(),
     })
 }
 
@@ -1913,18 +2173,13 @@ pub async fn switch_active_image(
 pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<(), String> {
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
 
-    let (file_path, needs_base_color, existing_base_color, has_proxy, colorspace) = {
+    let (file_path, has_proxy, colorspace) = {
         let item = read_lock(&item_arc);
         if std::fs::File::open(&item.file_path).is_err() {
             return Err("FILE_MISSING".into());
         }
-        let needs = item.base_color.base_r == 32768
-            && item.base_color.base_g == 32768
-            && item.base_color.base_b == 32768;
         (
             item.file_path.clone(),
-            needs,
-            item.base_color.clone(),
             item.proxy_image.is_some(),
             item.params.raw_decode.working_colorspace.clone(),
         )
@@ -1946,53 +2201,60 @@ pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<
         } else {
             img_buffer
         };
-        let bc = if needs_base_color {
-            compute_auto_base(&proxy)
-        } else {
-            existing_base_color
-        };
-        Ok((proxy, bc))
+        Ok(proxy)
     })
     .await
     .map_err(|e| e.to_string())??;
 
     {
         let mut item = write_lock(&item_arc);
-        let previous_base_color = item.base_color.clone();
-        let original_proxy = loaded.0;
-        if needs_base_color {
-            item.base_color = loaded.1;
-        }
-        let has_spatial_transform = item.geom.angle.abs() > 0.01
-            || item.geom.rotate_90_count.rem_euclid(4) != 0
-            || item.geom.flip_h
-            || item.geom.flip_v;
-        if has_spatial_transform {
-            let (proxy, pristine) = compute_geometry_and_pristine(
-                &original_proxy,
-                &item.geom,
-                &item.base_color,
-                item.params.film_mode.clone(),
-            );
-            item.original_proxy = Some(original_proxy);
-            item.proxy_image = Some(proxy);
-            item.pristine_proxy = Some(pristine);
-        } else {
-            item.original_proxy = Some(original_proxy.clone());
-            item.proxy_image = Some(original_proxy);
-            item.pristine_proxy = None;
-        }
-        if let Err(error) = save_image_state_to_db(&item) {
-            item.base_color = previous_base_color;
+        // The Develop proxy is always the unmodified LibRaw output. Geometry,
+        // inversion, and tone operations belong to WebGL and must not delay
+        // the first clear frame or duplicate the pixel buffer in memory.
+        if item.proxy_image.is_none() {
             item.original_proxy = None;
-            item.proxy_image = None;
+            item.proxy_image = Some(loaded);
             item.pristine_proxy = None;
-            return Err(error);
         }
     }
 
     track_proxy_loaded(&state, &id);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn analyze_proxy_base_color(
+    id: String,
+    state: State<'_, EngineState>,
+) -> Result<(), String> {
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let base_color = {
+            let item = read_lock(&item_arc);
+            if item.base_color != BaseColor::default() {
+                return Ok(());
+            }
+            let proxy = item
+                .proxy_image
+                .as_ref()
+                .ok_or_else(|| "PROXY_NOT_READY".to_string())?;
+            compute_auto_base(proxy)
+        };
+
+        let mut item = write_lock(&item_arc);
+        if item.base_color != BaseColor::default() {
+            return Ok(());
+        }
+        let previous_base_color = std::mem::replace(&mut item.base_color, base_color);
+        if let Err(error) = save_image_state_to_db(&item) {
+            item.base_color = previous_base_color;
+            return Err(error);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2054,37 +2316,10 @@ pub async fn update_geometry(
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
     let mut item = write_lock(&item_arc);
     let previous_geom = std::mem::replace(&mut item.geom, geom);
-    let previous_proxy = item.proxy_image.take();
-    let previous_pristine = item.pristine_proxy.take();
-    if item.original_proxy.is_some() {
-        if let Err(error) = reapply_geometry(&mut item) {
-            item.geom = previous_geom;
-            item.proxy_image = previous_proxy;
-            item.pristine_proxy = previous_pristine;
-            return Err(error);
-        }
-    }
     if let Err(error) = save_image_state_to_db(&item) {
         item.geom = previous_geom;
-        item.proxy_image = previous_proxy;
-        item.pristine_proxy = previous_pristine;
         return Err(error);
     }
-    Ok(())
-}
-
-fn reapply_geometry(item: &mut FilmItem) -> Result<(), String> {
-    let Some(original_proxy) = item.original_proxy.as_ref() else {
-        return Err("PROXY_NOT_READY".into());
-    };
-    let (proxy, pristine) = compute_geometry_and_pristine(
-        original_proxy,
-        &item.geom,
-        &item.base_color,
-        item.params.film_mode.clone(),
-    );
-    item.proxy_image = Some(proxy);
-    item.pristine_proxy = Some(pristine);
     Ok(())
 }
 
@@ -2157,7 +2392,7 @@ pub async fn geometry_auto_align(
     let (crop_rect, angle) = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let original_proxy = {
             let item = read_lock(&item_arc);
-            item.original_proxy
+            item.proxy_image
                 .clone()
                 .ok_or_else(|| "PROXY_NOT_READY".to_string())?
         };
@@ -2165,17 +2400,22 @@ pub async fn geometry_auto_align(
         let first_result = crate::geometry::auto_crop_rect(&original_proxy)?;
 
         let proxy_image = {
-            let mut item = write_lock(&item_arc);
-            item.geom.angle = first_result.angle;
-            reapply_geometry(&mut item)?;
-            item.proxy_image
-                .clone()
-                .ok_or_else(|| "PROXY_NOT_READY".to_string())?
+            let item = read_lock(&item_arc);
+            let mut geom = item.geom.clone();
+            geom.angle = first_result.angle;
+            compute_geometry_and_pristine(
+                &original_proxy,
+                &geom,
+                &item.base_color,
+                item.params.film_mode.clone(),
+            )
+            .0
         };
 
         let second_result = crate::geometry::auto_crop_rect(&proxy_image)?;
 
         let mut item = write_lock(&item_arc);
+        item.geom.angle = first_result.angle;
         item.geom.crop_rect = second_result.crop_rect.clone();
 
         Ok((item.geom.crop_rect.clone(), item.geom.angle))
@@ -2250,14 +2490,10 @@ pub async fn update_tuning_parameters(
         item.base_color = BaseColor::default();
         item.rendered_thumbnail_base64 = None;
     }
+    // Film mode is a shader parameter. Never rebuild a CPU density buffer on a
+    // slider/button update; the WebGL frame is the interactive source of truth.
     if film_mode_changed && !raw_decode_changed {
-        if let Some(proxy) = item.proxy_image.as_ref() {
-            item.pristine_proxy = Some(compute_pristine_proxy(
-                proxy,
-                &item.base_color,
-                item.params.film_mode.clone(),
-            ));
-        }
+        item.pristine_proxy = None;
     }
 
     if let Err(error) = save_image_state_to_db(&item) {
@@ -3453,10 +3689,11 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 #[cfg(test)]
 mod import_contract_tests {
     use super::{
-        decode_import_preview_base64, is_lightweight_direct_preview, is_raw_extension,
-        is_tiff_extension, persist_import_batch,
+        decode_image_buffer, decode_import_preview_base64, is_lightweight_direct_preview,
+        is_raw_extension, is_tiff_extension, persist_import_batch, DecodeMode,
     };
     use crate::app_state::{BaseColor, FilmItem, GeometryState, TuningParams};
+    use base64::Engine as _;
 
     #[test]
     fn import_only_directly_decodes_small_encoded_images() {
@@ -3489,6 +3726,81 @@ mod import_contract_tests {
         assert!(
             preview.is_some(),
             "tracked TIFF fixture has no import preview"
+        );
+    }
+
+    #[test]
+    fn nikon_nef_uses_the_embedded_jpeg_without_libraw_thumbnail_unpack() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("_DSC7333.NEF");
+        if !path.exists() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        let preview = decode_import_preview_base64(path.to_string_lossy().as_ref(), 256)
+            .expect("NEF should expose an embedded JPEG preview");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(preview)
+            .expect("preview must be base64");
+        let image = image::load_from_memory(&bytes).expect("preview must be a JPEG");
+        assert!(image.width() <= 256 && image.height() <= 256);
+        assert!(image.width() > 1 && image.height() > 1);
+        println!("NEF embedded preview extraction: {:?}", started.elapsed());
+    }
+
+    #[test]
+    fn nikon_nef_develop_decode_is_measured() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("_DSC7333.NEF");
+        if !path.exists() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        let decoded = decode_image_buffer(
+            path.to_string_lossy().as_ref(),
+            DecodeMode::DevelopProxy,
+            "linear-srgb",
+        )
+        .expect("NEF develop proxy should decode");
+        println!(
+            "NEF develop proxy {:?}, {:?}",
+            started.elapsed(),
+            decoded.dimensions()
+        );
+        assert!(decoded.width() > 256);
+    }
+
+    #[test]
+    fn nikon_nef_batch_import_previews_are_lightweight() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        let paths: Vec<_> = std::fs::read_dir(&root)
+            .expect("test_picture should be readable")
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("nef"))
+            })
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        let started = std::time::Instant::now();
+        for path in &paths {
+            let preview = decode_import_preview_base64(path.to_string_lossy().as_ref(), 256)
+                .expect("each NEF should expose an embedded preview");
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(preview)
+                .expect("preview must be base64");
+            let image = image::load_from_memory(&bytes).expect("preview must be a JPEG");
+            assert!(image.width().max(image.height()) <= 256);
+        }
+        println!(
+            "{} NEF import previews extracted in {:?}",
+            paths.len(),
+            started.elapsed()
         );
     }
 

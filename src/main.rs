@@ -23,6 +23,7 @@ fn main() {
             nexfilm_engine::commands::promote_roll,
             nexfilm_engine::commands::switch_active_image,
             nexfilm_engine::commands::prepare_proxy,
+            nexfilm_engine::commands::analyze_proxy_base_color,
             nexfilm_engine::commands::get_proxy_image_data,
             nexfilm_engine::commands::update_tuning_parameters,
             nexfilm_engine::commands::batch_export_images,

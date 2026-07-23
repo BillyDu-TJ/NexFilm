@@ -422,16 +422,12 @@ window.addEventListener('keydown', async (e) => {
         const undoGeom = JSON.parse(JSON.stringify(current_geom));
         try {
             await restoreLutForImage(prevState.params);
-            await invoke('update_geometry', { id: undoId, geom: undoGeom });
+            await persistGeometryQueued(undoId, undoGeom);
             await updateBackendParams(undoId, prevState.params);
 
-            if (NexFilmGeometry.proxyPixelTransformChanged(undoGeom, current_loaded_geom)) {
-                if (hasProcessedActiveImage) {
-                    await reloadDevelopProxy(undoGeom, { showLoading: false });
-                }
-            } else {
-                requestRender();
-            }
+            // Undoing crop/rotate/flip only changes WebGL geometry; the RAW
+            // proxy remains canonical and does not need another decode.
+            requestRender();
 
             requestThumbnailSync();
         } catch (error) {
@@ -581,7 +577,7 @@ async function flushPendingThumbnail() {
 function scheduleInstantThumbnailUpdate() {
     if (!activeId || !activeProxyIsFull || thumbnailCaptureRAF) return;
     const now = performance.now();
-    if (now - lastThumbnailCaptureAt < 180) return;
+    if (now - lastThumbnailCaptureAt < 250) return;
     lastThumbnailCaptureAt = now;
     thumbnailCaptureRAF = requestAnimationFrame(() => {
         thumbnailCaptureRAF = null;
@@ -669,6 +665,7 @@ let u_dmax_loc;
 let u_exposure_loc;
 let u_gamma_loc;
 let u_mode_loc;
+let u_invert_enabled_loc;
 let u_transform_loc;
 let u_highlights_loc;
 let u_shadows_loc;
@@ -684,6 +681,10 @@ let u_border_exposure_loc;
 let u_baseline_pass_loc;
 
 let currentBaseDensity = [0, 0, 0];
+let proxyHasAnalyzedBase = false;
+// Base analysis belongs to an image, not to the currently displayed buffer.
+// Keep it while a proxy is reloaded after Auto Invert.
+const proxyAnalyzedBaseIds = new Set();
 let webGLInitialized = false;
 let renderRequested = false;
 
@@ -729,6 +730,7 @@ function initWebGL() {
     uniform vec3 u_exposure;
     uniform float u_gamma;
     uniform int u_mode;
+    uniform int u_invert_enabled;
     
     uniform float u_highlights;
     uniform float u_shadows;
@@ -784,6 +786,21 @@ function initWebGL() {
         }
 
         uvec4 texel = texture(u_image, warped_uv);
+        vec3 raw_rgb = vec3(texel.rgb) / 65535.0;
+
+        // Develop staging view: keep the linear sensor output visibly
+        // negative until the user explicitly confirms the film area and runs
+        // Auto Invert. This prevents a loaded proxy from silently becoming a
+        // positive image because the density shader ran with a zero base.
+        if (u_invert_enabled == 0) {
+            vec3 staged = clamp(raw_rgb * exp2(u_exposure), 0.0, 1.0);
+            if (u_mode != 0) {
+                staged = vec3(getLuma(staged));
+            }
+            float safe_gamma = max(u_gamma, 1e-6);
+            outColor = vec4(pow(staged, vec3(1.0 / safe_gamma)), 1.0);
+            return;
+        }
         
         float epsilon = 1e-6;
         float t_r = max(float(texel.r) / 65535.0, epsilon);
@@ -874,6 +891,7 @@ function initWebGL() {
     u_exposure_loc = gl.getUniformLocation(shaderProgram, "u_exposure");
     u_gamma_loc = gl.getUniformLocation(shaderProgram, "u_gamma");
     u_mode_loc = gl.getUniformLocation(shaderProgram, "u_mode");
+    u_invert_enabled_loc = gl.getUniformLocation(shaderProgram, "u_invert_enabled");
     u_transform_loc = gl.getUniformLocation(shaderProgram, "u_transform");
     u_highlights_loc = gl.getUniformLocation(shaderProgram, "u_highlights");
     u_shadows_loc = gl.getUniformLocation(shaderProgram, "u_shadows");
@@ -1308,13 +1326,18 @@ function renderWebGL() {
     const expbVal = parseFloat(sliders.expb.el.value);
     const gammaVal = parseFloat(sliders.gamma.el.value);
 
-    gl.uniform3f(u_base_density_loc, currentBaseDensity[0], currentBaseDensity[1], currentBaseDensity[2]);
+        gl.uniform3f(
+            u_base_density_loc,
+            proxyHasAnalyzedBase ? currentBaseDensity[0] : 0.0,
+            proxyHasAnalyzedBase ? currentBaseDensity[1] : 0.0,
+            proxyHasAnalyzedBase ? currentBaseDensity[2] : 0.0,
+        );
     gl.uniform3f(u_dmin_loc, currentDMin[0], currentDMin[1], currentDMin[2]);
     gl.uniform3f(u_dmax_loc, currentDMax[0], currentDMax[1], currentDMax[2]);
     gl.uniform3f(u_exposure_loc, expVal + exprVal, expVal + expgVal, expVal + expbVal);
     gl.uniform1f(u_gamma_loc, gammaVal);
     gl.uniform1i(u_mode_loc, mode);
-    gl.uniform1i(u_mode_loc, mode);
+    gl.uniform1i(u_invert_enabled_loc, proxyHasAnalyzedBase ? 1 : 0);
     
     gl.uniform1f(u_highlights_loc, parseFloat(sliders.highlights.el.value));
     gl.uniform1f(u_shadows_loc, parseFloat(sliders.shadows.el.value));
@@ -1356,14 +1379,22 @@ function renderWebGL() {
         }
     }
 
-    // Render to FBO for Histogram
+    // Render to FBO for Histogram. Keep readback at the visualization cadence;
+    // the main canvas itself remains fully GPU-driven for 60fps slider motion.
     gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
     gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
     gl.viewport(0, 0, HIST_W, HIST_H);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     
     const pixels = new Uint8Array(HIST_W * HIST_H * 4);
-    gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    const now = performance.now();
+    if (now - lastVizTime >= 33) {
+        gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    } else if (lastHistPixels) {
+        pixels.set(lastHistPixels);
+    } else {
+        gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    }
     lastHistPixels = pixels;
 
     // Render to Main Canvas
@@ -1391,15 +1422,10 @@ const PROXY_CACHE_LIMIT = 8; // Matches backend MAX_PROXY_CACHE
 const proxyCache = new Map(); // key: id, value: { arrayBuffer, geomKey, lastUsed: Date.now() }
 const readyProxyIds = new Set();
 
-function getProxyGeomKey(geom = current_geom) {
-    if (!geom) return '';
-    const quarterTurns = ((Number(geom.rotate_90_count || 0) % 4) + 4) % 4;
-    return JSON.stringify({
-        angle: Number(geom.angle || 0).toFixed(4),
-        flip_h: !!geom.flip_h,
-        flip_v: !!geom.flip_v,
-        rotate_90_count: quarterTurns,
-    });
+function getProxyGeomKey() {
+    // The backend proxy is canonical RAW pixels. Crop/rotate/flip are applied
+    // by WebGL, so they must not invalidate or re-label the pixel cache.
+    return currentWorkingColorspace;
 }
 
 function getFromCache(id) {
@@ -1508,10 +1534,22 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         proxyWidth = width;
         proxyHeight = height;
         activeProxyIsFull = true;
+        // A proxy is a clear, linear negative until Auto Invert explicitly
+        // computes and persists the film-base estimate. Do not clear the
+        // per-image state when the same proxy is reloaded after analysis.
+        proxyHasAnalyzedBase = proxyAnalyzedBaseIds.has(requestedId);
         readyProxyIds.add(requestedId);
         addToCache(requestedId, arrayBuffer, requestedGeom);
         
-        current_loaded_geom = requestedGeom;
+        // No spatial transform is baked into get_proxy_image_data. Keep a
+        // canonical baseline so persisted flips/rotations remain active after
+        // the proxy upload instead of snapping back to the raw orientation.
+        current_loaded_geom = {
+            angle: 0.0,
+            flip_h: false,
+            flip_v: false,
+            rotate_90_count: 0,
+        };
         
         if (previewCanvas.width !== width || previewCanvas.height !== height) {
             previewCanvas.width = width;
@@ -1602,7 +1640,7 @@ async function flushPendingBackendSync() {
     if (!pending) return;
     try {
         if (pending.key === 'angle') {
-            await invoke('update_geometry', { id: pending.id, geom: pending.geom });
+            await persistGeometryQueued(pending.id, pending.geom);
         }
         await updateBackendParams(pending.id, pending.params);
     } catch (error) {
@@ -1667,7 +1705,7 @@ function enableUI() {
     btnRotateMode.disabled = false;
     document.getElementById('btn-recalibrate').disabled = false;
     btnResetCrop.disabled = false;
-    btnAutoColor.disabled = false;
+    btnAutoColor.disabled = !current_geom?.calibration_points || isCalibrationMode;
     btnSprocketPicker.disabled = false;
     btnResetColor.disabled = false;
     btnRotateLeft.disabled = false;
@@ -2295,9 +2333,13 @@ async function selectImage(id) {
         loadingUI.classList.add('hidden');
         loadingUI.classList.remove('flex');
     }
+    // Keep the previous image's calibration UI from leaking into the new
+    // selection. The authoritative persisted state below decides whether the
+    // area overlay is shown once the lightweight state switch completes.
     isCalibrationMode = false;
     document.getElementById('calibration-overlay').classList.add('hidden');
     document.getElementById('right-panel-blocker').classList.add('hidden');
+    btnAutoColor.disabled = true;
 
     try {
         saveCurrentState(); // Save current state before switching
@@ -2317,6 +2359,11 @@ async function selectImage(id) {
                 params: state.params,
                 geom: state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 }
             });
+            if (state.base_analyzed) {
+                proxyAnalyzedBaseIds.add(id);
+            } else {
+                proxyAnalyzedBaseIds.delete(id);
+            }
         } catch (err) {
             if (err === "FILE_MISSING") {
                 hideThumbnailPlaceholder();
@@ -2382,20 +2429,22 @@ async function selectImage(id) {
         // A developed frame must keep its positive thumbnail on screen until
         // the matching proxy is ready. Undeveloped frames may upgrade the
         // embedded negative while their proxy is prepared.
-        if (!hasRenderedPreview) {
-            void showEmbeddedDevelopPreview(id, myToken).catch(error => {
-                if (myToken === currentImageRequestToken) {
-                    console.error('Failed to upgrade embedded preview', error);
+        // The import-stage 256px embedded thumb is already in memory. Do not
+        // ask LibRaw for a second large JPEG while the linear proxy decodes.
+        // Every Develop entry requests the same coalesced half-size linear
+        // proxy. The embedded/rendered thumbnail remains visible while it is
+        // decoding, so RAW work never blocks navigation or slider input.
+        void ensureProxyDisplayed(id, { persistThumbnail: hasRenderedPreview })
+            .then(loaded => {
+                if (loaded && myToken === currentImageRequestToken && id === activeId) {
+                    queueAdjacentProxyPrewarm(id);
                 }
-            });
-        }
-        if (hasRenderedPreview) {
-            void ensureProxyDisplayed(id, { persistThumbnail: true }).catch(error => {
+            })
+            .catch(error => {
                 if (myToken === currentImageRequestToken) {
                     console.error('Background proxy preparation failed', error);
                 }
             });
-        }
 
         canvasWrapper.style.display = 'block';
         updateCanvasTransform();
@@ -2404,9 +2453,13 @@ async function selectImage(id) {
         } else {
             calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         }
-        isCalibrationMode = !hasRenderedPreview;
-        document.getElementById('calibration-overlay').classList.toggle('hidden', hasRenderedPreview);
-        document.getElementById('right-panel-blocker').classList.toggle('hidden', hasRenderedPreview);
+        const persistedPositive = !!state.base_analyzed;
+        isCalibrationMode = !persistedPositive;
+        document.getElementById('calibration-overlay').classList.toggle('hidden', persistedPositive);
+        // Fresh frames require explicit area confirmation. Persisted positive
+        // frames already have a saved area and can continue editing directly.
+        document.getElementById('right-panel-blocker').classList.toggle('hidden', persistedPositive);
+        btnAutoColor.disabled = !persistedPositive;
         if (isCalibrationMode) requestAnimationFrame(updateCalibrationPolygon);
 
 
@@ -2967,6 +3020,17 @@ function updateSpatialSamples(transform) {
 }
 
 let geomSyncId = 0;
+let geometrySyncChain = Promise.resolve();
+
+function persistGeometryQueued(id, geom) {
+    const snapshot = JSON.parse(JSON.stringify(geom));
+    const write = geometrySyncChain
+        .catch(() => {})
+        .then(() => invoke('update_geometry', { id, geom: snapshot }));
+    geometrySyncChain = write;
+    return write;
+}
+
 function sendGeometrySync() {
     if (!activeId) return;
     const targetId = activeId;
@@ -2977,17 +3041,21 @@ function sendGeometrySync() {
     updateCanvasTransform();
     requestRender();
     
-    invoke('update_geometry', { id: targetId, geom: geomSnapshot }).then(async () => {
-        if (geomSyncId !== currentSyncId) return;
-        if (hasProcessedActiveImage && NexFilmGeometry.proxyPixelTransformChanged(geomSnapshot, current_loaded_geom)) {
-            await reloadDevelopProxy(geomSnapshot, { showLoading: false });
-        } else {
+    // Geometry writes must be serialized. Parallel IPC calls can commit out
+    // of order in SQLite, which makes a flip visibly snap back when an older
+    // request finishes after the newer one.
+    void persistGeometryQueued(targetId, geomSnapshot)
+        .then(() => {
+            if (geomSyncId !== currentSyncId || targetId !== activeId) return;
+            // Geometry is a GPU display transform; the canonical proxy does
+            // not need to be decoded or uploaded again for a flip/rotation.
+            requestRender();
             requestThumbnailSync();
-        }
-    }).catch(error => {
-        console.error("Failed to save geometry", error);
-        showToast("Could not save geometry: " + error, "error");
-    });
+        })
+        .catch(error => {
+            console.error("Failed to save geometry", error);
+            showToast("Could not save geometry: " + error, "error");
+        });
 }
 
 btnRotateLeft.addEventListener('click', () => {
@@ -3042,6 +3110,7 @@ async function doAutoColor() {
     gl.uniform3f(u_exposure_loc, 0.0, 0.0, 0.0);
     gl.uniform1f(u_gamma_loc, 1.0);
     gl.uniform1i(u_mode_loc, mode);
+    gl.uniform1i(u_invert_enabled_loc, 1);
     gl.uniform1f(u_highlights_loc, 0.0);
     gl.uniform1f(u_shadows_loc, 0.0);
     gl.uniform1i(u_has_lut_loc, 0);
@@ -3179,6 +3248,9 @@ async function doAutoColor() {
 
 const proxyPreparePromises = new Map();
 const proxyDisplayPromises = new Map();
+const proxyPrewarmQueue = [];
+const proxyPrewarmQueued = new Set();
+let proxyPrewarmRunning = false;
 
 function ensureProxyPrepared(id) {
     const existing = proxyPreparePromises.get(id);
@@ -3190,6 +3262,71 @@ function ensureProxyPrepared(id) {
     });
     proxyPreparePromises.set(id, promise);
     return promise;
+}
+
+function queueProxyPrewarm(id) {
+    if (!id || proxyPrewarmQueued.has(id)) return;
+    proxyPrewarmQueued.add(id);
+    proxyPrewarmQueue.push(id);
+    void drainProxyPrewarmQueue();
+}
+
+function getProxyPrewarmOrder() {
+    const importPaths = activeImportViewPaths || currentImportSessionPaths;
+    if (importPaths?.length) {
+        return importPaths
+            .map(path => allLibraryItems.find(item => normalizePath(item.file_path) === path)?.id)
+            .filter(Boolean);
+    }
+
+    if (currentRollViewId && isRollEditing) {
+        const roll = allRolls.find(candidate => candidate.roll_id === currentRollViewId);
+        if (roll?.image_paths?.length) {
+            return roll.image_paths
+                .map(path => allLibraryItems.find(item =>
+                    item.roll_id === currentRollViewId
+                    && normalizePath(item.file_path) === normalizePath(path)
+                )?.id)
+                .filter(Boolean);
+        }
+    }
+
+    // The rendered filmstrip is already scoped by the existing state machine.
+    // Using it as the final fallback covers loose edits without pulling frames
+    // from History Films' preview-only mode into the RAW decode queue.
+    return Array.from(document.querySelectorAll('#filmstrip-container .film-item'))
+        .map(element => element.dataset.id)
+        .filter(Boolean);
+}
+
+function queueAdjacentProxyPrewarm(id) {
+    const orderedIds = getProxyPrewarmOrder();
+    const index = orderedIds.indexOf(id);
+    if (index < 0) return;
+    for (let offset = 1; offset <= 4; offset++) {
+        queueProxyPrewarm(orderedIds[index + offset]);
+    }
+}
+
+async function drainProxyPrewarmQueue() {
+    if (proxyPrewarmRunning) return;
+    proxyPrewarmRunning = true;
+    try {
+        while (proxyPrewarmQueue.length) {
+            const id = proxyPrewarmQueue.shift();
+            proxyPrewarmQueued.delete(id);
+            if (!id || id === activeId) continue;
+            try {
+                // Decode ahead of time, but keep this deliberately single-file
+                // so background prewarming never competes with the active edit.
+                await ensureProxyPrepared(id);
+            } catch (error) {
+                console.debug('Proxy prewarm skipped', id, error);
+            }
+        }
+    } finally {
+        proxyPrewarmRunning = false;
+    }
 }
 
 function ensureProxyDisplayed(id, options = {}) {
@@ -3256,32 +3393,37 @@ async function reloadDevelopProxy(geomSnapshot = current_geom, options = {}) {
 
 async function runAutoInvert() {
     if (!activeId) return;
+    if (isCalibrationMode || !current_geom.calibration_points) {
+        showToast("Confirm the film area before Auto Invert.", "info");
+        return;
+    }
     const targetId = activeId;
     const token = currentImageRequestToken;
     const geomSnapshot = JSON.parse(JSON.stringify(current_geom));
     try {
-        await invoke('update_geometry', { id: targetId, geom: geomSnapshot });
+        await persistGeometryQueued(targetId, geomSnapshot);
     } catch (error) {
         showToast("Auto invert failed: " + error, "error");
         return;
     }
     try {
         await ensureProxyPrepared(targetId);
+        await invoke('analyze_proxy_base_color', { id: targetId });
+        proxyAnalyzedBaseIds.add(targetId);
+        proxyHasAnalyzedBase = true;
         const pendingDisplay = proxyDisplayPromises.get(targetId);
         if (pendingDisplay) await pendingDisplay;
         if (token !== currentImageRequestToken || targetId !== activeId) return;
-        const proxyMatchesGeometry = activeProxyIsFull
-            && current_loaded_geom
-            && getProxyGeomKey(current_loaded_geom) === getProxyGeomKey(geomSnapshot);
-        if (!proxyMatchesGeometry) {
-            const loaded = await reloadDevelopProxy(geomSnapshot, {
-                showLoading: true,
-                persistThumbnail: false,
-                reveal: false,
-                errorPrefix: "Auto invert failed: ",
-            });
-            if (!loaded) return;
-        }
+        // Base-density metadata is part of the response header. Reload once
+        // after analysis so an already displayed proxy cannot retain the
+        // default half-white base used during the pre-invert staging view.
+        const loaded = await reloadDevelopProxy(geomSnapshot, {
+            showLoading: true,
+            persistThumbnail: false,
+            reveal: false,
+            errorPrefix: "Auto invert failed: ",
+        });
+        if (!loaded) return;
         await new Promise(resolve => requestAnimationFrame(resolve));
         await doAutoColor();
         previewCanvas.style.display = 'block';
@@ -3302,9 +3444,9 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
     current_geom.calibration_points = null;
     currentSprocketUV = new Float32Array([-1.0, -1.0]);
     if (isCropMode) updateCropOverlay();
-    await invoke('update_geometry', { id: activeId, geom: JSON.parse(JSON.stringify(current_geom)) });
+    await persistGeometryQueued(activeId, current_geom);
     await updateBackendParams();
-    if (hasProcessedActiveImage) await reloadDevelopProxy(current_geom);
+    if (hasProcessedActiveImage) requestRender();
     requestThumbnailSync();
 });
 
@@ -3899,10 +4041,11 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
     if (activeProxyIsFull) requestRender();
     saveCurrentState();
     try {
-        await invoke('update_geometry', { id: activeId, geom: JSON.parse(JSON.stringify(current_geom)) });
+        await persistGeometryQueued(activeId, current_geom);
         isCalibrationMode = false;
         document.getElementById('calibration-overlay').classList.add('hidden');
         document.getElementById('right-panel-blocker').classList.add('hidden');
+        btnAutoColor.disabled = false;
         showToast("Film area saved. Run Auto Invert when ready.", "success");
     } catch (e) {
         console.error("Calibration failed", e);
