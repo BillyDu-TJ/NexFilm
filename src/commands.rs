@@ -29,7 +29,7 @@ static RAYON_INIT: OnceLock<()> = OnceLock::new();
 static EXPORT_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 const FALLBACK_THUMB: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mM8c+bMfwAIGwK9t856VAAAAABJRU5ErkJggg==";
-const IMPORT_PREVIEW_LONG_EDGE: u32 = 256;
+const IMPORT_PREVIEW_LONG_EDGE: u32 = 1024;
 const PROXY_LONG_EDGE: f32 = 2560.0;
 
 struct LibrawGuard(*mut libraw_sys::libraw_data_t);
@@ -104,10 +104,18 @@ fn encode_preview_jpeg_base64(
     write_jpeg_base64(resize_preview_image(img, max_edge), quality)
 }
 
-/// Locate the largest JPEG preview advertised by a TIFF/NEF directory. Nikon
-/// files usually contain a small thumbnail and a much larger embedded preview;
-/// reading the IFD and JPEG segment avoids LibRaw's full RAW metadata path.
-fn extract_tiff_jpeg_preview(path: &str) -> Option<Vec<u8>> {
+fn is_better_preview_edge(candidate: u32, current: u32, target: u32) -> bool {
+    match (candidate >= target, current >= target) {
+        (true, false) => true,
+        (false, true) => false,
+        (true, true) => candidate < current,
+        (false, false) => candidate > current,
+    }
+}
+
+/// Locate the JPEG preview closest to the requested edge in a TIFF/NEF file.
+/// Reading the embedded JPEG avoids LibRaw's full RAW decode during import.
+fn extract_tiff_jpeg_preview(path: &str, target_edge: u32) -> Option<Vec<u8>> {
     let mut file = std::fs::File::open(path).ok()?;
     let file_len = file.metadata().ok()?.len();
     if file_len < 8 {
@@ -146,6 +154,7 @@ fn extract_tiff_jpeg_preview(path: &str) -> Option<Vec<u8>> {
         file.read_exact(&mut bytes).ok()?;
         Some(bytes)
     };
+    let mut best: Option<(u64, u64, u32)> = None;
     let probe_len = file_len.min(512 * 1024) as usize;
     let mut probe_best: Option<(usize, u32, u32, usize)> = None;
     if let Some(prefix) = read_at(&mut file, 0, probe_len) {
@@ -162,11 +171,9 @@ fn extract_tiff_jpeg_preview(path: &str) -> Option<Vec<u8>> {
                 {
                     let end = cursor + 2 + end_rel + 2;
                     let edge = width.max(height);
-                    if edge <= 1000
-                        && probe_best.is_none_or(|(_, current_width, current_height, _)| {
-                            edge < current_width.max(current_height)
-                        })
-                    {
+                    if probe_best.is_none_or(|(_, current_width, current_height, _)| {
+                        is_better_preview_edge(edge, current_width.max(current_height), target_edge)
+                    }) {
                         probe_best = Some((cursor, width, height, end));
                     }
                 }
@@ -174,15 +181,7 @@ fn extract_tiff_jpeg_preview(path: &str) -> Option<Vec<u8>> {
             cursor += 2;
         }
         if let Some((offset, width, height, end)) = probe_best {
-            let bytes = &prefix[offset..end];
-            if width.max(height) <= 256 {
-                return Some(bytes.to_vec());
-            }
-            if let Ok(image) = image::load_from_memory(bytes) {
-                if let Some(encoded) = encode_preview_jpeg_base64(image, 256, 86) {
-                    return Some(general_purpose::STANDARD.decode(encoded).ok()?);
-                }
-            }
+            best = Some((offset as u64, (end - offset) as u64, width.max(height)));
         }
     }
     let type_size = |kind: u16| -> Option<usize> {
@@ -207,10 +206,6 @@ fn extract_tiff_jpeg_preview(path: &str) -> Option<Vec<u8>> {
 
     let mut pending = vec![read_u32(&header[4..8]) as u64];
     let mut visited = HashSet::new();
-    // Prefer a camera preview-sized JPEG. Some NEFs contain a very large
-    // embedded JPEG (or JPEG-like maker-note payload); decoding that during
-    // import defeats the instant-placeholder path.
-    let mut best: Option<(u64, u64, u64)> = None;
     while let Some(ifd_offset) = pending.pop() {
         if visited.len() >= 32
             || ifd_offset == 0
@@ -261,17 +256,11 @@ fn extract_tiff_jpeg_preview(path: &str) -> Option<Vec<u8>> {
                         if width == 0 || height == 0 {
                             continue;
                         }
-                        let area = width as u64 * height as u64;
-                        // The first small camera JPEG is enough for the
-                        // library placeholder; do not decode a multi-megapixel
-                        // preview just to shrink it to 256 px.
-                        let bounded = width.max(height) <= 1000;
-                        let score = if bounded { area + 1_000_000_000 } else { area };
-                        if bounded {
-                            return read_at(&mut file, offset, length as usize);
-                        }
-                        if best.is_none_or(|(_, _, current_score)| score > current_score) {
-                            best = Some((offset, length, score));
+                        let edge = width.max(height);
+                        if best.is_none_or(|(_, _, current_edge)| {
+                            is_better_preview_edge(edge, current_edge, target_edge)
+                        }) {
+                            best = Some((offset, length, edge));
                         }
                     }
                 }
@@ -494,11 +483,11 @@ fn decode_direct_image_preview_base64(path: &str, max_edge: u32) -> Option<Strin
 }
 
 fn extract_embedded_preview_base64(path: &str, max_edge: u32) -> Option<String> {
-    if let Some(bytes) = extract_tiff_jpeg_preview(path) {
-        // The camera preview is already a display-ready JPEG. Keep the
-        // smallest embedded stream untouched so import never pays a decode /
-        // resize cost; CSS/WebGL scales it to the library tile size.
-        if bytes.len() <= 256 * 1024 {
+    if let Some(bytes) = extract_tiff_jpeg_preview(path, max_edge) {
+        // Keep a display-ready JPEG untouched when it already fits the target.
+        if bytes.len() <= 256 * 1024
+            && jpeg_dimensions(&bytes).is_some_and(|(width, height)| width.max(height) <= max_edge)
+        {
             return Some(general_purpose::STANDARD.encode(bytes));
         }
         if let Ok(image) = image::load_from_memory(&bytes) {
@@ -3689,8 +3678,9 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 #[cfg(test)]
 mod import_contract_tests {
     use super::{
-        decode_image_buffer, decode_import_preview_base64, is_lightweight_direct_preview,
-        is_raw_extension, is_tiff_extension, persist_import_batch, DecodeMode,
+        decode_image_buffer, decode_import_preview_base64, is_better_preview_edge,
+        is_lightweight_direct_preview, is_raw_extension, is_tiff_extension, persist_import_batch,
+        DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
     };
     use crate::app_state::{BaseColor, FilmItem, GeometryState, TuningParams};
     use base64::Engine as _;
@@ -3719,10 +3709,20 @@ mod import_contract_tests {
     }
 
     #[test]
+    fn embedded_preview_selection_prefers_the_closest_useful_resolution() {
+        assert!(is_better_preview_edge(1024, 256, 1024));
+        assert!(is_better_preview_edge(900, 640, 1024));
+        assert!(is_better_preview_edge(1280, 2048, 1024));
+        assert!(!is_better_preview_edge(2048, 1280, 1024));
+        assert!(!is_better_preview_edge(640, 1024, 1024));
+    }
+
+    #[test]
     fn tracked_tiff_fixture_has_an_import_stage_preview() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("output_portra400_log.tif");
-        let preview = decode_import_preview_base64(path.to_string_lossy().as_ref(), 256);
+        let preview =
+            decode_import_preview_base64(path.to_string_lossy().as_ref(), IMPORT_PREVIEW_LONG_EDGE);
         assert!(
             preview.is_some(),
             "tracked TIFF fixture has no import preview"
@@ -3738,15 +3738,25 @@ mod import_contract_tests {
             return;
         }
         let started = std::time::Instant::now();
-        let preview = decode_import_preview_base64(path.to_string_lossy().as_ref(), 256)
-            .expect("NEF should expose an embedded JPEG preview");
+        let preview =
+            decode_import_preview_base64(path.to_string_lossy().as_ref(), IMPORT_PREVIEW_LONG_EDGE)
+                .expect("NEF should expose an embedded JPEG preview");
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(preview)
             .expect("preview must be base64");
         let image = image::load_from_memory(&bytes).expect("preview must be a JPEG");
-        assert!(image.width() <= 256 && image.height() <= 256);
+        assert!(
+            image.width() <= IMPORT_PREVIEW_LONG_EDGE && image.height() <= IMPORT_PREVIEW_LONG_EDGE
+        );
+        assert!(image.width().max(image.height()) >= IMPORT_PREVIEW_LONG_EDGE / 2);
         assert!(image.width() > 1 && image.height() > 1);
-        println!("NEF embedded preview extraction: {:?}", started.elapsed());
+        println!(
+            "NEF embedded preview extraction: {:?}, {}x{}, {} KiB",
+            started.elapsed(),
+            image.width(),
+            image.height(),
+            bytes.len() / 1024
+        );
     }
 
     #[test]
@@ -3789,13 +3799,16 @@ mod import_contract_tests {
         }
         let started = std::time::Instant::now();
         for path in &paths {
-            let preview = decode_import_preview_base64(path.to_string_lossy().as_ref(), 256)
-                .expect("each NEF should expose an embedded preview");
+            let preview = decode_import_preview_base64(
+                path.to_string_lossy().as_ref(),
+                IMPORT_PREVIEW_LONG_EDGE,
+            )
+            .expect("each NEF should expose an embedded preview");
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(preview)
                 .expect("preview must be base64");
             let image = image::load_from_memory(&bytes).expect("preview must be a JPEG");
-            assert!(image.width().max(image.height()) <= 256);
+            assert!(image.width().max(image.height()) <= IMPORT_PREVIEW_LONG_EDGE);
         }
         println!(
             "{} NEF import previews extracted in {:?}",

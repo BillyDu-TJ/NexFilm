@@ -63,6 +63,7 @@ const cropOverlay = document.getElementById('crop-overlay');
 const cropMask = document.getElementById('crop-mask');
 const cropBox = document.getElementById('crop-box');
 const cropGrid = document.getElementById('crop-grid');
+const cropEdges = document.getElementById('crop-edges');
 const cropHandles = document.getElementById('crop-handles');
 const rotateHandleOuter = document.getElementById('rotate-handle-outer');
 
@@ -97,7 +98,6 @@ let hasProcessedActiveImage = false;
 
 let lastHistPixels = null;
 let current_geom = { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
-let current_loaded_geom = null;
 let isCropMode = false;
 let isRotateMode = false;
 let currentImageWidth = 1;
@@ -229,7 +229,7 @@ function appendMissingSourceBadge(container, item) {
     if (!item?.file_missing) return;
     const badge = document.createElement('div');
     badge.className = 'absolute right-1 top-1 bg-red-950/90 border border-red-700/70 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-red-200';
-    badge.textContent = 'SOURCE MISSING';
+    badge.textContent = 'Source Missing';
     container.appendChild(badge);
 }
 
@@ -285,11 +285,11 @@ function updateLibrarySelectionUI() {
     librarySelectionCount.textContent = `${selectedLibraryIds.size} selected`;
     if (selectedLibraryIds.size > 0) {
         btnExportDialog.disabled = false;
-        btnExportDialog.textContent = 'EXPORT (' + selectedLibraryIds.size + ')';
+        btnExportDialog.textContent = 'Export (' + selectedLibraryIds.size + ')';
         btnDeselectAll.classList.remove('hidden');
     } else {
         btnExportDialog.disabled = true;
-        btnExportDialog.textContent = 'EXPORT';
+        btnExportDialog.textContent = 'Export';
         btnDeselectAll.classList.add('hidden');
     }
     
@@ -666,7 +666,7 @@ let u_exposure_loc;
 let u_gamma_loc;
 let u_mode_loc;
 let u_invert_enabled_loc;
-let u_transform_loc;
+let u_geometry_uv_loc;
 let u_highlights_loc;
 let u_shadows_loc;
 let u_lut3d_loc;
@@ -674,7 +674,6 @@ let u_lut_opacity_loc;
 let u_has_lut_loc;
 let u_lut1d_loc;
 let u_image_loc;
-let u_image_aspect_loc;
 let u_crop_loc;
 let u_calib_pts_loc;
 let u_border_exposure_loc;
@@ -699,18 +698,9 @@ function initWebGL() {
     in vec4 a_position;
     in vec2 a_texcoord;
     out vec2 v_texcoord;
-    uniform mat4 u_transform;
-    uniform float u_aspect;
     uniform vec4 u_crop;
-    uniform float u_image_aspect;
     void main() {
-        vec4 pos = a_position;
-        
-        pos.x *= u_aspect;
-        pos = u_transform * pos;
-        pos.x /= u_aspect;
-        gl_Position = pos;
-        
+        gl_Position = a_position;
         vec2 base_uv = vec2(a_texcoord.x, 1.0 - a_texcoord.y);
         v_texcoord = vec2(
             u_crop.x + base_uv.x * u_crop.z,
@@ -742,6 +732,7 @@ function initWebGL() {
     uniform int u_lut_is_1d;
     
     uniform mat3 u_homography;
+    uniform mat3 u_geometry_uv;
     uniform vec2 u_sprocket_uv;
     uniform float u_sprocket_tolerance;
     uniform float u_sprocket_feather;
@@ -762,6 +753,11 @@ function initWebGL() {
         return p.xy / p.z;
     }
 
+    vec2 mapOrientedToSource(vec2 uv) {
+        vec3 p = u_geometry_uv * vec3(uv, 1.0);
+        return p.xy / p.z;
+    }
+
     float lutTextureCoord(float value, float size) {
         return (clamp(value, 0.0, 1.0) * (size - 1.0) + 0.5) / size;
     }
@@ -771,7 +767,8 @@ function initWebGL() {
     }
 
     void main() {
-        vec2 warped_uv = applyHomography(v_texcoord, u_homography);
+        vec2 oriented_uv = applyHomography(v_texcoord, u_homography);
+        vec2 warped_uv = mapOrientedToSource(oriented_uv);
         if (warped_uv.x < 0.0 || warped_uv.x > 1.0 || warped_uv.y < 0.0 || warped_uv.y > 1.0) {
             outColor = vec4(0.0, 0.0, 0.0, 1.0);
             return;
@@ -779,8 +776,9 @@ function initWebGL() {
 
         float mask = 0.0;
         if (u_sprocket_uv.x >= 0.0) {
+            vec2 sprocket_source_uv = mapOrientedToSource(u_sprocket_uv);
             vec3 raw_color = vec3(texture(u_image, warped_uv).rgb) / 65535.0;
-            vec3 raw_target = vec3(texture(u_image, u_sprocket_uv).rgb) / 65535.0;
+            vec3 raw_target = vec3(texture(u_image, sprocket_source_uv).rgb) / 65535.0;
             float luma_diff = abs(getLuma(raw_color) - getLuma(raw_target));
             mask = pow(1.0 - smoothstep(u_sprocket_tolerance, u_sprocket_tolerance + u_sprocket_feather + 0.0001, luma_diff), 3.0);
         }
@@ -892,7 +890,7 @@ function initWebGL() {
     u_gamma_loc = gl.getUniformLocation(shaderProgram, "u_gamma");
     u_mode_loc = gl.getUniformLocation(shaderProgram, "u_mode");
     u_invert_enabled_loc = gl.getUniformLocation(shaderProgram, "u_invert_enabled");
-    u_transform_loc = gl.getUniformLocation(shaderProgram, "u_transform");
+    u_geometry_uv_loc = gl.getUniformLocation(shaderProgram, "u_geometry_uv");
     u_highlights_loc = gl.getUniformLocation(shaderProgram, "u_highlights");
     u_shadows_loc = gl.getUniformLocation(shaderProgram, "u_shadows");
     u_lut3d_loc = gl.getUniformLocation(shaderProgram, "u_lut3d");
@@ -901,8 +899,6 @@ function initWebGL() {
     u_has_lut_loc = gl.getUniformLocation(shaderProgram, "u_has_lut");
     u_lut_is_1d_loc = gl.getUniformLocation(shaderProgram, "u_lut_is_1d");
     u_image_loc = gl.getUniformLocation(shaderProgram, "u_image");
-    u_aspect_loc = gl.getUniformLocation(shaderProgram, "u_aspect");
-    u_image_aspect_loc = gl.getUniformLocation(shaderProgram, "u_image_aspect");
     u_crop_loc = gl.getUniformLocation(shaderProgram, "u_crop");
     u_homography_loc = gl.getUniformLocation(shaderProgram, "u_homography");
     u_sprocket_uv_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_uv");
@@ -1302,14 +1298,6 @@ function requestRender() {
     requestAnimationFrame(renderWebGL);
 }
 
-function getActivePreviewTransform() {
-    return NexFilmGeometry.getPreviewTransform(
-        current_geom,
-        current_loaded_geom,
-        true
-    );
-}
-
 function renderWebGL() {
     renderRequested = false;
     if (!gl || !activeId) return;
@@ -1347,9 +1335,6 @@ function renderWebGL() {
     gl.uniform1i(u_lut3d_loc, 1);
     gl.uniform1i(u_lut1d_loc, 2);
     gl.uniform1i(u_image_loc, 0);
-    gl.uniform1f(u_aspect_loc, gl.canvas.width / gl.canvas.height);
-    gl.uniform1f(u_image_aspect_loc, proxyWidth / proxyHeight);
-    
     let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
     let minX = Math.min(pts[0][0], pts[1][0], pts[2][0], pts[3][0]);
     let maxX = Math.max(pts[0][0], pts[1][0], pts[2][0], pts[3][0]);
@@ -1363,9 +1348,12 @@ function renderWebGL() {
     gl.uniform1f(u_sprocket_feather_loc, currentSprocketFeather);
     gl.uniform4f(u_calib_bounds_loc, minX, minY, maxX, maxY);
     
-    const previewTransform = getActivePreviewTransform();
-    const transformMat = NexFilmGeometry.createTransformMatrix(previewTransform);
-    gl.uniformMatrix4fv(u_transform_loc, false, transformMat);
+    const geometryUv = NexFilmGeometry.createInverseGeometryMatrix(
+        proxyWidth,
+        proxyHeight,
+        current_geom
+    );
+    gl.uniformMatrix3fv(u_geometry_uv_loc, false, geometryUv);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -1398,14 +1386,19 @@ function renderWebGL() {
     lastHistPixels = pixels;
 
     // Render to Main Canvas
+    const orientedSize = NexFilmGeometry.getOrientedDimensions(
+        proxyWidth,
+        proxyHeight,
+        current_geom
+    );
     if (!isCropMode) {
         gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
-        gl.canvas.width = Math.max(1, proxyWidth * current_geom.crop_rect.width);
-        gl.canvas.height = Math.max(1, proxyHeight * current_geom.crop_rect.height);
+        gl.canvas.width = Math.max(1, Math.round(orientedSize.width * current_geom.crop_rect.width));
+        gl.canvas.height = Math.max(1, Math.round(orientedSize.height * current_geom.crop_rect.height));
     } else {
         gl.uniform4f(u_crop_loc, 0.0, 0.0, 1.0, 1.0);
-        gl.canvas.width = proxyWidth;
-        gl.canvas.height = proxyHeight;
+        gl.canvas.width = Math.max(1, Math.round(orientedSize.width));
+        gl.canvas.height = Math.max(1, Math.round(orientedSize.height));
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
@@ -1541,16 +1534,6 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         readyProxyIds.add(requestedId);
         addToCache(requestedId, arrayBuffer, requestedGeom);
         
-        // No spatial transform is baked into get_proxy_image_data. Keep a
-        // canonical baseline so persisted flips/rotations remain active after
-        // the proxy upload instead of snapping back to the raw orientation.
-        current_loaded_geom = {
-            angle: 0.0,
-            flip_h: false,
-            flip_v: false,
-            rotate_90_count: 0,
-        };
-        
         if (previewCanvas.width !== width || previewCanvas.height !== height) {
             previewCanvas.width = width;
             previewCanvas.height = height;
@@ -1679,7 +1662,7 @@ function scheduleBackendSync(key) {
 
 for (const key in sliders) {
     const s = sliders[key];
-    s.el.addEventListener('mousedown', () => pushUndoState());
+    s.el.addEventListener('pointerdown', () => pushUndoState());
     s.el.addEventListener('input', (e) => {
         s.val.textContent = parseFloat(e.target.value).toFixed(key === 'angle' ? 1 : 3);
         if (key === 'angle') {
@@ -1690,10 +1673,69 @@ for (const key in sliders) {
             currentSprocketFeather = parseFloat(e.target.value);
         }
         updateSliderTrack(e.target);
-        requestRender(); // Zero latency UI!
+        requestRender();
+    });
+    s.el.addEventListener('change', () => {
         scheduleBackendSync(key);
     });
 }
+
+function setupEditableSliderValues() {
+    Object.values(sliders).forEach(({ el, val }) => {
+        if (!el || !val) return;
+        val.classList.add('slider-value');
+        val.contentEditable = 'plaintext-only';
+        val.spellcheck = false;
+        val.title = 'Click to enter a value';
+
+        const restoreValue = () => {
+            val.textContent = Number.parseFloat(el.value).toFixed(3);
+        };
+        const commitValue = () => {
+            if (el.disabled) {
+                restoreValue();
+                return;
+            }
+            const parsed = Number.parseFloat(val.textContent);
+            if (!Number.isFinite(parsed)) {
+                restoreValue();
+                return;
+            }
+            const min = Number.parseFloat(el.min);
+            const max = Number.parseFloat(el.max);
+            const next = Math.min(max, Math.max(min, parsed));
+            pushUndoState();
+            el.value = String(next);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        };
+
+        val.addEventListener('focus', () => {
+            if (el.disabled) {
+                val.blur();
+                return;
+            }
+            const range = document.createRange();
+            range.selectNodeContents(val);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+        });
+        val.addEventListener('blur', commitValue);
+        val.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                val.blur();
+            } else if (event.key === 'Escape') {
+                event.preventDefault();
+                restoreValue();
+                val.blur();
+            }
+        });
+    });
+}
+
+setupEditableSliderValues();
 
 function enableUI() {
     for (const key in sliders) {
@@ -1750,6 +1792,13 @@ let currentRollViewId = null;
 let isRollEditing = false; // true only when Continue Editing (explicitly imported for editing), false for History preview
 let currentImportSessionPaths = null;
 let activeImportViewPaths = null;
+const rollPreviewCache = new Map();
+const ROLL_PREVIEW_CACHE_MS = 15_000;
+
+function getRollPreviewCacheKey(roll) {
+    const paths = roll.image_paths || [];
+    return `${roll.roll_id}:${paths.length}:${paths[0] || ''}`;
+}
 
 async function fetchRolls() {
     try {
@@ -1841,6 +1890,141 @@ function getActiveFilters() {
     return { formats, cameras, dates };
 }
 
+let cleanupLibraryVirtualizer = null;
+
+function createLibraryItemElement(item) {
+    const libDiv = document.createElement('div');
+    libDiv.className = `library-item overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
+    libDiv.dataset.id = item.id;
+    libDiv.ondblclick = () => {
+        selectedLibraryIds.clear();
+        selectedLibraryIds.add(item.id);
+        currentImportSessionPaths = null;
+        if (item.roll_id && item.roll_id !== 'LOOSE_DEFAULT') {
+            currentRollViewId = item.roll_id;
+        } else {
+            currentRollViewId = null;
+            isRollEditing = false;
+        }
+        updateLibrarySelectionUI();
+        selectImage(item.id);
+        switchView('develop');
+    };
+    libDiv.onclick = (event) => {
+        if (event.ctrlKey || event.metaKey) {
+            if (selectedLibraryIds.has(item.id)) selectedLibraryIds.delete(item.id);
+            else selectedLibraryIds.add(item.id);
+        } else {
+            selectedLibraryIds.clear();
+            selectedLibraryIds.add(item.id);
+        }
+        updateLibrarySelectionUI();
+    };
+
+    if (item.status === 'importing') {
+        const skeleton = document.createElement('div');
+        skeleton.className = 'w-full h-full bg-[#2C2C2E] flex items-center justify-center animate-pulse';
+        skeleton.innerHTML = `<svg class="animate-spin h-6 w-6 text-[#8E8E93]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
+        libDiv.appendChild(skeleton);
+        return libDiv;
+    }
+
+    const libImg = document.createElement('img');
+    libImg.dataset.imgId = item.id;
+    libImg.loading = 'lazy';
+    libImg.decoding = 'async';
+    if (item.thumbnail_base64 === 'FILE_MISSING') {
+        libImg.src = 'data:image/svg+xml;base64,' + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
+        libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
+    } else if (!item.thumbnail_base64 || item.thumbnail_base64 === 'CALCULATING') {
+        libImg.src = 'data:image/svg+xml;base64,' + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
+        libImg.className = 'w-full h-full object-cover pointer-events-none opacity-80';
+    } else {
+        libImg.src = getThumbnailSrc(item.id) || '';
+        libImg.className = 'w-full h-full object-cover pointer-events-none';
+    }
+    libDiv.appendChild(libImg);
+    appendMissingSourceBadge(libDiv, item);
+    return libDiv;
+}
+
+function mountVirtualLibraryGrid(items) {
+    if (cleanupLibraryVirtualizer) cleanupLibraryVirtualizer();
+
+    const scrollRoot = libraryGrid.parentElement;
+    const rendered = new Map();
+    const gap = 12;
+    const minItemWidth = 190;
+    const overscanRows = 2;
+    let frame = null;
+    let disposed = false;
+
+    libraryGrid.style.display = 'block';
+    libraryGrid.style.position = 'relative';
+
+    const renderVisible = () => {
+        frame = null;
+        if (disposed) return;
+        const width = libraryGrid.clientWidth || scrollRoot.clientWidth;
+        if (width <= 0) return;
+        const columns = Math.max(1, Math.floor((width + gap) / (minItemWidth + gap)));
+        const itemWidth = (width - gap * (columns - 1)) / columns;
+        const itemHeight = itemWidth * .75;
+        const rowStride = itemHeight + gap;
+        const rowCount = Math.ceil(items.length / columns);
+        libraryGrid.style.height = `${Math.max(0, rowCount * rowStride - gap)}px`;
+
+        const gridTop = libraryGrid.getBoundingClientRect().top
+            - scrollRoot.getBoundingClientRect().top
+            + scrollRoot.scrollTop;
+        const viewportTop = Math.max(0, scrollRoot.scrollTop - gridTop);
+        const viewportBottom = viewportTop + scrollRoot.clientHeight;
+        const firstRow = Math.max(0, Math.floor(viewportTop / rowStride) - overscanRows);
+        const lastRow = Math.min(rowCount - 1, Math.ceil(viewportBottom / rowStride) + overscanRows);
+        const firstIndex = firstRow * columns;
+        const lastIndex = Math.min(items.length - 1, (lastRow + 1) * columns - 1);
+
+        rendered.forEach((element, index) => {
+            if (index < firstIndex || index > lastIndex) {
+                element.remove();
+                rendered.delete(index);
+            }
+        });
+
+        for (let index = firstIndex; index <= lastIndex; index++) {
+            const row = Math.floor(index / columns);
+            const column = index % columns;
+            let element = rendered.get(index);
+            if (!element) {
+                element = createLibraryItemElement(items[index]);
+                rendered.set(index, element);
+                libraryGrid.appendChild(element);
+            }
+            element.style.position = 'absolute';
+            element.style.width = `${itemWidth}px`;
+            element.style.height = `${itemHeight}px`;
+            element.style.transform = `translate3d(${column * (itemWidth + gap)}px, ${row * rowStride}px, 0)`;
+        }
+    };
+
+    const queueRender = () => {
+        if (frame === null) frame = requestAnimationFrame(renderVisible);
+    };
+    const resizeObserver = new ResizeObserver(queueRender);
+    resizeObserver.observe(scrollRoot);
+    scrollRoot.addEventListener('scroll', queueRender, { passive: true });
+    renderVisible();
+
+    cleanupLibraryVirtualizer = () => {
+        disposed = true;
+        if (frame !== null) cancelAnimationFrame(frame);
+        resizeObserver.disconnect();
+        scrollRoot.removeEventListener('scroll', queueRender);
+        rendered.clear();
+        cleanupLibraryVirtualizer = null;
+    };
+}
+
 let renderVersion = 0;
 async function renderLibraryAndFilmstrip(skipFetch = false) {
     renderVersion++;
@@ -1870,7 +2054,9 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
         const btnExportContactSheet = document.getElementById('btn-export-contact-sheet');
         const historyEmpty = document.getElementById('history-empty');
         
+        if (cleanupLibraryVirtualizer) cleanupLibraryVirtualizer();
         libraryGrid.innerHTML = '';
+        libraryGrid.removeAttribute('style');
         libraryRollsGrid.innerHTML = '';
         historyInternalGrid.innerHTML = '';
         filmstripContainer.innerHTML = '';
@@ -1888,58 +2074,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
             libraryEmpty.classList.add('hidden');
             libraryGrid.classList.remove('hidden');
             btnSelectAll.classList.remove('hidden');
-
-            libraryItems.forEach(item => {
-                const libDiv = document.createElement('div');
-                libDiv.className = `library-item rounded overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
-                libDiv.dataset.id = item.id;
-                libDiv.ondblclick = () => {
-                    selectedLibraryIds.clear();
-                    selectedLibraryIds.add(item.id);
-                    currentImportSessionPaths = null;
-                    if (item.roll_id && item.roll_id !== 'LOOSE_DEFAULT') {
-                        currentRollViewId = item.roll_id;
-                    } else {
-                        currentRollViewId = null;
-                        isRollEditing = false;
-                    }
-                    updateLibrarySelectionUI();
-                    selectImage(item.id);
-                    switchView('develop');
-                };
-                libDiv.onclick = (e) => {
-                    if (e.ctrlKey || e.metaKey) {
-                        if (selectedLibraryIds.has(item.id)) selectedLibraryIds.delete(item.id);
-                        else selectedLibraryIds.add(item.id);
-                    } else {
-                        selectedLibraryIds.clear();
-                        selectedLibraryIds.add(item.id);
-                    }
-                    updateLibrarySelectionUI();
-                };
-                if (item.status === 'importing') {
-                    const skeleton = document.createElement('div');
-                    skeleton.className = 'w-full h-full bg-[#2C2C2E] flex items-center justify-center animate-pulse';
-                    skeleton.innerHTML = `<svg class="animate-spin h-6 w-6 text-[#8E8E93]" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>`;
-                    libDiv.appendChild(skeleton);
-                } else {
-                    const libImg = document.createElement('img');
-                    libImg.dataset.imgId = item.id;
-                    if (item.thumbnail_base64 === "FILE_MISSING") {
-                        libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" fill="none" stroke="#ff0000" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>`);
-                        libImg.className = 'w-full h-full object-contain opacity-50 bg-[#1C1C1E] p-4 pointer-events-none';
-                    } else if (!item.thumbnail_base64 || item.thumbnail_base64 === "CALCULATING") {
-                        libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
-                        libImg.className = 'w-full h-full object-cover pointer-events-none opacity-80';
-                    } else {
-                        libImg.src = getThumbnailSrc(item.id) || '';
-                        libImg.className = 'w-full h-full object-cover pointer-events-none';
-                    }
-                    libDiv.appendChild(libImg);
-                    appendMissingSourceBadge(libDiv, item);
-                }
-                libraryGrid.appendChild(libDiv);
-            });
+            mountVirtualLibraryGrid(libraryItems);
         }
         
         // --- Populate HISTORY FILMS View ---
@@ -1961,7 +2096,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 btnExportContactSheet.classList.remove('hidden');
                 document.getElementById('btn-promote-roll').classList.remove('hidden');
                 document.getElementById('btn-delete-rolls').classList.add('hidden');
-                historyTitle.textContent = "ROLL CONTENTS";
+                historyTitle.textContent = "Roll Contents";
                 
                 const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
                 if (currentRoll) {
@@ -1985,7 +2120,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                         console.error("Failed to load or import roll filmstrip", e);
                     }
                     
-                    document.getElementById('history-view-title').textContent = "ROLL CONTENTS";
+                    document.getElementById('history-view-title').textContent = "Roll Contents";
 
                     currentRoll.image_paths.forEach(path => {
                         const existingItem = items.find(i =>
@@ -2048,7 +2183,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                             if (!existingItem.rendered_thumbnail_base64) {
                                 const undeveloped = document.createElement('div');
                                 undeveloped.className = 'absolute inset-x-0 bottom-0 bg-black/75 px-2 py-1 text-center text-[9px] font-bold tracking-widest text-zinc-400';
-                                undeveloped.textContent = existingItem.state_available === false ? 'NO SAVED STATE' : 'UNDEVELOPED';
+                                undeveloped.textContent = existingItem.state_available === false ? 'No Saved State' : 'Undeveloped';
                                 libDiv.appendChild(undeveloped);
                             }
                         }
@@ -2063,7 +2198,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 btnExportContactSheet.classList.add('hidden');
                 document.getElementById('btn-promote-roll').classList.add('hidden');
                 document.getElementById('btn-delete-rolls').classList.remove('hidden');
-                historyTitle.textContent = "THE ROLL ARCHIVE";
+                historyTitle.textContent = "Roll Archive";
                 
                 let filteredRolls = allRolls.filter(r => {
                     if (filters.formats.length > 0 && !filters.formats.includes(r.format)) return false;
@@ -2080,24 +2215,27 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 
                 for (const roll of filteredRolls) {
                     if (renderVersion !== currentVersion) return;
-                    let thumbSrc = '';
-                    try {
-                        const previews = await invoke('get_roll_previews', { rollId: roll.roll_id });
-                        if (renderVersion !== currentVersion) return;
-                        if (previews && previews.length > 0) {
-                            thumbSrc = `data:image/jpeg;base64,${previews[0]}`;
+                    const previewCacheKey = getRollPreviewCacheKey(roll);
+                    const cachedPreview = rollPreviewCache.get(previewCacheKey);
+                    const hasFreshPreview = cachedPreview && Date.now() - cachedPreview.cachedAt < ROLL_PREVIEW_CACHE_MS;
+                    let thumbSrc = hasFreshPreview ? cachedPreview.src : '';
+                    if (!hasFreshPreview) {
+                        try {
+                            const previews = await invoke('get_roll_previews', { rollId: roll.roll_id });
+                            if (renderVersion !== currentVersion) return;
+                            if (previews && previews.length > 0) {
+                                thumbSrc = `data:image/jpeg;base64,${previews[0]}`;
+                            }
+                            rollPreviewCache.set(previewCacheKey, { src: thumbSrc, cachedAt: Date.now() });
+                        } catch (e) {
+                            console.error(e);
                         }
-                    } catch (e) {
-                        console.error(e);
                     }
                     
                     const card = document.createElement('div');
-                    card.className = "group relative bg-[#1C1C1E] rounded-lg overflow-hidden cursor-pointer hover:border-zinc-500 transition-all duration-300 flex h-[200px] shadow-lg w-full";
-                    
+                    card.className = "roll-row group cursor-pointer flex w-full";
                     if (isDeleteMode && selectedRollIds.has(roll.roll_id)) {
-                        card.style.border = "2px solid #ef4444";
-                    } else {
-                        card.style.border = "1px solid #28282c";
+                        card.classList.add('delete-selected');
                     }
 
                     card.onclick = async () => {
@@ -2113,19 +2251,16 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                         }
                     };
                     card.innerHTML = `
-                        <div class="flex-1 p-6 flex flex-col justify-between z-10 bg-gradient-to-r from-[#1C1C1E] to-[#1C1C1E]/80">
-                            <div>
-                                <div class="text-[24px] font-black tracking-tighter text-zinc-100 uppercase leading-none mb-2">${roll.film_stock || 'Unknown Film'}</div>
-                                <div class="text-[12px] font-bold text-zinc-500 uppercase tracking-widest">${roll.format || '135'} FORMAT</div>
-                            </div>
-                            <div>
-                                <div class="text-[11px] text-zinc-400 font-medium mb-1"><span class="text-zinc-600">CAM</span> ${roll.camera || 'Unknown'}</div>
-                                <div class="text-[11px] text-zinc-400 font-medium"><span class="text-zinc-600">DAT</span> ${roll.date || 'Unknown'}</div>
+                        <div class="roll-summary">
+                            <div class="roll-title">${roll.film_stock || 'Unknown Film'}</div>
+                            <div class="roll-format">${roll.format || '135'} format</div>
+                            <div class="roll-meta">
+                                <span>${roll.camera || 'Unknown camera'}</span>
+                                <span>${roll.date || 'Unknown date'}</span>
                             </div>
                         </div>
-                        <div class="w-1/2 h-full relative overflow-hidden shrink-0">
-                            <div class="absolute inset-0 bg-gradient-to-r from-[#1C1C1E]/80 to-transparent z-10"></div>
-                            ${thumbSrc ? `<img src="${thumbSrc}" class="w-full h-full object-cover scale-100 group-hover:scale-105 transition-transform duration-500 opacity-80 group-hover:opacity-100">` : `<div class="w-full h-full bg-[#121214]"></div>`}
+                        <div class="roll-preview">
+                            ${thumbSrc ? `<img src="${thumbSrc}" alt="" class="w-full h-full object-cover">` : `<div class="roll-preview-empty"></div>`}
                         </div>
                     `;
                     libraryRollsGrid.appendChild(card);
@@ -2429,7 +2564,7 @@ async function selectImage(id) {
         // A developed frame must keep its positive thumbnail on screen until
         // the matching proxy is ready. Undeveloped frames may upgrade the
         // embedded negative while their proxy is prepared.
-        // The import-stage 256px embedded thumb is already in memory. Do not
+        // The import-stage 1024px embedded preview is already in memory. Do not
         // ask LibRaw for a second large JPEG while the linear proxy decodes.
         // Every Develop entry requests the same coalesced half-size linear
         // proxy. The embedded/rendered thumbnail remains visible while it is
@@ -2790,7 +2925,7 @@ function showExportProgress(processed, total) {
         exportProgressToast.className = 'fixed bottom-6 right-6 z-[100] w-72 border border-[#3A3A3C] bg-[#1C1C1E] p-4 shadow-2xl';
         exportProgressToast.innerHTML = `
             <div class="mb-3 flex items-center justify-between text-[11px] font-bold tracking-widest text-zinc-200">
-                <span>EXPORTING</span><span id="export-progress-text">0 / 0</span>
+                <span>Exporting</span><span id="export-progress-text">0 / 0</span>
             </div>
             <div class="h-1.5 overflow-hidden bg-zinc-800"><div id="export-progress-bar" class="h-full bg-zinc-200" style="width:0%"></div></div>`;
         document.body.appendChild(exportProgressToast);
@@ -2885,13 +3020,6 @@ sliders.masterDmin.el.addEventListener('input', (e) => {
     sliders.masterDmin.val.textContent = current.toFixed(3);
     updateDMinMaxDisplay(); requestRender();
 });
-sliders.masterDmin.el.addEventListener('change', () => {
-    updateBackendParams().catch(error => {
-        console.error('Failed to save Master D-Min', error);
-        showToast('Could not save Master D-Min: ' + error, 'error');
-    });
-});
-
 sliders.masterDmax.el.addEventListener('input', (e) => {
     let current = parseFloat(e.target.value);
     let delta = current - lastMasterDmax;
@@ -2899,12 +3027,6 @@ sliders.masterDmax.el.addEventListener('input', (e) => {
     currentDMax[0] += delta; currentDMax[1] += delta; currentDMax[2] += delta;
     sliders.masterDmax.val.textContent = current.toFixed(3);
     updateDMinMaxDisplay(); requestRender();
-});
-sliders.masterDmax.el.addEventListener('change', () => {
-    updateBackendParams().catch(error => {
-        console.error('Failed to save Master D-Max', error);
-        showToast('Could not save Master D-Max: ' + error, 'error');
-    });
 });
 
 for (const key in sliders) updateSliderTrack(sliders[key].el);
@@ -2918,6 +3040,7 @@ function updateCanvasTransform(w, h) {
     const cw = currentImageWidth;
     const ch = currentImageHeight;
     const rect = current_geom.crop_rect;
+    const orientedSize = NexFilmGeometry.getOrientedDimensions(cw, ch, current_geom);
 
     canvasWrapper.style.overflow = 'hidden';
     previewCanvas.style.position = 'absolute';
@@ -2925,9 +3048,9 @@ function updateCanvasTransform(w, h) {
 
     let aspect;
     if (isCropMode || isRotateMode) {
-        aspect = cw / ch;
+        aspect = orientedSize.width / orientedSize.height;
     } else {
-        aspect = (cw * rect.width) / (ch * rect.height);
+        aspect = (orientedSize.width * rect.width) / (orientedSize.height * rect.height);
     }
     if (isNaN(aspect) || aspect === 0) aspect = 1;
 
@@ -2980,6 +3103,7 @@ btnCropMode.addEventListener('click', () => {
         cropOverlay.classList.remove('hidden');
         cropBox.classList.remove('hidden');
         cropMask.classList.remove('hidden');
+        cropEdges.classList.remove('hidden');
         cropHandles.classList.remove('hidden');
         updateCropOverlay();
     } else {
@@ -2999,6 +3123,7 @@ btnRotateMode.addEventListener('click', () => {
         cropOverlay.classList.remove('hidden');
         cropBox.classList.add('hidden');
         cropMask.classList.add('hidden');
+        cropEdges.classList.add('hidden');
         cropHandles.classList.add('hidden');
         updateCropOverlay();
     } else {
@@ -3120,13 +3245,13 @@ async function doAutoColor() {
     gl.uniform2fv(u_sprocket_uv_loc, new Float32Array([-1.0, -1.0])); // Disable target during calibration
     gl.uniform1f(u_sprocket_tolerance_loc, 0.0);
     
-    const previewTransform = getActivePreviewTransform();
-    const transformMat = NexFilmGeometry.createTransformMatrix(previewTransform);
-    gl.uniformMatrix4fv(u_transform_loc, false, transformMat);
+    const geometryUv = NexFilmGeometry.createInverseGeometryMatrix(
+        proxyWidth,
+        proxyHeight,
+        current_geom
+    );
+    gl.uniformMatrix3fv(u_geometry_uv_loc, false, geometryUv);
     gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
-    
-    gl.uniform1f(u_aspect_loc, gl.canvas.width / gl.canvas.height);
-    gl.uniform1f(u_image_aspect_loc, proxyWidth / proxyHeight);
 
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, tex);
@@ -3489,8 +3614,8 @@ async function showConfirm(message) {
                 <h3 class="text-zinc-100 font-bold mb-2">Confirm Action</h3>
                 <p class="text-zinc-400 text-sm mb-6">${message}</p>
                 <div class="flex justify-end gap-3">
-                    <button id="btn-confirm-cancel" class="px-4 py-2 text-xs font-bold tracking-wider uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">CANCEL</button>
-                    <button id="btn-confirm-ok" class="px-4 py-2 text-xs font-bold tracking-wider uppercase bg-red-900/50 hover:bg-red-800/60 border border-red-700/50 text-white rounded transition-colors">RESET</button>
+                    <button id="btn-confirm-cancel" class="px-4 py-2 text-xs font-bold tracking-wider uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">Cancel</button>
+                    <button id="btn-confirm-ok" class="px-4 py-2 text-xs font-bold tracking-wider uppercase bg-red-900/50 hover:bg-red-800/60 border border-red-700/50 text-white rounded transition-colors">Reset</button>
                 </div>
             </div>
         `;
@@ -3572,41 +3697,78 @@ function updateCropOverlay() {
     setHandle('nw', x, y); setHandle('n', x + w/2, y); setHandle('ne', x + w, y);
     setHandle('w', x, y + h/2); setHandle('e', x + w, y + h/2);
     setHandle('sw', x, y + h); setHandle('s', x + w/2, y + h); setHandle('se', x + w, y + h);
+
+    const setEdge = (pos, x1, y1, x2, y2) => {
+        const edge = cropEdges.querySelector(`[data-pos="${pos}"]`);
+        if (!edge) return;
+        edge.setAttribute('x1', `${x1}%`);
+        edge.setAttribute('y1', `${y1}%`);
+        edge.setAttribute('x2', `${x2}%`);
+        edge.setAttribute('y2', `${y2}%`);
+    };
+    setEdge('n', x, y, x + w, y);
+    setEdge('e', x + w, y, x + w, y + h);
+    setEdge('s', x, y + h, x + w, y + h);
+    setEdge('w', x, y, x, y + h);
 }
 
 let isDraggingCrop = false;
 let dragType = null;
 let dragStartPos = { x: 0, y: 0 };
+let dragStartRect = { x: 0, y: 0, width: 1, height: 1 };
 let dragStartAngle = 0;
 let dragCenter = { x: 0, y: 0 };
+let activeCropPointerId = null;
+const MIN_CROP_SIZE = 0.01;
 
-cropOverlay.addEventListener('mousedown', (e) => {
-    if (!isCropMode && !isRotateMode) return;
-    pushUndoState();
+function clampCropRect(rect) {
+    const width = Math.min(1, Math.max(MIN_CROP_SIZE, rect.width));
+    const height = Math.min(1, Math.max(MIN_CROP_SIZE, rect.height));
+    return {
+        x: Math.min(1 - width, Math.max(0, rect.x)),
+        y: Math.min(1 - height, Math.max(0, rect.y)),
+        width,
+        height,
+    };
+}
+
+cropOverlay.addEventListener('pointerdown', (e) => {
+    if ((!isCropMode && !isRotateMode) || e.button !== 0) return;
     const target = e.target;
-    
-    if (target === rotateHandleOuter || isRotateMode) dragType = 'rotate';
-    else if (target === cropBox && isCropMode) dragType = 'box';
-    else if (target.classList.contains('crop-handle') && isCropMode) dragType = target.getAttribute('data-pos');
-    else return;
-    
+
+    if (target.classList.contains('crop-handle') && isCropMode) {
+        dragType = target.getAttribute('data-pos');
+    } else if (target.classList.contains('crop-edge') && isCropMode) {
+        dragType = target.getAttribute('data-pos');
+    } else if (target === cropBox && isCropMode) {
+        dragType = 'box';
+    } else if (target === rotateHandleOuter || isRotateMode) {
+        dragType = 'rotate';
+    } else {
+        return;
+    }
+
+    pushUndoState();
     isDraggingCrop = true; dragStartPos = { x: e.clientX, y: e.clientY };
-    dragStartRect = { ...current_geom.crop_rect }; dragStartAngle = current_geom.angle;
+    dragStartRect = clampCropRect(current_geom.crop_rect); dragStartAngle = current_geom.angle;
+    activeCropPointerId = e.pointerId;
+    cropOverlay.setPointerCapture(e.pointerId);
     const rect = canvasWrapper.getBoundingClientRect();
     dragCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     cropGrid.style.opacity = '1';
+    e.preventDefault();
 });
 
-window.addEventListener('mousemove', (e) => {
-    if (!isDraggingCrop) return;
+window.addEventListener('pointermove', (e) => {
+    if (!isDraggingCrop || e.pointerId !== activeCropPointerId) return;
     const renderRect = getRenderRect();
     const dx = (e.clientX - dragStartPos.x) / renderRect.width;
     const dy = (e.clientY - dragStartPos.y) / renderRect.height;
     let newRect = { ...dragStartRect };
 
     if (dragType === 'box') {
-        newRect.x = newRect.x + dx;
-        newRect.y = newRect.y + dy;
+        newRect.x = Math.min(1 - newRect.width, Math.max(0, newRect.x + dx));
+        newRect.y = Math.min(1 - newRect.height, Math.max(0, newRect.y + dy));
     } else if (dragType === 'rotate') {
         const startRad = Math.atan2(dragStartPos.y - dragCenter.y, dragStartPos.x - dragCenter.x);
         const currentRad = Math.atan2(e.clientY - dragCenter.y, e.clientX - dragCenter.x);
@@ -3616,30 +3778,52 @@ window.addEventListener('mousemove', (e) => {
         requestRender();
         return;
     } else {
+        const left = dragStartRect.x;
+        const top = dragStartRect.y;
+        const right = left + dragStartRect.width;
+        const bottom = top + dragStartRect.height;
         if (dragType.includes('w')) {
-            const maxW = newRect.x + newRect.width; newRect.x = maxW - newRect.width + dx; newRect.width = newRect.width - dx;
+            newRect.x = Math.min(right - MIN_CROP_SIZE, Math.max(0, left + dx));
+            newRect.width = right - newRect.x;
         }
-        if (dragType.includes('e')) { newRect.width = newRect.width + dx; }
+        if (dragType.includes('e')) {
+            newRect.width = Math.min(1, Math.max(left + MIN_CROP_SIZE, right + dx)) - left;
+        }
         if (dragType.includes('n')) {
-            const maxH = newRect.y + newRect.height; newRect.y = maxH - newRect.height + dy; newRect.height = newRect.height - dy;
+            newRect.y = Math.min(bottom - MIN_CROP_SIZE, Math.max(0, top + dy));
+            newRect.height = bottom - newRect.y;
         }
-        if (dragType.includes('s')) { newRect.height = newRect.height + dy; }
-        newRect.width = Math.max(0.01, newRect.width);
-        newRect.height = Math.max(0.01, newRect.height);
+        if (dragType.includes('s')) {
+            newRect.height = Math.min(1, Math.max(top + MIN_CROP_SIZE, bottom + dy)) - top;
+        }
     }
-    current_geom.crop_rect = newRect; updateCropOverlay();
+    current_geom.crop_rect = clampCropRect(newRect); updateCropOverlay();
 });
 
-window.addEventListener('mouseup', async () => {
-    if (isDraggingCrop) {
-        isDraggingCrop = false; cropGrid.style.opacity = '0';
-        if (activeId) {
-            try {
-                sendGeometrySync();
-            } catch (err) { showToast("Crop failed: " + err, "error"); }
-        }
+function finishCropDrag(e, persist) {
+    if (!isDraggingCrop || e.pointerId !== activeCropPointerId) return;
+    if (cropOverlay.hasPointerCapture(e.pointerId)) {
+        cropOverlay.releasePointerCapture(e.pointerId);
     }
-});
+    isDraggingCrop = false;
+    activeCropPointerId = null;
+    cropGrid.style.opacity = '0';
+    if (!persist) {
+        if (dragType === 'rotate') current_geom.angle = dragStartAngle;
+        else current_geom.crop_rect = { ...dragStartRect };
+        updateCropOverlay();
+        requestRender();
+        return;
+    }
+    if (persist && activeId) {
+        try {
+            sendGeometrySync();
+        } catch (err) { showToast("Crop failed: " + err, "error"); }
+    }
+}
+
+window.addEventListener('pointerup', e => finishCropDrag(e, true));
+window.addEventListener('pointercancel', e => finishCropDrag(e, false));
 
 const btnCopySettings = document.getElementById('btn-copy-settings');
 const btnPasteSettings = document.getElementById('btn-paste-settings');
@@ -3750,7 +3934,7 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
     const btnExportContactSheet = document.getElementById('btn-export-contact-sheet');
     
     try {
-        btnExportContactSheet.textContent = "GENERATING...";
+        btnExportContactSheet.textContent = "Generating...";
         btnExportContactSheet.disabled = true;
 
         const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
@@ -4082,7 +4266,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     const loadingOverlay = document.createElement('div');
     loadingOverlay.id = 'startup-loading';
     loadingOverlay.className = 'absolute inset-0 bg-[#121214] z-50 flex flex-col items-center justify-center text-zinc-400 gap-4';
-    loadingOverlay.innerHTML = '<svg class="animate-spin h-10 w-10 text-orange-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><div class="tracking-widest text-sm uppercase font-bold text-zinc-300">LOADING DATABASE...</div>';
+    loadingOverlay.innerHTML = '<svg class="animate-spin h-10 w-10 text-orange-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><div class="tracking-widest text-sm uppercase font-bold text-zinc-300">Loading Library...</div>';
     document.body.appendChild(loadingOverlay);
 
     try {
@@ -4299,7 +4483,7 @@ function initImportToast(count) {
         precacheToast = document.createElement('div');
         precacheToast.className = 'fixed bottom-4 right-4 bg-[#1C1C1E] border border-[#28282c] shadow-lg rounded p-4 z-50 flex flex-col gap-2 w-64';
         precacheToast.innerHTML = `
-            <div class="text-[11px] font-bold tracking-wider text-zinc-300">IMPORTING ASSETS</div>
+            <div class="text-[11px] font-bold tracking-wider text-zinc-300">Importing Frames</div>
             <div class="w-full h-1 bg-zinc-800 rounded overflow-hidden">
                 <div class="h-full bg-blue-500 transition-all duration-300" id="precache-bar" style="width: 0%"></div>
             </div>
@@ -4399,38 +4583,17 @@ canvasWrapper.parentElement.addEventListener('mousedown', e => {
     if (isSprocketPickerActive) {
         if (!gl || !activeId) return;
         const rect = previewCanvas.getBoundingClientRect();
-        const scaleX = previewCanvas.width / rect.width;
-        const scaleY = previewCanvas.height / rect.height;
-        const x = Math.floor((e.clientX - rect.left) * scaleX);
-        const y = Math.floor((rect.bottom - e.clientY) * scaleY);
-        if (x >= 0 && x < previewCanvas.width && y >= 0 && y < previewCanvas.height) {
-            let ndc_x = (x / previewCanvas.width) * 2.0 - 1.0;
-            let ndc_y = (y / previewCanvas.height) * 2.0 - 1.0;
-            
-            let aspect = previewCanvas.width / previewCanvas.height;
-            let px = ndc_x * aspect;
-            let py = ndc_y;
-            
-            const previewTransform = getActivePreviewTransform();
-            const sourcePoint = NexFilmGeometry.invertDisplayPoint(px, py, previewTransform);
-            let rx = sourcePoint.x;
-            let ry = sourcePoint.y;
-            rx /= aspect;
-            
-            let base_u = (rx + 1.0) / 2.0;
-            let base_v = (ry + 1.0) / 2.0;
-            
-            let vs_base_u = base_u;
-            let vs_base_v = 1.0 - base_v;
-            
-            let tex_u = current_geom.crop_rect.x + vs_base_u * current_geom.crop_rect.width;
-            let tex_v = current_geom.crop_rect.y + vs_base_v * current_geom.crop_rect.height;
+        const displayU = (e.clientX - rect.left) / rect.width;
+        const displayV = (e.clientY - rect.top) / rect.height;
+        if (displayU >= 0 && displayU <= 1 && displayV >= 0 && displayV <= 1) {
+            const tex_u = current_geom.crop_rect.x + displayU * current_geom.crop_rect.width;
+            const tex_v = current_geom.crop_rect.y + displayV * current_geom.crop_rect.height;
             
             let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
             let hMat = getHomography(pts);
             let w_homo = hMat[2]*tex_u + hMat[5]*tex_v + hMat[8];
-            let raw_u = (hMat[0]*tex_u + hMat[3]*tex_v + hMat[6]) / w_homo;
-            let raw_v = (hMat[1]*tex_u + hMat[4]*tex_v + hMat[7]) / w_homo;
+            const raw_u = (hMat[0]*tex_u + hMat[3]*tex_v + hMat[6]) / w_homo;
+            const raw_v = (hMat[1]*tex_u + hMat[4]*tex_v + hMat[7]) / w_homo;
             
             pushUndoState();
             currentSprocketUV = new Float32Array([raw_u, raw_v]);
@@ -4471,18 +4634,22 @@ document.getElementById('menu-lang-toggle').addEventListener('click', () => {
         navDevelop.textContent = '冲洗';
         navHistory.textContent = '历史卷';
     } else {
-        navLibrary.textContent = 'LIBRARY';
-        navDevelop.textContent = 'DEVELOP';
-        navHistory.textContent = 'HISTORY FILMS';
+        navLibrary.textContent = 'Library';
+        navDevelop.textContent = 'Develop';
+        navHistory.textContent = 'Rolls';
     }
 });
-let isDarkTheme = true;
+let isDarkTheme = localStorage.getItem('nexfilm-theme') !== 'light';
+
+function applyTheme(theme) {
+    isDarkTheme = theme !== 'light';
+    document.body.dataset.theme = isDarkTheme ? 'dark' : 'light';
+    const label = document.getElementById('theme-value') || document.getElementById('menu-theme-toggle')?.querySelector('span');
+    if (label) label.textContent = isDarkTheme ? 'Dark' : 'Light';
+    localStorage.setItem('nexfilm-theme', isDarkTheme ? 'dark' : 'light');
+}
+
+applyTheme(isDarkTheme ? 'dark' : 'light');
 document.getElementById('menu-theme-toggle').addEventListener('click', () => {
-    isDarkTheme = !isDarkTheme;
-    document.getElementById('menu-theme-toggle').querySelector('span').textContent = isDarkTheme ? 'Theme: Dark' : 'Theme: Light';
-    if(isDarkTheme) {
-        document.body.style.backgroundColor = '#121214';
-    } else {
-        document.body.style.backgroundColor = '#f4f4f5';
-    }
+    applyTheme(isDarkTheme ? 'light' : 'dark');
 });

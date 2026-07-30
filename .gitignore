@@ -5,11 +5,16 @@ node_modules
 *.tmp
 .idea/
 .vscode/
+.codex/config.toml
 ui/node_modules
 rolls.json
 
 reference_divere/
+test_picture/
 *.jpg
 *.jpeg
 *.tif
 *.tiff
+*.png
+*.nef
+*.db

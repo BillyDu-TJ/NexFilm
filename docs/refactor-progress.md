@@ -5,7 +5,7 @@ Last updated: 2026-07-22
 ## Completed In The Current Worktree
 
 - Import-stage camera RAW handling is embedded-thumbnail-only. TIFF prefers an
-  embedded preview and falls back to a background 256px decode for scanner
+  embedded preview and falls back to a background 1024px decode for scanner
   files without a thumbnail IFD; no inversion or auto color runs during import.
 - Develop proxy decoding uses explicit half-size, 16-bit, gamma 1.0, no-auto-bright LibRaw settings.
 - Embedded and rendered thumbnails are stored separately and rendered previews are preferred by Library, Develop, History, and contact sheets.
@@ -67,7 +67,7 @@ Last updated: 2026-07-22
   shared by preview rendering, Auto Color sampling, and picker hit testing.
 - RAW working-space changes invalidate the old proxy, base-color estimate, and
   rendered thumbnail before rebuilding them in the selected linear space.
-- The tracked 19 MB scanner TIFF fixture now produces a real 256px import
+- The tracked 19 MB scanner TIFF fixture now produces a real 1024px import
   preview even though it has no thumbnail IFD. The fallback runs only in the
   background import producer; its current timing has not been re-benchmarked.
 - The same tracked 16-bit TIFF completes the Develop decode, base-color
@@ -83,7 +83,7 @@ Last updated: 2026-07-22
   and geometry undo renders immediately before asynchronous persistence.
 - Master D-Min/D-Max change handlers no longer pass a DOM event object as the
   `update_tuning_parameters` image id; the IPC helper also guards that contract.
-- Import previews use a 256px long edge. Develop keeps an existing rendered
+- Import previews use a 1024px long edge. Develop keeps an existing rendered
   positive visible while its matching proxy loads; undeveloped frames stay on
   the embedded negative until an explicit editing action needs a 16-bit proxy.
 - Rendered thumbnails are no longer transformed a second time by legacy CSS or

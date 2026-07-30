@@ -3,7 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NexFilm Engine v2.0</title>
+    <title>NexFilm - Film Workspace</title>
+    <meta name="theme-color" content="#0b0e10">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="style.css">
     <script>
@@ -21,7 +22,7 @@
         });
     </script>
 </head>
-<body class="text-zinc-300 h-screen w-screen overflow-hidden font-sans selection:bg-zinc-700 flex flex-col bg-[#121214]">
+<body data-theme="dark" class="text-zinc-300 h-screen w-screen overflow-hidden font-sans selection:bg-zinc-700 flex flex-col bg-[#121214]">
     
     <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
@@ -29,8 +30,8 @@
     <div id="drag-overlay" class="hidden fixed inset-0 z-[100] bg-blue-500/20 border-4 border-blue-500/50 backdrop-blur-sm flex items-center justify-center pointer-events-none transition-all duration-200">
         <div class="bg-[#1C1C1E] px-8 py-6 rounded-lg shadow-2xl flex flex-col items-center gap-4">
             <svg class="w-12 h-12 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
-            <div class="text-zinc-100 font-bold tracking-widest text-[14px]">RELEASE TO IMPORT</div>
-            <div class="text-zinc-400 text-[11px] uppercase tracking-wider">Images will be added loosely</div>
+            <div class="text-zinc-100 font-bold tracking-widest text-[14px]">Release to Import</div>
+            <div class="text-zinc-400 text-[11px] uppercase tracking-wider">Images will be added as loose frames</div>
         </div>
     </div>
 
@@ -44,7 +45,8 @@
                     <span>Language: EN</span>
                 </div>
                 <div class="px-4 py-1.5 hover:bg-zinc-800 cursor-pointer flex justify-between items-center" id="menu-theme-toggle">
-                    <span>Theme: Dark</span>
+                    <span>Theme</span>
+                    <span id="theme-value">Dark</span>
                 </div>
             </div>
         </div>
@@ -58,9 +60,9 @@
             <div class="text-[14px] font-black tracking-[0.25em] text-zinc-200">NEXFILM <span class="text-zinc-500 font-normal">v2.0</span></div>
             <div class="h-6 w-px bg-zinc-700"></div>
             <nav class="flex h-full gap-2">
-                <button id="nav-library" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-100 border-zinc-100">LIBRARY</button>
-                <button id="nav-develop" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">DEVELOP</button>
-                <button id="nav-history" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">HISTORY FILMS</button>
+                <button id="nav-library" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-100 border-zinc-100">Library</button>
+                <button id="nav-develop" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Develop</button>
+                <button id="nav-history" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Rolls</button>
             </nav>
         </div>
         <div class="flex items-center gap-4">
@@ -123,7 +125,7 @@
                         <button id="btn-history-back" class="hidden text-zinc-400 hover:text-zinc-100 transition-colors">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
                         </button>
-                        <div id="history-view-title" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">THE ROLL ARCHIVE</div>
+                        <div id="history-view-title" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Roll Archive</div>
                     </div>
                     <div class="flex items-center gap-4">
                         <button id="btn-delete-rolls" class="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-red-900/80 hover:bg-red-800 text-white rounded transition-colors shadow-sm border border-red-700/50">Delete Rolls</button>
@@ -136,7 +138,7 @@
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                         </svg>
-                        <div class="font-medium tracking-widest text-sm uppercase">Archive is Empty</div>
+                        <div class="font-medium tracking-widest text-sm uppercase">No archived rolls</div>
                         <button class="btn-import-trigger px-6 py-2 mt-4 text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
                     </div>
                     <!-- Roll Cards (1 per row) -->
@@ -154,7 +156,7 @@
         <!-- ============================== -->
         <div id="view-library" class="absolute inset-0 flex flex-col z-20 transition-opacity duration-300" style="display: flex;">
             <div class="h-[48px] border-b border-[#28282c] flex items-center justify-between px-8 bg-[#1C1C1E] shrink-0">
-                <div class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">GRID VIEW</div>
+                <div class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">All frames</div>
                 <div class="flex items-center gap-4">
                     <span id="library-selection-count" class="text-[11px] text-zinc-400 font-medium">0 selected</span>
                     <button id="btn-select-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors">Select All</button>
@@ -166,7 +168,8 @@
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
-                    <div class="font-medium tracking-widest text-sm uppercase">No Images Loaded</div>
+                    <div class="font-medium tracking-widest text-sm uppercase">Your library is ready</div>
+                    <div class="text-[11px] text-zinc-500 max-w-xs text-center leading-relaxed">Import a roll to keep frames, camera and film stock together, or add a loose scan for a quick edit.</div>
                     <button class="btn-import-trigger px-6 py-2 mt-4 text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import From Disk</button>
                 </div>
                 <div id="library-grid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 hidden">
@@ -185,17 +188,17 @@
                 <!-- Transform Tool Bar -->
                 <div class="h-[48px] border-b border-[#28282c] flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm bg-[#1C1C1E]">
                     <div class="flex space-x-2">
-                        <button id="btn-crop-mode" class="toolbar-btn" disabled>CROP</button>
-                        <button id="btn-recalibrate" class="toolbar-btn" disabled>SET FILM AREA</button>
-                        <button id="btn-reset-crop" class="toolbar-btn" disabled>RESET CROP</button>
-                        <button id="btn-rotate-mode" class="toolbar-btn" disabled>ROTATE</button>
+                        <button id="btn-crop-mode" class="toolbar-btn" disabled>Crop</button>
+                        <button id="btn-recalibrate" class="toolbar-btn" disabled>Set Film Area</button>
+                        <button id="btn-reset-crop" class="toolbar-btn" disabled>Reset Crop</button>
+                        <button id="btn-rotate-mode" class="toolbar-btn" disabled>Straighten</button>
                     </div>
                     <div class="w-px h-4 bg-zinc-700"></div>
-                    <button id="btn-rotate-left" class="toolbar-btn" disabled>ROT L</button>
-                    <button id="btn-rotate-right" class="toolbar-btn" disabled>ROT R</button>
+                    <button id="btn-rotate-left" class="toolbar-btn" disabled>Rotate Left</button>
+                    <button id="btn-rotate-right" class="toolbar-btn" disabled>Rotate Right</button>
                     <div class="w-px h-4 bg-zinc-700"></div>
-                    <button id="btn-flip-h" class="toolbar-btn" disabled>FLIP H</button>
-                    <button id="btn-flip-v" class="toolbar-btn" disabled>FLIP V</button>
+                    <button id="btn-flip-h" class="toolbar-btn" disabled>Flip Horizontal</button>
+                    <button id="btn-flip-v" class="toolbar-btn" disabled>Flip Vertical</button>
                 </div>
 
                 <!-- Main Preview -->
@@ -209,7 +212,7 @@
                             <svg class="w-16 h-16 text-red-500/50 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
                             <div class="text-zinc-300 font-bold uppercase tracking-widest text-[13px] mb-2">文件已丢失 / File Missing</div>
                             <div class="text-zinc-500 text-[11px] mb-6 max-w-sm text-center leading-relaxed">The original file has been moved or deleted. Please locate the file to continue editing.</div>
-                            <button id="btn-locate-file" class="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-bold uppercase tracking-widest rounded border border-zinc-700/50 shadow-lg transition-colors pointer-events-auto">LOCATE FILE</button>
+                            <button id="btn-locate-file" class="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-bold uppercase tracking-widest rounded border border-zinc-700/50 shadow-lg transition-colors pointer-events-auto">Locate File</button>
                         </div>
                         
                         <!-- High-Res Proxy Loading UI -->
@@ -218,7 +221,7 @@
                                 <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
                                 <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                             </svg>
-                            <div class="text-orange-400 font-bold uppercase tracking-widest text-[12px] animate-pulse">PROCESSING RAW...</div>
+                            <div class="text-orange-400 font-bold uppercase tracking-widest text-[12px] animate-pulse">Processing RAW...</div>
                         </div>
 
                         <!-- Calibration Mode Overlay -->
@@ -248,12 +251,18 @@
                             <!-- Outer Rotation Handles (Large invisible paths surrounding the box) -->
                             <rect id="rotate-handle-outer" x="-50%" y="-50%" width="200%" height="200%" fill="transparent" class="pointer-events-auto" style="cursor: grab;"></rect>
                             <path id="crop-mask" fill="rgba(0,0,0,0.6)" fill-rule="evenodd" d=""></path>
-                            <rect id="crop-box" x="0" y="0" width="100%" height="100%" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="1.5" stroke-dasharray="4 4" class="pointer-events-auto cursor-move"></rect>
+                            <rect id="crop-box" x="0" y="0" width="100%" height="100%" fill="transparent" stroke="rgba(255,255,255,0.9)" stroke-width="1.5" stroke-dasharray="4 4" class="pointer-events-auto cursor-move"></rect>
                             <g id="crop-grid" opacity="0" class="transition-opacity duration-200 pointer-events-none">
                                 <line id="grid-v1" x1="33.33%" y1="0" x2="33.33%" y2="100%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
                                 <line id="grid-v2" x1="66.66%" y1="0" x2="66.66%" y2="100%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
                                 <line id="grid-h1" x1="0" y1="33.33%" x2="100%" y2="33.33%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
                                 <line id="grid-h2" x1="0" y1="66.66%" x2="100%" y2="66.66%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+                            </g>
+                            <g id="crop-edges">
+                                <line class="crop-edge pointer-events-auto" data-pos="n" x1="0" y1="0" x2="100%" y2="0" stroke="transparent" stroke-width="16" vector-effect="non-scaling-stroke" style="cursor: ns-resize;"/>
+                                <line class="crop-edge pointer-events-auto" data-pos="e" x1="100%" y1="0" x2="100%" y2="100%" stroke="transparent" stroke-width="16" vector-effect="non-scaling-stroke" style="cursor: ew-resize;"/>
+                                <line class="crop-edge pointer-events-auto" data-pos="s" x1="0" y1="100%" x2="100%" y2="100%" stroke="transparent" stroke-width="16" vector-effect="non-scaling-stroke" style="cursor: ns-resize;"/>
+                                <line class="crop-edge pointer-events-auto" data-pos="w" x1="0" y1="0" x2="0" y2="100%" stroke="transparent" stroke-width="16" vector-effect="non-scaling-stroke" style="cursor: ew-resize;"/>
                             </g>
                             <g id="crop-handles" class="pointer-events-auto">
                                 <rect class="crop-handle" data-pos="nw" x="-4" y="-4" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nwse-resize;"/>
@@ -281,7 +290,7 @@
                 <div id="right-panel-blocker" class="absolute inset-0 z-50 bg-[#1C1C1E]/80 backdrop-blur-[4px] hidden flex flex-col items-center justify-center p-6 text-center">
                     <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Film Area</h3>
                     <p class="text-xs leading-relaxed text-zinc-300 mb-6">请先拖动四角，框定胶片实际成像区域。完成后再运行自动反相与校色。</p>
-                    <button id="btn-confirm-calibration" class="w-full py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg pointer-events-auto">SAVE AREA</button>
+                    <button id="btn-confirm-calibration" class="w-full py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg pointer-events-auto">Save Area</button>
                 </div>
                 
                 <!-- Histogram / Waveform Area -->
@@ -306,11 +315,11 @@
                     <!-- Mode Toggle -->
                     <div class="control-group">
                         <div class="flex gap-2 mb-4">
-                            <button id="btn-auto-color" class="flex-[3] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>AUTO INVERT</button>
-                            <button id="btn-reset-color" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>RESET</button>
+                            <button id="btn-auto-color" class="flex-[3] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Auto Invert</button>
+                            <button id="btn-reset-color" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Reset</button>
                         </div>
                         <div class="flex gap-2 mb-2">
-                            <button id="btn-sprocket-picker" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>SPROCKET PICKER</button>
+                            <button id="btn-sprocket-picker" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Sample Film Base</button>
                         </div>
                         <div class="space-y-4 mb-4">
                             <div>
@@ -335,7 +344,7 @@
                             </div>
                         </div>
                         <div class="flex items-center justify-between bg-[#121214] p-1 rounded-md border border-[#28282c]">
-                            <button id="btn-mode-color" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all bg-[#28282c] text-zinc-100 shadow-sm disabled:opacity-50">COLOR</button>
+                            <button id="btn-mode-color" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all bg-[#28282c] text-zinc-100 shadow-sm disabled:opacity-50">Color</button>
                             <button id="btn-mode-bw" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all text-zinc-500 hover:text-zinc-300 disabled:opacity-50">B&W</button>
                         </div>
                     </div>
@@ -502,22 +511,25 @@
     <div id="import-choice-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
         <div class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[320px] flex flex-col transform scale-95 transition-transform duration-200" id="import-choice-content">
             <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
-                <h2 class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Import Method</h2>
+                <div>
+                    <h2 class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Import Method</h2>
+                    <p class="text-[11px] text-zinc-500 mt-1 normal-case tracking-normal">Choose how these scans should be organized.</p>
+                </div>
                 <button id="btn-close-import-choice" class="text-zinc-500 hover:text-zinc-200 transition-colors">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
             </div>
             <div class="p-6 flex flex-col gap-4">
                 <button id="btn-import-by-roll" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
-                    <span class="text-white">Import by Roll</span>
+                    <span class="text-zinc-100">Import by Roll</span>
                     <span class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Group images with camera and film stock metadata.</span>
                 </button>
                 <button id="btn-import-single" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
-                    <span class="text-zinc-100">LOOSE IMPORT</span>
+                    <span class="text-zinc-100">Loose Import</span>
                     <span class="text-[10px] text-zinc-400 font-normal">Add images directly without creating a roll</span>
                 </button>
                 <button id="btn-continue-roll" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
-                    <span class="text-white">Continue Editing Roll</span>
+                    <span class="text-zinc-100">Continue Editing Roll</span>
                     <span class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Select an existing roll from the archive to continue editing its photos.</span>
                 </button>
             </div>

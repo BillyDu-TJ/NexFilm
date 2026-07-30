@@ -113,7 +113,7 @@ Hard rule:
 - `import_images` and `import_roll` must not call, enqueue, or indirectly trigger
   RAW `libraw_unpack`, `dcraw_process`, demosaic, `compute_auto_base`, or
   `compute_pristine_proxy`. TIFF files without a thumbnail IFD may be decoded in
-  the background producer only to create a 256px import preview.
+  the background producer only to create a 1024px import preview.
 
 ### Stage 2: Develop Proxy And Auto Color
 

@@ -8,6 +8,111 @@
         return Number.isFinite(number) ? number : 0;
     }
 
+    function normalizedQuarterTurns(value) {
+        const turns = Math.trunc(numberOrZero(value));
+        return ((turns % 4) + 4) % 4;
+    }
+
+    function getRotationLayout(width, height, angleDegrees) {
+        const sourceWidth = Math.max(1, numberOrZero(width));
+        const sourceHeight = Math.max(1, numberOrZero(height));
+        const angle = Math.abs(angleDegrees) > 0.01 ? angleDegrees * Math.PI / 180 : 0;
+        if (angle === 0) {
+            return {
+                angle,
+                width: sourceWidth,
+                height: sourceHeight,
+                diagonal: 0,
+                sourceOffsetX: 0,
+                sourceOffsetY: 0,
+                cropOffsetX: 0,
+                cropOffsetY: 0,
+            };
+        }
+
+        const sine = Math.sin(angle);
+        const cosine = Math.cos(angle);
+        const rotatedWidth = Math.ceil(sourceWidth * Math.abs(cosine) + sourceHeight * Math.abs(sine));
+        const rotatedHeight = Math.ceil(sourceWidth * Math.abs(sine) + sourceHeight * Math.abs(cosine));
+        const diagonal = Math.ceil(Math.hypot(sourceWidth, sourceHeight));
+        return {
+            angle,
+            width: rotatedWidth,
+            height: rotatedHeight,
+            diagonal,
+            sourceOffsetX: Math.trunc((diagonal - sourceWidth) / 2),
+            sourceOffsetY: Math.trunc((diagonal - sourceHeight) / 2),
+            cropOffsetX: Math.trunc((diagonal - rotatedWidth) / 2),
+            cropOffsetY: Math.trunc((diagonal - rotatedHeight) / 2),
+        };
+    }
+
+    function getOrientedDimensions(width, height, geom) {
+        const layout = getRotationLayout(width, height, numberOrZero(geom && geom.angle));
+        const turns = normalizedQuarterTurns(geom && geom.rotate_90_count);
+        return turns % 2 === 0
+            ? { width: layout.width, height: layout.height }
+            : { width: layout.height, height: layout.width };
+    }
+
+    // Geometry is applied to pixels before crop in the Rust export pipeline.
+    // This inverse maps a point in that oriented image back to canonical RAW UV.
+    function mapOrientedPointToSource(point, width, height, geom) {
+        const sourceWidth = Math.max(1, numberOrZero(width));
+        const sourceHeight = Math.max(1, numberOrZero(height));
+        const state = geom || {};
+        const layout = getRotationLayout(sourceWidth, sourceHeight, numberOrZero(state.angle));
+        const turns = normalizedQuarterTurns(state.rotate_90_count);
+        const oriented = getOrientedDimensions(sourceWidth, sourceHeight, state);
+
+        let x = numberOrZero(point[0]) * oriented.width;
+        let y = numberOrZero(point[1]) * oriented.height;
+
+        if (state.flip_h) x = oriented.width - x;
+        if (state.flip_v) y = oriented.height - y;
+
+        let rotatedX;
+        let rotatedY;
+        if (turns === 1) {
+            rotatedX = y;
+            rotatedY = layout.height - x;
+        } else if (turns === 2) {
+            rotatedX = layout.width - x;
+            rotatedY = layout.height - y;
+        } else if (turns === 3) {
+            rotatedX = layout.width - y;
+            rotatedY = x;
+        } else {
+            rotatedX = x;
+            rotatedY = y;
+        }
+
+        if (layout.angle === 0) {
+            return [rotatedX / sourceWidth, rotatedY / sourceHeight];
+        }
+
+        const expandedX = rotatedX + layout.cropOffsetX;
+        const expandedY = rotatedY + layout.cropOffsetY;
+        const dx = expandedX - layout.diagonal / 2;
+        const dy = expandedY - layout.diagonal / 2;
+        const sine = Math.sin(layout.angle);
+        const cosine = Math.cos(layout.angle);
+        const sourceX = cosine * dx + sine * dy + layout.diagonal / 2 - layout.sourceOffsetX;
+        const sourceY = -sine * dx + cosine * dy + layout.diagonal / 2 - layout.sourceOffsetY;
+        return [sourceX / sourceWidth, sourceY / sourceHeight];
+    }
+
+    function createInverseGeometryMatrix(width, height, geom) {
+        const origin = mapOrientedPointToSource([0, 0], width, height, geom);
+        const axisX = mapOrientedPointToSource([1, 0], width, height, geom);
+        const axisY = mapOrientedPointToSource([0, 1], width, height, geom);
+        return new Float32Array([
+            axisX[0] - origin[0], axisX[1] - origin[1], 0,
+            axisY[0] - origin[0], axisY[1] - origin[1], 0,
+            origin[0], origin[1], 1,
+        ]);
+    }
+
     function getPreviewTransform(currentGeom, loadedGeom, editing) {
         if (!editing || !currentGeom) {
             return { angleDegrees: 0, angleRadians: 0, scaleX: 1, scaleY: 1 };
@@ -137,6 +242,9 @@
     }
 
     return {
+        getOrientedDimensions,
+        mapOrientedPointToSource,
+        createInverseGeometryMatrix,
         getPreviewTransform,
         proxyPixelTransformChanged,
         createTransformMatrix,
