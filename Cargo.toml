@@ -3,6 +3,8 @@ name = "nexfilm_engine"
 version = "0.1.0"
 edition = "2021"
 description = "Scientific Film Inversion Engine"
+license = "GPL-3.0-only"
+repository = "https://github.com/BillyDu-TJ/NexFilm"
 
 [dependencies]
 nalgebra = "0.32"

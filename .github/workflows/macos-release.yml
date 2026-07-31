@@ -1,0 +1,86 @@
+name: Build macOS Preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing or new release tag, for example v0.1.0-preview.1"
+        required: true
+        default: "v0.1.0-preview.1"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    name: Verify source
+    runs-on: macos-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust and frontend code
+        run: |
+          cargo fmt --check
+          cargo test --locked --lib
+          node --check ui/main.js
+          node --check ui/geometry.js
+          node scripts/verify-geometry-contract.cjs
+          node scripts/verify-ui-startup-order.cjs
+          node scripts/verify-webgl-shaders.cjs
+
+  build-macos:
+    name: Build ${{ matrix.name }} DMG
+    needs: verify
+    runs-on: macos-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - name: Apple Silicon
+            target: aarch64-apple-darwin
+          - name: Intel
+            target: x86_64-apple-darwin
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Rust stable and target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build DMG and publish pre-release
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ inputs.tag }}
+          releaseName: "NexFilm Engine ${{ inputs.tag }}"
+          releaseBody: |
+            Development preview. Download the installer for your platform from Assets.
+
+            开发预览版。请在 Assets 中下载适用于当前平台的安装程序。
+          releaseDraft: false
+          prerelease: true
+          args: --target ${{ matrix.target }} --bundles dmg
+          releaseAssetNamePattern: "[name]-[version]-macos-[arch]-[bundle][ext]"
