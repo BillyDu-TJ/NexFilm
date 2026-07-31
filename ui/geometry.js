@@ -102,6 +102,20 @@
         return [sourceX / sourceWidth, sourceY / sourceHeight];
     }
 
+    function mapDisplayPointToSource(point, cropRect, homography, width, height, geom) {
+        if (!homography || homography.length < 9) return null;
+        const crop = cropRect || { x: 0, y: 0, width: 1, height: 1 };
+        const cropX = numberOrZero(crop.x) + numberOrZero(point[0]) * numberOrZero(crop.width);
+        const cropY = numberOrZero(crop.y) + numberOrZero(point[1]) * numberOrZero(crop.height);
+        const divisor = homography[2] * cropX + homography[5] * cropY + homography[8];
+        if (!Number.isFinite(divisor) || Math.abs(divisor) < 1e-8) return null;
+        const orientedPoint = [
+            (homography[0] * cropX + homography[3] * cropY + homography[6]) / divisor,
+            (homography[1] * cropX + homography[4] * cropY + homography[7]) / divisor,
+        ];
+        return mapOrientedPointToSource(orientedPoint, width, height, geom);
+    }
+
     function createInverseGeometryMatrix(width, height, geom) {
         const origin = mapOrientedPointToSource([0, 0], width, height, geom);
         const axisX = mapOrientedPointToSource([1, 0], width, height, geom);
@@ -321,6 +335,7 @@
     return {
         getOrientedDimensions,
         mapOrientedPointToSource,
+        mapDisplayPointToSource,
         createInverseGeometryMatrix,
         getPreviewTransform,
         proxyPixelTransformChanged,

@@ -87,7 +87,7 @@ NexFilm Engine 用于把相机翻拍或扫描仪输出的胶片负片转换为�
 1. 在 **Library** 选择画面，然后进入 **Develop**。
 2. 首次编辑时，先在 **Film Area** 中点击 **Auto Area**。如果检测不准确，拖动四角，使边界落在有效胶片画面上，再点击 **Save Area**。
 3. 同卷扫描位置一致时，点击 **Batch Apply**，把当前胶片范围应用到其他画面。
-4. 点击 **Auto Invert** 计算片基并生成正片。需要手动控制时，可使用 **Sample Film Base** 在未曝光片基或齿孔附近取样。
+4. 点击 **Auto Invert** 生成正片；需要清理边框齿孔时，使用 **Sample Sprocket Hole** 采样一个齿孔。
 5. 使用 D-Min/D-Max、曝光、Gamma、高光、阴影、RGB 通道、白平衡和 LUT 完成调整。顶部工具栏可裁切、拉直、旋转和翻转。
 6. 使用 **Copy Settings / Paste Settings** 将一张画面的参数复制到其他相似画面。
 
@@ -224,7 +224,8 @@ DMG 会生成在对应目标目录的 `release/bundle/dmg/` 下。跨架构构�
 
 - 作者：Billy_Du (GitHub：[@BillyDu-TJ](https://github.com/BillyDu-TJ))
 - 特别鸣谢：UI设计由 lonely-xmw (Github: [@lxmw44426-tech](https://github.com/lxmw44426-tech))
-- 联系邮箱：[790704944@qq.com](mailto:790704944@qq.com)
+- 鸣谢与参考：去色罩的理论参考了知乎 `@黄昊Haosky` 与 `@V777` 两位大佬。他们为科学去色罩提供了坚实的理论基础。
+- 联系邮箱：[790704944@qq.com](mailto:790704944@qq.com) 或者 [duzhongtao188@gmail.com](mailto:duzhongtao188@gmail.com)
 - 问题反馈：[GitHub Issues](https://github.com/BillyDu-TJ/NexFilm/issues)
 - 开源许可：[GNU General Public License v3.0 only](LICENSE)。你可以使用、研究和修改本项目；分发本项目或其修改版本时，必须按 GPLv3 提供相应源码、保留许可声明，并以相同许可证发布衍生作品。软件按“原样”提供，不附带任何担保。
 
@@ -289,7 +290,7 @@ For temporary images that do not need roll archiving, use **Loose Import** or dr
 1. Select a frame in **Library**, then open **Develop**.
 2. On first edit, choose **Auto Area** under **Film Area**. If detection is inaccurate, drag the four corners around the valid image area and select **Save Area**.
 3. When scans from the roll share the same placement, use **Batch Apply** to copy the film area to other frames.
-4. Select **Auto Invert** to calculate the film base and create a positive. For manual control, use **Sample Film Base** over unexposed film or near a sprocket hole.
+4. Select **Auto Invert** to create a positive. To clean up border perforations, use **Sample Sprocket Hole** on one sprocket hole.
 5. Refine D-Min/D-Max, exposure, gamma, highlights, shadows, RGB channels, white balance, and LUT. Crop, straighten, rotate, and flip tools are in the top toolbar.
 6. Use **Copy Settings / Paste Settings** to transfer a grade between similar frames.
 
@@ -424,6 +425,7 @@ Search existing [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) before op
 
 - Author: Billy_Du (GitHub: [@BillyDu-TJ](https://github.com/BillyDu-TJ))
 - Special Thank：UI Design: lonely-xmw (Github: [@lxmw44426-tech](https://github.com/lxmw44426-tech))
-- Email: [790704944@qq.com](mailto:790704944@qq.com)
+- Acknowledgement：The theory of demask comes from Zhihu User `@黄昊Haosky` and `@V777`. They laid a solid theoretical foundation for scientific demask algorithm.
+- Email: [790704944@qq.com](mailto:790704944@qq.com) or [duzhongtao188@gmail.com](mailto:duzhongtao188@gmail.com)
 - Support: [GitHub Issues](https://github.com/BillyDu-TJ/NexFilm/issues)
 - License: [GNU General Public License v3.0 only](LICENSE). You may use, study, and modify the project. Distribution of the project or modified versions must provide the corresponding source, preserve license notices, and license derivative works under the same GPLv3 terms. The software is provided as-is, without warranty.

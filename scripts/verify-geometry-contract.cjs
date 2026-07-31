@@ -4,6 +4,7 @@ const {
     proxyPixelTransformChanged,
     createTransformMatrix,
     invertDisplayPoint,
+    mapDisplayPointToSource,
     transformGeometryForQuarterTurn,
     transformGeometryForFlip,
 } = require('../ui/geometry.js');
@@ -48,6 +49,30 @@ assert.deepEqual(getPreviewTransform({ angle: 15 }, null, false), {
     scaleX: 1,
     scaleY: 1,
 });
+
+assert.deepEqual(
+    mapDisplayPointToSource(
+        [0.25, 0.75],
+        { x: 0.1, y: 0.2, width: 0.6, height: 0.4 },
+        new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]),
+        1000,
+        500,
+        {}
+    ),
+    [0.25, 0.5]
+);
+
+assert.deepEqual(
+    mapDisplayPointToSource(
+        [0.25, 0.75],
+        { x: 0.1, y: 0.2, width: 0.6, height: 0.4 },
+        new Float32Array([1, 0, 0, 0, 1, 0, 0.1, -0.2, 1]),
+        1000,
+        500,
+        {}
+    ).map(value => Number(value.toFixed(6))),
+    [0.35, 0.3]
+);
 
 const transform = getPreviewTransform({ angle: 30, flip_h: true }, null, true);
 const matrix = createTransformMatrix(transform);

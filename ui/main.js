@@ -1,6 +1,7 @@
 const invoke = window.__TAURI__.core.invoke;
 const { listen } = window.__TAURI__.event;
 const { getContactSheetLayout, createContactSheetFilename } = window.NexFilmContactSheet;
+const { getNeutralExposureOffsets } = window.NexFilmDensity;
 
 // DOM: Global
 const btnImport = document.getElementById('btn-import');
@@ -4147,12 +4148,25 @@ previewCanvas.addEventListener('click', (e) => {
     if (!isEyedropperActive || !proxyPixels || !activeId) return;
     
     const rect = previewCanvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    
-    // map click coordinate to proxy image space
-    const px = Math.floor((x / rect.width) * proxyWidth);
-    const py = Math.floor((y / rect.height) * proxyHeight);
+    const displayU = (e.clientX - rect.left) / rect.width;
+    const displayV = (e.clientY - rect.top) / rect.height;
+    if (displayU < 0 || displayU > 1 || displayV < 0 || displayV > 1) return;
+
+    const points = NexFilmGeometry.resolveCalibrationRenderPoints(
+        current_geom.calibration_points,
+        isCalibrationMode
+    );
+    const sourceUv = NexFilmGeometry.mapDisplayPointToSource(
+        [displayU, displayV],
+        current_geom.crop_rect,
+        getHomography(points),
+        proxyWidth,
+        proxyHeight,
+        current_geom
+    );
+    if (!sourceUv || sourceUv.some(value => !Number.isFinite(value) || value < 0 || value > 1)) return;
+    const px = Math.min(proxyWidth - 1, Math.floor(sourceUv[0] * proxyWidth));
+    const py = Math.min(proxyHeight - 1, Math.floor(sourceUv[1] * proxyHeight));
     
     let sumR = 0, sumG = 0, sumB = 0;
     let count = 0;
@@ -4181,14 +4195,13 @@ previewCanvas.addEventListener('click', (e) => {
         const tG = Math.max(avgG / 65535.0, epsilon);
         const tB = Math.max(avgB / 65535.0, epsilon);
         
-        let dR = -Math.log10(tR) - currentBaseDensity[0];
-        let dG = -Math.log10(tG) - currentBaseDensity[1];
-        let dB = -Math.log10(tB) - currentBaseDensity[2];
-        
+        const rawDensity = [
+            -Math.log10(tR) - currentBaseDensity[0],
+            -Math.log10(tG) - currentBaseDensity[1],
+            -Math.log10(tB) - currentBaseDensity[2],
+        ];
         const currentExpG = parseFloat(sliders.expg.el.value);
-        
-        const targetExpR = (dG + currentExpG) - dR;
-        const targetExpB = (dG + currentExpG) - dB;
+        const [targetExpR, , targetExpB] = getNeutralExposureOffsets(rawDensity, currentExpG);
         
         pushUndoState();
         
