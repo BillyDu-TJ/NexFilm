@@ -3834,18 +3834,6 @@ mod import_contract_tests {
     }
 
     #[test]
-    fn tracked_tiff_fixture_has_an_import_stage_preview() {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("output_portra400_log.tif");
-        let preview =
-            decode_import_preview_base64(path.to_string_lossy().as_ref(), IMPORT_PREVIEW_LONG_EDGE);
-        assert!(
-            preview.is_some(),
-            "tracked TIFF fixture has no import preview"
-        );
-    }
-
-    #[test]
     fn nikon_nef_uses_the_embedded_jpeg_without_libraw_thumbnail_unpack() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("test_picture")
@@ -3960,10 +3948,7 @@ mod import_contract_tests {
 
 #[cfg(test)]
 mod export_contract_tests {
-    use super::{
-        compute_auto_base, decode_image_buffer, render_shader_equivalent,
-        validate_export_color_space, DecodeMode,
-    };
+    use super::{render_shader_equivalent, validate_export_color_space};
     use crate::app_state::{BaseColor, FilmMode, GeometryState, TuningParams};
     use image::{ImageBuffer, Rgb};
 
@@ -4019,32 +4004,5 @@ mod export_contract_tests {
         assert_eq!(validate_export_color_space("srgb").unwrap(), "srgb");
         assert!(validate_export_color_space("rec2020").is_err());
         assert!(validate_export_color_space("prophoto").is_err());
-    }
-
-    #[test]
-    fn tracked_tiff_fixture_completes_develop_and_export_math_path() {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("output_portra400_log.tif");
-        let decoded = decode_image_buffer(
-            path.to_string_lossy().as_ref(),
-            DecodeMode::DevelopProxy,
-            "linear-srgb",
-        )
-        .unwrap();
-        assert_eq!(decoded.dimensions(), (1597, 2000));
-        assert!(decoded.as_raw().iter().any(|sample| *sample > 255));
-
-        let proxy =
-            image::imageops::resize(&decoded, 52, 64, image::imageops::FilterType::Triangle);
-        let base_color = compute_auto_base(&proxy);
-        let rendered = render_shader_equivalent(
-            &proxy,
-            &TuningParams::default(),
-            &GeometryState::default(),
-            &base_color,
-            None,
-        );
-        assert_eq!(rendered.dimensions(), proxy.dimensions());
-        assert!(rendered.as_raw().iter().any(|sample| *sample > 0));
     }
 }

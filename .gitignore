@@ -3,11 +3,14 @@ node_modules
 .DS_Store
 *.swp
 *.tmp
+*.bak
 .idea/
 .vscode/
 .codex/config.toml
 ui/node_modules
 rolls.json
+.claude/settings.local.json
+.smoke-data/
 
 reference_divere/
 test_picture/
@@ -18,3 +21,6 @@ test_picture/
 *.png
 *.nef
 *.db
+*.db-journal
+*.db-shm
+*.db-wal
