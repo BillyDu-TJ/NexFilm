@@ -1,4 +1,4 @@
-use image::{imageops::colorops::grayscale, DynamicImage, GenericImageView};
+use image::{imageops::colorops::grayscale, DynamicImage, GenericImageView, GrayImage, Pixel};
 use imageproc::contours::find_contours_with_threshold;
 use imageproc::contrast::{otsu_level, threshold};
 use imageproc::edges::canny;
@@ -14,6 +14,7 @@ const MAX_AREA_RATIO: f64 = 0.98;
 const MAX_SIDE_RATIO: f64 = 6.0;
 const MAX_DIAGONAL_RATIO: f64 = 3.0;
 const MIN_GRADIENT_PROMINENCE: f64 = 1.22;
+const MAX_ANALYSIS_EDGE: u32 = 320;
 
 #[derive(Clone, Copy)]
 struct FittedLine {
@@ -60,7 +61,8 @@ pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
         return FilmBorderDetection::fallback();
     }
 
-    let gray = grayscale(thumbnail);
+    let gray = analysis_grayscale(thumbnail);
+    let (width, height) = gray.dimensions();
     let blurred = gaussian_blur_f32(&gray, 1.4);
 
     // Film gates are often not closed contours after thresholding: sprocket
@@ -84,6 +86,29 @@ pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
     };
 
     detected_result(points, width, height, "detected_contour")
+}
+
+fn analysis_grayscale(thumbnail: &DynamicImage) -> GrayImage {
+    let (width, height) = thumbnail.dimensions();
+    let longest_edge = width.max(height);
+    if longest_edge <= MAX_ANALYSIS_EDGE {
+        return grayscale(thumbnail);
+    }
+
+    let scale = MAX_ANALYSIS_EDGE as f64 / longest_edge as f64;
+    let analysis_width = (width as f64 * scale).round().max(16.0) as u32;
+    let analysis_height = (height as f64 * scale).round().max(16.0) as u32;
+    let mut gray = GrayImage::new(analysis_width, analysis_height);
+    for y in 0..analysis_height {
+        let source_y = (((y as u64 * 2 + 1) * height as u64) / (analysis_height as u64 * 2))
+            .min(height.saturating_sub(1) as u64) as u32;
+        for x in 0..analysis_width {
+            let source_x = (((x as u64 * 2 + 1) * width as u64) / (analysis_width as u64 * 2))
+                .min(width.saturating_sub(1) as u64) as u32;
+            gray.put_pixel(x, y, thumbnail.get_pixel(source_x, source_y).to_luma());
+        }
+    }
+    gray
 }
 
 fn find_best_quad(
@@ -517,9 +542,24 @@ fn validate_quad(points: &[Point<i32>; 4], width: u32, height: u32, area: f64) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::imageops::FilterType;
     use image::{DynamicImage, GrayImage, Luma};
     use imageproc::drawing::{draw_filled_rect_mut, draw_polygon_mut};
     use imageproc::rect::Rect;
+
+    fn textured_film_strip() -> GrayImage {
+        let mut image = GrayImage::from_pixel(320, 210, Luma([178]));
+        draw_filled_rect_mut(&mut image, Rect::at(48, 38).of_size(226, 136), Luma([62]));
+
+        for x in (22..300).step_by(30) {
+            draw_filled_rect_mut(&mut image, Rect::at(x, 9).of_size(14, 19), Luma([235]));
+            draw_filled_rect_mut(&mut image, Rect::at(x, 182).of_size(14, 19), Luma([235]));
+        }
+        for y in (52..168).step_by(16) {
+            draw_filled_rect_mut(&mut image, Rect::at(70, y).of_size(175, 4), Luma([90]));
+        }
+        image
+    }
 
     #[test]
     fn blank_thumbnail_uses_centered_eighty_percent_fallback() {
@@ -552,19 +592,26 @@ mod tests {
 
     #[test]
     fn detects_inner_gate_in_a_textured_film_strip() {
-        let mut image = GrayImage::from_pixel(320, 210, Luma([178]));
-        draw_filled_rect_mut(&mut image, Rect::at(48, 38).of_size(226, 136), Luma([62]));
+        let result = detect_film_border(&DynamicImage::ImageLuma8(textured_film_strip()));
 
-        for x in (22..300).step_by(30) {
-            draw_filled_rect_mut(&mut image, Rect::at(x, 9).of_size(14, 19), Luma([235]));
-            draw_filled_rect_mut(&mut image, Rect::at(x, 182).of_size(14, 19), Luma([235]));
-        }
-        for y in (52..168).step_by(16) {
-            draw_filled_rect_mut(&mut image, Rect::at(70, y).of_size(175, 4), Luma([90]));
-        }
+        assert_eq!(result.confidence, DetectionConfidence::High);
+        assert_eq!(result.status, "detected_gradient");
+        assert!((result.points[0][0] - 48.0 / 319.0).abs() < 0.03);
+        assert!((result.points[0][1] - 38.0 / 209.0).abs() < 0.03);
+        assert!((result.points[2][0] - 274.0 / 319.0).abs() < 0.03);
+        assert!((result.points[2][1] - 174.0 / 209.0).abs() < 0.03);
+    }
 
-        let result = detect_film_border(&DynamicImage::ImageLuma8(image));
+    #[test]
+    fn large_preview_keeps_gate_accuracy_after_analysis_downsampling() {
+        let large =
+            image::imageops::resize(&textured_film_strip(), 1600, 1050, FilterType::Nearest);
+        let dynamic = DynamicImage::ImageLuma8(large);
+        let analysis = analysis_grayscale(&dynamic);
 
+        assert_eq!(analysis.dimensions(), (320, 210));
+
+        let result = detect_film_border(&dynamic);
         assert_eq!(result.confidence, DetectionConfidence::High);
         assert_eq!(result.status, "detected_gradient");
         assert!((result.points[0][0] - 48.0 / 319.0).abs() < 0.03);

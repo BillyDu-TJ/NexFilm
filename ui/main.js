@@ -290,6 +290,8 @@ let isCalibrationMode = false;
 let calibrationDragState = null;
 let calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
 const calibrationEdgeIndices = NexFilmGeometry.calibrationEdgeIndices;
+let calibrationRevision = 0;
+const filmAreaDetectionPromises = new Map();
 
 function updateLibrarySelectionUI() {
     librarySelectionCount.textContent = `${selectedLibraryIds.size} selected`;
@@ -2506,7 +2508,7 @@ async function selectImage(id) {
             }
             imageStates.set(id, {
                 params: state.params,
-                geom: state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 }
+                geom: state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0, calibration_points: null, calibration_confirmed: false }
             });
             if (state.base_analyzed) {
                 proxyAnalyzedBaseIds.add(id);
@@ -2547,6 +2549,7 @@ async function selectImage(id) {
         readyProxyIds.delete(id);
         enableUI();
         current_geom = JSON.parse(JSON.stringify(state.geom));
+        const selectionCalibrationRevision = ++calibrationRevision;
         btnBatchApply.disabled = !current_geom.calibration_points;
         updateUIFromParams(state.params, current_geom);
         updateThumbnailPlaceholderLayout(document.getElementById('thumbnail-placeholder'));
@@ -2604,15 +2607,21 @@ async function selectImage(id) {
         } else {
             calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         }
-        const hasSavedFilmArea = !!current_geom.calibration_points;
-        isCalibrationMode = !hasSavedFilmArea;
-        btnBatchApply.disabled = !current_geom.calibration_points;
-        document.getElementById('calibration-overlay').classList.toggle('hidden', hasSavedFilmArea);
+        const hasFilmArea = !!current_geom.calibration_points;
+        const hasConfirmedFilmArea = hasFilmArea && current_geom.calibration_confirmed === true;
+        isCalibrationMode = !hasConfirmedFilmArea;
+        btnBatchApply.disabled = !hasConfirmedFilmArea;
+        document.getElementById('calibration-overlay').classList.toggle('hidden', hasConfirmedFilmArea);
         // A batch-applied area is persisted edit state even if the target has
         // never rendered. It must reach Auto Invert without another save.
-        document.getElementById('right-panel-blocker').classList.toggle('hidden', hasSavedFilmArea);
-        btnAutoColor.disabled = !hasSavedFilmArea;
-        if (isCalibrationMode) requestAnimationFrame(updateCalibrationPolygon);
+        document.getElementById('right-panel-blocker').classList.toggle('hidden', hasConfirmedFilmArea);
+        btnAutoColor.disabled = !hasConfirmedFilmArea;
+        if (isCalibrationMode) {
+            requestAnimationFrame(updateCalibrationPolygon);
+            if (!hasFilmArea) {
+                void initializeDefaultFilmArea(id, myToken, selectionCalibrationRevision);
+            }
+        }
 
 
     } catch(e) {
@@ -3578,12 +3587,14 @@ async function runAutoInvert() {
 
 document.getElementById('btn-reset-crop').addEventListener('click', async () => {
     if (!activeId) return; pushUndoState();
+    calibrationRevision++;
     current_geom.crop_rect = { x: 0, y: 0, width: 1, height: 1 };
     current_geom.angle = 0.0;
     current_geom.flip_h = false;
     current_geom.flip_v = false;
     current_geom.rotate_90_count = 0;
     current_geom.calibration_points = null;
+    current_geom.calibration_confirmed = false;
     btnBatchApply.disabled = true;
     currentSprocketUV = new Float32Array([-1.0, -1.0]);
     if (isCropMode) updateCropOverlay();
@@ -3596,10 +3607,11 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
 
 
 function enterCalibrationMode() {
+    calibrationRevision++;
     isCalibrationMode = true;
     document.getElementById('calibration-overlay').classList.remove('hidden');
     document.getElementById('right-panel-blocker').classList.remove('hidden');
-    btnBatchApply.disabled = !current_geom.calibration_points;
+    btnBatchApply.disabled = true;
     if (current_geom.calibration_points) {
         calibrationPoints = JSON.parse(JSON.stringify(current_geom.calibration_points));
     } else {
@@ -3610,35 +3622,97 @@ function enterCalibrationMode() {
 
 btnRecalibrate.addEventListener('click', enterCalibrationMode);
 
+function validateFilmAreaDetection(result) {
+    if (!Array.isArray(result?.points) || result.points.length !== 4) {
+        throw new Error('The detector returned an invalid quadrilateral.');
+    }
+    const points = result.points.map(point => [Number(point[0]), Number(point[1])]);
+    if (!NexFilmGeometry.isValidCalibrationQuad(points)) {
+        throw new Error('The detector returned an invalid point order.');
+    }
+    return points;
+}
+
+function requestFilmAreaDetection(id) {
+    const existing = filmAreaDetectionPromises.get(id);
+    if (existing) return existing;
+    const source = findKnownItem(id);
+    if (!source?.file_path) {
+        return Promise.reject(new Error('Cached image identity is unavailable.'));
+    }
+    const request = invoke('auto_detect_film_border', {
+        roll_id: source.roll_id || 'LOOSE_DEFAULT',
+        file_path: source.file_path
+    }).finally(() => {
+        if (filmAreaDetectionPromises.get(id) === request) {
+            filmAreaDetectionPromises.delete(id);
+        }
+    });
+    filmAreaDetectionPromises.set(id, request);
+    return request;
+}
+
+function setAutoAreaBusy(id, busy) {
+    if (id !== activeId) return;
+    btnAutoArea.disabled = busy || !activeId;
+    btnAutoArea.toggleAttribute('aria-busy', busy);
+    btnAutoArea.textContent = busy ? 'Detecting...' : 'Auto Area';
+}
+
+function applyFilmAreaDetection(result) {
+    calibrationPoints = validateFilmAreaDetection(result);
+    current_geom.calibration_points = cloneCalibrationPoints(calibrationPoints);
+    current_geom.calibration_confirmed = false;
+    btnBatchApply.disabled = true;
+    updateCalibrationPolygon();
+    if (activeProxyIsFull) requestRender();
+}
+
+function isSafeDefaultFilmAreaDetection(result) {
+    return result?.confidence === 'high' && result?.status === 'detected_gradient';
+}
+
+async function initializeDefaultFilmArea(id, requestToken, revision) {
+    setAutoAreaBusy(id, true);
+    try {
+        const result = await requestFilmAreaDetection(id);
+        if (id !== activeId || requestToken !== currentImageRequestToken || revision !== calibrationRevision) {
+            return;
+        }
+        applyFilmAreaDetection(result);
+        if (!isSafeDefaultFilmAreaDetection(result)) {
+            showToast("自动探测结果需要确认，请手动微调并保存。", "info");
+            return;
+        }
+
+        saveCurrentState();
+        await persistGeometryQueued(id, current_geom);
+        if (id !== activeId || requestToken !== currentImageRequestToken || revision !== calibrationRevision) {
+            return;
+        }
+        showToast("Film area detected. Review the frame and save it.", "success");
+    } catch (error) {
+        console.error('Automatic film-area initialization failed', error);
+        if (id === activeId && requestToken === currentImageRequestToken) {
+            showToast("Automatic film-area detection failed. Set the area manually.", "error");
+        }
+    } finally {
+        setAutoAreaBusy(id, false);
+    }
+}
+
 btnAutoArea.addEventListener('click', async () => {
     if (!activeId || btnAutoArea.getAttribute('aria-busy') === 'true') return;
-    const source = findKnownItem(activeId);
-    if (!source?.file_path) {
-        showToast("Cached image identity is unavailable.", "error");
-        return;
-    }
 
     const detectionId = activeId;
     if (!isCalibrationMode) enterCalibrationMode();
-    const previousLabel = btnAutoArea.textContent;
-    btnAutoArea.disabled = true;
-    btnAutoArea.setAttribute('aria-busy', 'true');
-    btnAutoArea.textContent = 'Detecting...';
+    const revision = ++calibrationRevision;
+    setAutoAreaBusy(detectionId, true);
     try {
-        const result = await invoke('auto_detect_film_border', {
-            roll_id: source.roll_id || 'LOOSE_DEFAULT',
-            file_path: source.file_path
-        });
-        if (detectionId !== activeId) return;
-        if (!Array.isArray(result?.points) || result.points.length !== 4) {
-            throw new Error('The detector returned an invalid quadrilateral.');
-        }
+        const result = await requestFilmAreaDetection(detectionId);
+        if (detectionId !== activeId || revision !== calibrationRevision) return;
         pushUndoState();
-        calibrationPoints = result.points.map(point => [Number(point[0]), Number(point[1])]);
-        current_geom.calibration_points = JSON.parse(JSON.stringify(calibrationPoints));
-        btnBatchApply.disabled = false;
-        updateCalibrationPolygon();
-        requestRender();
+        applyFilmAreaDetection(result);
         if (result.confidence === 'low') {
             showToast("自动探测置信度较低，请手动微调。", "info");
         } else {
@@ -3648,9 +3722,7 @@ btnAutoArea.addEventListener('click', async () => {
         console.error('Auto Area failed', error);
         showToast("Auto Area failed: " + error, "error");
     } finally {
-        btnAutoArea.removeAttribute('aria-busy');
-        btnAutoArea.textContent = previousLabel;
-        btnAutoArea.disabled = !activeId;
+        setAutoAreaBusy(detectionId, false);
     }
 });
 
@@ -4372,8 +4444,9 @@ function setCalibrationDraft(points, render = true) {
     calibrationPoints = cloneCalibrationPoints(points);
     if (current_geom) {
         current_geom.calibration_points = cloneCalibrationPoints(points);
+        current_geom.calibration_confirmed = false;
     }
-    btnBatchApply.disabled = false;
+    btnBatchApply.disabled = true;
 
     if (!calibrationRAF) {
         calibrationRAF = requestAnimationFrame(() => {
@@ -4392,6 +4465,7 @@ document.getElementById('calibration-svg').addEventListener('pointerdown', (e) =
         return;
     }
 
+    calibrationRevision++;
     e.preventDefault();
     if (target.setPointerCapture) target.setPointerCapture(e.pointerId);
     calibrationDragState = {
@@ -4456,6 +4530,7 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
     if (!activeId) return;
     pushUndoState();
     current_geom.calibration_points = JSON.parse(JSON.stringify(calibrationPoints));
+    current_geom.calibration_confirmed = true;
     if (activeProxyIsFull) requestRender();
     saveCurrentState();
     try {
@@ -4467,6 +4542,7 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
         btnBatchApply.disabled = false;
         showToast("Film area saved. Run Auto Invert when ready.", "success");
     } catch (e) {
+        current_geom.calibration_confirmed = false;
         console.error("Calibration failed", e);
         showToast("Failed to save film area.", "error");
     }

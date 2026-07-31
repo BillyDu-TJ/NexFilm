@@ -1326,6 +1326,8 @@ pub async fn import_images(
                     db_cache.get(&path.replace("\\", "/").to_lowercase())
                 {
                     let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
+                    let mut geom = geom.clone();
+                    apply_default_film_border(&mut geom, embedded_thumb);
                     return FilmItem {
                         id,
                         roll_id: target_roll_producer.clone(),
@@ -1337,7 +1339,7 @@ pub async fn import_images(
                         pristine_proxy: None,
                         base_color: base_color.clone(),
                         params: params.clone(),
-                        geom: geom.clone(),
+                        geom,
                         is_loose: loose,
                         in_library: in_lib,
                     };
@@ -1348,6 +1350,8 @@ pub async fn import_images(
                         .unwrap_or_else(|| FALLBACK_THUMB.to_string());
                 let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
                 let params = TuningParams::default();
+                let mut geom = crate::app_state::GeometryState::default();
+                apply_default_film_border(&mut geom, &embedded_thumbnail_base64);
 
                 FilmItem {
                     id,
@@ -1360,7 +1364,7 @@ pub async fn import_images(
                     pristine_proxy: None,
                     base_color: BaseColor::default(),
                     params,
-                    geom: crate::app_state::GeometryState::default(),
+                    geom,
                     is_loose: loose,
                     in_library: in_lib,
                 }
@@ -2339,38 +2343,147 @@ pub async fn update_geometry(
 pub async fn auto_detect_film_border(
     roll_id: String,
     file_path: String,
+    state: State<'_, EngineState>,
 ) -> Result<crate::film_border::FilmBorderDetection, String> {
-    tokio::task::spawn_blocking(move || {
-        let connection = persistence::open_connection()
-            .map_err(|error| format!("Failed to open state database: {error}"))?;
-        let encoded = connection
-            .query_row(
-                "SELECT COALESCE(embedded_thumb_base64, thumbnail_base64)
-                 FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
-                rusqlite::params![roll_id, file_path],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .optional()
-            .map_err(|error| format!("Failed to read cached thumbnail: {error}"))?
-            .flatten()
-            .ok_or_else(|| "CACHED_THUMBNAIL_NOT_FOUND".to_string())?;
-        let encoded = if encoded.starts_with("data:") {
-            encoded
-                .split_once(',')
-                .map(|(_, payload)| payload)
-                .ok_or_else(|| "Cached thumbnail data URL is invalid".to_string())?
-        } else {
-            &encoded
+    let cache_key = format!("{}::{}", roll_id, normalize_path(&file_path));
+    if let Some(cached) = state.film_border_cache.get(&cache_key) {
+        return Ok(cached.clone());
+    }
+
+    let normalized_path = normalize_path(&file_path);
+    let in_memory_thumbnail = state.items.iter().find_map(|entry| {
+        let item = read_lock(entry.value());
+        (item.roll_id == roll_id && normalize_path(&item.file_path) == normalized_path)
+            .then(|| item.embedded_thumbnail_base64.clone())
+    });
+
+    let result = tokio::task::spawn_blocking(move || {
+        let encoded = match in_memory_thumbnail {
+            Some(encoded) => encoded,
+            None => {
+                let connection = persistence::open_connection()
+                    .map_err(|error| format!("Failed to open state database: {error}"))?;
+                connection
+                    .query_row(
+                        "SELECT COALESCE(embedded_thumb_base64, thumbnail_base64)
+                         FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
+                        rusqlite::params![roll_id, file_path],
+                        |row| row.get::<_, Option<String>>(0),
+                    )
+                    .optional()
+                    .map_err(|error| format!("Failed to read cached thumbnail: {error}"))?
+                    .flatten()
+                    .ok_or_else(|| "CACHED_THUMBNAIL_NOT_FOUND".to_string())?
+            }
         };
-        let bytes = general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|error| format!("Cached thumbnail is not valid base64: {error}"))?;
-        let thumbnail = image::load_from_memory(&bytes)
-            .map_err(|error| format!("Cached thumbnail cannot be decoded: {error}"))?;
-        Ok(crate::film_border::detect_film_border(&thumbnail))
+        detect_film_border_from_encoded(&encoded)
     })
     .await
-    .map_err(|error| format!("Film-border worker failed: {error}"))?
+    .map_err(|error| format!("Film-border worker failed: {error}"))??;
+
+    state.film_border_cache.insert(cache_key, result.clone());
+    Ok(result)
+}
+
+fn detect_film_border_from_encoded(
+    encoded: &str,
+) -> Result<crate::film_border::FilmBorderDetection, String> {
+    let encoded = if encoded.starts_with("data:") {
+        encoded
+            .split_once(',')
+            .map(|(_, payload)| payload)
+            .ok_or_else(|| "Cached thumbnail data URL is invalid".to_string())?
+    } else {
+        encoded
+    };
+    let bytes = general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|error| format!("Cached thumbnail is not valid base64: {error}"))?;
+    let thumbnail = image::load_from_memory(&bytes)
+        .map_err(|error| format!("Cached thumbnail cannot be decoded: {error}"))?;
+    Ok(crate::film_border::detect_film_border(&thumbnail))
+}
+
+fn apply_default_film_border(geom: &mut GeometryState, encoded: &str) {
+    if geom.calibration_points.is_some() {
+        return;
+    }
+    let Ok(result) = detect_film_border_from_encoded(encoded) else {
+        return;
+    };
+    if result.confidence == crate::film_border::DetectionConfidence::High
+        && result.status == "detected_gradient"
+    {
+        geom.calibration_points = Some(result.points);
+        geom.calibration_confirmed = false;
+    }
+}
+
+#[cfg(test)]
+mod film_area_default_tests {
+    use super::apply_default_film_border;
+    use crate::app_state::GeometryState;
+    use base64::{engine::general_purpose, Engine as _};
+    use image::{DynamicImage, GrayImage, ImageOutputFormat, Luma};
+    use imageproc::drawing::draw_filled_rect_mut;
+    use imageproc::rect::Rect;
+    use std::io::Cursor;
+
+    fn encode_png(image: GrayImage) -> String {
+        let mut cursor = Cursor::new(Vec::new());
+        DynamicImage::ImageLuma8(image)
+            .write_to(&mut cursor, ImageOutputFormat::Png)
+            .unwrap();
+        general_purpose::STANDARD.encode(cursor.into_inner())
+    }
+
+    fn textured_film_strip() -> GrayImage {
+        let mut image = GrayImage::from_pixel(320, 210, Luma([178]));
+        draw_filled_rect_mut(&mut image, Rect::at(48, 38).of_size(226, 136), Luma([62]));
+        for x in (22..300).step_by(30) {
+            draw_filled_rect_mut(&mut image, Rect::at(x, 9).of_size(14, 19), Luma([235]));
+            draw_filled_rect_mut(&mut image, Rect::at(x, 182).of_size(14, 19), Luma([235]));
+        }
+        for y in (52..168).step_by(16) {
+            draw_filled_rect_mut(&mut image, Rect::at(70, y).of_size(175, 4), Luma([90]));
+        }
+        image
+    }
+
+    #[test]
+    fn high_confidence_detection_becomes_the_default_geometry() {
+        let mut geom = GeometryState::default();
+        apply_default_film_border(&mut geom, &encode_png(textured_film_strip()));
+
+        assert!(geom.calibration_points.is_some());
+        assert!(!geom.calibration_confirmed);
+    }
+
+    #[test]
+    fn low_confidence_fallback_is_not_saved_as_default_geometry() {
+        let mut geom = GeometryState::default();
+        let blank = GrayImage::from_pixel(320, 210, Luma([16]));
+        apply_default_film_border(&mut geom, &encode_png(blank));
+
+        assert!(geom.calibration_points.is_none());
+        assert!(!geom.calibration_confirmed);
+    }
+
+    #[test]
+    fn geometry_without_confirmation_metadata_remains_readable() {
+        let geom: GeometryState = serde_json::from_value(serde_json::json!({
+            "crop_rect": { "x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0 },
+            "angle": 0.0,
+            "flip_h": false,
+            "flip_v": false,
+            "rotate_90_count": 0,
+            "calibration_points": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]
+        }))
+        .unwrap();
+
+        assert!(geom.calibration_points.is_some());
+        assert!(!geom.calibration_confirmed);
+    }
 }
 
 #[tauri::command]

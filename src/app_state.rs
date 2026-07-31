@@ -222,6 +222,8 @@ pub struct GeometryState {
     pub rotate_90_count: i32,
     #[serde(default)]
     pub calibration_points: Option<[[f32; 2]; 4]>,
+    #[serde(default)]
+    pub calibration_confirmed: bool,
 }
 
 impl Default for GeometryState {
@@ -233,6 +235,7 @@ impl Default for GeometryState {
             flip_v: false,
             rotate_90_count: 0,
             calibration_points: None,
+            calibration_confirmed: false,
         }
     }
 }
@@ -288,6 +291,7 @@ pub struct Roll {
 
 pub struct EngineState {
     pub items: dashmap::DashMap<String, std::sync::Arc<std::sync::RwLock<FilmItem>>>,
+    pub film_border_cache: dashmap::DashMap<String, crate::film_border::FilmBorderDetection>,
     pub item_order: RwLock<Vec<String>>,
     pub active_id: RwLock<Option<String>>,
     pub rolls: RwLock<Vec<Roll>>,
@@ -300,6 +304,7 @@ impl EngineState {
     pub fn new() -> Self {
         EngineState {
             items: dashmap::DashMap::new(),
+            film_border_cache: dashmap::DashMap::new(),
             item_order: RwLock::new(Vec::new()),
             active_id: RwLock::new(None),
             rolls: RwLock::new(Vec::new()),
