@@ -117,6 +117,16 @@ NexFilm Engine 用于把相机翻拍或扫描仪输出的胶片负片转换为�
 
 输出支持 16 位未压缩 TIFF、8 位 TIFF、JPEG 和 PNG。当前仅提供 sRGB 输出。
 
+### 赞赏
+
+如果 NexFilm 对你的胶片工作流有帮助，可以通过收款码支持项目的持续开发。赞赏完全自愿，不影响软件功能、开源许可或问题处理优先级。
+
+作者开发本软件纯属为爱发电，自费开发。如果你喜欢，欢迎给作者买卷胶片，或者帮我回回血。
+
+<p align="center">
+  <img src="docs/assets/sponsor-qr.png" width="240" alt="赞赏 NexFilm / Sponsor NexFilm">
+</p>
+
 ### 数据、隐私与备份
 
 - Windows Release 构建把数据库和胶卷兼容数据保存在 `%APPDATA%\NexFilm Engine\`。macOS 当前使用 `$XDG_DATA_HOME/NexFilm Engine/`，未设置该变量时使用 `~/.local/share/NexFilm Engine/`；Debug 构建保存在仓库工作目录。
@@ -209,23 +219,11 @@ DMG 会生成在对应目标目录的 `release/bundle/dmg/` 下。跨架构构�
 
 提交问题前请先搜索现有 [Issues](https://github.com/BillyDu-TJ/NexFilm/issues)。Bug 报告请包含系统版本、相机/扫描仪型号、输入格式、复现步骤和错误信息；请勿上传包含隐私内容的原片。代码贡献请保持改动聚焦，并在 Pull Request 中写明验证命令与结果。
 
-### 赞赏
-
-如果 NexFilm 对你的胶片工作流有帮助，可以通过收款码支持项目的持续开发。赞赏完全自愿，不影响软件功能、开源许可或问题处理优先级。
-
-作者开发本软件纯属为爱发电，自费开发。如果你喜欢，欢迎给作者买卷胶片，或者帮我回回血。
-
-> 收款码即将添加。维护者可把图片保存为 `docs/assets/sponsor-qr.png`，然后取消 README 源码中下一段的注释。
-
-<!--
-<p align="center">
-  <img src="docs/assets/sponsor-qr.png" width="240" alt="赞赏 NexFilm / Sponsor NexFilm">
-</p>
--->
 
 ### 作者、联系与许可
 
-- 作者：Billy_Du（GitHub：[@BillyDu-TJ](https://github.com/BillyDu-TJ)）
+- 作者：Billy_Du (GitHub：[@BillyDu-TJ](https://github.com/BillyDu-TJ))
+- 特别鸣谢：UI设计由 lonely-xmw (Github: [@lxmw44426-tech](https://github.com/lxmw44426-tech))
 - 联系邮箱：[790704944@qq.com](mailto:790704944@qq.com)
 - 问题反馈：[GitHub Issues](https://github.com/BillyDu-TJ/NexFilm/issues)
 - 开源许可：[GNU General Public License v3.0 only](LICENSE)。你可以使用、研究和修改本项目；分发本项目或其修改版本时，必须按 GPLv3 提供相应源码、保留许可声明，并以相同许可证发布衍生作品。软件按“原样”提供，不附带任何担保。
@@ -321,6 +319,14 @@ The input picker supports common camera RAW formats, including DNG, NEF/NRW, CR2
 
 Export formats are uncompressed 16-bit TIFF, 8-bit TIFF, JPEG, and PNG. Output is currently limited to sRGB.
 
+### Sponsorship
+
+If NexFilm helps your film workflow, you can support its continued development through the payment QR code below. Sponsorship is optional and does not affect features, licensing, or issue priority.
+
+<p align="center">
+  <img src="docs/assets/sponsor-qr.png" width="240" alt="赞赏 NexFilm / Sponsor NexFilm">
+</p>
+
 ### Data, privacy, and backups
 
 - Windows release builds store the database and compatibility data in `%APPDATA%\NexFilm Engine\`. macOS currently uses `$XDG_DATA_HOME/NexFilm Engine/`, falling back to `~/.local/share/NexFilm Engine/`; debug builds use the repository working directory.
@@ -413,15 +419,11 @@ The workflows are manual, so incomplete commits do not automatically become publ
 
 Search existing [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) before opening a new report. A useful bug report includes the operating-system version, camera/scanner model, input format, reproduction steps, and error message. Do not upload private scans. Keep code contributions focused and include verification commands and results in the pull request.
 
-### Sponsorship
-
-If NexFilm helps your film workflow, you can support its continued development through the payment QR code below. Sponsorship is optional and does not affect features, licensing, or issue priority.
-
-> The QR code will be added here. The maintainer can save it as `docs/assets/sponsor-qr.png` and uncomment the image block in the README source.
 
 ### Author, contact, and license
 
 - Author: Billy_Du (GitHub: [@BillyDu-TJ](https://github.com/BillyDu-TJ))
+- Special Thank：UI Design: lonely-xmw (Github: [@lxmw44426-tech](https://github.com/lxmw44426-tech))
 - Email: [790704944@qq.com](mailto:790704944@qq.com)
 - Support: [GitHub Issues](https://github.com/BillyDu-TJ/NexFilm/issues)
 - License: [GNU General Public License v3.0 only](LICENSE). You may use, study, and modify the project. Distribution of the project or modified versions must provide the corresponding source, preserve license notices, and license derivative works under the same GPLv3 terms. The software is provided as-is, without warranty.
