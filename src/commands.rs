@@ -34,52 +34,6 @@ const FALLBACK_THUMB: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADU
 const IMPORT_PREVIEW_LONG_EDGE: u32 = 1024;
 const PROXY_LONG_EDGE: f32 = 2560.0;
 
-struct LibrawGuard(*mut libraw_sys::libraw_data_t);
-impl Drop for LibrawGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { libraw_sys::libraw_close(self.0) };
-        }
-    }
-}
-
-struct LibrawMemGuard(*mut libraw_sys::libraw_processed_image_t);
-impl Drop for LibrawMemGuard {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { libraw_sys::libraw_dcraw_clear_mem(self.0 as *mut _) };
-        }
-    }
-}
-
-#[cfg(windows)]
-unsafe extern "C" {
-    fn libraw_open_wfile(
-        data: *mut libraw_sys::libraw_data_t,
-        path: *const u16,
-    ) -> std::os::raw::c_int;
-}
-
-fn libraw_open_path(data: *mut libraw_sys::libraw_data_t, path: &str) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::ffi::OsStrExt;
-        let wide_path: Vec<u16> = std::ffi::OsStr::new(path)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        return unsafe { libraw_open_wfile(data, wide_path.as_ptr()) == 0 };
-    }
-
-    #[cfg(not(windows))]
-    {
-        let Ok(c_path) = std::ffi::CString::new(path) else {
-            return false;
-        };
-        unsafe { libraw_sys::libraw_open_file(data, c_path.as_ptr()) == 0 }
-    }
-}
-
 fn resize_preview_image(mut img: image::DynamicImage, max_edge: u32) -> image::DynamicImage {
     let (w, h) = img.dimensions();
     if w.max(h) > max_edge {
@@ -496,74 +450,47 @@ fn extract_embedded_preview_base64(path: &str, max_edge: u32) -> Option<String> 
             return encode_preview_jpeg_base64(image, max_edge, 86);
         }
     }
-    unsafe {
-        let data = libraw_sys::libraw_init(0);
-        if data.is_null() {
-            return None;
-        }
-        let _data_guard = LibrawGuard(data);
-        let opened = libraw_open_path(data, path);
+    let mut processor = rawlib::RawProcessor::new().ok()?;
+    processor.open_file(path).ok()?;
+    processor.unpack_thumb().ok()?;
+    let thumb = processor.get_thumbnail().ok()?;
 
-        if opened && libraw_sys::libraw_unpack_thumb(data) == 0 {
-            let mut err = 0;
-            let thumb = libraw_sys::libraw_dcraw_make_mem_thumb(data, &mut err);
-            if !thumb.is_null() {
-                let _thumb_guard = LibrawMemGuard(thumb);
-                let thumb_type = (*thumb).type_;
-                let thumb_len = (*thumb).data_size as usize;
-                let thumb_data = std::slice::from_raw_parts((*thumb).data.as_ptr(), thumb_len);
+    if thumb.format == rawlib::ImageFormat::Jpeg {
+        return Some(encode_preview_bytes_base64(&thumb.data, max_edge, 86));
+    }
 
-                if thumb_type == 1 {
-                    return Some(encode_preview_bytes_base64(thumb_data, max_edge, 86));
-                }
+    if thumb.format == rawlib::ImageFormat::Bitmap {
+        let width = thumb.width as u32;
+        let height = thumb.height as u32;
 
-                if thumb_type == 2 {
-                    let width = (*thumb).width as u32;
-                    let height = (*thumb).height as u32;
-                    let colors = (*thumb).colors;
-                    let bits = (*thumb).bits;
-
-                    if colors == 3 && bits == 8 {
-                        if let Some(img) = image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(
-                            width,
-                            height,
-                            thumb_data.to_vec(),
-                        ) {
-                            return encode_preview_jpeg_base64(
-                                image::DynamicImage::ImageRgb8(img),
-                                max_edge,
-                                86,
-                            );
-                        }
-                    } else if colors == 3 && bits == 16 {
-                        let slice = std::slice::from_raw_parts(
-                            (*thumb).data.as_ptr() as *const u16,
-                            thumb_len / 2,
-                        );
-                        let mut img = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
-                        img.as_mut()
-                            .par_chunks_exact_mut(3)
-                            .enumerate()
-                            .for_each(|(i, pixel)| {
-                                let idx = i * 3;
-                                pixel[0] = slice.get(idx).copied().unwrap_or(0);
-                                pixel[1] = slice.get(idx + 1).copied().unwrap_or(0);
-                                pixel[2] = slice.get(idx + 2).copied().unwrap_or(0);
-                            });
-                        return encode_stretched_preview_jpeg_base64(
-                            image::DynamicImage::ImageRgb16(img),
-                            max_edge,
-                            86,
-                        );
-                    }
-                }
-
-                return Some(encode_preview_bytes_base64(thumb_data, max_edge, 86));
+        if thumb.colors == 3 && thumb.bits == 8 {
+            if let Some(img) =
+                image::ImageBuffer::<image::Rgb<u8>, _>::from_raw(width, height, thumb.data.clone())
+            {
+                return encode_preview_jpeg_base64(
+                    image::DynamicImage::ImageRgb8(img),
+                    max_edge,
+                    86,
+                );
+            }
+        } else if thumb.colors == 3 && thumb.bits == 16 {
+            if let Ok(img) = rgb16_image_from_bytes(
+                width,
+                height,
+                thumb.colors as usize,
+                thumb.bits,
+                &thumb.data,
+            ) {
+                return encode_stretched_preview_jpeg_base64(
+                    image::DynamicImage::ImageRgb16(img),
+                    max_edge,
+                    86,
+                );
             }
         }
     }
 
-    None
+    Some(encode_preview_bytes_base64(&thumb.data, max_edge, 86))
 }
 
 /// Import-stage decoder. Camera RAW is always embedded-preview-only. TIFF first
@@ -830,6 +757,45 @@ fn libraw_output_color(colorspace: &str) -> Result<i32, String> {
     }
 }
 
+fn rgb16_image_from_bytes(
+    width: u32,
+    height: u32,
+    colors: usize,
+    bits: u16,
+    bytes: &[u8],
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    if colors < 3 || bits != 16 {
+        return Err(format!(
+            "Unexpected LibRaw output: {colors} channels at {bits} bits"
+        ));
+    }
+
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| "LibRaw image dimensions overflowed".to_string())?;
+    let required_bytes = pixel_count
+        .checked_mul(colors)
+        .and_then(|samples| samples.checked_mul(std::mem::size_of::<u16>()))
+        .ok_or_else(|| "LibRaw image buffer size overflowed".to_string())?;
+    if bytes.len() < required_bytes {
+        return Err("LibRaw returned a truncated image buffer".to_string());
+    }
+
+    let mut image_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
+    image_buffer
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .enumerate()
+        .for_each(|(index, pixel)| {
+            let source = index * colors * std::mem::size_of::<u16>();
+            for (channel, value) in pixel.iter_mut().enumerate() {
+                let offset = source + channel * std::mem::size_of::<u16>();
+                *value = u16::from_ne_bytes([bytes[offset], bytes[offset + 1]]);
+            }
+        });
+    Ok(image_buffer)
+}
+
 fn decode_image_buffer(
     path: &str,
     mode: DecodeMode,
@@ -841,78 +807,33 @@ fn decode_image_buffer(
             .map_err(|error| format!("Image decode failed for {path}: {error:?}"));
     }
 
-    unsafe {
-        let data = libraw_sys::libraw_init(0);
-        if data.is_null() {
-            return Err("Failed to initialize LibRaw".to_string());
-        }
-        let _data_guard = LibrawGuard(data);
+    // RAW_DECODE_VERSION 4 contract: LibRaw 0.22.2 camera/RAF tables, unsigned
+    // 16-bit output, camera white balance and matrix, linear gamma, and fixed
+    // brightness. Black/white levels are applied by LibRaw before this buffer.
+    let options = rawlib::DecodeOptions {
+        half_size: mode == DecodeMode::DevelopProxy,
+        demosaic_quality: 3,
+        output_bps: 16,
+        no_auto_bright: true,
+        output_color: libraw_output_color(colorspace)?,
+        linear_gamma: true,
+        use_camera_wb: true,
+    };
+    let decoded =
+        rawlib::RawProcessor::extract_image_with_options(path, &options).map_err(|error| {
+            format!(
+                "LibRaw {} cannot decode {path}: {error}",
+                rawlib::RawProcessor::version()
+            )
+        })?;
 
-        // RAW_DECODE_VERSION 3 contract: 16-bit, gamma 1.0, fixed brightness,
-        // camera matrix enabled, no automatic brightness normalization, and
-        // no external camera profile until the decoder has real profile support.
-        (*data).params.use_auto_wb = 0;
-        (*data).params.use_camera_wb = 1;
-        (*data).params.use_camera_matrix = 1;
-        (*data).params.output_color = libraw_output_color(colorspace)?;
-        (*data).params.output_bps = 16;
-        (*data).params.gamm[0] = 1.0;
-        (*data).params.gamm[1] = 1.0;
-        (*data).params.no_auto_bright = 1;
-        (*data).params.bright = 1.0;
-        (*data).params.highlight = 0;
-        (*data).params.half_size = i32::from(mode == DecodeMode::DevelopProxy);
-
-        if !libraw_open_path(data, path) {
-            return Err(format!("LibRaw cannot open this camera RAW: {path}"));
-        }
-        if libraw_sys::libraw_unpack(data) != 0 {
-            return Err(format!("LibRaw cannot unpack this camera RAW: {path}"));
-        }
-        if libraw_sys::libraw_dcraw_process(data) != 0 {
-            return Err(format!("LibRaw cannot process this camera RAW: {path}"));
-        }
-
-        let mut error_code = 0;
-        let memory_image = libraw_sys::libraw_dcraw_make_mem_image(data, &mut error_code);
-        if memory_image.is_null() {
-            return Err(format!(
-                "LibRaw failed to create a 16-bit image ({error_code})"
-            ));
-        }
-        let _memory_guard = LibrawMemGuard(memory_image);
-
-        let width = (*memory_image).width as u32;
-        let height = (*memory_image).height as u32;
-        let colors = (*memory_image).colors as usize;
-        let bits = (*memory_image).bits;
-        let data_len = (*memory_image).data_size as usize;
-        if colors < 3 || bits != 16 {
-            return Err(format!(
-                "Unexpected LibRaw output: {colors} channels at {bits} bits"
-            ));
-        }
-
-        let samples = std::slice::from_raw_parts(
-            (*memory_image).data.as_ptr() as *const u16,
-            data_len / std::mem::size_of::<u16>(),
-        );
-        let required_samples = width as usize * height as usize * colors;
-        if samples.len() < required_samples {
-            return Err("LibRaw returned a truncated image buffer".to_string());
-        }
-
-        let mut image_buffer = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(width, height);
-        image_buffer
-            .as_mut()
-            .par_chunks_exact_mut(3)
-            .enumerate()
-            .for_each(|(index, pixel)| {
-                let source = index * colors;
-                pixel.copy_from_slice(&samples[source..source + 3]);
-            });
-        Ok(image_buffer)
-    }
+    rgb16_image_from_bytes(
+        decoded.width as u32,
+        decoded.height as u32,
+        decoded.colors as usize,
+        decoded.bits,
+        &decoded.data,
+    )
 }
 
 fn persist_import_batch(
@@ -3909,7 +3830,7 @@ mod import_contract_tests {
     use super::{
         decode_image_buffer, decode_import_preview_base64, is_better_preview_edge,
         is_lightweight_direct_preview, is_raw_extension, is_tiff_extension, persist_import_batch,
-        DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
+        rgb16_image_from_bytes, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
     };
     use crate::app_state::{BaseColor, FilmItem, GeometryState, TuningParams};
     use base64::Engine as _;
@@ -3944,6 +3865,33 @@ mod import_contract_tests {
         assert!(is_better_preview_edge(1280, 2048, 1024));
         assert!(!is_better_preview_edge(2048, 1280, 1024));
         assert!(!is_better_preview_edge(640, 1024, 1024));
+    }
+
+    #[test]
+    fn raw_rgb16_conversion_preserves_full_range_and_channel_stride() {
+        let samples = [0u16, 32768, u16::MAX, 111, u16::MAX, 1, 16383, 222];
+        let mut bytes = Vec::with_capacity(samples.len() * std::mem::size_of::<u16>());
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_ne_bytes());
+        }
+
+        let image = rgb16_image_from_bytes(2, 1, 4, 16, &bytes).unwrap();
+        assert_eq!(image.get_pixel(0, 0).0, [0, 32768, u16::MAX]);
+        assert_eq!(image.get_pixel(1, 0).0, [u16::MAX, 1, 16383]);
+    }
+
+    #[test]
+    fn linked_libraw_supports_current_gfx_raf_generation() {
+        let version = rawlib::RawProcessor::version();
+        let mut numbers = version
+            .split(['.', '-'])
+            .filter_map(|part| part.parse::<u32>().ok());
+        let major = numbers.next().unwrap_or_default();
+        let minor = numbers.next().unwrap_or_default();
+        assert!(
+            (major, minor) >= (0, 22),
+            "LibRaw {version} is too old for current Fujifilm GFX RAF files"
+        );
     }
 
     #[test]

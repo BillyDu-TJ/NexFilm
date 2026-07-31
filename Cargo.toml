@@ -18,14 +18,10 @@ tokio = { version = "1.37", features = ["sync"] }
 base64 = "0.22"
 rfd = "0.14"
 imageproc = "0.23"
-libraw-rs = "0.0.4"
-libraw-rs-sys = "0.0.4"
+rawlib = "0.7.1"
 dashmap = "6.2.1"
 tauri-plugin-dialog = "2.7.1"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
-
-[patch.crates-io]
-libraw-rs-sys = { path = "vendor/libraw-rs-sys/libraw-rs-sys-0.0.4+libraw-0.20.1" }
