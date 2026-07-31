@@ -36,6 +36,8 @@ jobs:
           cargo test --locked --lib
           node --check ui/main.js
           node --check ui/geometry.js
+          node --check ui/contact-sheet.js
+          node scripts/verify-contact-sheet.cjs
           node scripts/verify-geometry-contract.cjs
           node scripts/verify-ui-startup-order.cjs
           node scripts/verify-webgl-shaders.cjs

@@ -124,7 +124,7 @@ NexFilm Engine 用于把相机翻拍或扫描仪输出的胶片负片转换为�
 作者开发本软件纯属为爱发电，自费开发。如果你喜欢，欢迎给作者买卷胶片，或者帮我回回血。
 
 <p align="center">
-  <img src="docs/assets/sponsor-qr.png" width="240" alt="赞赏 NexFilm / Sponsor NexFilm">
+  <img src="ui/assets/sponsor-qr.jpg" width="240" alt="赞赏 NexFilm / Sponsor NexFilm">
 </p>
 
 ### 数据、隐私与备份
@@ -324,7 +324,7 @@ Export formats are uncompressed 16-bit TIFF, 8-bit TIFF, JPEG, and PNG. Output i
 If NexFilm helps your film workflow, you can support its continued development through the payment QR code below. Sponsorship is optional and does not affect features, licensing, or issue priority.
 
 <p align="center">
-  <img src="docs/assets/sponsor-qr.png" width="240" alt="赞赏 NexFilm / Sponsor NexFilm">
+  <img src="ui/assets/sponsor-qr.jpg" width="240" alt="赞赏 NexFilm / Sponsor NexFilm">
 </p>
 
 ### Data, privacy, and backups

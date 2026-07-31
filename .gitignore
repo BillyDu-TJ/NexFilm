@@ -19,6 +19,7 @@ test_picture/
 *.tif
 *.tiff
 *.png
+!ui/assets/sponsor-qr.jpg
 *.nef
 *.db
 *.db-journal

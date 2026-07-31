@@ -1,5 +1,6 @@
 const invoke = window.__TAURI__.core.invoke;
 const { listen } = window.__TAURI__.event;
+const { getContactSheetLayout, createContactSheetFilename } = window.NexFilmContactSheet;
 
 // DOM: Global
 const btnImport = document.getElementById('btn-import');
@@ -11,9 +12,15 @@ const toastContainer = document.getElementById('toast-container');
 const navHistory = document.getElementById('nav-history');
 const navLibrary = document.getElementById('nav-library');
 const navDevelop = document.getElementById('nav-develop');
+const navSponsor = document.getElementById('nav-sponsor');
 const viewHistory = document.getElementById('view-history');
 const viewLibrary = document.getElementById('view-library');
 const viewDevelop = document.getElementById('view-develop');
+
+// DOM: Sponsor Modal
+const sponsorModal = document.getElementById('sponsor-modal');
+const sponsorModalContent = document.getElementById('sponsor-modal-content');
+const btnCloseSponsor = document.getElementById('btn-close-sponsor');
 
 // DOM: Library View
 const libraryGrid = document.getElementById('library-grid');
@@ -373,6 +380,37 @@ navLibrary.addEventListener('click', () => {
     renderLibraryAndFilmstrip();
 });
 navDevelop.addEventListener('click', () => switchView('develop'));
+
+let sponsorLastFocusedElement = null;
+
+function openSponsorModal() {
+    sponsorLastFocusedElement = document.activeElement;
+    sponsorModal.classList.add('is-open');
+    sponsorModal.setAttribute('aria-hidden', 'false');
+    requestAnimationFrame(() => btnCloseSponsor.focus());
+}
+
+function closeSponsorModal() {
+    if (!sponsorModal.classList.contains('is-open')) return;
+    sponsorModal.classList.remove('is-open');
+    sponsorModal.setAttribute('aria-hidden', 'true');
+    if (sponsorLastFocusedElement instanceof HTMLElement) sponsorLastFocusedElement.focus();
+}
+
+navSponsor.addEventListener('click', openSponsorModal);
+btnCloseSponsor.addEventListener('click', closeSponsorModal);
+sponsorModal.addEventListener('click', (event) => {
+    if (event.target === sponsorModal) closeSponsorModal();
+});
+sponsorModalContent.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        closeSponsorModal();
+    } else if (event.key === 'Tab') {
+        event.preventDefault();
+        btnCloseSponsor.focus();
+    }
+});
 
 // History Stack for Undo/Redo
 const undoStacks = {};
@@ -4187,19 +4225,12 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
 
         if (rollItems.length === 0) throw new Error("No images in roll");
 
-        // 1. Determine frames_per_row and format flag
-        let formatStr = currentRoll.format ? currentRoll.format.toLowerCase() : "135";
-        let is120 = formatStr.includes("120");
-        let frames_per_row = 6;
-        let aspect = 2/3; // fallback 3:2
-
-        if (is120) {
-            if (formatStr.includes("6x4.5") || formatStr.includes("645")) { frames_per_row = 4; aspect = 3/4; }
-            else if (formatStr.includes("6x6")) { frames_per_row = 4; aspect = 1; }
-            else if (formatStr.includes("6x7")) { frames_per_row = 3; aspect = 6/7; }
-            else if (formatStr.includes("6x9")) { frames_per_row = 2; aspect = 2/3; }
-            else { frames_per_row = 3; aspect = 1; }
-        }
+        // 1. Determine the format-specific row density and image aspect ratio.
+        const canvasW = 3000;
+        const outerMargin = 100;
+        const layout = getContactSheetLayout(currentRoll.format, canvasW, outerMargin);
+        const is120 = layout.is120;
+        const frames_per_row = layout.framesPerRow;
 
         // 2. Pad with empty frames
         const totalRows = Math.ceil(rollItems.length / frames_per_row);
@@ -4213,12 +4244,9 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
         const rows = totalRows;
         
         // 3. Math for grid layout
-        const canvasW = 3000;
-        const outerMargin = 100;
-        const hGap = is120 ? (canvasW * 0.02) : 0;
-        const totalHGap = hGap * (frames_per_row - 1);
-        const colWidth = (canvasW - outerMargin * 2 - totalHGap) / frames_per_row;
-        const colHeight = colWidth * aspect;
+        const hGap = layout.horizontalGap;
+        const colWidth = layout.imageWidth;
+        const colHeight = layout.imageHeight;
         
         const borderH = colHeight * 0.18; // 18% for top and bottom borders
         const rowHeightTotal = colHeight + borderH * 2;
@@ -4359,7 +4387,8 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
 
         // 8. Convert to high quality JPEG
         const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
-        const savedPath = await invoke('save_contact_sheet', { dataUrl });
+        const filename = createContactSheetFilename(currentRoll);
+        const savedPath = await invoke('save_contact_sheet', { dataUrl, filename });
         showToast("Contact sheet saved: " + savedPath, "success");
 
     } catch (e) {
@@ -4950,10 +4979,12 @@ document.getElementById('menu-lang-toggle').addEventListener('click', () => {
         navLibrary.textContent = '图库';
         navDevelop.textContent = '冲洗';
         navHistory.textContent = '历史卷';
+        navSponsor.textContent = '赞赏';
     } else {
         navLibrary.textContent = 'Library';
         navDevelop.textContent = 'Develop';
         navHistory.textContent = 'Rolls';
+        navSponsor.textContent = 'Sponsor';
     }
 });
 let isDarkTheme = localStorage.getItem('nexfilm-theme') !== 'light';

@@ -553,6 +553,86 @@ body > header > div:last-child button:hover { background: var(--control) !import
 #import-choice-content button { background: transparent !important; border-color: var(--line) !important; box-shadow: none !important; }
 #import-choice-content button:hover { background: var(--panel-raised) !important; }
 
+.sponsor-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    visibility: hidden;
+    opacity: 0;
+    pointer-events: none;
+    background: rgba(0, 0, 0, .58) !important;
+    -webkit-backdrop-filter: blur(10px) !important;
+    backdrop-filter: blur(10px) !important;
+    transition: opacity .18s ease, visibility .18s ease;
+}
+.sponsor-modal.is-open { visibility: visible; opacity: 1; pointer-events: auto; }
+#sponsor-modal-content.sponsor-card {
+    width: min(720px, calc(100vw - 48px)) !important;
+    max-height: calc(100vh - 48px);
+    overflow: auto;
+    border: 1px solid var(--line-strong) !important;
+    border-radius: 7px !important;
+    background: var(--panel) !important;
+    color: var(--text) !important;
+    box-shadow: 0 22px 60px rgba(0, 0, 0, .38) !important;
+    transform: translateY(8px) scale(.98);
+    transition: transform .18s ease;
+}
+.sponsor-modal.is-open .sponsor-card { transform: translateY(0) scale(1); }
+.sponsor-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    padding: 18px 20px;
+    border-bottom: 1px solid var(--line);
+}
+.sponsor-card-kicker {
+    margin-bottom: 4px;
+    color: var(--accent);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+}
+#sponsor-modal-title { margin: 0; color: var(--text); font-size: 17px; font-weight: 620; }
+.sponsor-close-button {
+    display: grid;
+    flex: 0 0 32px;
+    width: 32px;
+    min-height: 32px;
+    place-items: center;
+    border: 1px solid transparent !important;
+    border-radius: 4px !important;
+    background: transparent;
+    color: var(--muted);
+    cursor: pointer;
+}
+.sponsor-close-button:hover { border-color: var(--line) !important; background: var(--control); color: var(--text); }
+.sponsor-close-button svg { width: 18px; height: 18px; }
+.sponsor-card-body {
+    display: grid;
+    grid-template-columns: minmax(0, 250px) minmax(0, 1fr);
+    gap: 24px;
+    align-items: center;
+    padding: 22px !important;
+}
+.sponsor-qr-frame {
+    overflow: hidden;
+    border: 1px solid var(--line-strong);
+    border-radius: 5px;
+    background: #fff;
+}
+.sponsor-qr-frame img { display: block; width: 100%; height: auto; }
+.sponsor-copy { min-width: 0; }
+.sponsor-copy section { display: grid; gap: 9px; }
+.sponsor-copy h3 { margin: 0; color: var(--text); font-size: 12px; font-weight: 650; }
+.sponsor-copy p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.72; }
+.sponsor-copy-divider { height: 1px; margin: 18px 0; background: var(--line); }
+
 .batch-target-options { display: grid; gap: 8px; }
 .batch-target-option {
     display: grid;
@@ -595,6 +675,7 @@ body[data-theme="light"] .text-zinc-500,
 body[data-theme="light"] .text-zinc-600 { color: var(--muted) !important; }
 body[data-theme="light"] .bg-zinc-800, body[data-theme="light"] .bg-zinc-900 { background: var(--control) !important; }
 body[data-theme="light"] [id$="-modal"] { background: rgba(30, 30, 28, .24) !important; }
+body[data-theme="light"] .sponsor-modal { background: rgba(30, 30, 28, .24) !important; }
 
 @media (max-width: 1050px) {
     #view-develop > div:last-child { width: 320px !important; }
@@ -613,4 +694,15 @@ body[data-theme="light"] [id$="-modal"] { background: rgba(30, 30, 28, .24) !imp
     #view-library > div:nth-child(2), #view-history > div:last-child > div:nth-child(2) { padding: 16px !important; }
     .roll-row { gap: 16px; }
     .roll-preview { width: 44%; min-width: 180px; }
+}
+
+@media (max-width: 640px) {
+    .sponsor-modal { padding: 16px; }
+    #sponsor-modal-content.sponsor-card { width: calc(100vw - 32px) !important; max-height: calc(100vh - 32px); }
+    .sponsor-card-body { grid-template-columns: minmax(0, 1fr); padding: 18px !important; }
+    .sponsor-qr-frame { width: min(240px, 100%); margin: 0 auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sponsor-modal, .sponsor-card { transition: none !important; }
 }
