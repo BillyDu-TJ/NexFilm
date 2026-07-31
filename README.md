@@ -62,7 +62,7 @@ NexFilm Engine 用于把相机翻拍或扫描仪输出的胶片负片转换为�
 - **基于 Cineon 思路的密度域校色**：在线性透射率上进行 `-log10(T)` 密度转换、片基扣除和 Status M 串扰校正，并提供 D-Min、D-Max、曝光、Gamma、高光、阴影及分通道调节。
 - **自动识别胶片边缘**：从导入预览中自动检测胶片范围，也可手动拖动四角进行透视校准；已确认的范围可批量应用到同卷其他画面。
 - **按卷生命周期管理**：按画幅、相机、胶片型号和日期导入，支持胶卷归档、筛选、继续编辑、追加画面、缺失文件重定位和整卷删除。
-- **自动反相与片基取样**：支持自动反相、手动取样片基、彩色与黑白模式、白平衡吸管以及齿孔区域容差/羽化控制。
+- **自动画面识别与自动校色**：支持自动识别胶片成像范围，并且自动进行校色。
 - **实时预览与几何工具**：使用 WebGL 进行交互预览，提供裁切、拉直、90 度旋转、水平/垂直翻转、直方图和波形图。
 - **LUT 工作流**：内置多款打印胶片/相纸风格 LUT，同时支持载入自定义 `.cube` LUT 并调节强度。
 - **批量导出**：支持 16 位 TIFF、8 位 TIFF、JPEG 和 PNG，可选择原始尺寸或 2048 px 长边、输出锐化、JPEG 质量和命名模板。
@@ -213,6 +213,8 @@ DMG 会生成在对应目标目录的 `release/bundle/dmg/` 下。跨架构构�
 
 如果 NexFilm 对你的胶片工作流有帮助，可以通过收款码支持项目的持续开发。赞赏完全自愿，不影响软件功能、开源许可或问题处理优先级。
 
+作者开发本软件纯属为爱发电，自费开发。如果你喜欢，欢迎给作者买卷胶片，或者帮我回回血。
+
 > 收款码即将添加。维护者可把图片保存为 `docs/assets/sponsor-qr.png`，然后取消 README 源码中下一段的注释。
 
 <!--
@@ -264,7 +266,7 @@ NexFilm Engine converts camera-scanned or scanner-produced film negatives into p
 - **Cineon-inspired density-domain grading** using `-log10(T)` density conversion, film-base subtraction, Status M crosstalk correction, D-Min/D-Max, exposure, gamma, highlights, shadows, and per-channel controls.
 - **Automatic film-edge detection**, manual four-corner perspective calibration, and batch application of a confirmed film area to other frames.
 - **Roll lifecycle management** with format, camera, film stock, and date metadata; archive filters; continue editing; append frames; relocate missing files; and roll deletion.
-- **Automatic inversion and film-base sampling**, with color/B&W modes, a white-balance eyedropper, and sprocket tolerance/feather controls.
+- **Automatic Edge Recognition and Automatic Reverse**, enable to regonize film area automaticlly, and demask with a click.
 - **Real-time WebGL preview and geometry tools**, including crop, straighten, quarter-turn rotation, horizontal/vertical flip, histogram, and waveform views.
 - **LUT workflow** with bundled print-film/paper looks, custom `.cube` LUT loading, and opacity control.
 - **Batch export** to 16-bit TIFF, 8-bit TIFF, JPEG, or PNG with original/2048 px sizing, output sharpening, JPEG quality, and filename tokens.
