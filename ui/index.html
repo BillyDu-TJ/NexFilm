@@ -230,6 +230,16 @@
                             <svg id="calibration-svg" class="absolute top-0 left-0 w-full h-full overflow-visible pointer-events-none z-20">
                                 <polygon id="calibration-polygon" points="" fill="rgba(249,115,22,0.1)" stroke="#f97316" stroke-width="1.5" stroke-dasharray="4 4" class="pointer-events-auto"></polygon>
                                 <path id="calibration-grid" d="" stroke="rgba(249,115,22,0.4)" stroke-width="1" class="pointer-events-none"></path>
+                                <g id="calibration-edge-handles" class="pointer-events-auto">
+                                    <line class="calib-edge-handle calib-edge-horizontal" data-edge="0" x1="0" y1="0" x2="0" y2="0" stroke="transparent" stroke-width="20" vector-effect="non-scaling-stroke"/>
+                                    <circle class="calib-edge-dot pointer-events-none" data-edge-dot="0" cx="0" cy="0" r="4"/>
+                                    <line class="calib-edge-handle calib-edge-vertical" data-edge="1" x1="0" y1="0" x2="0" y2="0" stroke="transparent" stroke-width="20" vector-effect="non-scaling-stroke"/>
+                                    <circle class="calib-edge-dot pointer-events-none" data-edge-dot="1" cx="0" cy="0" r="4"/>
+                                    <line class="calib-edge-handle calib-edge-horizontal" data-edge="2" x1="0" y1="0" x2="0" y2="0" stroke="transparent" stroke-width="20" vector-effect="non-scaling-stroke"/>
+                                    <circle class="calib-edge-dot pointer-events-none" data-edge-dot="2" cx="0" cy="0" r="4"/>
+                                    <line class="calib-edge-handle calib-edge-vertical" data-edge="3" x1="0" y1="0" x2="0" y2="0" stroke="transparent" stroke-width="20" vector-effect="non-scaling-stroke"/>
+                                    <circle class="calib-edge-dot pointer-events-none" data-edge-dot="3" cx="0" cy="0" r="4"/>
+                                </g>
                                 <g id="calibration-handles" class="pointer-events-auto">
                                     <circle class="calib-handle cursor-crosshair" data-idx="0" cx="0" cy="0" r="16" fill="transparent" stroke="transparent"/>
                                     <circle class="pointer-events-none calib-dot" id="calib-dot-0" cx="0" cy="0" r="4" fill="#f97316" stroke="white" stroke-width="1"/>
@@ -289,8 +299,13 @@
                 
                 <div id="right-panel-blocker" class="absolute inset-0 z-50 bg-[#1C1C1E]/80 backdrop-blur-[4px] hidden flex flex-col items-center justify-center p-6 text-center">
                     <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Film Area</h3>
-                    <p class="text-xs leading-relaxed text-zinc-300 mb-6">请先拖动四角，框定胶片实际成像区域。完成后再运行自动反相与校色。</p>
-                    <button id="btn-confirm-calibration" class="w-full py-3 bg-orange-600 hover:bg-orange-500 text-white font-bold text-xs uppercase tracking-widest rounded transition-colors shadow-lg pointer-events-auto">Save Area</button>
+                    <p class="film-area-description">拖动四角或四边，框定胶片实际成像区域。完成后再运行自动反相与校色。</p>
+                    <div class="film-area-actions">
+                        <button id="btn-auto-area" class="film-area-action film-area-action-secondary" title="Detect film area from cached thumbnail" disabled>Auto Area</button>
+                        <button id="btn-confirm-calibration" class="film-area-action film-area-action-primary">Save Area</button>
+                        <button id="btn-batch-apply" class="film-area-action film-area-action-secondary" title="Apply film area to other frames" disabled>Batch Apply</button>
+                        <p class="batch-apply-hint">仅在每张照片的胶片位置保持一致时使用。</p>
+                    </div>
                 </div>
                 
                 <!-- Histogram / Waveform Area -->
@@ -675,6 +690,36 @@
                 <div class="flex justify-end gap-3 pt-2">
                     <button id="btn-cancel-roll-meta" class="px-5 py-2 text-[12px] font-bold uppercase tracking-wider text-zinc-400 hover:text-zinc-200 transition-colors">Cancel</button>
                     <button id="btn-confirm-roll-meta" class="px-6 py-2 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm">Select Images</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Batch Apply Modal -->
+    <div id="batch-apply-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
+        <div class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[430px] flex flex-col transform scale-95 transition-transform duration-200" id="batch-apply-modal-content">
+            <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
+                <h2 class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Batch Apply</h2>
+                <button id="btn-close-batch-apply" class="text-zinc-500 hover:text-zinc-200 transition-colors" title="Close" aria-label="Close">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div class="p-6 flex flex-col gap-5">
+                <fieldset class="batch-target-options">
+                    <label class="batch-target-option">
+                        <input type="radio" name="batch-target" value="roll-unprocessed" checked>
+                        <span>All unprocessed frames in this roll</span>
+                        <span id="batch-roll-count" class="batch-target-count">0</span>
+                    </label>
+                    <label class="batch-target-option">
+                        <input type="radio" name="batch-target" value="selected">
+                        <span>Selected frames</span>
+                        <span id="batch-selected-count" class="batch-target-count">0</span>
+                    </label>
+                </fieldset>
+                <div class="flex justify-end gap-3 pt-2">
+                    <button id="btn-cancel-batch-apply" class="px-5 py-2 text-[12px] font-bold uppercase tracking-wider text-zinc-400 hover:text-zinc-200 transition-colors">Cancel</button>
+                    <button id="btn-confirm-batch-apply" class="px-6 py-2 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm">Apply Geometry</button>
                 </div>
             </div>
         </div>

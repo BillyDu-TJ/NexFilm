@@ -50,6 +50,9 @@ const btnModeBw = document.getElementById('btn-mode-bw');
 // DOM: Crop & Transform
 const btnCropMode = document.getElementById('btn-crop-mode');
 const btnRotateMode = document.getElementById('btn-rotate-mode');
+const btnRecalibrate = document.getElementById('btn-recalibrate');
+const btnAutoArea = document.getElementById('btn-auto-area');
+const btnBatchApply = document.getElementById('btn-batch-apply');
 const btnResetCrop = document.getElementById('btn-reset-crop');
 const btnAutoColor = document.getElementById('btn-auto-color');
 const btnSprocketPicker = document.getElementById('btn-sprocket-picker');
@@ -66,6 +69,12 @@ const cropGrid = document.getElementById('crop-grid');
 const cropEdges = document.getElementById('crop-edges');
 const cropHandles = document.getElementById('crop-handles');
 const rotateHandleOuter = document.getElementById('rotate-handle-outer');
+
+const batchApplyModal = document.getElementById('batch-apply-modal');
+const batchApplyModalContent = document.getElementById('batch-apply-modal-content');
+const btnCloseBatchApply = document.getElementById('btn-close-batch-apply');
+const btnCancelBatchApply = document.getElementById('btn-cancel-batch-apply');
+const btnConfirmBatchApply = document.getElementById('btn-confirm-batch-apply');
 
 let currentDMin = [0.1, 0.1, 0.1];
 let currentDMax = [2.0, 2.0, 2.0];
@@ -278,8 +287,9 @@ let selectedRollIds = new Set();
 
 // Calibration State
 let isCalibrationMode = false;
-let calibrationDragIdx = -1;
+let calibrationDragState = null;
 let calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+const calibrationEdgeIndices = NexFilmGeometry.calibrationEdgeIndices;
 
 function updateLibrarySelectionUI() {
     librarySelectionCount.textContent = `${selectedLibraryIds.size} selected`;
@@ -1745,7 +1755,9 @@ function enableUI() {
     sliders.lutOpacity.el.disabled = !hasLUT;
     btnCropMode.disabled = false;
     btnRotateMode.disabled = false;
-    document.getElementById('btn-recalibrate').disabled = false;
+    btnRecalibrate.disabled = false;
+    btnAutoArea.disabled = false;
+    btnBatchApply.disabled = !current_geom?.calibration_points;
     btnResetCrop.disabled = false;
     btnAutoColor.disabled = !current_geom?.calibration_points || isCalibrationMode;
     btnSprocketPicker.disabled = false;
@@ -1772,7 +1784,9 @@ function disableUI() {
     sliders.lutOpacity.el.disabled = true;
     btnCropMode.disabled = true;
     btnRotateMode.disabled = true;
-    document.getElementById('btn-recalibrate').disabled = true;
+    btnRecalibrate.disabled = true;
+    btnAutoArea.disabled = true;
+    btnBatchApply.disabled = true;
     btnResetCrop.disabled = true;
     btnAutoColor.disabled = true;
     btnSprocketPicker.disabled = true;
@@ -2533,6 +2547,7 @@ async function selectImage(id) {
         readyProxyIds.delete(id);
         enableUI();
         current_geom = JSON.parse(JSON.stringify(state.geom));
+        btnBatchApply.disabled = !current_geom.calibration_points;
         updateUIFromParams(state.params, current_geom);
         updateThumbnailPlaceholderLayout(document.getElementById('thumbnail-placeholder'));
         await restoreLutForImage(state.params);
@@ -2548,6 +2563,7 @@ async function selectImage(id) {
         filmItems.forEach(item => {
             if (item.dataset.id === activeId) {
                 item.classList.add('active');
+                item.classList.remove('settings-updated');
                 item.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
             } else {
                 item.classList.remove('active');
@@ -2588,13 +2604,14 @@ async function selectImage(id) {
         } else {
             calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         }
-        const persistedPositive = !!state.base_analyzed;
-        isCalibrationMode = !persistedPositive;
-        document.getElementById('calibration-overlay').classList.toggle('hidden', persistedPositive);
-        // Fresh frames require explicit area confirmation. Persisted positive
-        // frames already have a saved area and can continue editing directly.
-        document.getElementById('right-panel-blocker').classList.toggle('hidden', persistedPositive);
-        btnAutoColor.disabled = !persistedPositive;
+        const hasSavedFilmArea = !!current_geom.calibration_points;
+        isCalibrationMode = !hasSavedFilmArea;
+        btnBatchApply.disabled = !current_geom.calibration_points;
+        document.getElementById('calibration-overlay').classList.toggle('hidden', hasSavedFilmArea);
+        // A batch-applied area is persisted edit state even if the target has
+        // never rendered. It must reach Auto Invert without another save.
+        document.getElementById('right-panel-blocker').classList.toggle('hidden', hasSavedFilmArea);
+        btnAutoColor.disabled = !hasSavedFilmArea;
         if (isCalibrationMode) requestAnimationFrame(updateCalibrationPolygon);
 
 
@@ -3567,6 +3584,7 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
     current_geom.flip_v = false;
     current_geom.rotate_90_count = 0;
     current_geom.calibration_points = null;
+    btnBatchApply.disabled = true;
     currentSprocketUV = new Float32Array([-1.0, -1.0]);
     if (isCropMode) updateCropOverlay();
     await persistGeometryQueued(activeId, current_geom);
@@ -3577,16 +3595,63 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
 
 
 
-document.getElementById('btn-recalibrate').addEventListener('click', () => {
+function enterCalibrationMode() {
     isCalibrationMode = true;
     document.getElementById('calibration-overlay').classList.remove('hidden');
     document.getElementById('right-panel-blocker').classList.remove('hidden');
+    btnBatchApply.disabled = !current_geom.calibration_points;
     if (current_geom.calibration_points) {
         calibrationPoints = JSON.parse(JSON.stringify(current_geom.calibration_points));
     } else {
         calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
     }
     requestAnimationFrame(updateCalibrationPolygon);
+}
+
+btnRecalibrate.addEventListener('click', enterCalibrationMode);
+
+btnAutoArea.addEventListener('click', async () => {
+    if (!activeId || btnAutoArea.getAttribute('aria-busy') === 'true') return;
+    const source = findKnownItem(activeId);
+    if (!source?.file_path) {
+        showToast("Cached image identity is unavailable.", "error");
+        return;
+    }
+
+    const detectionId = activeId;
+    if (!isCalibrationMode) enterCalibrationMode();
+    const previousLabel = btnAutoArea.textContent;
+    btnAutoArea.disabled = true;
+    btnAutoArea.setAttribute('aria-busy', 'true');
+    btnAutoArea.textContent = 'Detecting...';
+    try {
+        const result = await invoke('auto_detect_film_border', {
+            roll_id: source.roll_id || 'LOOSE_DEFAULT',
+            file_path: source.file_path
+        });
+        if (detectionId !== activeId) return;
+        if (!Array.isArray(result?.points) || result.points.length !== 4) {
+            throw new Error('The detector returned an invalid quadrilateral.');
+        }
+        pushUndoState();
+        calibrationPoints = result.points.map(point => [Number(point[0]), Number(point[1])]);
+        current_geom.calibration_points = JSON.parse(JSON.stringify(calibrationPoints));
+        btnBatchApply.disabled = false;
+        updateCalibrationPolygon();
+        requestRender();
+        if (result.confidence === 'low') {
+            showToast("自动探测置信度较低，请手动微调。", "info");
+        } else {
+            showToast("Film area detected. Review the corners before saving.", "success");
+        }
+    } catch (error) {
+        console.error('Auto Area failed', error);
+        showToast("Auto Area failed: " + error, "error");
+    } finally {
+        btnAutoArea.removeAttribute('aria-busy');
+        btnAutoArea.textContent = previousLabel;
+        btnAutoArea.disabled = !activeId;
+    }
 });
 
 btnAutoColor.addEventListener('click', async () => {
@@ -3824,6 +3889,107 @@ function finishCropDrag(e, persist) {
 
 window.addEventListener('pointerup', e => finishCropDrag(e, true));
 window.addEventListener('pointercancel', e => finishCropDrag(e, false));
+
+function batchTargetItems(mode) {
+    const source = findKnownItem(activeId);
+    if (!source) return [];
+    const candidates = uniqueItemsByPath(Array.from(itemIndex.values()));
+    if (mode === 'selected') {
+        return Array.from(selectedLibraryIds)
+            .map(findKnownItem)
+            .filter(item => item && item.id !== activeId && item.file_path);
+    }
+    return candidates.filter(item =>
+        item.id !== activeId &&
+        item.roll_id === source.roll_id &&
+        item.file_path &&
+        !item.rendered_thumbnail_base64
+    );
+}
+
+function refreshBatchTargetCounts() {
+    const rollTargets = batchTargetItems('roll-unprocessed');
+    const selectedTargets = batchTargetItems('selected');
+    document.getElementById('batch-roll-count').textContent = String(rollTargets.length);
+    document.getElementById('batch-selected-count').textContent = String(selectedTargets.length);
+    const selectedRadio = document.querySelector('input[name="batch-target"][value="selected"]');
+    selectedRadio.disabled = selectedTargets.length === 0;
+    if (selectedRadio.checked && selectedRadio.disabled) {
+        document.querySelector('input[name="batch-target"][value="roll-unprocessed"]').checked = true;
+    }
+}
+
+function closeBatchApplyModal() {
+    batchApplyModalContent.classList.add('scale-95');
+    batchApplyModal.classList.add('opacity-0', 'pointer-events-none');
+}
+
+btnBatchApply.addEventListener('click', () => {
+    if (!activeId || !current_geom?.calibration_points) {
+        showToast("Set a film area before applying it to other frames.", "info");
+        return;
+    }
+    refreshBatchTargetCounts();
+    batchApplyModal.classList.remove('opacity-0', 'pointer-events-none');
+    setTimeout(() => batchApplyModalContent.classList.remove('scale-95'), 10);
+});
+
+btnCloseBatchApply.addEventListener('click', closeBatchApplyModal);
+btnCancelBatchApply.addEventListener('click', closeBatchApplyModal);
+
+btnConfirmBatchApply.addEventListener('click', async () => {
+    const source = findKnownItem(activeId);
+    const mode = document.querySelector('input[name="batch-target"]:checked')?.value || 'roll-unprocessed';
+    const targets = batchTargetItems(mode);
+    if (!source?.file_path || targets.length === 0) {
+        showToast("No eligible target frames.", "info");
+        return;
+    }
+
+    const previousLabel = btnConfirmBatchApply.textContent;
+    btnConfirmBatchApply.disabled = true;
+    btnConfirmBatchApply.textContent = 'Applying...';
+    try {
+        // Batch Apply is an explicit commit point: persist the current draft
+        // before the backend transaction reads its geometry as the source.
+        await persistGeometryQueued(activeId, current_geom);
+        const result = await invoke('batch_copy_settings', {
+            source: {
+                roll_id: source.roll_id || 'LOOSE_DEFAULT',
+                file_path: source.file_path
+            },
+            targets: targets.map(item => ({
+                roll_id: item.roll_id || 'LOOSE_DEFAULT',
+                file_path: item.file_path
+            })),
+            modules: ['geometry']
+        });
+        closeBatchApplyModal();
+        showToast(`Film area applied to ${result.updated} frame(s).`, "success");
+    } catch (error) {
+        console.error('Batch Apply failed', error);
+        showToast("Batch Apply failed: " + error, "error");
+    } finally {
+        btnConfirmBatchApply.disabled = false;
+        btnConfirmBatchApply.textContent = previousLabel;
+    }
+});
+
+listen('settings_updated', (event) => {
+    const targets = event.payload?.targets || [];
+    for (const target of targets) {
+        const identity = `${target.roll_id || 'LOOSE_DEFAULT'}::${normalizePath(target.file_path)}`;
+        const item = Array.from(itemIndex.values()).find(candidate => itemIdentity(candidate) === identity);
+        if (!item) continue;
+        imageStates.delete(item.id);
+        document.querySelectorAll(`.film-item[data-id="${CSS.escape(item.id)}"]`).forEach(element => {
+            const elementRect = element.getBoundingClientRect();
+            const stripRect = filmstripContainer.getBoundingClientRect();
+            const visible = elementRect.right > stripRect.left && elementRect.left < stripRect.right;
+            if (visible) element.classList.add('settings-updated');
+        });
+    }
+});
 
 const btnCopySettings = document.getElementById('btn-copy-settings');
 const btnPasteSettings = document.getElementById('btn-paste-settings');
@@ -4132,6 +4298,8 @@ function updateCalibrationPolygon() {
     const grid = document.getElementById('calibration-grid');
     const handles = document.querySelectorAll('.calib-handle');
     const dots = document.querySelectorAll('.calib-dot');
+    const edgeHandles = document.querySelectorAll('.calib-edge-handle');
+    const edgeDots = document.querySelectorAll('.calib-edge-dot');
     const svgRect = document.getElementById('calibration-svg').getBoundingClientRect();
     if (!svgRect.width || !svgRect.height) {
         requestAnimationFrame(updateCalibrationPolygon);
@@ -4158,6 +4326,23 @@ function updateCalibrationPolygon() {
 
     if (pts.length === 4) {
         const lerp = (p1, p2, t) => ({x: p1.x + (p2.x - p1.x) * t, y: p1.y + (p2.y - p1.y) * t});
+
+        calibrationEdgeIndices.forEach(([startIndex, endIndex], edgeIndex) => {
+            const start = pts[startIndex];
+            const end = pts[endIndex];
+            const edgeHandle = edgeHandles[edgeIndex];
+            const edgeDot = edgeDots[edgeIndex];
+            if (edgeHandle) {
+                edgeHandle.setAttribute('x1', start.x);
+                edgeHandle.setAttribute('y1', start.y);
+                edgeHandle.setAttribute('x2', end.x);
+                edgeHandle.setAttribute('y2', end.y);
+            }
+            if (edgeDot) {
+                edgeDot.setAttribute('cx', (start.x + end.x) / 2);
+                edgeDot.setAttribute('cy', (start.y + end.y) / 2);
+            }
+        });
         
         const top1 = lerp(pts[0], pts[1], 1/3);
         const top2 = lerp(pts[0], pts[1], 2/3);
@@ -4178,41 +4363,90 @@ function updateCalibrationPolygon() {
     }
 }
 
+function cloneCalibrationPoints(points = calibrationPoints) {
+    return points.map(point => [Number(point[0]), Number(point[1])]);
+}
+
+function setCalibrationDraft(points, render = true) {
+    if (!NexFilmGeometry.isValidCalibrationQuad(points)) return false;
+    calibrationPoints = cloneCalibrationPoints(points);
+    if (current_geom) {
+        current_geom.calibration_points = cloneCalibrationPoints(points);
+    }
+    btnBatchApply.disabled = false;
+
+    if (!calibrationRAF) {
+        calibrationRAF = requestAnimationFrame(() => {
+            updateCalibrationPolygon();
+            if (render && activeProxyIsFull) requestRender();
+            calibrationRAF = null;
+        });
+    }
+    return true;
+}
+
 document.getElementById('calibration-svg').addEventListener('pointerdown', (e) => {
     if (!isCalibrationMode) return;
-    if (e.target.classList.contains('calib-handle')) {
-        calibrationDragIdx = parseInt(e.target.dataset.idx);
-        e.target.setPointerCapture(e.pointerId);
+    const target = e.target;
+    if (!target.classList.contains('calib-handle') && !target.classList.contains('calib-edge-handle')) {
+        return;
     }
+
+    e.preventDefault();
+    if (target.setPointerCapture) target.setPointerCapture(e.pointerId);
+    calibrationDragState = {
+        type: target.classList.contains('calib-handle') ? 'corner' : 'edge',
+        index: target.classList.contains('calib-handle')
+            ? Number(target.dataset.idx)
+            : Number(target.dataset.edge),
+        pointerId: e.pointerId,
+        target,
+        startClient: [e.clientX, e.clientY],
+        startPoints: cloneCalibrationPoints()
+    };
 });
 
 let calibrationRAF = null;
 window.addEventListener('pointermove', (e) => {
-    if (isCalibrationMode && calibrationDragIdx !== -1) {
-        const svgRect = document.getElementById('calibration-svg').getBoundingClientRect();
-        let nx = (e.clientX - svgRect.left) / svgRect.width;
-        let ny = (e.clientY - svgRect.top) / svgRect.height;
-        nx = Math.max(0, Math.min(1, nx));
-        ny = Math.max(0, Math.min(1, ny));
-        calibrationPoints[calibrationDragIdx] = [nx, ny];
-        
-        if (!calibrationRAF) {
-            calibrationRAF = requestAnimationFrame(() => {
-                updateCalibrationPolygon();
-                calibrationRAF = null;
-            });
-        }
+    const drag = calibrationDragState;
+    if (!isCalibrationMode || !drag || drag.pointerId !== e.pointerId) return;
+
+    const svgRect = document.getElementById('calibration-svg').getBoundingClientRect();
+    if (!svgRect.width || !svgRect.height) return;
+    const candidate = cloneCalibrationPoints(drag.startPoints);
+
+    if (drag.type === 'corner') {
+        candidate[drag.index] = [
+            Math.max(0, Math.min(1, (e.clientX - svgRect.left) / svgRect.width)),
+            Math.max(0, Math.min(1, (e.clientY - svgRect.top) / svgRect.height))
+        ];
+        setCalibrationDraft(candidate);
+        return;
     }
+
+    const pointerDeltaX = e.clientX - drag.startClient[0];
+    const pointerDeltaY = e.clientY - drag.startClient[1];
+    const translated = NexFilmGeometry.translateCalibrationEdge(
+        drag.startPoints,
+        drag.index,
+        [pointerDeltaX, pointerDeltaY],
+        [svgRect.width, svgRect.height]
+    );
+    if (translated) setCalibrationDraft(translated);
 });
 
-window.addEventListener('pointerup', (e) => {
-    if (calibrationDragIdx !== -1) {
-        if (e.target.classList && e.target.classList.contains('calib-handle')) {
-            e.target.releasePointerCapture(e.pointerId);
-        }
-        calibrationDragIdx = -1;
+function finishCalibrationDrag(e, cancelled) {
+    const drag = calibrationDragState;
+    if (!drag || drag.pointerId !== e.pointerId) return;
+    if (cancelled) setCalibrationDraft(drag.startPoints);
+    if (drag.target.hasPointerCapture?.(e.pointerId)) {
+        drag.target.releasePointerCapture(e.pointerId);
     }
-});
+    calibrationDragState = null;
+}
+
+window.addEventListener('pointerup', e => finishCalibrationDrag(e, false));
+window.addEventListener('pointercancel', e => finishCalibrationDrag(e, true));
 
 window.addEventListener('resize', () => {
     if (isCalibrationMode) updateCalibrationPolygon();
@@ -4230,6 +4464,7 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
         document.getElementById('calibration-overlay').classList.add('hidden');
         document.getElementById('right-panel-blocker').classList.add('hidden');
         btnAutoColor.disabled = false;
+        btnBatchApply.disabled = false;
         showToast("Film area saved. Run Auto Invert when ready.", "success");
     } catch (e) {
         console.error("Calibration failed", e);

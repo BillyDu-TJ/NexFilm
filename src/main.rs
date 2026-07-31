@@ -30,6 +30,8 @@ fn main() {
             nexfilm_engine::commands::sync_thumbnail_buffer,
             nexfilm_engine::commands::set_thumbnail_data,
             nexfilm_engine::commands::update_geometry,
+            nexfilm_engine::commands::auto_detect_film_border,
+            nexfilm_engine::commands::batch_copy_settings,
             nexfilm_engine::commands::geometry_auto_align,
             nexfilm_engine::commands::load_3d_lut,
             nexfilm_engine::commands::open_lut_dialog,

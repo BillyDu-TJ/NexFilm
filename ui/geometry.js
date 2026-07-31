@@ -221,6 +221,76 @@
         return reordered;
     }
 
+    const calibrationEdgeIndices = Object.freeze([
+        Object.freeze([0, 1]),
+        Object.freeze([1, 2]),
+        Object.freeze([2, 3]),
+        Object.freeze([3, 0]),
+    ]);
+
+    function isValidCalibrationQuad(points) {
+        if (!Array.isArray(points) || points.length !== 4) return false;
+        if (points.some(point =>
+            !Array.isArray(point)
+            || !Number.isFinite(Number(point[0]))
+            || !Number.isFinite(Number(point[1]))
+            || Number(point[0]) < 0
+            || Number(point[0]) > 1
+            || Number(point[1]) < 0
+            || Number(point[1]) > 1
+        )) return false;
+
+        let signedArea = 0;
+        let orientation = 0;
+        for (let index = 0; index < 4; index++) {
+            const current = points[index];
+            const next = points[(index + 1) % 4];
+            const afterNext = points[(index + 2) % 4];
+            signedArea += current[0] * next[1] - next[0] * current[1];
+            const cross = (next[0] - current[0]) * (afterNext[1] - next[1])
+                - (next[1] - current[1]) * (afterNext[0] - next[0]);
+            if (Math.abs(cross) < 0.0001) return false;
+            const sign = Math.sign(cross);
+            if (orientation && sign !== orientation) return false;
+            orientation = sign;
+        }
+        return Math.abs(signedArea) > 0.004;
+    }
+
+    function translateCalibrationEdge(points, edgeIndex, pointerDelta, viewport) {
+        const indices = calibrationEdgeIndices[edgeIndex];
+        if (!indices || !isValidCalibrationQuad(points)) return null;
+
+        const viewportWidth = Math.max(1, numberOrZero(viewport && viewport[0]));
+        const viewportHeight = Math.max(1, numberOrZero(viewport && viewport[1]));
+        const deltaClientX = numberOrZero(pointerDelta && pointerDelta[0]);
+        const deltaClientY = numberOrZero(pointerDelta && pointerDelta[1]);
+        const candidate = points.map(point => [Number(point[0]), Number(point[1])]);
+        const [startIndex, endIndex] = indices;
+        const start = points[startIndex];
+        const end = points[endIndex];
+        const edgeX = (end[0] - start[0]) * viewportWidth;
+        const edgeY = (end[1] - start[1]) * viewportHeight;
+        const edgeLength = Math.hypot(edgeX, edgeY);
+        if (edgeLength < 1) return null;
+
+        const normalX = -edgeY / edgeLength;
+        const normalY = edgeX / edgeLength;
+        const projectedDistance = deltaClientX * normalX + deltaClientY * normalY;
+        let deltaX = normalX * projectedDistance / viewportWidth;
+        let deltaY = normalY * projectedDistance / viewportHeight;
+
+        const minX = Math.min(start[0], end[0]);
+        const maxX = Math.max(start[0], end[0]);
+        const minY = Math.min(start[1], end[1]);
+        const maxY = Math.max(start[1], end[1]);
+        deltaX = Math.max(-minX, Math.min(1 - maxX, deltaX));
+        deltaY = Math.max(-minY, Math.min(1 - maxY, deltaY));
+        candidate[startIndex] = [start[0] + deltaX, start[1] + deltaY];
+        candidate[endIndex] = [end[0] + deltaX, end[1] + deltaY];
+        return isValidCalibrationQuad(candidate) ? candidate : null;
+    }
+
     function transformGeometryForQuarterTurn(geom, clockwise) {
         const flipH = !!geom.flip_h;
         const flipV = !!geom.flip_v;
@@ -249,6 +319,9 @@
         proxyPixelTransformChanged,
         createTransformMatrix,
         invertDisplayPoint,
+        calibrationEdgeIndices,
+        isValidCalibrationQuad,
+        translateCalibrationEdge,
         transformGeometryForQuarterTurn,
         transformGeometryForFlip,
     };

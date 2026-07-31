@@ -1,6 +1,7 @@
 use crate::app_state::{
     BaseColor, EngineState, FilmItem, FilmMode, FilmstripItem, GeometryState, Roll, TuningParams,
 };
+use crate::batch_settings::{BatchCopyResult, ImageKey};
 use crate::core_math::{
     apply_homography, normalize_density_channel, shader_homography, sprocket_white_mask,
     tone_density_channel,
@@ -15,6 +16,7 @@ use image::{
 };
 use rayon::prelude::*;
 use rfd::FileDialog;
+use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{Cursor, Read, Seek, SeekFrom};
@@ -2136,20 +2138,41 @@ pub async fn switch_active_image(
     state: State<'_, EngineState>,
     _app_handle: tauri::AppHandle,
 ) -> Result<ActiveImageState, String> {
-    // Pure state switch: never trigger RAW unpack/demosaic here.
-    {
-        let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
-        let item = item_arc.read().map_err(|e| e.to_string())?;
+    // State activation is deliberately ordered before proxy preparation. The
+    // database is authoritative, including settings written by batch jobs for
+    // frames that have never been rendered in this process.
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+    let file_path = {
+        let item = item_arc.read().map_err(|error| error.to_string())?;
         if item.roll_id != roll_id {
             return Err("Image does not belong to the requested roll".into());
         }
         if std::fs::File::open(&item.file_path).is_err() {
             return Err("FILE_MISSING".into());
         }
-    }
+        item.file_path.clone()
+    };
 
-    let item_arc = state.items.get(&id).unwrap();
-    let item = item_arc.read().map_err(|e| e.to_string())?;
+    let persisted_roll_id = roll_id.clone();
+    let persisted_file_path = file_path.clone();
+    let persisted = tokio::task::spawn_blocking(move || {
+        let connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open state database: {error}"))?;
+        load_image_state_from_connection(&connection, &persisted_roll_id, &persisted_file_path)?
+            .ok_or_else(|| "Persisted image state is missing".to_string())
+    })
+    .await
+    .map_err(|error| format!("State-loading worker failed: {error}"))??;
+
+    let (_, params, geom, base_color) = persisted;
+    let mut item = item_arc.write().map_err(|error| error.to_string())?;
+    if item.roll_id != roll_id || item.file_path != file_path {
+        return Err("Image identity changed while loading persisted state".into());
+    }
+    item.params = params;
+    item.geom = geom;
+    item.base_color = base_color;
+
     *state.active_id.write().map_err(|e| e.to_string())? = Some(id.clone());
     Ok(ActiveImageState {
         params: item.params.clone(),
@@ -2310,6 +2333,99 @@ pub async fn update_geometry(
         return Err(error);
     }
     Ok(())
+}
+
+#[tauri::command(rename_all = "snake_case")]
+pub async fn auto_detect_film_border(
+    roll_id: String,
+    file_path: String,
+) -> Result<crate::film_border::FilmBorderDetection, String> {
+    tokio::task::spawn_blocking(move || {
+        let connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open state database: {error}"))?;
+        let encoded = connection
+            .query_row(
+                "SELECT COALESCE(embedded_thumb_base64, thumbnail_base64)
+                 FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
+                rusqlite::params![roll_id, file_path],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map_err(|error| format!("Failed to read cached thumbnail: {error}"))?
+            .flatten()
+            .ok_or_else(|| "CACHED_THUMBNAIL_NOT_FOUND".to_string())?;
+        let encoded = if encoded.starts_with("data:") {
+            encoded
+                .split_once(',')
+                .map(|(_, payload)| payload)
+                .ok_or_else(|| "Cached thumbnail data URL is invalid".to_string())?
+        } else {
+            &encoded
+        };
+        let bytes = general_purpose::STANDARD
+            .decode(encoded)
+            .map_err(|error| format!("Cached thumbnail is not valid base64: {error}"))?;
+        let thumbnail = image::load_from_memory(&bytes)
+            .map_err(|error| format!("Cached thumbnail cannot be decoded: {error}"))?;
+        Ok(crate::film_border::detect_film_border(&thumbnail))
+    })
+    .await
+    .map_err(|error| format!("Film-border worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn batch_copy_settings(
+    source: ImageKey,
+    targets: Vec<ImageKey>,
+    modules: Vec<String>,
+    state: State<'_, EngineState>,
+    app_handle: tauri::AppHandle,
+) -> Result<BatchCopyResult, String> {
+    let commit = tokio::task::spawn_blocking(move || {
+        let mut connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open state database: {error}"))?;
+        crate::batch_settings::copy_settings_transaction(
+            &mut connection,
+            &source,
+            &targets,
+            &modules,
+            persistence::now_timestamp(),
+        )
+    })
+    .await
+    .map_err(|error| format!("Batch settings worker failed: {error}"))??;
+
+    if let Some(geometry) = commit.geometry.as_ref() {
+        match serde_json::from_value::<GeometryState>(geometry.clone()) {
+            Ok(geometry) => {
+                let updated = commit
+                    .result
+                    .targets
+                    .iter()
+                    .cloned()
+                    .collect::<HashSet<_>>();
+                for entry in state.items.iter() {
+                    let item_arc = entry.value().clone();
+                    let mut item = write_lock(&item_arc);
+                    let key = ImageKey {
+                        roll_id: item.roll_id.clone(),
+                        file_path: item.file_path.clone(),
+                    };
+                    if updated.contains(&key) {
+                        item.geom = geometry.clone();
+                    }
+                }
+            }
+            Err(error) => {
+                eprintln!("[Batch Settings] committed geometry cache refresh failed: {error}");
+            }
+        }
+    }
+
+    if let Err(error) = app_handle.emit("settings_updated", &commit.result) {
+        eprintln!("[Batch Settings] settings_updated broadcast failed: {error}");
+    }
+    Ok(commit.result)
 }
 
 /// Standalone geometry application — does NOT require a write lock on FilmItem.

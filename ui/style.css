@@ -313,6 +313,7 @@ body > header > div:last-child button:hover { background: var(--control) !import
     border-top: 1px solid var(--line) !important;
 }
 .film-item {
+    position: relative;
     width: 108px !important;
     height: 72px !important;
     border: 0 !important;
@@ -325,6 +326,19 @@ body > header > div:last-child button:hover { background: var(--control) !import
 }
 .film-item:hover { opacity: .9 !important; transform: none !important; }
 .film-item.active { opacity: 1 !important; border: 0 !important; outline: 2px solid var(--accent); box-shadow: none; }
+.film-item.settings-updated::after {
+    content: "";
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    width: 7px;
+    height: 7px;
+    border: 1px solid var(--chrome);
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+    pointer-events: none;
+}
 
 /* Develop inspector */
 #view-develop > div:last-child {
@@ -398,7 +412,59 @@ body > header > div:last-child button:hover { background: var(--control) !import
 #btn-mode-color, #btn-mode-bw { min-height: 28px; border-radius: 3px !important; }
 #right-panel-blocker { background: color-mix(in srgb, var(--panel) 92%, transparent) !important; }
 #right-panel-blocker h3 { color: var(--text) !important; font-size: 15px !important; text-transform: none !important; }
-#btn-confirm-calibration { background: var(--accent) !important; border-radius: 4px !important; color: #17110d !important; }
+.film-area-description {
+    max-width: 290px;
+    margin: 0 0 22px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.65;
+}
+.film-area-actions {
+    display: grid;
+    width: min(100%, 290px);
+    gap: 10px;
+}
+.film-area-action {
+    width: 100%;
+    min-height: 42px;
+    padding: 0 14px;
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    background: var(--control);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0;
+    transition: background .14s ease, border-color .14s ease, opacity .14s ease;
+    pointer-events: auto;
+}
+.film-area-action:hover:not(:disabled) { background: var(--control-hover); border-color: var(--subtle); }
+.film-area-action:disabled { cursor: not-allowed; opacity: .42; }
+.film-area-action-primary,
+#btn-confirm-calibration {
+    background: var(--accent) !important;
+    border-color: var(--accent) !important;
+    color: #17110d !important;
+}
+.film-area-action-primary:hover { background: var(--accent-hover) !important; }
+.batch-apply-hint {
+    margin: -2px 2px 0;
+    color: var(--subtle);
+    font-size: 11px;
+    line-height: 1.5;
+    text-align: left;
+}
+.calib-edge-handle { pointer-events: stroke; touch-action: none; }
+.calib-edge-horizontal { cursor: ns-resize; }
+.calib-edge-vertical { cursor: ew-resize; }
+.calib-edge-dot {
+    fill: var(--panel);
+    pointer-events: none;
+    stroke: #f97316;
+    stroke-width: 1.5;
+}
+.calib-dot { pointer-events: none; }
+.calib-handle { touch-action: none; }
 
 /* Precision sliders */
 .custom-range, .slider {
@@ -486,6 +552,23 @@ body > header > div:last-child button:hover { background: var(--control) !import
 [id$="-content"] button[id*="confirm"] { background: var(--text) !important; color: var(--panel) !important; }
 #import-choice-content button { background: transparent !important; border-color: var(--line) !important; box-shadow: none !important; }
 #import-choice-content button:hover { background: var(--panel-raised) !important; }
+
+.batch-target-options { display: grid; gap: 8px; }
+.batch-target-option {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    min-height: 42px;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--panel-raised);
+    cursor: pointer;
+}
+.batch-target-option:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.batch-target-option input { width: 14px; min-height: 14px; accent-color: var(--accent); }
+.batch-target-count { min-width: 24px; color: var(--muted); font-family: var(--font-mono); font-size: 11px; text-align: right; }
 
 #toast-container > div {
     border: 1px solid var(--line-strong) !important;
