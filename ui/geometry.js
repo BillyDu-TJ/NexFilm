@@ -257,6 +257,13 @@
         return Math.abs(signedArea) > 0.004;
     }
 
+    function resolveCalibrationRenderPoints(points, isCalibrating) {
+        if (isCalibrating || !isValidCalibrationQuad(points)) {
+            return [[0, 0], [1, 0], [1, 1], [0, 1]];
+        }
+        return points.map(point => [Number(point[0]), Number(point[1])]);
+    }
+
     function translateCalibrationEdge(points, edgeIndex, pointerDelta, viewport) {
         const indices = calibrationEdgeIndices[edgeIndex];
         if (!indices || !isValidCalibrationQuad(points)) return null;
@@ -321,6 +328,7 @@
         invertDisplayPoint,
         calibrationEdgeIndices,
         isValidCalibrationQuad,
+        resolveCalibrationRenderPoints,
         translateCalibrationEdge,
         transformGeometryForQuarterTurn,
         transformGeometryForFlip,

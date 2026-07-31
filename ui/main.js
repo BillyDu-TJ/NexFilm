@@ -1347,7 +1347,10 @@ function renderWebGL() {
     gl.uniform1i(u_lut3d_loc, 1);
     gl.uniform1i(u_lut1d_loc, 2);
     gl.uniform1i(u_image_loc, 0);
-    let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
+    let pts = NexFilmGeometry.resolveCalibrationRenderPoints(
+        current_geom.calibration_points,
+        isCalibrationMode
+    );
     let minX = Math.min(pts[0][0], pts[1][0], pts[2][0], pts[3][0]);
     let maxX = Math.max(pts[0][0], pts[1][0], pts[2][0], pts[3][0]);
     let minY = Math.min(pts[0][1], pts[1][1], pts[2][1], pts[3][1]);
@@ -3618,6 +3621,7 @@ function enterCalibrationMode() {
         calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
     }
     requestAnimationFrame(updateCalibrationPolygon);
+    if (activeProxyIsFull) requestRender();
 }
 
 btnRecalibrate.addEventListener('click', enterCalibrationMode);
@@ -3661,11 +3665,8 @@ function setAutoAreaBusy(id, busy) {
 
 function applyFilmAreaDetection(result) {
     calibrationPoints = validateFilmAreaDetection(result);
-    current_geom.calibration_points = cloneCalibrationPoints(calibrationPoints);
-    current_geom.calibration_confirmed = false;
     btnBatchApply.disabled = true;
     updateCalibrationPolygon();
-    if (activeProxyIsFull) requestRender();
 }
 
 function isSafeDefaultFilmAreaDetection(result) {
@@ -3685,11 +3686,17 @@ async function initializeDefaultFilmArea(id, requestToken, revision) {
             return;
         }
 
-        saveCurrentState();
-        await persistGeometryQueued(id, current_geom);
+        const detectedGeom = {
+            ...JSON.parse(JSON.stringify(current_geom)),
+            calibration_points: cloneCalibrationPoints(calibrationPoints),
+            calibration_confirmed: false
+        };
+        await persistGeometryQueued(id, detectedGeom);
         if (id !== activeId || requestToken !== currentImageRequestToken || revision !== calibrationRevision) {
             return;
         }
+        current_geom = detectedGeom;
+        saveCurrentState();
         showToast("Film area detected. Review the frame and save it.", "success");
     } catch (error) {
         console.error('Automatic film-area initialization failed', error);
@@ -4439,19 +4446,14 @@ function cloneCalibrationPoints(points = calibrationPoints) {
     return points.map(point => [Number(point[0]), Number(point[1])]);
 }
 
-function setCalibrationDraft(points, render = true) {
+function setCalibrationDraft(points) {
     if (!NexFilmGeometry.isValidCalibrationQuad(points)) return false;
     calibrationPoints = cloneCalibrationPoints(points);
-    if (current_geom) {
-        current_geom.calibration_points = cloneCalibrationPoints(points);
-        current_geom.calibration_confirmed = false;
-    }
     btnBatchApply.disabled = true;
 
     if (!calibrationRAF) {
         calibrationRAF = requestAnimationFrame(() => {
             updateCalibrationPolygon();
-            if (render && activeProxyIsFull) requestRender();
             calibrationRAF = null;
         });
     }
@@ -4467,6 +4469,7 @@ document.getElementById('calibration-svg').addEventListener('pointerdown', (e) =
 
     calibrationRevision++;
     e.preventDefault();
+    e.stopPropagation();
     if (target.setPointerCapture) target.setPointerCapture(e.pointerId);
     calibrationDragState = {
         type: target.classList.contains('calib-handle') ? 'corner' : 'edge',
@@ -4484,6 +4487,7 @@ let calibrationRAF = null;
 window.addEventListener('pointermove', (e) => {
     const drag = calibrationDragState;
     if (!isCalibrationMode || !drag || drag.pointerId !== e.pointerId) return;
+    e.preventDefault();
 
     const svgRect = document.getElementById('calibration-svg').getBoundingClientRect();
     if (!svgRect.width || !svgRect.height) return;
@@ -4529,9 +4533,9 @@ window.addEventListener('resize', () => {
 document.getElementById('btn-confirm-calibration').addEventListener('click', async () => {
     if (!activeId) return;
     pushUndoState();
+    const previousGeom = JSON.parse(JSON.stringify(current_geom));
     current_geom.calibration_points = JSON.parse(JSON.stringify(calibrationPoints));
     current_geom.calibration_confirmed = true;
-    if (activeProxyIsFull) requestRender();
     saveCurrentState();
     try {
         await persistGeometryQueued(activeId, current_geom);
@@ -4540,9 +4544,11 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
         document.getElementById('right-panel-blocker').classList.add('hidden');
         btnAutoColor.disabled = false;
         btnBatchApply.disabled = false;
+        if (activeProxyIsFull) requestRender();
         showToast("Film area saved. Run Auto Invert when ready.", "success");
     } catch (e) {
-        current_geom.calibration_confirmed = false;
+        current_geom = previousGeom;
+        saveCurrentState();
         console.error("Calibration failed", e);
         showToast("Failed to save film area.", "error");
     }

@@ -20,4 +20,11 @@ assert.deepEqual(movedLeft, [[0.2, 0.1], [0.9, 0.1], [0.9, 0.9], [0.2, 0.9]]);
 assert.equal(geometry.isValidCalibrationQuad(square), true);
 assert.equal(geometry.isValidCalibrationQuad([[0.1, 0.1], [0.9, 0.9], [0.9, 0.1], [0.1, 0.9]]), false);
 
+assert.deepEqual(
+    geometry.resolveCalibrationRenderPoints(square, true),
+    [[0, 0], [1, 0], [1, 1], [0, 1]],
+    'calibration mode must keep the underlying image in its stable source coordinates'
+);
+assert.deepEqual(geometry.resolveCalibrationRenderPoints(square, false), square);
+
 console.log('Calibration edge geometry tests passed.');
