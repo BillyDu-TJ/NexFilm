@@ -40,6 +40,7 @@ jobs:
           node --check ui/density-math.js
           node scripts/verify-contact-sheet.cjs
           node scripts/verify-density-contract.cjs
+          node scripts/verify-histogram-contract.cjs
           node scripts/verify-geometry-contract.cjs
           node scripts/verify-ui-startup-order.cjs
           node scripts/verify-webgl-shaders.cjs

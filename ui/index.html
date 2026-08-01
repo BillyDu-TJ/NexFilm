@@ -315,9 +315,12 @@
                 
                 <!-- Histogram / Waveform Area -->
                 <div class="px-6 py-5 border-b border-[#28282c] bg-[#1a1a1ef0] backdrop-blur sticky top-0 z-10 shadow-sm">
-                    <div class="flex justify-between items-center mb-3">
-                        <h2 class="text-[10px] font-bold text-zinc-500 tracking-[0.2em] uppercase" id="viz-title">Histogram</h2>
-                        <button id="btn-toggle-viz" class="text-[9px] font-bold text-zinc-400 hover:text-zinc-100 bg-[#28282c] hover:bg-zinc-700 px-2 py-1 rounded transition-colors uppercase tracking-wider">Waveform</button>
+                    <div class="flex justify-between items-center gap-3 mb-3">
+                        <h2 class="text-[10px] font-bold text-zinc-500 tracking-[0.2em] uppercase" id="viz-title">Scopes</h2>
+                        <div id="viz-mode-tabs" class="viz-mode-tabs" role="tablist" aria-label="Scope display">
+                            <button id="btn-viz-histogram" class="viz-mode-tab active" type="button" role="tab" aria-selected="true" aria-controls="histogram-canvas" tabindex="0">Histogram</button>
+                            <button id="btn-viz-waveform" class="viz-mode-tab" type="button" role="tab" aria-selected="false" aria-controls="waveform-canvas" tabindex="-1">Waveform</button>
+                        </div>
                     </div>
                     <div class="w-full h-[140px] bg-[#121214] rounded-md overflow-hidden relative shadow-inner border border-[#28282c]">
                         <canvas id="histogram-canvas" class="w-full h-full absolute top-0 left-0"></canvas>
@@ -901,6 +904,7 @@
     <script src="geometry.js"></script>
     <script src="contact-sheet.js"></script>
     <script src="density-math.js"></script>
+    <script src="histogram-math.js"></script>
     <script src="settings-copy.js"></script>
     <script src="main.js"></script>
 </body>

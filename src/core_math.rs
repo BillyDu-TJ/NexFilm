@@ -39,6 +39,20 @@ pub fn normalize_density_channel(
 }
 
 #[inline]
+pub fn neutral_density_bounds(d_min: [f32; 3], d_max: [f32; 3]) -> (f32, f32) {
+    (
+        (d_min[0] + d_min[1] + d_min[2]) / 3.0,
+        (d_max[0] + d_max[1] + d_max[2]) / 3.0,
+    )
+}
+
+#[inline]
+pub fn neutralize_rgb(rgb: [f32; 3]) -> [f32; 3] {
+    let luma = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+    [luma; 3]
+}
+
+#[inline]
 pub fn tone_density_channel(
     density: f32,
     d_min: f32,
@@ -191,8 +205,8 @@ pub fn sprocket_white_mask(luma_difference: f32, tolerance: f32, feather: f32) -
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_homography, apply_post_gamma_adjustments, normalize_density_channel,
-        shader_homography, sprocket_white_mask,
+        apply_homography, apply_post_gamma_adjustments, neutral_density_bounds, neutralize_rgb,
+        normalize_density_channel, shader_homography, sprocket_white_mask,
     };
 
     #[test]
@@ -224,6 +238,20 @@ mod tests {
         let adjusted = apply_post_gamma_adjustments([0.2, 0.5, 0.8], 0.0, 0.0, -1.0, 0.0, 0.0);
         assert!((adjusted[0] - adjusted[1]).abs() < 1e-6);
         assert!((adjusted[1] - adjusted[2]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn black_and_white_density_bounds_are_channel_neutral() {
+        let (d_min, d_max) = neutral_density_bounds([0.2, 0.4, 0.6], [1.8, 2.1, 2.4]);
+        assert!((d_min - 0.4).abs() < 1e-6);
+        assert!((d_max - 2.1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn neutralize_rgb_removes_lut_tint() {
+        let neutral = neutralize_rgb([0.8, 0.5, 0.2]);
+        assert!((neutral[0] - neutral[1]).abs() < 1e-6);
+        assert!((neutral[1] - neutral[2]).abs() < 1e-6);
     }
 
     #[test]

@@ -2,6 +2,7 @@ const invoke = window.__TAURI__.core.invoke;
 const { listen } = window.__TAURI__.event;
 const { getContactSheetLayout, createContactSheetFilename } = window.NexFilmContactSheet;
 const { getNeutralExposureOffsets } = window.NexFilmDensity;
+const { getHistogramScale, getHistogramY } = window.NexFilmHistogram;
 const { cloneSettingsValue, createCopyPayload, mergeCopyPayload } = window.NexFilmSettingsCopy;
 
 // DOM: Global
@@ -46,8 +47,9 @@ const rightPanelBlocker = document.getElementById('right-panel-blocker');
 // DOM: Visualization
 const histCanvas = document.getElementById('histogram-canvas');
 const waveCanvas = document.getElementById('waveform-canvas');
-const btnToggleViz = document.getElementById('btn-toggle-viz');
-const vizTitle = document.getElementById('viz-title');
+const vizModeTabs = document.getElementById('viz-mode-tabs');
+const btnVizHistogram = document.getElementById('btn-viz-histogram');
+const btnVizWaveform = document.getElementById('btn-viz-waveform');
 
 const histCtx = histCanvas.getContext('2d');
 const waveCtx = waveCanvas.getContext('2d');
@@ -1197,10 +1199,18 @@ function initWebGL() {
             density += vec3(u_exposure.r);
         }
         
-        vec3 density_range = u_dmax - u_dmin;
+        vec3 effective_dmin = u_dmin;
+        vec3 effective_dmax = u_dmax;
+        if (u_mode != 0) {
+            float bw_dmin = (u_dmin.r + u_dmin.g + u_dmin.b) / 3.0;
+            float bw_dmax = (u_dmax.r + u_dmax.g + u_dmax.b) / 3.0;
+            effective_dmin = vec3(bw_dmin);
+            effective_dmax = vec3(bw_dmax);
+        }
+        vec3 density_range = effective_dmax - effective_dmin;
         bvec3 valid_range = greaterThan(abs(density_range), vec3(1e-6));
         vec3 safe_range = mix(vec3(1.0), density_range, valid_range);
-        vec3 norm = mix(vec3(0.0), (density - u_dmin) / safe_range, valid_range);
+        vec3 norm = mix(vec3(0.0), (density - effective_dmin) / safe_range, valid_range);
         
         float safe_gamma = max(u_gamma, 1e-6);
         vec3 final_rgb = vec3(
@@ -1222,6 +1232,9 @@ function initWebGL() {
                 lut_color = texture(u_lut3d, lutTextureCoord(lut_in, lut_size)).rgb;
             }
             final_rgb = mix(final_rgb, lut_color, u_lut_opacity);
+        }
+        if (u_mode != 0) {
+            final_rgb = vec3(getLuma(final_rgb));
         }
 
         if (u_sprocket_uv.x >= 0.0) {
@@ -1480,13 +1493,31 @@ btnLoadLUT.addEventListener('click', async () => {
     }
 });
 
-btnToggleViz.addEventListener('click', () => {
-    isWaveform = !isWaveform;
-    vizTitle.textContent = isWaveform ? 'Waveform' : 'Histogram';
-    btnToggleViz.textContent = isWaveform ? 'Histogram' : 'Waveform';
+function setVisualizationMode(mode, { focus = false } = {}) {
+    isWaveform = mode === 'waveform';
+    const selectedButton = isWaveform ? btnVizWaveform : btnVizHistogram;
+    const unselectedButton = isWaveform ? btnVizHistogram : btnVizWaveform;
+    selectedButton.classList.add('active');
+    selectedButton.setAttribute('aria-selected', 'true');
+    selectedButton.tabIndex = 0;
+    unselectedButton.classList.remove('active');
+    unselectedButton.setAttribute('aria-selected', 'false');
+    unselectedButton.tabIndex = -1;
     histCanvas.classList.toggle('hidden', isWaveform);
     waveCanvas.classList.toggle('hidden', !isWaveform);
     if (lastPixels) updateDataViz(lastPixels);
+    if (focus) selectedButton.focus();
+}
+
+btnVizHistogram.addEventListener('click', () => setVisualizationMode('histogram'));
+btnVizWaveform.addEventListener('click', () => setVisualizationMode('waveform'));
+vizModeTabs.addEventListener('keydown', event => {
+    let mode = null;
+    if (event.key === 'ArrowLeft' || event.key === 'Home') mode = 'histogram';
+    if (event.key === 'ArrowRight' || event.key === 'End') mode = 'waveform';
+    if (!mode) return;
+    event.preventDefault();
+    setVisualizationMode(mode, { focus: true });
 });
 
 function drawHistogram(pixels) {
@@ -1495,7 +1526,6 @@ function drawHistogram(pixels) {
     const bHist = new Uint32Array(256);
     const lHist = new Uint32Array(256);
 
-    let maxVal = 0;
     const len = pixels.length;
     for (let i = 0; i < len; i += 4) {
         const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
@@ -1503,13 +1533,9 @@ function drawHistogram(pixels) {
         rHist[r]++; gHist[g]++; bHist[b]++; lHist[l]++;
     }
 
-    // Ignore extreme shadows (0) and highlights (255) for dynamic scaling
-    for (let i = 1; i < 255; i++) {
-        if (rHist[i] > maxVal) maxVal = rHist[i];
-        if (gHist[i] > maxVal) maxVal = gHist[i];
-        if (bHist[i] > maxVal) maxVal = bHist[i];
-    }
-    if (maxVal === 0) maxVal = 1;
+    // Use a robust interior-bin scale so isolated clipping spikes do not
+    // flatten the useful distribution. Endpoint peaks remain visible, capped.
+    const maxVal = getHistogramScale([rHist, gHist, bHist]);
 
     histCanvas.width = histCanvas.offsetWidth;
     histCanvas.height = histCanvas.offsetHeight;
@@ -1524,7 +1550,7 @@ function drawHistogram(pixels) {
         histCtx.moveTo(0, h);
         for (let i = 0; i < 256; i++) {
             const x = (i / 255) * w;
-            const y = h - (hist[i] / maxVal) * h * 0.9;
+            const y = getHistogramY(hist[i], maxVal, h);
             histCtx.lineTo(x, y);
         }
         histCtx.lineTo(w, h);
@@ -1542,7 +1568,7 @@ function drawHistogram(pixels) {
     histCtx.beginPath();
     for (let i = 0; i < 256; i++) {
         const x = (i / 255) * w;
-        const y = h - (lHist[i] / maxVal) * h * 0.9;
+        const y = getHistogramY(lHist[i], maxVal, h);
         if (i === 0) histCtx.moveTo(x, y);
         else histCtx.lineTo(x, y);
     }
@@ -1703,9 +1729,9 @@ function renderWebGL() {
     gl.uniform3f(u_dmax_loc, currentDMax[0], currentDMax[1], currentDMax[2]);
     gl.uniform3f(
         u_exposure_loc,
-        expVal + exprVal * CHANNEL_CONTROL_SCALE,
-        expVal + expgVal * CHANNEL_CONTROL_SCALE,
-        expVal + expbVal * CHANNEL_CONTROL_SCALE
+        mode === 0 ? expVal + exprVal * CHANNEL_CONTROL_SCALE : expVal,
+        mode === 0 ? expVal + expgVal * CHANNEL_CONTROL_SCALE : expVal,
+        mode === 0 ? expVal + expbVal * CHANNEL_CONTROL_SCALE : expVal
     );
     gl.uniform1f(u_gamma_loc, gammaVal);
     gl.uniform1f(u_saturation_loc, parseFloat(sliders.saturation.el.value));

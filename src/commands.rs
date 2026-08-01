@@ -3,8 +3,8 @@ use crate::app_state::{
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
 use crate::core_math::{
-    apply_homography, apply_post_gamma_adjustments, normalize_density_channel, shader_homography,
-    sprocket_white_mask,
+    apply_homography, apply_post_gamma_adjustments, neutral_density_bounds, neutralize_rgb,
+    normalize_density_channel, shader_homography, sprocket_white_mask,
 };
 use crate::persistence::{self, MATH_VERSION, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
@@ -2768,15 +2768,21 @@ fn render_shader_equivalent(
     let tolerance = params.sprocket.sprocket_tolerance.unwrap_or(0.10);
     let feather = params.sprocket.sprocket_feather.unwrap_or(0.05);
     let lut_opacity = params.lut.lut_opacity.clamp(0.0, 1.0) * LUT_CONTROL_SCALE;
-    let pipeline = FilmPipeline::new(
-        [base_color.base_r, base_color.base_g, base_color.base_b],
+    let exposure_offsets = if params.film_mode == FilmMode::BW {
+        [params.exposure.exposure; 3]
+    } else {
         [
             params.exposure.exposure + params.exposure.exp_r * CHANNEL_CONTROL_SCALE,
             params.exposure.exposure + params.exposure.exp_g * CHANNEL_CONTROL_SCALE,
             params.exposure.exposure + params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
-        ],
+        ]
+    };
+    let pipeline = FilmPipeline::new(
+        [base_color.base_r, base_color.base_g, base_color.base_b],
+        exposure_offsets,
         params.film_mode.clone(),
     );
+    let (bw_dmin, bw_dmax) = neutral_density_bounds(params.density.d_min, params.density.d_max);
 
     let mut output = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(output_width, output_height);
     output
@@ -2802,27 +2808,32 @@ fn render_shader_equivalent(
                 raw[2] as f32 / 65535.0,
             ];
             let density = pipeline.process_pixel(&linear_rgb);
+            let (d_min, d_max) = if params.film_mode == FilmMode::BW {
+                ([bw_dmin; 3], [bw_dmax; 3])
+            } else {
+                (params.density.d_min, params.density.d_max)
+            };
             let normalized = [
                 normalize_density_channel(
                     density[0],
-                    params.density.d_min[0],
-                    params.density.d_max[0],
+                    d_min[0],
+                    d_max[0],
                     0.0,
                     0.0,
                     params.density.gamma,
                 ),
                 normalize_density_channel(
                     density[1],
-                    params.density.d_min[1],
-                    params.density.d_max[1],
+                    d_min[1],
+                    d_max[1],
                     0.0,
                     0.0,
                     params.density.gamma,
                 ),
                 normalize_density_channel(
                     density[2],
-                    params.density.d_min[2],
-                    params.density.d_max[2],
+                    d_min[2],
+                    d_max[2],
                     0.0,
                     0.0,
                     params.density.gamma,
@@ -2855,6 +2866,9 @@ fn render_shader_equivalent(
             } else {
                 baseline
             };
+            if params.film_mode == FilmMode::BW {
+                rendered = neutralize_rgb(rendered);
+            }
 
             if let Some(target) = sprocket_target {
                 let raw_luma =
@@ -4049,13 +4063,18 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     }
     let params = &item.params;
     let base_color = &item.base_color;
-    let pipeline = FilmPipeline::new(
-        [base_color.base_r, base_color.base_g, base_color.base_b],
+    let exposure_offsets = if params.film_mode == FilmMode::BW {
+        [params.exposure.exposure; 3]
+    } else {
         [
             params.exposure.exposure + params.exposure.exp_r * CHANNEL_CONTROL_SCALE,
             params.exposure.exposure + params.exposure.exp_g * CHANNEL_CONTROL_SCALE,
             params.exposure.exposure + params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
-        ],
+        ]
+    };
+    let pipeline = FilmPipeline::new(
+        [base_color.base_r, base_color.base_g, base_color.base_b],
+        exposure_offsets,
         params.film_mode.clone(),
     );
 
@@ -4071,6 +4090,7 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     let gamma = params.density.gamma;
     let highlights = params.tone.highlights;
     let shadows = params.tone.shadows;
+    let (bw_dmin, bw_dmax) = neutral_density_bounds(d_min, d_max);
     let (saturation, temperature, tint) = if params.film_mode == FilmMode::Color {
         (
             params.tone.saturation,
@@ -4088,18 +4108,38 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             let true_density = [in_px[0], in_px[1], in_px[2]];
             let density = pipeline.apply_exposure(&true_density);
 
+            let (effective_dmin, effective_dmax) = if params.film_mode == FilmMode::BW {
+                ([bw_dmin; 3], [bw_dmax; 3])
+            } else {
+                (d_min, d_max)
+            };
             let gamma_corrected = [
                 normalize_density_channel(
-                    density[0], d_min[0], d_max[0], highlights, shadows, gamma,
+                    density[0],
+                    effective_dmin[0],
+                    effective_dmax[0],
+                    highlights,
+                    shadows,
+                    gamma,
                 ),
                 normalize_density_channel(
-                    density[1], d_min[1], d_max[1], highlights, shadows, gamma,
+                    density[1],
+                    effective_dmin[1],
+                    effective_dmax[1],
+                    highlights,
+                    shadows,
+                    gamma,
                 ),
                 normalize_density_channel(
-                    density[2], d_min[2], d_max[2], highlights, shadows, gamma,
+                    density[2],
+                    effective_dmin[2],
+                    effective_dmax[2],
+                    highlights,
+                    shadows,
+                    gamma,
                 ),
             ];
-            let final_rgb = apply_post_gamma_adjustments(
+            let mut final_rgb = apply_post_gamma_adjustments(
                 gamma_corrected,
                 0.0,
                 0.0,
@@ -4107,6 +4147,9 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
                 temperature,
                 tint,
             );
+            if params.film_mode == FilmMode::BW {
+                final_rgb = neutralize_rgb(final_rgb);
+            }
 
             out_px[0] = (final_rgb[0] * 255.0).clamp(0.0, 255.0) as u8;
             out_px[1] = (final_rgb[1] * 255.0).clamp(0.0, 255.0) as u8;
