@@ -267,6 +267,23 @@ body > header > div:last-child button:hover { background: var(--control) !import
 .roll-title { color: var(--text); font-size: 20px; font-weight: 620; letter-spacing: -.02em; line-height: 1.2; }
 .roll-format { margin-top: 7px; color: var(--accent); font-size: 12px; font-weight: 540; }
 .roll-meta { margin-top: auto; display: flex; gap: 24px; color: var(--muted); font-size: 12px; }
+.roll-edit-action {
+    align-self: flex-start;
+    margin-top: 14px;
+    padding: 4px 0 !important;
+    color: var(--muted) !important;
+    background: transparent !important;
+}
+#btn-delete-rolls:disabled,
+#btn-promote-roll:disabled,
+#btn-edit-roll:disabled,
+#btn-delete-current-roll:disabled,
+#btn-delete-develop-roll:disabled,
+#btn-delete-library-roll:disabled {
+    opacity: .4 !important;
+    cursor: not-allowed !important;
+}
+.roll-edit-action:hover { color: var(--text) !important; }
 .roll-preview { width: min(42%, 520px); min-width: 280px; overflow: hidden; background: var(--workspace); }
 .roll-preview img { display: block; opacity: .82; transition: opacity .15s ease; }
 .roll-row:hover .roll-preview img { opacity: 1; }
@@ -567,6 +584,10 @@ body > header > div:last-child button:hover { background: var(--control) !import
     -webkit-backdrop-filter: blur(10px) !important;
     backdrop-filter: blur(10px) !important;
     transition: opacity .18s ease, visibility .18s ease;
+}
+.library-item, .film-item, .roll-row {
+    -webkit-user-select: none;
+    user-select: none;
 }
 .sponsor-modal.is-open { visibility: visible; opacity: 1; pointer-events: auto; }
 #sponsor-modal-content.sponsor-card {

@@ -67,6 +67,7 @@
             </nav>
         </div>
         <div class="flex items-center gap-4">
+            <button id="btn-delete-develop-roll" class="hidden px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-transparent hover:bg-red-950/40 text-red-300 rounded transition-colors border border-red-800/60">Remove Roll</button>
             <button id="btn-export-roll" class="hidden px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Export Roll</button>
             <button id="btn-import" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
             <button id="btn-export-dialog" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed" disabled>Export</button>
@@ -130,6 +131,8 @@
                     </div>
                     <div class="flex items-center gap-4">
                         <button id="btn-delete-rolls" class="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-red-900/80 hover:bg-red-800 text-white rounded transition-colors shadow-sm border border-red-700/50">Delete Rolls</button>
+                        <button id="btn-edit-roll" class="hidden px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors border border-zinc-700/50">Edit Info</button>
+                        <button id="btn-delete-current-roll" class="hidden px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-transparent hover:bg-red-950/40 text-red-300 rounded transition-colors border border-red-800/60">Remove Roll</button>
                         <button id="btn-promote-roll" class="hidden px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-orange-600 hover:bg-orange-500 text-white rounded transition-colors shadow-sm">Promote to Library</button>
                         <button id="btn-export-contact-sheet" class="hidden px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Export Contact Sheet</button>
                     </div>
@@ -160,6 +163,7 @@
                 <div class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">All frames</div>
                 <div class="flex items-center gap-4">
                     <span id="library-selection-count" class="text-[11px] text-zinc-400 font-medium">0 selected</span>
+                    <button id="btn-delete-library-roll" class="text-[10px] font-bold tracking-widest text-red-400 hover:text-red-300 uppercase transition-colors disabled:opacity-40 disabled:cursor-not-allowed" disabled>Remove Roll</button>
                     <button id="btn-select-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors">Select All</button>
                     <button id="btn-deselect-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors hidden">Deselect All</button>
                 </div>
@@ -615,7 +619,7 @@
     <div id="roll-metadata-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
         <div class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[450px] flex flex-col transform scale-95 transition-transform duration-200" id="roll-metadata-content">
             <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
-                <h2 class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Roll Metadata</h2>
+                <h2 id="roll-metadata-title" class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Roll Metadata</h2>
                 <button id="btn-close-roll-meta" class="text-zinc-500 hover:text-zinc-200 transition-colors">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
@@ -625,6 +629,7 @@
                     <div class="flex items-center justify-between">
                         <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Format</label>
                         <select id="roll-format" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
+                            <option value="Loose">Loose Import</option>
                             <option value="135">135 (35mm)</option>
                             <option value="135 Half-frame">135 Half-frame</option>
                             <option value="APS">APS</option>

@@ -29,6 +29,10 @@ const libraryEmpty = document.getElementById('library-empty');
 const btnSelectAll = document.getElementById('btn-select-all');
 const btnDeselectAll = document.getElementById('btn-deselect-all');
 const librarySelectionCount = document.getElementById('library-selection-count');
+const btnDeleteLibraryRoll = document.getElementById('btn-delete-library-roll');
+const btnDeleteDevelopRoll = document.getElementById('btn-delete-develop-roll');
+const btnDeleteCurrentRoll = document.getElementById('btn-delete-current-roll');
+const btnEditRoll = document.getElementById('btn-edit-roll');
 
 // DOM: Develop View
 const filmstripContainer = document.getElementById('filmstrip-container');
@@ -126,6 +130,7 @@ let missingFileId = null;
 let totalImportCount = 0;
 let currentImportCount = 0;
 let importFailedCount = 0;
+let importInProgress = false;
 
 window.addEventListener('resize', () => {
     if (activeId) updateCanvasTransform();
@@ -250,16 +255,6 @@ function appendMissingSourceBadge(container, item) {
     container.appendChild(badge);
 }
 
-async function mergeRollIntoWorkingSet(rollId) {
-    if (!rollId) return [];
-    const rollStrip = await invoke('get_roll_filmstrip', { rollId });
-    rollStrip.forEach(item => {
-        upsertLibraryItem({ ...item, in_working_set: true });
-    });
-    allLibraryItems = uniqueItemsByPath(allLibraryItems);
-    return rollStrip;
-}
-
 function uniqueImportPaths(paths) {
     const unique = new Map();
     (paths || []).forEach(path => {
@@ -313,6 +308,8 @@ function updateLibrarySelectionUI() {
         btnDeselectAll.classList.add('hidden');
     }
     
+    btnDeleteLibraryRoll.disabled = importInProgress || getSelectedLibraryRollIds().length === 0;
+
     // update visuals
     Array.from(libraryGrid.children).forEach(child => {
         const id = child.dataset.id;
@@ -338,6 +335,90 @@ btnDeselectAll.addEventListener('click', () => {
 // Routing
 let currentView = 'library'; // Tracks active view: 'library' | 'develop' | 'history'
 
+function clearNativeSelection(event) {
+    if (event) event.preventDefault();
+    window.getSelection()?.removeAllRanges();
+}
+
+function createLooseImportRoll(paths) {
+    const now = new Date();
+    const localDate = new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
+        .toISOString()
+        .slice(0, 10);
+    return {
+        roll_id: `loose_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+        date: localDate,
+        format: 'Loose',
+        film_stock: 'Loose Import',
+        camera: '',
+        image_paths: paths
+    };
+}
+
+async function flushActiveImageState() {
+    if (activeId) {
+        await flushPendingBackendSync();
+        const outgoingId = activeId;
+        const outgoingParams = saveCurrentState();
+        await updateBackendParams(outgoingId, outgoingParams);
+        scheduleInstantThumbnailUpdate();
+        await flushPendingThumbnail();
+    }
+}
+
+async function beginWorkingImport(rollId, paths) {
+    await flushActiveImageState();
+    resetWorkingLibrary();
+    currentRollViewId = rollId;
+    isRollEditing = true;
+    currentImportSessionPaths = paths.map(normalizePath);
+    activeImportViewPaths = currentImportSessionPaths.slice();
+}
+
+function getSelectedLibraryRollIds() {
+    const rollIds = new Set();
+    selectedLibraryIds.forEach(id => {
+        const rollId = findKnownItem(id)?.roll_id;
+        if (rollId) rollIds.add(rollId);
+    });
+    return [...rollIds];
+}
+
+function getDevelopRollId() {
+    return findKnownItem(activeId)?.roll_id || currentRollViewId || null;
+}
+
+function setImportManagementBusy(busy) {
+    document.getElementById('btn-delete-rolls').disabled = busy;
+    document.getElementById('btn-promote-roll').disabled = busy;
+    btnEditRoll.disabled = busy;
+    btnDeleteCurrentRoll.disabled = busy;
+    btnDeleteDevelopRoll.disabled = busy || !getDevelopRollId();
+    btnDeleteLibraryRoll.disabled = busy || getSelectedLibraryRollIds().length === 0;
+}
+
+function resetWorkingLibrary() {
+    currentImageRequestToken++;
+    activeId = null;
+    activeProxyIsFull = false;
+    hasProcessedActiveImage = false;
+    proxyPixels = null;
+    proxyWidth = 0;
+    proxyHeight = 0;
+    currentRollViewId = null;
+    isRollEditing = false;
+    currentImportSessionPaths = null;
+    activeImportViewPaths = null;
+    selectedLibraryIds.clear();
+    allLibraryItems = [];
+    imageStates.clear();
+    filmstripContainer.innerHTML = '';
+    hideThumbnailPlaceholder();
+    previewCanvas.style.display = 'none';
+    disableUI();
+    updateLibrarySelectionUI();
+}
+
 function switchView(viewName) {
     currentView = viewName;
     const views = [
@@ -358,10 +439,14 @@ function switchView(viewName) {
             v.nav.classList.remove('text-zinc-100', 'border-zinc-100');
             v.nav.classList.add('text-zinc-500', 'border-transparent'); 
         }
-        if (viewName !== 'develop') { document.getElementById('btn-export-roll').classList.add('hidden'); }
     });
 
-    if (viewName === 'develop') { document.getElementById('btn-export-roll').classList.remove('hidden');
+    const isDevelop = viewName === 'develop';
+    document.getElementById('btn-export-roll').classList.toggle('hidden', !isDevelop);
+    btnDeleteDevelopRoll.classList.toggle('hidden', !isDevelop);
+    btnDeleteDevelopRoll.disabled = !getDevelopRollId();
+
+    if (isDevelop) {
         // Re-enable UI if there's an active image (e.g., user switched away and came back)
         if (activeId) {
             enableUI();
@@ -510,7 +595,7 @@ window.addEventListener('keydown', async (e) => {
 });
 
 document.getElementById('btn-delete-rolls').addEventListener('click', () => {
-    if (navHistory.classList.contains('text-zinc-100') && !currentRollViewId) {
+    if (navHistory.classList.contains('text-zinc-100') && !historyRollViewId) {
         isDeleteMode = !isDeleteMode;
         if (!isDeleteMode) selectedRollIds.clear();
         renderLibraryAndFilmstrip();
@@ -519,17 +604,7 @@ document.getElementById('btn-delete-rolls').addEventListener('click', () => {
 
 document.getElementById('btn-confirm-delete').addEventListener('click', async () => {
     if (selectedRollIds.size === 0) return;
-    const confirm = await showConfirm(`Are you sure you want to delete ${selectedRollIds.size} roll(s)?`);
-    if (confirm) {
-        const deletedRollIds = Array.from(selectedRollIds);
-        await invoke('delete_rolls', { rollIds: deletedRollIds });
-        forgetRollItems(deletedRollIds);
-        selectedRollIds.clear();
-        isDeleteMode = false;
-        allRolls = await invoke('get_rolls');
-        renderLibraryAndFilmstrip();
-        showToast("Rolls deleted", "success");
-    }
+    await requestRollDeletion(Array.from(selectedRollIds));
 });
 
 document.getElementById('btn-cancel-delete').addEventListener('click', () => {
@@ -537,6 +612,58 @@ document.getElementById('btn-cancel-delete').addEventListener('click', () => {
     selectedRollIds.clear();
     renderLibraryAndFilmstrip();
 });
+
+async function requestRollDeletion(rollIds) {
+    if (importInProgress) {
+        showToast('Wait for the current import to finish before removing a roll.', 'error');
+        return;
+    }
+    const uniqueRollIds = [...new Set((rollIds || []).filter(Boolean))];
+    if (uniqueRollIds.length === 0) return;
+    const choice = await showDeleteRollDialog(uniqueRollIds.length);
+    if (!choice) return;
+
+    try {
+        const currentWorkingRollId = getDevelopRollId();
+        const result = await invoke('delete_rolls', {
+            rollIds: uniqueRollIds,
+            deleteSourceFiles: choice === 'files'
+        });
+        forgetRollItems(uniqueRollIds);
+        for (const rollId of uniqueRollIds) {
+            for (const key of rollPreviewCache.keys()) {
+                if (key.startsWith(`${rollId}:`)) rollPreviewCache.delete(key);
+            }
+        }
+        selectedRollIds.clear();
+        isDeleteMode = false;
+        const deletedHistoryRoll = uniqueRollIds.includes(historyRollViewId);
+        if (uniqueRollIds.includes(currentWorkingRollId)) {
+            resetWorkingLibrary();
+        }
+        if (deletedHistoryRoll) historyRollViewId = null;
+        allRolls = await invoke('get_rolls');
+        await updateFilterSidebar();
+        await renderLibraryAndFilmstrip();
+
+        let message = `${uniqueRollIds.length} roll(s) removed from NexFilm`;
+        if (choice === 'files') {
+            message += `; ${result.deleted_source_files || 0} source file(s) deleted`;
+            if (result.protected_source_files) message += `, ${result.protected_source_files} shared file(s) kept`;
+            if (result.failed_source_files?.length) {
+                showToast(`${message}. ${result.failed_source_files.length} source file(s) could not be deleted.`, 'error');
+                return;
+            }
+        }
+        showToast(message, 'success');
+    } catch (error) {
+        showToast(`Could not remove the roll: ${error}`, 'error');
+    }
+}
+
+btnDeleteLibraryRoll.addEventListener('click', () => requestRollDeletion(getSelectedLibraryRollIds()));
+btnDeleteDevelopRoll.addEventListener('click', () => requestRollDeletion([getDevelopRollId()]));
+btnDeleteCurrentRoll.addEventListener('click', () => requestRollDeletion([historyRollViewId]));
 
 function showToast(message, type = "error") {
     const toast = document.createElement('div');
@@ -1847,7 +1974,9 @@ function disableUI() {
 
 let allRolls = [];
 let currentRollViewId = null;
+let historyRollViewId = null;
 let isRollEditing = false; // true only when Continue Editing (explicitly imported for editing), false for History preview
+let editingRollId = null;
 let currentImportSessionPaths = null;
 let activeImportViewPaths = null;
 const rollPreviewCache = new Map();
@@ -1954,12 +2083,17 @@ function createLibraryItemElement(item) {
     const libDiv = document.createElement('div');
     libDiv.className = `library-item overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
     libDiv.dataset.id = item.id;
-    libDiv.ondblclick = () => {
+    libDiv.onmousedown = event => {
+        if (event.detail > 1) clearNativeSelection(event);
+    };
+    libDiv.ondblclick = event => {
+        clearNativeSelection(event);
         selectedLibraryIds.clear();
         selectedLibraryIds.add(item.id);
         currentImportSessionPaths = null;
-        if (item.roll_id && item.roll_id !== 'LOOSE_DEFAULT') {
+        if (item.roll_id) {
             currentRollViewId = item.roll_id;
+            isRollEditing = true;
         } else {
             currentRollViewId = null;
             isRollEditing = false;
@@ -2142,11 +2276,15 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
             historyInternalGrid.classList.add('hidden');
             btnHistoryBack.classList.add('hidden');
             btnExportContactSheet.classList.add('hidden');
+            document.getElementById('btn-promote-roll').classList.add('hidden');
+            document.getElementById('btn-delete-rolls').classList.remove('hidden');
+            btnEditRoll.classList.add('hidden');
+            btnDeleteCurrentRoll.classList.add('hidden');
         } else {
             historyEmpty.classList.add('hidden');
             const filters = getActiveFilters();
             
-            if (currentRollViewId) {
+            if (historyRollViewId) {
                 // Inner Roll View
                 libraryRollsGrid.classList.add('hidden');
                 historyInternalGrid.classList.remove('hidden');
@@ -2154,12 +2292,14 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 btnExportContactSheet.classList.remove('hidden');
                 document.getElementById('btn-promote-roll').classList.remove('hidden');
                 document.getElementById('btn-delete-rolls').classList.add('hidden');
+                btnEditRoll.classList.remove('hidden');
+                btnDeleteCurrentRoll.classList.remove('hidden');
                 historyTitle.textContent = "Roll Contents";
                 
-                const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
+                const currentRoll = allRolls.find(r => r.roll_id === historyRollViewId);
                 if (currentRoll) {
                     try {
-                        let rollStrip = await invoke('get_roll_filmstrip', { rollId: currentRollViewId });
+                        let rollStrip = await invoke('get_roll_filmstrip', { rollId: historyRollViewId });
 
                         // History Films is preview-only — never trigger import.
                         // If items are missing from state, the grid simply shows what's available.
@@ -2182,7 +2322,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
 
                     currentRoll.image_paths.forEach(path => {
                         const existingItem = items.find(i =>
-                            i.roll_id === currentRollViewId &&
+                            i.roll_id === historyRollViewId &&
                             normalizePath(i.file_path) === normalizePath(path)
                         );
                         if (!existingItem) return;
@@ -2192,16 +2332,20 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                         
                         if (selectedLibraryIds.has(existingItem.id)) libDiv.classList.add('selected');
                         libDiv.dataset.id = existingItem.id;
-                        libDiv.ondblclick = () => {
+                        libDiv.onmousedown = event => {
+                            if (event.detail > 1) clearNativeSelection(event);
+                        };
+                        libDiv.ondblclick = event => {
+                            clearNativeSelection(event);
                             selectedLibraryIds.clear();
                             selectedLibraryIds.add(existingItem.id);
                             updateLibrarySelectionUI();
                             // State 3 (Continue Editing / Import by Roll): allow switching to develop
                             // State 4 (History preview): selection only, no develop switching
-                            if (isRollEditing && existingItem.state_available !== false) {
+                            if (isRollEditing && historyRollViewId === currentRollViewId && existingItem.state_available !== false) {
                                 selectImage(existingItem.id);
                                 switchView('develop');
-                            } else if (isRollEditing) {
+                            } else if (isRollEditing && historyRollViewId === currentRollViewId) {
                                 showToast("This frame has no persisted edit state.", "error");
                             }
                         };
@@ -2256,6 +2400,8 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 btnExportContactSheet.classList.add('hidden');
                 document.getElementById('btn-promote-roll').classList.add('hidden');
                 document.getElementById('btn-delete-rolls').classList.remove('hidden');
+                btnEditRoll.classList.add('hidden');
+                btnDeleteCurrentRoll.classList.add('hidden');
                 historyTitle.textContent = "Roll Archive";
                 
                 let filteredRolls = allRolls.filter(r => {
@@ -2302,25 +2448,33 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                             else selectedRollIds.add(roll.roll_id);
                             renderLibraryAndFilmstrip();
                         } else {
-                            currentRollViewId = roll.roll_id;
-                            isRollEditing = false; // History preview only — not editing
+                            historyRollViewId = roll.roll_id;
                             selectedLibraryIds.clear();
                             renderLibraryAndFilmstrip();
                         }
                     };
                     card.innerHTML = `
                         <div class="roll-summary">
-                            <div class="roll-title">${roll.film_stock || 'Unknown Film'}</div>
-                            <div class="roll-format">${roll.format || '135'} format</div>
+                            <div class="roll-title"></div>
+                            <div class="roll-format"></div>
                             <div class="roll-meta">
-                                <span>${roll.camera || 'Unknown camera'}</span>
-                                <span>${roll.date || 'Unknown date'}</span>
+                                <span data-roll-camera></span>
+                                <span data-roll-date></span>
                             </div>
+                            <button type="button" class="roll-edit-action">Edit Info</button>
                         </div>
                         <div class="roll-preview">
                             ${thumbSrc ? `<img src="${thumbSrc}" alt="" class="w-full h-full object-cover">` : `<div class="roll-preview-empty"></div>`}
                         </div>
                     `;
+                    card.querySelector('.roll-title').textContent = roll.film_stock || 'Unknown Film';
+                    card.querySelector('.roll-format').textContent = `${roll.format || '135'} format`;
+                    card.querySelector('[data-roll-camera]').textContent = roll.camera || 'Unknown camera';
+                    card.querySelector('[data-roll-date]').textContent = roll.date || 'Unknown date';
+                    card.querySelector('.roll-edit-action').addEventListener('click', event => {
+                        event.stopPropagation();
+                        openRollMetadataEditor(roll);
+                    });
                     libraryRollsGrid.appendChild(card);
                 }
             }
@@ -2384,11 +2538,27 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
 }
 
 document.getElementById('btn-promote-roll').addEventListener('click', async () => {
-    if (currentRollViewId) {
+    if (historyRollViewId) {
+        if (importInProgress) {
+            showToast('Wait for the current import to finish before promoting a roll.', 'error');
+            return;
+        }
         try {
-            await invoke('promote_roll', { rollId: currentRollViewId });
+            const promotedRollId = historyRollViewId;
+            await flushActiveImageState();
+            await invoke('promote_roll', { rollId: promotedRollId });
+            const promotedItems = await invoke('get_filmstrip');
+            resetWorkingLibrary();
+            allLibraryItems = uniqueItemsByPath(promotedItems);
+            rememberItems(allLibraryItems);
+            currentRollViewId = promotedRollId;
+            isRollEditing = true;
+            currentImportSessionPaths = null;
+            activeImportViewPaths = null;
+            selectedLibraryIds.clear();
             showToast("Roll promoted to Library successfully", "success");
-            renderLibraryAndFilmstrip();
+            await renderLibraryAndFilmstrip();
+            switchView('library');
         } catch (e) {
             showToast("Failed to promote roll", "error");
             console.error(e);
@@ -2397,8 +2567,7 @@ document.getElementById('btn-promote-roll').addEventListener('click', async () =
 });
 
 document.getElementById('btn-history-back').addEventListener('click', () => {
-    currentRollViewId = null;
-    isRollEditing = false;
+    historyRollViewId = null;
     selectedLibraryIds.clear();
     renderLibraryAndFilmstrip();
 });
@@ -2570,6 +2739,7 @@ async function selectImage(id) {
                 canvasWrapper.style.width = '100%';
                 canvasWrapper.style.height = '100%';
                 activeId = id;
+                btnDeleteDevelopRoll.disabled = !getDevelopRollId();
                 renderLibraryAndFilmstrip();
                 return;
             }
@@ -2583,6 +2753,7 @@ async function selectImage(id) {
         document.getElementById('preview-canvas').style.display = 'block';
 
         activeId = id;
+        btnDeleteDevelopRoll.disabled = !getDevelopRollId();
         activeProxyIsFull = false;
         hasProcessedActiveImage = false;
         proxyPixels = null;
@@ -2707,41 +2878,30 @@ const doImportSingle = async () => {
         
         const selectedPaths = uniqueImportPaths(await invoke('open_file_dialog'));
         if (selectedPaths.length > 0) {
-            const knownLoosePaths = new Set(
-                [...itemIndex.values(), ...allLibraryItems]
-                    .filter(item => (item.roll_id || 'LOOSE_DEFAULT') === 'LOOSE_DEFAULT')
-                    .map(item => normalizePath(item.file_path))
-            );
-            const paths = selectedPaths.filter(path => !knownLoosePaths.has(normalizePath(path)));
-            if (paths.length === 0) {
-                showToast("The selected files are already imported.", "error");
-                return;
-            }
-            currentRollViewId = null;
-            isRollEditing = false;
-            currentImportSessionPaths = paths.map(normalizePath);
-            activeImportViewPaths = currentImportSessionPaths.slice();
+            const paths = selectedPaths;
+            const roll = createLooseImportRoll(paths);
+            await beginWorkingImport(roll.roll_id, paths);
             
             initImportToast(paths.length);
             
             const tempItems = paths.map((p, idx) => ({
                 id: 'temp_import_' + Date.now() + '_' + idx,
-                roll_id: 'LOOSE_DEFAULT',
+                roll_id: roll.roll_id,
                 file_path: p,
                 thumbnail_base64: '',
                 status: 'importing'
             }));
             transientIds = tempItems.map(item => item.id);
             rememberItems(tempItems);
-            allLibraryItems = [...allLibraryItems, ...tempItems];
+            allLibraryItems = tempItems;
             await renderLibraryAndFilmstrip(true);
             
-            await invoke('import_images', { paths, isLoose: true, rollId: 'LOOSE_DEFAULT', isHistorical: false });
+            await invoke('import_roll', { roll, paths });
             importStarted = true;
         }
     } catch (e) {
-        activeImportViewPaths = null;
         removeTransientItems(transientIds);
+        resetWorkingLibrary();
         await renderLibraryAndFilmstrip(true);
         showToast("Import failed: " + e, "error");
     }
@@ -2753,9 +2913,6 @@ const doImportSingle = async () => {
 const doImportRoll = async () => {
     let importStarted = false;
     let transientIds = [];
-    const previousRollViewId = currentRollViewId;
-    const previousRollEditing = isRollEditing;
-    const previousImportSessionPaths = currentImportSessionPaths;
     try {
         const format = document.getElementById('roll-format').value;
         const date = document.getElementById('roll-date').value;
@@ -2783,10 +2940,9 @@ const doImportRoll = async () => {
         const paths = uniqueImportPaths(await invoke('open_file_dialog'));
         if (paths.length > 0) {
             initImportToast(paths.length);
-            currentImportSessionPaths = paths.map(normalizePath);
-            activeImportViewPaths = currentImportSessionPaths.slice();
             const roll_id = `roll_${Date.now()}_${Math.floor(Math.random()*1000)}`;
             const roll = { roll_id, date, format, film_stock: film, camera, image_paths: paths };
+            await beginWorkingImport(roll_id, paths);
             const tempItems = paths.map((p, idx) => ({
                 id: 'temp_import_' + Date.now() + '_' + idx,
                 roll_id,
@@ -2797,9 +2953,7 @@ const doImportRoll = async () => {
             }));
             transientIds = tempItems.map(item => item.id);
             rememberItems(tempItems);
-            allLibraryItems = [...allLibraryItems, ...tempItems];
-            currentRollViewId = roll_id;
-            isRollEditing = true; // Fresh roll import — editing mode active
+            allLibraryItems = tempItems;
             await renderLibraryAndFilmstrip(true);
             
             await invoke('import_roll', { roll, paths });
@@ -2815,11 +2969,8 @@ const doImportRoll = async () => {
             
         }
     } catch (e) {
-        activeImportViewPaths = null;
         removeTransientItems(transientIds);
-        currentRollViewId = previousRollViewId;
-        isRollEditing = previousRollEditing;
-        currentImportSessionPaths = previousImportSessionPaths;
+        resetWorkingLibrary();
         await renderLibraryAndFilmstrip(true);
         showToast("Import failed: " + e, "error");
     }
@@ -2855,6 +3006,10 @@ document.getElementById('btn-close-continue-roll').addEventListener('click', () 
 });
 
 document.getElementById('btn-confirm-continue').addEventListener('click', async () => {
+    if (importInProgress) {
+        showToast('Wait for the current import to finish before opening another roll.', 'error');
+        return;
+    }
     const rollId = document.getElementById('continue-roll-select').value;
     if (!rollId) return;
     
@@ -2867,9 +3022,14 @@ document.getElementById('btn-confirm-continue').addEventListener('click', async 
     }
 
     try {
+        await flushActiveImageState();
         await invoke('promote_roll', { rollId });
-        const persistedItems = await mergeRollIntoWorkingSet(rollId);
+        const persistedItems = await invoke('get_filmstrip');
+        resetWorkingLibrary();
+        allLibraryItems = uniqueItemsByPath(persistedItems);
+        rememberItems(allLibraryItems);
         currentRollViewId = rollId;
+        historyRollViewId = rollId;
         isRollEditing = true;
         currentImportSessionPaths = null;
         selectedLibraryIds.clear();
@@ -2954,6 +3114,7 @@ document.getElementById('roll-film-select').addEventListener('change', (e) => {
 handleInputEnter('roll-film-input', 'roll-film-select');
 
 const showImportChoice = () => {
+    editingRollId = null;
     document.getElementById('import-choice-modal').classList.remove('opacity-0', 'pointer-events-none');
     setTimeout(() => document.getElementById('import-choice-content').classList.remove('scale-95'), 10);
 };
@@ -2969,6 +3130,14 @@ document.getElementById('btn-import-single').addEventListener('click', doImportS
 
 document.getElementById('btn-import-by-roll').addEventListener('click', () => {
     document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
+    editingRollId = null;
+    document.getElementById('roll-metadata-title').textContent = 'Roll Metadata';
+    document.getElementById('btn-confirm-roll-meta').textContent = 'Select Images';
+    document.getElementById('roll-format').value = '135';
+    if (!document.getElementById('roll-date').value) {
+        const now = new Date();
+        document.getElementById('roll-date').value = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+    }
     document.getElementById('roll-metadata-modal').classList.remove('opacity-0', 'pointer-events-none');
     setTimeout(() => document.getElementById('roll-metadata-content').classList.remove('scale-95'), 10);
 });
@@ -2979,7 +3148,81 @@ document.getElementById('btn-close-roll-meta').addEventListener('click', () => {
 document.getElementById('btn-cancel-roll-meta').addEventListener('click', () => {
     document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
 });
-document.getElementById('btn-confirm-roll-meta').addEventListener('click', doImportRoll);
+document.getElementById('btn-confirm-roll-meta').addEventListener('click', async () => {
+    if (editingRollId) await updateCurrentRollMetadata();
+    else await doImportRoll();
+});
+
+function setRollMetadataSelect(selectId, inputId, value) {
+    const select = document.getElementById(selectId);
+    const input = document.getElementById(inputId);
+    const normalized = value || '';
+    if (normalized && !Array.from(select.options).some(option => option.value === normalized)) {
+        const option = document.createElement('option');
+        option.value = normalized;
+        option.textContent = normalized;
+        select.insertBefore(option, select.querySelector('option[value="__new__"]'));
+    }
+    select.value = normalized;
+    input.value = '';
+    input.classList.add('hidden');
+}
+
+function openRollMetadataEditor(roll) {
+    if (!roll) return;
+    editingRollId = roll.roll_id;
+    document.getElementById('roll-metadata-title').textContent = 'Edit Roll Info';
+    document.getElementById('btn-confirm-roll-meta').textContent = 'Save Changes';
+    document.getElementById('roll-format').value = roll.format || '135';
+    document.getElementById('roll-date').value = roll.date || '';
+    setRollMetadataSelect('roll-camera-select', 'roll-camera-input', roll.camera);
+    setRollMetadataSelect('roll-film-select', 'roll-film-input', roll.film_stock);
+    document.getElementById('roll-metadata-modal').classList.remove('opacity-0', 'pointer-events-none');
+    requestAnimationFrame(() => document.getElementById('roll-metadata-content').classList.remove('scale-95'));
+}
+
+async function updateCurrentRollMetadata() {
+    const rollId = editingRollId;
+    if (!rollId) return;
+    if (importInProgress) {
+        showToast('Wait for the current import to finish before editing roll information.', 'error');
+        return;
+    }
+    let camera = document.getElementById('roll-camera-select').value;
+    if (camera === '__new__') camera = document.getElementById('roll-camera-input').value.trim();
+    let filmStock = document.getElementById('roll-film-select').value;
+    if (filmStock === '__new__') filmStock = document.getElementById('roll-film-input').value.trim();
+    if (!filmStock) {
+        showToast('Film stock is required', 'error');
+        return;
+    }
+
+    try {
+        const updated = await invoke('update_roll_metadata', {
+            rollId,
+            date: document.getElementById('roll-date').value,
+            format: document.getElementById('roll-format').value,
+            filmStock,
+            camera
+        });
+        const index = allRolls.findIndex(roll => roll.roll_id === rollId);
+        if (index >= 0) allRolls[index] = updated;
+        rollPreviewCache.clear();
+        if (camera) await invoke('add_user_camera', { camera }).catch(() => {});
+        if (filmStock) await invoke('add_user_film', { film: filmStock }).catch(() => {});
+        editingRollId = null;
+        document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
+        await updateFilterSidebar();
+        await renderLibraryAndFilmstrip(true);
+        showToast('Roll information updated', 'success');
+    } catch (error) {
+        showToast(`Could not update roll information: ${error}`, 'error');
+    }
+}
+
+btnEditRoll.addEventListener('click', () => {
+    openRollMetadataEditor(allRolls.find(roll => roll.roll_id === historyRollViewId));
+});
 
 
 
@@ -3815,6 +4058,32 @@ async function showConfirm(message) {
     });
 }
 
+async function showDeleteRollDialog(rollCount) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 bg-black/80 flex items-center justify-center z-[110] backdrop-blur-sm';
+        overlay.innerHTML = `
+            <div class="bg-[#1a1a1e] border border-[#28282c] rounded-lg p-6 max-w-md w-full mx-4 shadow-2xl">
+                <h3 class="text-zinc-100 font-bold mb-2">Remove ${rollCount} roll${rollCount === 1 ? '' : 's'}?</h3>
+                <p class="text-zinc-400 text-sm mb-2">Choose whether to remove only the NexFilm catalog records or also delete the original source files.</p>
+                <p class="text-red-300 text-xs mb-6">Deleting source files is permanent. Files still referenced by another roll will be kept.</p>
+                <div class="flex flex-wrap justify-end gap-3">
+                    <button data-delete-choice="cancel" class="px-4 py-2 text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">Cancel</button>
+                    <button data-delete-choice="catalog" class="px-4 py-2 text-xs font-bold bg-zinc-700 hover:bg-zinc-600 text-white rounded transition-colors">Remove Records</button>
+                    <button data-delete-choice="files" class="px-4 py-2 text-xs font-bold bg-red-900/70 hover:bg-red-800 border border-red-700/60 text-white rounded transition-colors">Delete Source Files</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        overlay.querySelectorAll('[data-delete-choice]').forEach(button => {
+            button.addEventListener('click', () => {
+                overlay.remove();
+                resolve(button.dataset.deleteChoice === 'cancel' ? null : button.dataset.deleteChoice);
+            });
+        });
+    });
+}
+
 btnResetColor.addEventListener('click', async () => {
     if (!activeId) return;
     
@@ -4226,15 +4495,15 @@ previewCanvas.addEventListener('click', (e) => {
 
 // Contact Sheet Generator Logic
 document.getElementById('btn-export-contact-sheet').addEventListener('click', async () => {
-    if (!currentRollViewId) return;
+    if (!historyRollViewId) return;
     const btnExportContactSheet = document.getElementById('btn-export-contact-sheet');
     
     try {
         btnExportContactSheet.textContent = "Generating...";
         btnExportContactSheet.disabled = true;
 
-        const currentRoll = allRolls.find(r => r.roll_id === currentRollViewId);
-        const rollItems = await invoke('get_roll_filmstrip', { rollId: currentRollViewId });
+        const currentRoll = allRolls.find(r => r.roll_id === historyRollViewId);
+        const rollItems = await invoke('get_roll_filmstrip', { rollId: historyRollViewId });
 
         if (rollItems.length === 0) throw new Error("No images in roll");
 
@@ -4826,6 +5095,8 @@ listen('tauri://drag-leave', (event) => {
 });
 
 function restoreImportButtons() {
+    importInProgress = false;
+    setImportManagementBusy(false);
     btnImport.textContent = "Import Roll";
     btnImport.disabled = false;
     btnImportTriggers.forEach(btn => {
@@ -4835,6 +5106,8 @@ function restoreImportButtons() {
 }
 
 function initImportToast(count) {
+    importInProgress = true;
+    setImportManagementBusy(true);
     totalImportCount = count;
     currentImportCount = 0;
     importFailedCount = 0;
@@ -4856,40 +5129,33 @@ const handleDrop = async (event) => {
     document.getElementById('drag-overlay').classList.add('hidden');
     const droppedPaths = uniqueImportPaths(event.payload.paths || event.payload)
         .filter(isSupportedImportPath);
-    const knownLoosePaths = new Set(
-        [...itemIndex.values(), ...allLibraryItems]
-            .filter(item => (item.roll_id || 'LOOSE_DEFAULT') === 'LOOSE_DEFAULT')
-            .map(item => normalizePath(item.file_path))
-    );
-    const paths = droppedPaths.filter(path => !knownLoosePaths.has(normalizePath(path)));
+    const paths = droppedPaths;
     if (paths.length > 0) {
         let transientIds = [];
         btnImport.textContent = 'Importing...';
         btnImport.disabled = true;
         initImportToast(paths.length);
         try {
-            currentRollViewId = null;
-            isRollEditing = false;
-            currentImportSessionPaths = paths.map(normalizePath);
-            activeImportViewPaths = currentImportSessionPaths.slice();
+            const roll = createLooseImportRoll(paths);
+            await beginWorkingImport(roll.roll_id, paths);
 
             const tempItems = paths.map((p, idx) => ({
                 id: 'temp_import_' + Date.now() + '_' + idx,
-                roll_id: 'LOOSE_DEFAULT',
+                roll_id: roll.roll_id,
                 file_path: p,
                 thumbnail_base64: '',
                 status: 'importing'
             }));
             transientIds = tempItems.map(item => item.id);
             rememberItems(tempItems);
-            allLibraryItems = [...allLibraryItems, ...tempItems];
+            allLibraryItems = tempItems;
             await renderLibraryAndFilmstrip(true);
 
-            await invoke('import_images', { paths, isLoose: true, rollId: 'LOOSE_DEFAULT', isHistorical: false });
+            await invoke('import_roll', { roll, paths });
             showToast(`Queued ${paths.length} file(s) for import`, 'success');
         } catch (error) {
-            activeImportViewPaths = null;
             removeTransientItems(transientIds);
+            resetWorkingLibrary();
             restoreImportButtons();
             await renderLibraryAndFilmstrip(true);
             showToast("Import failed: " + error, "error");

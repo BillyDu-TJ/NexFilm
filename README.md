@@ -80,7 +80,9 @@ NexFilm Engine 用于把相机翻拍或扫描仪输出的胶片负片转换为�
 4. 点击 **Select Images**，一次选择这一卷的全部扫描文件。建议先按拍摄顺序整理文件名。
 5. 等待导入进度完成。导入只建立工作集和预览，不会修改原始文件。
 
-临时处理不需要归档的单张图片时，可选择 **Loose Import**，也可以把受支持的图片直接拖入窗口。Loose Import 不会出现在胶卷归档中。
+临时处理散张图片时，可选择 **Loose Import**，也可以把受支持的图片直接拖入窗口。每次散张导入会形成一个独立的 **Loose Import** 记录，因而也能在 **Rolls** 中继续编辑、修改元信息或删除。
+
+Library 和 Develop 只显示当前工作卷：软件启动时工作区为空，每次新导入或从 Rolls 使用 **Promote to Library** 都会替换上一批画面，历史记录仍保留在 Rolls 中。
 
 #### 2. 确认胶片范围并反相
 
@@ -110,6 +112,8 @@ NexFilm Engine 用于把相机翻拍或扫描仪输出的胶片负片转换为�
 #### 5. 继续编辑旧胶卷
 
 点击 **Import Roll**，选择 **Continue Editing Roll**，再选择归档中的胶卷。若原图被移动，使用 **Locate File** 重新指定文件。建议不要随意改动原始扫描文件的路径；NexFilm 数据库只保存编辑状态和文件路径，不会复制整套原图。
+
+在 Library 选择任意画面、在 Develop 打开画面，或在 Rolls 选择胶卷后，都可以使用 **Remove Roll**。确认框可选择仅移除 NexFilm 记录，或同时永久删除磁盘源文件；仍被其他胶卷引用的同一路径会保留。在 Rolls 使用 **Edit Info** 可修改相机、胶片、日期和画幅。
 
 ### 支持的文件与输出
 
@@ -283,7 +287,9 @@ NexFilm Engine converts camera-scanned or scanner-produced film negatives into p
 4. Select **Select Images** and choose every scan from the roll in one operation. Sorting filenames into shooting order first is recommended.
 5. Wait for import to finish. Import creates a working set and previews; it does not alter source files.
 
-For temporary images that do not need roll archiving, use **Loose Import** or drag supported files into the window. Loose imports do not appear in the roll archive.
+For loose images, use **Loose Import** or drag supported files into the window. Each loose import becomes an independent **Loose Import** record, so it can also be resumed, edited, or removed from **Rolls**.
+
+Library and Develop show only the current working roll. The workspace starts empty, and every new import or **Promote to Library** action replaces the previous batch while keeping its history in Rolls.
 
 #### 2. Confirm the film area and invert
 
@@ -313,6 +319,8 @@ Use 16-bit TIFF for further editing or archival output; JPEG/PNG are more conven
 #### 5. Continue an archived roll
 
 Select **Import Roll**, then **Continue Editing Roll**, and choose a roll from the archive. If source images have moved, use **Locate File**. Avoid moving source scans unnecessarily: the database stores edit state and source paths, not a second copy of the originals.
+
+Use **Remove Roll** after selecting a frame in Library, while viewing a frame in Develop, or after selecting a roll in Rolls. The confirmation dialog can remove only NexFilm records or permanently delete source files as well; paths still referenced by another roll are kept. Use **Edit Info** in Rolls to change the camera, film stock, date, or format.
 
 ### Supported files and output
 

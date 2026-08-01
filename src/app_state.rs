@@ -189,6 +189,8 @@ pub struct FilmItem {
     pub params: TuningParams,
     pub geom: GeometryState,
     pub is_loose: bool,
+    /// Ephemeral membership in the current Library/Develop working session.
+    /// Persisted archive records always restore with this set to false.
     pub in_library: bool,
 }
 

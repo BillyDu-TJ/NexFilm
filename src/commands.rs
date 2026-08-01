@@ -898,7 +898,8 @@ pub async fn import_images(
     in_library: Option<bool>,
     roll_id: Option<String>,
     is_historical: Option<bool>,
-    _state: State<'_, EngineState>,
+    replace_library: Option<bool>,
+    state: State<'_, EngineState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     if paths.is_empty() {
@@ -915,6 +916,10 @@ pub async fn import_images(
         return Err(
             "Historical rolls must be resumed from persisted state, not re-imported".into(),
         );
+    }
+
+    if replace_library.unwrap_or(true) {
+        clear_library_membership(&state)?;
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -1362,6 +1367,38 @@ fn filmstrip_item(item: &FilmItem) -> FilmstripItem {
         state_available: true,
         file_missing,
     }
+}
+
+fn clear_library_membership(state: &EngineState) -> Result<(), String> {
+    for entry in state.items.iter() {
+        entry
+            .value()
+            .write()
+            .map_err(|error| error.to_string())?
+            .in_library = false;
+    }
+    *state.active_id.write().map_err(|error| error.to_string())? = None;
+    Ok(())
+}
+
+fn activate_library_roll(state: &EngineState, roll: &Roll) -> Result<Vec<String>, String> {
+    clear_library_membership(state)?;
+    let roll_paths: HashSet<String> = roll
+        .image_paths
+        .iter()
+        .map(|path| normalize_path(path))
+        .collect();
+    let is_loose_roll = roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT";
+    let mut activated_ids = Vec::new();
+    for entry in state.items.iter() {
+        let mut item = write_lock(entry.value());
+        if item.roll_id == roll.roll_id && roll_paths.contains(&normalize_path(&item.file_path)) {
+            item.in_library = true;
+            item.is_loose = is_loose_roll;
+            activated_ids.push(item.id.clone());
+        }
+    }
+    Ok(activated_ids)
 }
 
 #[tauri::command]
@@ -3201,6 +3238,7 @@ pub async fn import_roll(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let roll_id_clone = roll.roll_id.clone();
+    let is_loose_roll = roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT";
     let updated_rolls = {
         let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
         let mut updated = rolls.clone();
@@ -3220,10 +3258,11 @@ pub async fn import_roll(
 
     crate::commands::import_images(
         paths,
-        Some(false),
+        Some(is_loose_roll),
         Some(true),
         Some(roll_id_clone),
         Some(false),
+        Some(true),
         state,
         app_handle,
     )
@@ -3267,42 +3306,92 @@ pub async fn save_contact_sheet(
     }
 }
 
+#[derive(Default, Serialize)]
+pub struct DeleteRollsResult {
+    pub removed_rolls: usize,
+    pub removed_records: usize,
+    pub deleted_source_files: usize,
+    pub missing_source_files: usize,
+    pub protected_source_files: usize,
+    pub failed_source_files: Vec<String>,
+}
+
+fn delete_source_paths(
+    source_paths: HashMap<String, String>,
+    protected_paths: &HashSet<String>,
+    result: &mut DeleteRollsResult,
+) {
+    for (normalized, path) in source_paths {
+        if protected_paths.contains(&normalized) {
+            result.protected_source_files += 1;
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => result.deleted_source_files += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                result.missing_source_files += 1;
+            }
+            Err(error) => result.failed_source_files.push(format!("{path}: {error}")),
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn delete_rolls(
     roll_ids: Vec<String>,
+    delete_source_files: Option<bool>,
     state: State<'_, EngineState>,
-) -> Result<(), String> {
+) -> Result<DeleteRollsResult, String> {
     if roll_ids.is_empty() {
-        return Ok(());
+        return Ok(DeleteRollsResult::default());
     }
 
     let deleted_roll_ids: HashSet<&str> = roll_ids.iter().map(String::as_str).collect();
-    let remaining_rolls = {
+    let (remaining_rolls, source_paths, removed_roll_count) = {
         let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
+        let mut paths = HashMap::new();
+        for roll in rolls
+            .iter()
+            .filter(|roll| deleted_roll_ids.contains(roll.roll_id.as_str()))
+        {
+            for path in &roll.image_paths {
+                paths
+                    .entry(normalize_path(path))
+                    .or_insert_with(|| path.clone());
+            }
+        }
         let remaining: Vec<Roll> = rolls
             .iter()
             .filter(|roll| !deleted_roll_ids.contains(roll.roll_id.as_str()))
             .cloned()
             .collect();
+        let removed_roll_count = rolls.len().saturating_sub(remaining.len());
         let mut connection = persistence::open_connection()
             .map_err(|error| format!("Failed to open roll database: {error}"))?;
         persistence::delete_rolls_and_states(&mut connection, &roll_ids, &remaining)
             .map_err(|error| format!("Failed to delete rolls: {error}"))?;
         *rolls = remaining.clone();
-        remaining
+        (remaining, paths, removed_roll_count)
     };
     update_rolls_compatibility_mirror(&remaining_rolls);
 
+    let mut source_paths = source_paths;
     let ids_to_remove: Vec<String> = state
         .items
         .iter()
         .filter_map(|entry| {
             let item = entry.value().read().ok()?;
-            deleted_roll_ids
-                .contains(item.roll_id.as_str())
-                .then(|| entry.key().clone())
+            if deleted_roll_ids.contains(item.roll_id.as_str()) {
+                source_paths
+                    .entry(normalize_path(&item.file_path))
+                    .or_insert_with(|| item.file_path.clone());
+                Some(entry.key().clone())
+            } else {
+                None
+            }
         })
         .collect();
+    let removed_record_count = ids_to_remove.len();
     let removed_ids: HashSet<String> = ids_to_remove.iter().cloned().collect();
     for id in ids_to_remove {
         state.items.remove(&id);
@@ -3324,7 +3413,60 @@ pub async fn delete_rolls(
     {
         *active_id = None;
     }
-    Ok(())
+
+    let mut result = DeleteRollsResult {
+        removed_rolls: removed_roll_count,
+        removed_records: removed_record_count,
+        deleted_source_files: 0,
+        missing_source_files: 0,
+        protected_source_files: 0,
+        failed_source_files: Vec::new(),
+    };
+    if delete_source_files.unwrap_or(false) {
+        let protected_paths: HashSet<String> = remaining_rolls
+            .iter()
+            .flat_map(|roll| roll.image_paths.iter())
+            .map(|path| normalize_path(path))
+            .chain(state.items.iter().filter_map(|entry| {
+                let item = entry.value().read().ok()?;
+                Some(normalize_path(&item.file_path))
+            }))
+            .collect();
+        delete_source_paths(source_paths, &protected_paths, &mut result);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn update_roll_metadata(
+    roll_id: String,
+    date: String,
+    format: String,
+    film_stock: String,
+    camera: String,
+    state: State<'_, EngineState>,
+) -> Result<Roll, String> {
+    if film_stock.trim().is_empty() {
+        return Err("Film stock is required".to_string());
+    }
+    let (updated_roll, updated_rolls) = {
+        let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
+        let mut updated = rolls.clone();
+        let roll = updated
+            .iter_mut()
+            .find(|roll| roll.roll_id == roll_id)
+            .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
+        roll.date = date;
+        roll.format = format;
+        roll.film_stock = film_stock;
+        roll.camera = camera;
+        let updated_roll = roll.clone();
+        persist_roll_snapshot(&updated)?;
+        *rolls = updated.clone();
+        (updated_roll, updated)
+    };
+    update_rolls_compatibility_mirror(&updated_rolls);
+    Ok(updated_roll)
 }
 
 #[tauri::command]
@@ -3337,18 +3479,7 @@ pub async fn promote_roll(roll_id: String, state: State<'_, EngineState>) -> Res
         .find(|roll| roll.roll_id == roll_id)
         .cloned()
         .ok_or("Roll not found")?;
-    let mut promoted_ids = Vec::new();
-    for path in &roll.image_paths {
-        for entry in state.items.iter() {
-            let mut item = write_lock(entry.value());
-            if item.roll_id == roll_id && normalize_path(&item.file_path) == normalize_path(path) {
-                item.in_library = true;
-                item.is_loose = false;
-                promoted_ids.push(item.id.clone());
-                break;
-            }
-        }
-    }
+    let promoted_ids = activate_library_roll(&state, &roll)?;
     let mut order = state
         .item_order
         .write()
@@ -3394,6 +3525,7 @@ pub async fn append_to_roll(
         Some(false),
         Some(true),
         Some(roll_id),
+        Some(false),
         Some(false),
         state,
         app_handle,
@@ -3583,81 +3715,110 @@ pub fn load_image_state_from_db(roll_id: &str, file_path: &str) -> Option<Persis
         .flatten()
 }
 
-pub fn load_all_image_states(state: &crate::app_state::EngineState) {
-    if let Ok(conn) = persistence::open_connection() {
-        if let Ok(mut stmt) = conn.prepare(
+fn load_all_image_states_from_connection(
+    state: &crate::app_state::EngineState,
+    connection: &rusqlite::Connection,
+) -> Result<(), String> {
+    let mut statement = connection
+        .prepare(
             "SELECT roll_id, file_path,
                     COALESCE(embedded_thumb_base64, thumbnail_base64),
                     rendered_thumb_base64,
                     params, geom, base_color
              FROM image_states",
-        ) {
-            if let Ok(rows) = stmt.query_map([], |row| {
-                let roll_id: String = row.get(0)?;
-                let file_path: String = row.get(1)?;
-                let embedded_thumb: String = row.get(2)?;
-                let rendered_thumb: Option<String> = row.get(3)?;
-                let params_str: String = row.get(4)?;
-                let geom_str: String = row.get(5)?;
-                let base_color_str: String = row.get(6)?;
-                Ok((
-                    roll_id,
-                    file_path,
-                    embedded_thumb,
-                    rendered_thumb,
-                    params_str,
-                    geom_str,
-                    base_color_str,
-                ))
-            }) {
-                let mut _order_guard = state.item_order.write().unwrap();
-                for row_result in rows {
-                    if let Ok((
-                        db_roll_id,
-                        db_path,
-                        embedded_thumb,
-                        rendered_thumb,
-                        params_str,
-                        geom_str,
-                        base_color_str,
-                    )) = row_result
-                    {
-                        let params = serde_json::from_str(&params_str).unwrap_or_default();
-                        let geom = serde_json::from_str(&geom_str).unwrap_or_default();
-                        let base_color = serde_json::from_str(&base_color_str).unwrap_or_default();
+        )
+        .map_err(|error| format!("Failed to prepare image-state restore: {error}"))?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(|error| format!("Failed to query image-state restore: {error}"))?;
+    let mut order = state
+        .item_order
+        .write()
+        .map_err(|error| error.to_string())?;
+    for row in rows.flatten() {
+        let (roll_id, file_path, embedded_thumb, rendered_thumb, params, geom, base_color) = row;
+        let img_id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
+        let item = FilmItem {
+            id: img_id.clone(),
+            is_loose: roll_id == "LOOSE_DEFAULT",
+            roll_id,
+            file_path,
+            embedded_thumbnail_base64: embedded_thumb,
+            rendered_thumbnail_base64: rendered_thumb,
+            original_proxy: None,
+            proxy_image: None,
+            pristine_proxy: None,
+            base_color: serde_json::from_str(&base_color).unwrap_or_default(),
+            params: serde_json::from_str(&params).unwrap_or_default(),
+            geom: serde_json::from_str(&geom).unwrap_or_default(),
+            // Restored records belong to Rolls. A working Library is created
+            // only by a new import, Promote, or Continue Editing.
+            in_library: false,
+        };
+        state
+            .items
+            .insert(img_id.clone(), Arc::new(RwLock::new(item)));
+        order.push(img_id);
+    }
+    Ok(())
+}
 
-                        let is_loose_item = db_roll_id == "LOOSE_DEFAULT";
-
-                        let img_id = format!(
-                            "img_{}",
-                            crate::commands::NEXT_ID
-                                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                        );
-                        let item = crate::app_state::FilmItem {
-                            id: img_id.clone(),
-                            roll_id: db_roll_id,
-                            file_path: db_path.clone(),
-                            embedded_thumbnail_base64: embedded_thumb,
-                            rendered_thumbnail_base64: rendered_thumb,
-                            original_proxy: None,
-                            proxy_image: None,
-                            pristine_proxy: None,
-                            base_color,
-                            params,
-                            geom,
-                            is_loose: is_loose_item,
-                            in_library: is_loose_item, // Only loose items appear in Library; roll items are viewed via History Films
-                        };
-                        state.items.insert(
-                            img_id.clone(),
-                            std::sync::Arc::new(std::sync::RwLock::new(item)),
-                        );
-                        _order_guard.push(img_id);
-                    }
-                }
+pub fn load_all_image_states(state: &crate::app_state::EngineState) {
+    match persistence::open_connection() {
+        Ok(connection) => {
+            if let Err(error) = load_all_image_states_from_connection(state, &connection) {
+                eprintln!("[Image State Restore] {error}");
             }
         }
+        Err(error) => eprintln!("[Image State Restore] Failed to open database: {error}"),
     }
+}
+
+fn migrate_legacy_loose_roll(
+    connection: &mut rusqlite::Connection,
+    rolls: &mut Vec<Roll>,
+) -> Result<bool, String> {
+    if rolls.iter().any(|roll| roll.roll_id == "LOOSE_DEFAULT") {
+        return Ok(false);
+    }
+    let paths = {
+        let mut statement = connection
+            .prepare(
+                "SELECT file_path FROM image_states
+                 WHERE roll_id = 'LOOSE_DEFAULT' ORDER BY updated_at, file_path",
+            )
+            .map_err(|error| format!("Failed to inspect legacy loose imports: {error}"))?;
+        let paths = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|error| format!("Failed to read legacy loose imports: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("Failed to read legacy loose import path: {error}"))?;
+        paths
+    };
+    if paths.is_empty() {
+        return Ok(false);
+    }
+    rolls.push(Roll {
+        roll_id: "LOOSE_DEFAULT".to_string(),
+        date: String::new(),
+        format: "Loose".to_string(),
+        film_stock: "Loose Import".to_string(),
+        camera: String::new(),
+        image_paths: paths,
+    });
+    persistence::save_rolls(connection, rolls)
+        .map_err(|error| format!("Failed to migrate legacy loose imports: {error}"))?;
+    Ok(true)
 }
 
 pub fn load_all_rolls(state: &crate::app_state::EngineState) -> Result<(), String> {
@@ -3677,8 +3838,11 @@ pub fn load_all_rolls(state: &crate::app_state::EngineState) -> Result<(), Strin
     };
     persistence::migrate_legacy_rolls_if_empty(&mut connection, &legacy_rolls)
         .map_err(|error| format!("Failed to migrate legacy roll metadata: {error}"))?;
-    let rolls = persistence::load_rolls(&connection)
+    let mut rolls = persistence::load_rolls(&connection)
         .map_err(|error| format!("Failed to load roll metadata: {error}"))?;
+    if migrate_legacy_loose_roll(&mut connection, &mut rolls)? {
+        update_rolls_compatibility_mirror(&rolls);
+    }
     *state.rolls.write().map_err(|error| error.to_string())? = rolls;
     Ok(())
 }
@@ -4004,6 +4168,194 @@ mod import_contract_tests {
 
         persist_import_batch(&mut connection, &[item]).unwrap();
         assert!(crate::persistence::row_exists(&connection, "LOOSE_DEFAULT", "loose.dng").unwrap());
+    }
+}
+
+#[cfg(test)]
+mod library_management_contract_tests {
+    use super::{
+        activate_library_roll, clear_library_membership, delete_source_paths,
+        load_all_image_states_from_connection, migrate_legacy_loose_roll, normalize_path,
+        persist_import_batch, DeleteRollsResult,
+    };
+    use crate::app_state::{BaseColor, EngineState, FilmItem, GeometryState, Roll, TuningParams};
+    use std::sync::{Arc, RwLock};
+
+    fn item(id: &str, roll_id: &str, path: &str, in_library: bool) -> FilmItem {
+        FilmItem {
+            id: id.to_string(),
+            roll_id: roll_id.to_string(),
+            file_path: path.to_string(),
+            embedded_thumbnail_base64: "preview".to_string(),
+            rendered_thumbnail_base64: None,
+            original_proxy: None,
+            proxy_image: None,
+            pristine_proxy: None,
+            base_color: BaseColor::default(),
+            params: TuningParams::default(),
+            geom: GeometryState::default(),
+            is_loose: false,
+            in_library,
+        }
+    }
+
+    #[test]
+    fn clearing_a_working_library_keeps_records_but_removes_membership_and_active_image() {
+        let state = EngineState::new();
+        state.items.insert(
+            "old".to_string(),
+            Arc::new(RwLock::new(item("old", "roll-old", "old.dng", true))),
+        );
+        *state.active_id.write().unwrap() = Some("old".to_string());
+
+        clear_library_membership(&state).unwrap();
+
+        assert!(!state.items.get("old").unwrap().read().unwrap().in_library);
+        assert!(state.active_id.read().unwrap().is_none());
+        assert!(state.items.contains_key("old"));
+    }
+
+    #[test]
+    fn restored_records_do_not_reopen_in_the_working_library() {
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persistence::init_schema(&connection).unwrap();
+        persist_import_batch(
+            &mut connection,
+            &[item("persisted", "LOOSE_DEFAULT", "old-scan.dng", true)],
+        )
+        .unwrap();
+        let restored = EngineState::new();
+
+        load_all_image_states_from_connection(&restored, &connection).unwrap();
+
+        assert_eq!(restored.items.len(), 1);
+        let restored_item = restored.items.iter().next().unwrap();
+        assert!(!restored_item.value().read().unwrap().in_library);
+    }
+
+    #[test]
+    fn legacy_loose_records_become_a_manageable_archive_roll() {
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persistence::init_schema(&connection).unwrap();
+        persist_import_batch(
+            &mut connection,
+            &[
+                item("a", "LOOSE_DEFAULT", "a.dng", true),
+                item("b", "LOOSE_DEFAULT", "b.dng", true),
+            ],
+        )
+        .unwrap();
+        let mut rolls = Vec::new();
+
+        assert!(migrate_legacy_loose_roll(&mut connection, &mut rolls).unwrap());
+        assert_eq!(rolls.len(), 1);
+        assert_eq!(rolls[0].format, "Loose");
+        assert_eq!(rolls[0].image_paths, vec!["a.dng", "b.dng"]);
+        assert!(!migrate_legacy_loose_roll(&mut connection, &mut rolls).unwrap());
+        assert_eq!(crate::persistence::load_rolls(&connection).unwrap(), rolls);
+    }
+
+    #[test]
+    fn activating_a_roll_replaces_the_previous_working_library() {
+        let state = EngineState::new();
+        for item in [
+            item("old", "roll-old", "old.dng", true),
+            item("target", "roll-new", "new.dng", false),
+            item("not-in-roll", "roll-new", "extra.dng", true),
+        ] {
+            state
+                .items
+                .insert(item.id.clone(), Arc::new(RwLock::new(item)));
+        }
+        let roll = Roll {
+            roll_id: "roll-new".to_string(),
+            date: "2026-07-31".to_string(),
+            format: "135".to_string(),
+            film_stock: "Test Film".to_string(),
+            camera: "Test Camera".to_string(),
+            image_paths: vec!["NEW.DNG".to_string()],
+        };
+
+        let activated = activate_library_roll(&state, &roll).unwrap();
+
+        assert_eq!(activated, vec!["target".to_string()]);
+        assert!(!state.items.get("old").unwrap().read().unwrap().in_library);
+        assert!(
+            state
+                .items
+                .get("target")
+                .unwrap()
+                .read()
+                .unwrap()
+                .in_library
+        );
+        assert!(
+            !state
+                .items
+                .get("not-in-roll")
+                .unwrap()
+                .read()
+                .unwrap()
+                .in_library
+        );
+    }
+
+    #[test]
+    fn activating_a_loose_batch_preserves_its_loose_identity() {
+        let state = EngineState::new();
+        state.items.insert(
+            "loose".to_string(),
+            Arc::new(RwLock::new(item("loose", "loose-1", "scan.tif", false))),
+        );
+        let roll = Roll {
+            roll_id: "loose-1".to_string(),
+            date: String::new(),
+            format: "Loose".to_string(),
+            film_stock: "Loose Import".to_string(),
+            camera: String::new(),
+            image_paths: vec!["scan.tif".to_string()],
+        };
+
+        activate_library_roll(&state, &roll).unwrap();
+
+        let entry = state.items.get("loose").unwrap();
+        let item = entry.read().unwrap();
+        assert!(item.in_library);
+        assert!(item.is_loose);
+    }
+
+    #[test]
+    fn source_deletion_removes_only_unshared_existing_files() {
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-delete-test-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let removable = root.join("remove.dng");
+        let protected = root.join("shared.dng");
+        let missing = root.join("missing.dng");
+        std::fs::write(&removable, b"remove").unwrap();
+        std::fs::write(&protected, b"keep").unwrap();
+        let mut paths = std::collections::HashMap::new();
+        for path in [&removable, &protected, &missing] {
+            let path = path.to_string_lossy().to_string();
+            paths.insert(normalize_path(&path), path);
+        }
+        let protected_paths =
+            std::collections::HashSet::from([normalize_path(protected.to_string_lossy().as_ref())]);
+        let mut result = DeleteRollsResult::default();
+
+        delete_source_paths(paths, &protected_paths, &mut result);
+
+        assert_eq!(result.deleted_source_files, 1);
+        assert_eq!(result.protected_source_files, 1);
+        assert_eq!(result.missing_source_files, 1);
+        assert!(result.failed_source_files.is_empty());
+        assert!(!removable.exists());
+        assert!(protected.exists());
+        std::fs::remove_file(protected).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 }
 
