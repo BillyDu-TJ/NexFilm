@@ -59,6 +59,13 @@ impl Default for ExposureParams {
 pub struct ToneParams {
     pub highlights: f32,
     pub shadows: f32,
+    #[serde(default)]
+    pub saturation: f32,
+    #[serde(default)]
+    pub temperature: f32,
+    #[serde(default)]
+    #[serde(alias = "hue")]
+    pub tint: f32,
 }
 
 impl Default for ToneParams {
@@ -66,6 +73,9 @@ impl Default for ToneParams {
         Self {
             highlights: 0.0,
             shadows: 0.0,
+            saturation: 0.0,
+            temperature: 0.0,
+            tint: 0.0,
         }
     }
 }
@@ -154,6 +164,36 @@ impl Default for TuningParams {
             lut: LutParams::default(),
             raw_decode: RawDecodeParams::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tuning_params_tests {
+    use super::TuningParams;
+
+    #[test]
+    fn legacy_tuning_json_defaults_new_post_gamma_controls() {
+        let mut legacy = serde_json::to_value(TuningParams::default()).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("saturation");
+        object.remove("temperature");
+        object.remove("tint");
+
+        let params: TuningParams = serde_json::from_value(legacy).unwrap();
+        assert_eq!(params.tone.saturation, 0.0);
+        assert_eq!(params.tone.temperature, 0.0);
+        assert_eq!(params.tone.tint, 0.0);
+    }
+
+    #[test]
+    fn legacy_hue_field_loads_as_tint() {
+        let mut legacy = serde_json::to_value(TuningParams::default()).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("tint");
+        object.insert("hue".to_string(), serde_json::json!(0.25));
+
+        let params: TuningParams = serde_json::from_value(legacy).unwrap();
+        assert_eq!(params.tone.tint, 0.25);
     }
 }
 

@@ -39,6 +39,7 @@ fn main() {
             nexfilm_engine::commands::get_rolls,
             nexfilm_engine::commands::import_roll,
             nexfilm_engine::commands::delete_rolls,
+            nexfilm_engine::commands::delete_images,
             nexfilm_engine::commands::update_roll_metadata,
             nexfilm_engine::commands::save_contact_sheet,
             nexfilm_engine::commands::append_to_roll,

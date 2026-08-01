@@ -67,7 +67,7 @@
             </nav>
         </div>
         <div class="flex items-center gap-4">
-            <button id="btn-delete-develop-roll" class="hidden px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-transparent hover:bg-red-950/40 text-red-300 rounded transition-colors border border-red-800/60">Remove Roll</button>
+            <button id="btn-delete-develop-image" class="hidden px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-transparent hover:bg-red-950/40 text-red-300 rounded transition-colors border border-red-800/60 disabled:opacity-40 disabled:cursor-not-allowed" disabled>Delete Photo</button>
             <button id="btn-export-roll" class="hidden px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Export Roll</button>
             <button id="btn-import" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
             <button id="btn-export-dialog" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed" disabled>Export</button>
@@ -132,7 +132,7 @@
                     <div class="flex items-center gap-4">
                         <button id="btn-delete-rolls" class="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-red-900/80 hover:bg-red-800 text-white rounded transition-colors shadow-sm border border-red-700/50">Delete Rolls</button>
                         <button id="btn-edit-roll" class="hidden px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors border border-zinc-700/50">Edit Info</button>
-                        <button id="btn-delete-current-roll" class="hidden px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-transparent hover:bg-red-950/40 text-red-300 rounded transition-colors border border-red-800/60">Remove Roll</button>
+                        <button id="btn-delete-roll-images" class="hidden px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-transparent hover:bg-red-950/40 text-red-300 rounded transition-colors border border-red-800/60 disabled:opacity-40 disabled:cursor-not-allowed" disabled>Delete Selected</button>
                         <button id="btn-promote-roll" class="hidden px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-orange-600 hover:bg-orange-500 text-white rounded transition-colors shadow-sm">Promote to Library</button>
                         <button id="btn-export-contact-sheet" class="hidden px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Export Contact Sheet</button>
                     </div>
@@ -163,7 +163,7 @@
                 <div class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">All frames</div>
                 <div class="flex items-center gap-4">
                     <span id="library-selection-count" class="text-[11px] text-zinc-400 font-medium">0 selected</span>
-                    <button id="btn-delete-library-roll" class="text-[10px] font-bold tracking-widest text-red-400 hover:text-red-300 uppercase transition-colors disabled:opacity-40 disabled:cursor-not-allowed" disabled>Remove Roll</button>
+                    <button id="btn-delete-library-images" class="text-[10px] font-bold tracking-widest text-red-400 hover:text-red-300 uppercase transition-colors disabled:opacity-40 disabled:cursor-not-allowed" disabled>Delete Selected</button>
                     <button id="btn-select-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors">Select All</button>
                     <button id="btn-deselect-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors hidden">Deselect All</button>
                 </div>
@@ -300,7 +300,7 @@
             </div>
             
             <!-- Right Sidebar -->
-            <div class="w-[340px] h-full border-l border-[#28282c] shrink-0 flex flex-col shadow-2xl overflow-y-auto custom-scrollbar z-10 bg-[#1C1C1E] relative">
+            <div id="develop-inspector" class="w-[340px] h-full border-l border-[#28282c] shrink-0 flex flex-col shadow-2xl overflow-y-auto custom-scrollbar z-10 bg-[#1C1C1E] relative">
                 
                 <div id="right-panel-blocker" class="absolute inset-0 z-50 bg-[#1C1C1E]/80 backdrop-blur-[4px] hidden flex flex-col items-center justify-center p-6 text-center">
                     <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Film Area</h3>
@@ -332,37 +332,16 @@
                         <button id="btn-paste-settings" class="flex-1 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Paste Settings</button>
                     </div>
 
-                    <!-- Mode Toggle -->
-                    <div class="control-group">
-                        <div class="flex gap-2 mb-4">
+                    <!-- Auto Invert -->
+                    <div class="control-group border-t border-[#28282c] pt-6">
+                        <div class="flex gap-2">
                             <button id="btn-auto-color" class="flex-[3] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Auto Invert</button>
                             <button id="btn-reset-color" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Reset</button>
                         </div>
-                        <div class="flex gap-2 mb-2">
-                            <button id="btn-sprocket-picker" title="Sample a sprocket hole to remove perforations from the positive border" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Sample Sprocket Hole</button>
-                        </div>
-                        <div class="space-y-4 mb-4">
-                            <div>
-                                <div class="flex justify-between mb-1.5">
-                                    <span class="text-[10px] font-bold tracking-widest uppercase text-zinc-400">Sprocket Tolerance</span>
-                                    <span id="val-sprocket-tolerance" class="text-[10px] font-mono text-zinc-500">0.10</span>
-                                </div>
-                                <div class="slider-container">
-                                    <input type="range" id="sprocket-tolerance" min="0.0" max="1.0" step="0.01" value="0.10" class="slider" disabled>
-                                    <div class="slider-track" id="track-sprocket-tolerance"></div>
-                                </div>
-                            </div>
-                            <div>
-                                <div class="flex justify-between mb-1.5">
-                                    <span class="text-[10px] font-bold tracking-widest uppercase text-zinc-400">Sprocket Feather</span>
-                                    <span id="val-sprocket-feather" class="text-[10px] font-mono text-zinc-500">0.05</span>
-                                </div>
-                                <div class="slider-container">
-                                    <input type="range" id="sprocket-feather" min="0.0" max="1.0" step="0.01" value="0.05" class="slider" disabled>
-                                    <div class="slider-track" id="track-sprocket-feather"></div>
-                                </div>
-                            </div>
-                        </div>
+                    </div>
+
+                    <!-- Color Mode -->
+                    <div class="control-group border-t border-[#28282c] pt-6">
                         <div class="flex items-center justify-between bg-[#121214] p-1 rounded-md border border-[#28282c]">
                             <button id="btn-mode-color" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all bg-[#28282c] text-zinc-100 shadow-sm disabled:opacity-50">Color</button>
                             <button id="btn-mode-bw" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all text-zinc-500 hover:text-zinc-300 disabled:opacity-50">B&W</button>
@@ -412,45 +391,8 @@
                         </div>
                     </div>
 
-                    <!-- Aesthetics -->
+                    <!-- Printer Lights -->
                     <div class="control-group border-t border-[#28282c] pt-6">
-                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
-                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
-                            Aesthetics
-                        </h3>
-                        <div class="flex flex-col gap-5">
-                            <div class="slider-container">
-                                <div class="flex justify-between items-center mb-2">
-                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Exposure</label>
-                                    <span id="val-exposure" class="text-[10px] font-mono text-zinc-400">0.000</span>
-                                </div>
-                                <input type="range" id="exposure" class="w-full custom-range silver-track" min="-1.50" max="1.50" step="0.001" value="0.00" disabled>
-                            </div>
-                            <div class="slider-container">
-                                <div class="flex justify-between items-center mb-2">
-                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Gamma</label>
-                                    <span id="val-gamma" class="text-[10px] font-mono text-zinc-400">1.000</span>
-                                </div>
-                                <input type="range" id="gamma" class="w-full custom-range silver-track" min="0.10" max="3.00" step="0.002" value="1.00" disabled>
-                            </div>
-                            <div class="slider-container">
-                                <div class="flex justify-between items-center mb-2">
-                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Highlights</label>
-                                    <span id="val-highlights" class="text-[10px] font-mono text-zinc-400">0.000</span>
-                                </div>
-                                <input type="range" id="highlights" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
-                            </div>
-                            <div class="slider-container">
-                                <div class="flex justify-between items-center mb-2">
-                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Shadows</label>
-                                    <span id="val-shadows" class="text-[10px] font-mono text-zinc-400">0.000</span>
-                                </div>
-                                <input type="range" id="shadows" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="control-group border-t border-[#28282c] pt-6 pb-6">
                         <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center justify-between gap-2">
                             <span class="flex items-center gap-2">
                                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"></path></svg>
@@ -481,6 +423,98 @@
                                     <span id="val-expb" class="text-[10px] font-mono text-zinc-400">0.000</span>
                                 </div>
                                 <input type="range" id="expb" class="w-full custom-range blue-track" min="-1.00" max="1.00" step="0.001" value="0.00" disabled>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Aesthetics -->
+                    <div class="control-group border-t border-[#28282c] pt-6">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                            Aesthetics
+                        </h3>
+                        <div class="flex flex-col gap-5">
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Exposure</label>
+                                    <span id="val-exposure" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                </div>
+                                <input type="range" id="exposure" class="w-full custom-range silver-track" min="-1.50" max="1.50" step="0.001" value="0.00" disabled>
+                            </div>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Gamma</label>
+                                    <span id="val-gamma" class="text-[10px] font-mono text-zinc-400">1.000</span>
+                                </div>
+                                <input type="range" id="gamma" class="w-full custom-range silver-track" min="0.10" max="3.00" step="0.002" value="1.00" disabled>
+                            </div>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Saturation</label>
+                                    <span id="val-saturation" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                </div>
+                                <input type="range" id="saturation" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
+                            </div>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Highlights</label>
+                                    <span id="val-highlights" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                </div>
+                                <input type="range" id="highlights" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
+                            </div>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Shadows</label>
+                                    <span id="val-shadows" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                </div>
+                                <input type="range" id="shadows" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
+                            </div>
+                            <div class="color-balance-group" aria-labelledby="color-balance-title">
+                                <div id="color-balance-title" class="color-balance-title">Color Balance</div>
+                                <div class="slider-container">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Temperature</label>
+                                        <span id="val-temperature" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                    </div>
+                                    <input type="range" id="temperature" class="w-full custom-range temperature-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
+                                </div>
+                                <div class="slider-container">
+                                    <div class="flex justify-between items-center mb-2">
+                                        <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Tint</label>
+                                        <span id="val-tint" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                    </div>
+                                    <input type="range" id="tint" class="w-full custom-range tint-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Sprocket Settings -->
+                    <div class="control-group border-t border-[#28282c] pt-6">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
+                            Sprocket Settings
+                        </h3>
+                        <div class="flex flex-col gap-5">
+                            <button id="btn-sprocket-picker" title="Sample a sprocket hole to remove perforations from the positive border" class="w-full px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Sample Sprocket Hole</button>
+                            <div>
+                                <div class="flex justify-between mb-1.5">
+                                    <span class="text-[10px] font-bold tracking-widest uppercase text-zinc-400">Sprocket Tolerance</span>
+                                    <span id="val-sprocket-tolerance" class="text-[10px] font-mono text-zinc-500">0.10</span>
+                                </div>
+                                <div class="slider-container">
+                                    <input type="range" id="sprocket-tolerance" min="0.0" max="1.0" step="0.01" value="0.10" class="slider" disabled>
+                                    <div class="slider-track" id="track-sprocket-tolerance"></div>
+                                </div>
+                            </div>
+                            <div>
+                                <div class="flex justify-between mb-1.5">
+                                    <span class="text-[10px] font-bold tracking-widest uppercase text-zinc-400">Sprocket Feather</span>
+                                    <span id="val-sprocket-feather" class="text-[10px] font-mono text-zinc-500">0.05</span>
+                                </div>
+                                <div class="slider-container">
+                                    <input type="range" id="sprocket-feather" min="0.0" max="1.0" step="0.01" value="0.05" class="slider" disabled>
+                                    <div class="slider-track" id="track-sprocket-feather"></div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -559,6 +593,40 @@
                 </div>
             </div>
         </section>
+    </div>
+
+    <!-- Copy Settings Modal -->
+    <div id="copy-settings-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-[60] flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="copy-settings-title">
+        <div id="copy-settings-content" class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[360px] flex flex-col transform scale-95 transition-transform duration-200">
+            <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
+                <h2 id="copy-settings-title" class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Copy Settings</h2>
+                <button id="btn-close-copy-settings" type="button" class="text-zinc-500 hover:text-zinc-200 transition-colors" title="Close" aria-label="Close copy settings">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            <div class="p-6 flex flex-col gap-3">
+                <label class="flex items-center gap-3 px-3 py-2.5 bg-[#121214] border border-[#28282c] rounded cursor-pointer text-[12px] text-zinc-300">
+                    <input type="checkbox" value="crop" class="copy-settings-module rounded bg-zinc-800 border-zinc-700 text-zinc-200 focus:ring-0" checked>
+                    <span>Crop &amp; Film Area</span>
+                </label>
+                <label class="flex items-center gap-3 px-3 py-2.5 bg-[#121214] border border-[#28282c] rounded cursor-pointer text-[12px] text-zinc-300">
+                    <input type="checkbox" value="edit" class="copy-settings-module rounded bg-zinc-800 border-zinc-700 text-zinc-200 focus:ring-0" checked>
+                    <span>Develop Parameters</span>
+                </label>
+                <label class="flex items-center gap-3 px-3 py-2.5 bg-[#121214] border border-[#28282c] rounded cursor-pointer text-[12px] text-zinc-300">
+                    <input type="checkbox" value="transform" class="copy-settings-module rounded bg-zinc-800 border-zinc-700 text-zinc-200 focus:ring-0" checked>
+                    <span>Rotate &amp; Flip</span>
+                </label>
+                <label class="flex items-center gap-3 px-3 py-2.5 bg-[#121214] border border-[#28282c] rounded cursor-pointer text-[12px] text-zinc-300">
+                    <input type="checkbox" value="sprocket" class="copy-settings-module rounded bg-zinc-800 border-zinc-700 text-zinc-200 focus:ring-0" checked>
+                    <span>Sprocket Sample</span>
+                </label>
+                <div class="flex justify-end gap-3 mt-3">
+                    <button id="btn-cancel-copy-settings" type="button" class="px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">Cancel</button>
+                    <button id="btn-confirm-copy-settings" type="button" class="px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors">Copy</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Import Choice Modal -->
@@ -833,6 +901,7 @@
     <script src="geometry.js"></script>
     <script src="contact-sheet.js"></script>
     <script src="density-math.js"></script>
+    <script src="settings-copy.js"></script>
     <script src="main.js"></script>
 </body>
 </html>

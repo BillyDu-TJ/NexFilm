@@ -8,9 +8,9 @@ const html = fs.readFileSync(path.join(root, 'ui', 'index.html'), 'utf8');
 const css = fs.readFileSync(path.join(root, 'ui', 'style.css'), 'utf8');
 
 for (const id of [
-    'btn-delete-library-roll',
-    'btn-delete-develop-roll',
-    'btn-delete-current-roll',
+    'btn-delete-library-images',
+    'btn-delete-develop-image',
+    'btn-delete-roll-images',
     'btn-edit-roll',
 ]) {
     assert.match(html, new RegExp(`id=["']${id}["']`), `${id} is missing`);
@@ -56,6 +56,41 @@ for (const contract of [
 assert.match(main, /deleteSourceFiles:\s*choice === 'files'/);
 assert.match(main, /data-delete-choice="catalog"/);
 assert.match(main, /data-delete-choice="files"/);
+assert.match(main, /invoke\('delete_images'/);
+assert.match(main, /data-delete-image-choice="catalog"/);
+assert.match(main, /data-delete-image-choice="files"/);
+assert.match(main, /btnDeleteLibraryImages.*requestImageDeletion/);
+assert.match(main, /btnDeleteDevelopImage.*requestImageDeletion/);
+assert.match(main, /btnDeleteRollImages.*requestImageDeletion/);
+assert.match(html, /id="temperature"[^>]*temperature-track/);
+assert.match(html, /id="tint"[^>]*tint-track/);
+assert.match(css, /\.temperature-track::[\s\S]*?#3976d2[\s\S]*?#d9682f/);
+assert.match(css, /\.tint-track::[\s\S]*?#36a565[\s\S]*?#874ca2/);
+const inspectorHtml = html.slice(
+    html.indexOf('id="develop-inspector"'),
+    html.indexOf('<!-- Sponsor Modal -->'),
+);
+const inspectorOrder = [
+    'id="btn-copy-settings"',
+    'id="btn-auto-color"',
+    'id="btn-mode-color"',
+    'Density Limits',
+    'Printer Lights',
+    'Aesthetics',
+    'Sprocket Settings',
+    'Input Color Science',
+    'Print Film Emulation',
+];
+let previousInspectorPosition = -1;
+for (const marker of inspectorOrder) {
+    const position = inspectorHtml.indexOf(marker);
+    assert.ok(position > previousInspectorPosition, `Develop inspector order is incorrect at: ${marker}`);
+    previousInspectorPosition = position;
+}
+assert.match(css, /#develop-inspector\.calibration-locked\s*\{[\s\S]*?overflow:\s*hidden\s*!important/);
+assert.match(main, /function setDevelopInspectorCalibrationLocked\(locked\)[\s\S]*?scrollTop = 0/);
+assert.match(main, /function enterCalibrationMode\(\)[\s\S]*?setDevelopInspectorCalibrationLocked\(true\)/);
+assert.match(main, /btn-confirm-calibration[\s\S]*?setDevelopInspectorCalibrationLocked\(false\)/);
 assert.match(main, /invoke\('update_roll_metadata'/);
 assert.match(main, /if \(importInProgress\)[\s\S]*?Wait for the current import to finish/);
 

@@ -412,6 +412,24 @@ pub fn delete_rolls_and_states(
     transaction.commit()
 }
 
+pub fn delete_images_and_update_rolls(
+    connection: &mut Connection,
+    images: &[(String, String)],
+    updated_rolls: &[Roll],
+) -> rusqlite::Result<usize> {
+    let transaction = connection.transaction()?;
+    let mut removed_states = 0;
+    for (roll_id, file_path) in images {
+        removed_states += transaction.execute(
+            "DELETE FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
+            rusqlite::params![roll_id, file_path],
+        )?;
+    }
+    replace_rolls(&transaction, updated_rolls)?;
+    transaction.commit()?;
+    Ok(removed_states)
+}
+
 pub fn relocate_roll_image(
     connection: &mut Connection,
     roll_id: &str,
@@ -620,6 +638,60 @@ mod tests {
         let rolls = load_rolls(&connection).unwrap();
         assert_eq!(rolls.len(), 1);
         assert_eq!(rolls[0].roll_id, "roll-b");
+    }
+
+    #[test]
+    fn deleting_one_image_keeps_the_roll_and_other_image_state() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let original = sample_roll("roll-a", &["a.dng", "b.dng"]);
+        save_rolls(&mut connection, std::slice::from_ref(&original)).unwrap();
+        for path in ["a.dng", "b.dng"] {
+            connection
+                .execute(
+                    "INSERT INTO image_states (roll_id, file_path) VALUES (?1, ?2)",
+                    rusqlite::params!["roll-a", path],
+                )
+                .unwrap();
+        }
+        let updated = sample_roll("roll-a", &["b.dng"]);
+
+        let removed = delete_images_and_update_rolls(
+            &mut connection,
+            &[("roll-a".to_string(), "a.dng".to_string())],
+            std::slice::from_ref(&updated),
+        )
+        .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!row_exists(&connection, "roll-a", "a.dng").unwrap());
+        assert!(row_exists(&connection, "roll-a", "b.dng").unwrap());
+        assert_eq!(load_rolls(&connection).unwrap(), vec![updated]);
+    }
+
+    #[test]
+    fn deleting_the_last_image_keeps_an_empty_roll() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let original = sample_roll("roll-a", &["only.dng"]);
+        save_rolls(&mut connection, &[original]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO image_states (roll_id, file_path) VALUES (?1, ?2)",
+                rusqlite::params!["roll-a", "only.dng"],
+            )
+            .unwrap();
+        let empty_roll = sample_roll("roll-a", &[]);
+
+        delete_images_and_update_rolls(
+            &mut connection,
+            &[("roll-a".to_string(), "only.dng".to_string())],
+            std::slice::from_ref(&empty_roll),
+        )
+        .unwrap();
+
+        assert!(!row_exists(&connection, "roll-a", "only.dng").unwrap());
+        assert_eq!(load_rolls(&connection).unwrap(), vec![empty_roll]);
     }
 
     #[test]

@@ -28,7 +28,14 @@ pub fn normalize_density_channel(
     shadows: f32,
     gamma: f32,
 ) -> f32 {
-    tone_density_channel(density, d_min, d_max, highlights, shadows).powf(1.0 / gamma.max(1e-6))
+    let range = d_max - d_min;
+    let normalized = if range.abs() > 1e-6 {
+        (density - d_min) / range
+    } else {
+        0.0
+    };
+    let gamma_corrected = normalized.clamp(0.0, 1.0).powf(1.0 / gamma.max(1e-6));
+    tone_normalized_channel(gamma_corrected, highlights, shadows)
 }
 
 #[inline]
@@ -50,6 +57,42 @@ pub fn tone_density_channel(
         + shadows * (1.0 - clamped).powi(2) * normalized
         + highlights * clamped.powi(2) * (1.0 - normalized);
     toned.clamp(0.0, 1.0)
+}
+
+#[inline]
+pub fn tone_normalized_channel(value: f32, highlights: f32, shadows: f32) -> f32 {
+    let clamped = value.clamp(0.0, 1.0);
+    (value
+        + shadows * (1.0 - clamped).powi(2) * value
+        + highlights * clamped.powi(2) * (1.0 - value))
+        .clamp(0.0, 1.0)
+}
+
+/// Apply the creative controls that intentionally live after display gamma.
+/// This mirrors `applyPostGammaAdjustments` in the WebGL fragment shader.
+#[inline]
+pub fn apply_post_gamma_adjustments(
+    rgb: [f32; 3],
+    highlights: f32,
+    shadows: f32,
+    saturation: f32,
+    temperature: f32,
+    tint: f32,
+) -> [f32; 3] {
+    let mut adjusted = rgb.map(|value| tone_normalized_channel(value, highlights, shadows));
+
+    let temperature = temperature.clamp(-1.0, 1.0);
+    adjusted[0] *= 1.0 + temperature * 0.20;
+    adjusted[2] *= 1.0 - temperature * 0.20;
+
+    let tint = tint.clamp(-1.0, 1.0);
+    adjusted[0] *= 1.0 + tint * 0.10;
+    adjusted[1] *= 1.0 - tint * 0.20;
+    adjusted[2] *= 1.0 + tint * 0.10;
+
+    let luma = 0.299 * adjusted[0] + 0.587 * adjusted[1] + 0.114 * adjusted[2];
+    let saturation_factor = 1.0 + saturation.clamp(-1.0, 1.0);
+    adjusted.map(|value| (luma + (value - luma) * saturation_factor).clamp(0.0, 1.0))
 }
 
 /// Reproduces `getHomography` from the WebGL frontend. The matrix maps the
@@ -148,7 +191,8 @@ pub fn sprocket_white_mask(luma_difference: f32, tolerance: f32, feather: f32) -
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_homography, normalize_density_channel, shader_homography, sprocket_white_mask,
+        apply_homography, apply_post_gamma_adjustments, normalize_density_channel,
+        shader_homography, sprocket_white_mask,
     };
 
     #[test]
@@ -164,6 +208,31 @@ mod tests {
     fn density_tone_curve_is_finite_for_degenerate_ranges() {
         let output = normalize_density_channel(1.0, 0.5, 0.5, 0.0, 0.0, 0.0);
         assert!(output.is_finite());
+    }
+
+    #[test]
+    fn post_gamma_color_defaults_are_neutral() {
+        let rgb = [0.2, 0.5, 0.8];
+        let adjusted = apply_post_gamma_adjustments(rgb, 0.0, 0.0, 0.0, 0.0, 0.0);
+        for channel in 0..3 {
+            assert!((adjusted[channel] - rgb[channel]).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn minimum_saturation_produces_grayscale() {
+        let adjusted = apply_post_gamma_adjustments([0.2, 0.5, 0.8], 0.0, 0.0, -1.0, 0.0, 0.0);
+        assert!((adjusted[0] - adjusted[1]).abs() < 1e-6);
+        assert!((adjusted[1] - adjusted[2]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn tint_moves_between_green_and_magenta() {
+        let green = apply_post_gamma_adjustments([0.5; 3], 0.0, 0.0, 0.0, 0.0, -1.0);
+        assert!(green[1] > green[0] && green[1] > green[2]);
+
+        let magenta = apply_post_gamma_adjustments([0.5; 3], 0.0, 0.0, 0.0, 0.0, 1.0);
+        assert!(magenta[0] > magenta[1] && magenta[2] > magenta[1]);
     }
 
     #[test]

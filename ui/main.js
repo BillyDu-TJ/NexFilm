@@ -2,6 +2,7 @@ const invoke = window.__TAURI__.core.invoke;
 const { listen } = window.__TAURI__.event;
 const { getContactSheetLayout, createContactSheetFilename } = window.NexFilmContactSheet;
 const { getNeutralExposureOffsets } = window.NexFilmDensity;
+const { cloneSettingsValue, createCopyPayload, mergeCopyPayload } = window.NexFilmSettingsCopy;
 
 // DOM: Global
 const btnImport = document.getElementById('btn-import');
@@ -29,9 +30,9 @@ const libraryEmpty = document.getElementById('library-empty');
 const btnSelectAll = document.getElementById('btn-select-all');
 const btnDeselectAll = document.getElementById('btn-deselect-all');
 const librarySelectionCount = document.getElementById('library-selection-count');
-const btnDeleteLibraryRoll = document.getElementById('btn-delete-library-roll');
-const btnDeleteDevelopRoll = document.getElementById('btn-delete-develop-roll');
-const btnDeleteCurrentRoll = document.getElementById('btn-delete-current-roll');
+const btnDeleteLibraryImages = document.getElementById('btn-delete-library-images');
+const btnDeleteDevelopImage = document.getElementById('btn-delete-develop-image');
+const btnDeleteRollImages = document.getElementById('btn-delete-roll-images');
 const btnEditRoll = document.getElementById('btn-edit-roll');
 
 // DOM: Develop View
@@ -39,6 +40,8 @@ const filmstripContainer = document.getElementById('filmstrip-container');
 const canvasWrapper = document.getElementById('canvas-wrapper');
 const previewCanvas = document.getElementById('preview-canvas');
 const dummyPusher = document.getElementById('dummy-pusher');
+const developInspector = document.getElementById('develop-inspector');
+const rightPanelBlocker = document.getElementById('right-panel-blocker');
 
 // DOM: Visualization
 const histCanvas = document.getElementById('histogram-canvas');
@@ -88,14 +91,25 @@ const btnCloseBatchApply = document.getElementById('btn-close-batch-apply');
 const btnCancelBatchApply = document.getElementById('btn-cancel-batch-apply');
 const btnConfirmBatchApply = document.getElementById('btn-confirm-batch-apply');
 
+const copySettingsModal = document.getElementById('copy-settings-modal');
+const copySettingsContent = document.getElementById('copy-settings-content');
+const btnCloseCopySettings = document.getElementById('btn-close-copy-settings');
+const btnCancelCopySettings = document.getElementById('btn-cancel-copy-settings');
+const btnConfirmCopySettings = document.getElementById('btn-confirm-copy-settings');
+
 let currentDMin = [0.1, 0.1, 0.1];
 let currentDMax = [2.0, 2.0, 2.0];
+const CHANNEL_CONTROL_SCALE = 0.5;
+const LUT_CONTROL_SCALE = 0.5;
 
 const sliders = {
     masterDmin: { el: document.getElementById('master-dmin'), val: document.getElementById('val-master-dmin') },
     masterDmax: { el: document.getElementById('master-dmax'), val: document.getElementById('val-master-dmax') },
     exposure: { el: document.getElementById('exposure'), val: document.getElementById('val-exposure') },
     gamma: { el: document.getElementById('gamma'), val: document.getElementById('val-gamma') },
+    saturation: { el: document.getElementById('saturation'), val: document.getElementById('val-saturation') },
+    temperature: { el: document.getElementById('temperature'), val: document.getElementById('val-temperature') },
+    tint: { el: document.getElementById('tint'), val: document.getElementById('val-tint') },
     expr: { el: document.getElementById('expr'), val: document.getElementById('val-expr') },
     expg: { el: document.getElementById('expg'), val: document.getElementById('val-expg') },
     expb: { el: document.getElementById('expb'), val: document.getElementById('val-expb') },
@@ -209,6 +223,52 @@ function forgetRollItems(rollIds) {
     if (activeId && removedItemIds.has(activeId)) activeId = null;
 }
 
+function getImageDeletionTargets(ids) {
+    const targets = new Map();
+    for (const id of ids || []) {
+        const item = findKnownItem(id);
+        if (!item || item.status === 'importing' || !item.file_path) continue;
+        const target = {
+            id: item.id,
+            roll_id: item.roll_id || 'LOOSE_DEFAULT',
+            file_path: item.file_path
+        };
+        targets.set(itemIdentity(target), target);
+    }
+    return [...targets.values()];
+}
+
+function forgetImageItems(targets) {
+    const deletedIdentities = new Set((targets || []).map(itemIdentity));
+    if (deletedIdentities.size === 0) return new Set();
+
+    const removedIds = new Set();
+    for (const [id, item] of itemIndex.entries()) {
+        if (deletedIdentities.has(itemIdentity(item))) removedIds.add(id);
+    }
+    allLibraryItems = allLibraryItems.filter(item => !deletedIdentities.has(itemIdentity(item)));
+    for (const id of removedIds) {
+        itemIndex.delete(id);
+        imageStates.delete(id);
+        proxyCache.delete(id);
+        readyProxyIds.delete(id);
+        proxyAnalyzedBaseIds.delete(id);
+        proxyPreparePromises.delete(id);
+        proxyDisplayPromises.delete(id);
+        delete undoStacks[id];
+    }
+    selectedLibraryIds = new Set([...selectedLibraryIds].filter(id => !removedIds.has(id)));
+
+    const deletedPaths = new Set((targets || []).map(target => normalizePath(target.file_path)));
+    if (currentImportSessionPaths) {
+        currentImportSessionPaths = currentImportSessionPaths.filter(path => !deletedPaths.has(normalizePath(path)));
+    }
+    if (activeImportViewPaths) {
+        activeImportViewPaths = activeImportViewPaths.filter(path => !deletedPaths.has(normalizePath(path)));
+    }
+    return removedIds;
+}
+
 function upsertLibraryItem(item) {
     if (!item || !item.id) return;
     const known = rememberItem(item);
@@ -296,7 +356,14 @@ const calibrationEdgeIndices = NexFilmGeometry.calibrationEdgeIndices;
 let calibrationRevision = 0;
 const filmAreaDetectionPromises = new Map();
 
+function setDevelopInspectorCalibrationLocked(locked) {
+    if (locked) developInspector.scrollTop = 0;
+    developInspector.classList.toggle('calibration-locked', locked);
+    rightPanelBlocker.classList.toggle('hidden', !locked);
+}
+
 function updateLibrarySelectionUI() {
+    const selectedTargets = getImageDeletionTargets(selectedLibraryIds);
     librarySelectionCount.textContent = `${selectedLibraryIds.size} selected`;
     if (selectedLibraryIds.size > 0) {
         btnExportDialog.disabled = false;
@@ -308,10 +375,14 @@ function updateLibrarySelectionUI() {
         btnDeselectAll.classList.add('hidden');
     }
     
-    btnDeleteLibraryRoll.disabled = importInProgress || getSelectedLibraryRollIds().length === 0;
+    btnDeleteLibraryImages.disabled = importInProgress || selectedTargets.length === 0;
+    btnDeleteRollImages.disabled = importInProgress || selectedTargets.length === 0;
+    btnDeleteRollImages.textContent = selectedTargets.length > 0
+        ? `Delete Selected (${selectedTargets.length})`
+        : 'Delete Selected';
 
     // update visuals
-    Array.from(libraryGrid.children).forEach(child => {
+    document.querySelectorAll('#library-grid .library-item[data-id], #history-internal-grid .library-item[data-id]').forEach(child => {
         const id = child.dataset.id;
         if (selectedLibraryIds.has(id)) {
             child.classList.add('selected');
@@ -375,15 +446,6 @@ async function beginWorkingImport(rollId, paths) {
     activeImportViewPaths = currentImportSessionPaths.slice();
 }
 
-function getSelectedLibraryRollIds() {
-    const rollIds = new Set();
-    selectedLibraryIds.forEach(id => {
-        const rollId = findKnownItem(id)?.roll_id;
-        if (rollId) rollIds.add(rollId);
-    });
-    return [...rollIds];
-}
-
 function getDevelopRollId() {
     return findKnownItem(activeId)?.roll_id || currentRollViewId || null;
 }
@@ -392,13 +454,16 @@ function setImportManagementBusy(busy) {
     document.getElementById('btn-delete-rolls').disabled = busy;
     document.getElementById('btn-promote-roll').disabled = busy;
     btnEditRoll.disabled = busy;
-    btnDeleteCurrentRoll.disabled = busy;
-    btnDeleteDevelopRoll.disabled = busy || !getDevelopRollId();
-    btnDeleteLibraryRoll.disabled = busy || getSelectedLibraryRollIds().length === 0;
+    btnDeleteRollImages.disabled = busy || getImageDeletionTargets(selectedLibraryIds).length === 0;
+    btnDeleteDevelopImage.disabled = busy || getImageDeletionTargets([activeId]).length === 0;
+    btnDeleteLibraryImages.disabled = busy || getImageDeletionTargets(selectedLibraryIds).length === 0;
 }
 
 function resetWorkingLibrary() {
     currentImageRequestToken++;
+    isCalibrationMode = false;
+    document.getElementById('calibration-overlay').classList.add('hidden');
+    setDevelopInspectorCalibrationLocked(false);
     activeId = null;
     activeProxyIsFull = false;
     hasProcessedActiveImage = false;
@@ -443,8 +508,8 @@ function switchView(viewName) {
 
     const isDevelop = viewName === 'develop';
     document.getElementById('btn-export-roll').classList.toggle('hidden', !isDevelop);
-    btnDeleteDevelopRoll.classList.toggle('hidden', !isDevelop);
-    btnDeleteDevelopRoll.disabled = !getDevelopRollId();
+    btnDeleteDevelopImage.classList.toggle('hidden', !isDevelop);
+    btnDeleteDevelopImage.disabled = importInProgress || getImageDeletionTargets([activeId]).length === 0;
 
     if (isDevelop) {
         // Re-enable UI if there's an active image (e.g., user switched away and came back)
@@ -512,6 +577,9 @@ function pushUndoState() {
         d_max: currentDMax.slice(),
         exposure: parseFloat(sliders.exposure.el.value),
         gamma: parseFloat(sliders.gamma.el.value),
+        saturation: parseFloat(sliders.saturation.el.value),
+        temperature: parseFloat(sliders.temperature.el.value),
+        tint: parseFloat(sliders.tint.el.value),
         exp_r: parseFloat(sliders.expr.el.value),
         exp_g: parseFloat(sliders.expg.el.value),
         exp_b: parseFloat(sliders.expb.el.value),
@@ -661,9 +729,101 @@ async function requestRollDeletion(rollIds) {
     }
 }
 
-btnDeleteLibraryRoll.addEventListener('click', () => requestRollDeletion(getSelectedLibraryRollIds()));
-btnDeleteDevelopRoll.addEventListener('click', () => requestRollDeletion([getDevelopRollId()]));
-btnDeleteCurrentRoll.addEventListener('click', () => requestRollDeletion([historyRollViewId]));
+async function requestImageDeletion(ids) {
+    if (importInProgress) {
+        showToast('Wait for the current import to finish before deleting photos.', 'error');
+        return;
+    }
+    const targets = getImageDeletionTargets(ids);
+    if (targets.length === 0) return;
+    const choice = await showDeleteImagesDialog(targets.length);
+    if (!choice) return;
+
+    const removedIdentities = new Set(targets.map(itemIdentity));
+    const activeItem = activeId ? findKnownItem(activeId) : null;
+    const activeTargeted = !!activeItem && removedIdentities.has(itemIdentity(activeItem));
+    const filmstripIds = Array.from(filmstripContainer.querySelectorAll('.film-item[data-id]'))
+        .map(element => element.dataset.id);
+    const activeIndex = filmstripIds.indexOf(activeId);
+    const remainingFilmstripIds = filmstripIds.filter(id => {
+        const item = findKnownItem(id);
+        return item && !removedIdentities.has(itemIdentity(item));
+    });
+    const nextId = activeTargeted
+        ? remainingFilmstripIds[Math.min(Math.max(activeIndex, 0), remainingFilmstripIds.length - 1)] || null
+        : null;
+
+    try {
+        if (activeTargeted) {
+            await flushPendingBackendSync();
+            await flushPendingThumbnail();
+            currentImageRequestToken++;
+            if (thumbnailSyncTimeout) {
+                clearTimeout(thumbnailSyncTimeout);
+                thumbnailSyncTimeout = null;
+            }
+            if (thumbnailCaptureRAF) {
+                cancelAnimationFrame(thumbnailCaptureRAF);
+                thumbnailCaptureRAF = null;
+            }
+        }
+
+        const result = await invoke('delete_images', {
+            images: targets.map(({ roll_id, file_path }) => ({ roll_id, file_path })),
+            deleteSourceFiles: choice === 'files'
+        });
+        const removedIds = forgetImageItems(targets);
+        for (const target of targets) {
+            for (const key of rollPreviewCache.keys()) {
+                if (key.startsWith(`${target.roll_id}:`)) rollPreviewCache.delete(key);
+            }
+        }
+
+        if (activeTargeted) {
+            activeId = null;
+            activeProxyIsFull = false;
+            hasProcessedActiveImage = false;
+            proxyPixels = null;
+            proxyWidth = 0;
+            proxyHeight = 0;
+            if (removedIds.has(missingFileId)) missingFileId = null;
+            document.getElementById('missing-file-ui').classList.add('hidden');
+            document.getElementById('missing-file-ui').classList.remove('flex');
+            hideThumbnailPlaceholder();
+            previewCanvas.style.display = 'none';
+            disableUI();
+        }
+
+        allRolls = await invoke('get_rolls');
+        await updateFilterSidebar();
+        await renderLibraryAndFilmstrip();
+        if (activeTargeted && nextId && findKnownItem(nextId)) {
+            selectedLibraryIds.clear();
+            selectedLibraryIds.add(nextId);
+            await selectImage(nextId);
+        }
+        updateLibrarySelectionUI();
+        btnDeleteDevelopImage.disabled = importInProgress || getImageDeletionTargets([activeId]).length === 0;
+
+        let message = `${result.removed_images || targets.length} photo(s) removed from NexFilm`;
+        if (choice === 'files') {
+            message += `; ${result.deleted_source_files || 0} source file(s) deleted`;
+            if (result.protected_source_files) message += `, ${result.protected_source_files} shared file(s) kept`;
+            if (result.failed_source_files?.length) {
+                showToast(`${message}. ${result.failed_source_files.length} source file(s) could not be deleted.`, 'error');
+                return;
+            }
+        }
+        showToast(message, 'success');
+    } catch (error) {
+        btnDeleteDevelopImage.disabled = importInProgress || getImageDeletionTargets([activeId]).length === 0;
+        showToast(`Could not delete the selected photo(s): ${error}`, 'error');
+    }
+}
+
+btnDeleteLibraryImages.addEventListener('click', () => requestImageDeletion(selectedLibraryIds));
+btnDeleteDevelopImage.addEventListener('click', () => requestImageDeletion([activeId]));
+btnDeleteRollImages.addEventListener('click', () => requestImageDeletion(selectedLibraryIds));
 
 function showToast(message, type = "error") {
     const toast = document.createElement('div');
@@ -792,6 +952,9 @@ function saveCurrentState() {
         d_max: currentDMax.slice(),
         exposure: parseFloat(sliders.exposure.el.value),
         gamma: parseFloat(sliders.gamma.el.value),
+        saturation: parseFloat(sliders.saturation.el.value),
+        temperature: parseFloat(sliders.temperature.el.value),
+        tint: parseFloat(sliders.tint.el.value),
         exp_r: parseFloat(sliders.expr.el.value),
         exp_g: parseFloat(sliders.expg.el.value),
         exp_b: parseFloat(sliders.expb.el.value),
@@ -842,6 +1005,9 @@ let u_dmin_loc;
 let u_dmax_loc;
 let u_exposure_loc;
 let u_gamma_loc;
+let u_saturation_loc;
+let u_temperature_loc;
+let u_tint_loc;
 let u_mode_loc;
 let u_invert_enabled_loc;
 let u_geometry_uv_loc;
@@ -897,6 +1063,9 @@ function initWebGL() {
     uniform vec3 u_dmax;
     uniform vec3 u_exposure;
     uniform float u_gamma;
+    uniform float u_saturation;
+    uniform float u_temperature;
+    uniform float u_tint;
     uniform int u_mode;
     uniform int u_invert_enabled;
     
@@ -924,6 +1093,35 @@ function initWebGL() {
 
     float getLuma(vec3 c) {
         return dot(c, vec3(0.299, 0.587, 0.114));
+    }
+
+    float tonePostGamma(float value) {
+        float clamped = clamp(value, 0.0, 1.0);
+        return clamp(value
+            + u_shadows * pow(1.0 - clamped, 2.0) * value
+            + u_highlights * pow(clamped, 2.0) * (1.0 - value), 0.0, 1.0);
+    }
+
+    vec3 applyPostGammaAdjustments(vec3 color) {
+        color = vec3(tonePostGamma(color.r), tonePostGamma(color.g), tonePostGamma(color.b));
+        if (u_mode != 0) return color;
+
+        float temperature = clamp(u_temperature, -1.0, 1.0);
+        color.r *= 1.0 + temperature * 0.20;
+        color.b *= 1.0 - temperature * 0.20;
+
+        float tint = clamp(u_tint, -1.0, 1.0);
+        color.r *= 1.0 + tint * 0.10;
+        color.g *= 1.0 - tint * 0.20;
+        color.b *= 1.0 + tint * 0.10;
+
+        float luma = getLuma(color);
+        float saturation = 1.0 + clamp(u_saturation, -1.0, 1.0);
+        return clamp(vec3(
+            luma + (color.r - luma) * saturation,
+            luma + (color.g - luma) * saturation,
+            luma + (color.b - luma) * saturation
+        ), 0.0, 1.0);
     }
 
     vec2 applyHomography(vec2 uv, mat3 h) {
@@ -1004,11 +1202,15 @@ function initWebGL() {
         vec3 safe_range = mix(vec3(1.0), density_range, valid_range);
         vec3 norm = mix(vec3(0.0), (density - u_dmin) / safe_range, valid_range);
         
-        norm = norm + u_shadows * pow(1.0 - clamp(norm, 0.0, 1.0), vec3(2.0)) * norm + u_highlights * pow(clamp(norm, 0.0, 1.0), vec3(2.0)) * (1.0 - norm);
-        
-        vec3 final_rgb;
+        float safe_gamma = max(u_gamma, 1e-6);
+        vec3 final_rgb = vec3(
+            pow(clamp(norm.r, 0.0, 1.0), 1.0 / safe_gamma),
+            pow(clamp(norm.g, 0.0, 1.0), 1.0 / safe_gamma),
+            pow(clamp(norm.b, 0.0, 1.0), 1.0 / safe_gamma)
+        );
+        final_rgb = applyPostGammaAdjustments(final_rgb);
         if (u_has_lut == 1) {
-            vec3 lut_in = clamp(norm, 0.0, 1.0);
+            vec3 lut_in = clamp(final_rgb, 0.0, 1.0);
             vec3 lut_color;
             if (u_lut_is_1d == 1) {
                 float lut_size = float(textureSize(u_lut1d, 0).x);
@@ -1019,11 +1221,7 @@ function initWebGL() {
                 vec3 lut_size = vec3(textureSize(u_lut3d, 0));
                 lut_color = texture(u_lut3d, lutTextureCoord(lut_in, lut_size)).rgb;
             }
-            float safe_gamma = max(u_gamma, 1e-6);
-            final_rgb = mix(vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / safe_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / safe_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / safe_gamma)), lut_color, u_lut_opacity);
-        } else {
-            float safe_gamma = max(u_gamma, 1e-6);
-            final_rgb = vec3(pow(clamp(norm.r, 0.0, 1.0), 1.0 / safe_gamma), pow(clamp(norm.g, 0.0, 1.0), 1.0 / safe_gamma), pow(clamp(norm.b, 0.0, 1.0), 1.0 / safe_gamma));
+            final_rgb = mix(final_rgb, lut_color, u_lut_opacity);
         }
 
         if (u_sprocket_uv.x >= 0.0) {
@@ -1066,6 +1264,9 @@ function initWebGL() {
     u_dmax_loc = gl.getUniformLocation(shaderProgram, "u_dmax");
     u_exposure_loc = gl.getUniformLocation(shaderProgram, "u_exposure");
     u_gamma_loc = gl.getUniformLocation(shaderProgram, "u_gamma");
+    u_saturation_loc = gl.getUniformLocation(shaderProgram, "u_saturation");
+    u_temperature_loc = gl.getUniformLocation(shaderProgram, "u_temperature");
+    u_tint_loc = gl.getUniformLocation(shaderProgram, "u_tint");
     u_mode_loc = gl.getUniformLocation(shaderProgram, "u_mode");
     u_invert_enabled_loc = gl.getUniformLocation(shaderProgram, "u_invert_enabled");
     u_geometry_uv_loc = gl.getUniformLocation(shaderProgram, "u_geometry_uv");
@@ -1500,14 +1701,22 @@ function renderWebGL() {
         );
     gl.uniform3f(u_dmin_loc, currentDMin[0], currentDMin[1], currentDMin[2]);
     gl.uniform3f(u_dmax_loc, currentDMax[0], currentDMax[1], currentDMax[2]);
-    gl.uniform3f(u_exposure_loc, expVal + exprVal, expVal + expgVal, expVal + expbVal);
+    gl.uniform3f(
+        u_exposure_loc,
+        expVal + exprVal * CHANNEL_CONTROL_SCALE,
+        expVal + expgVal * CHANNEL_CONTROL_SCALE,
+        expVal + expbVal * CHANNEL_CONTROL_SCALE
+    );
     gl.uniform1f(u_gamma_loc, gammaVal);
+    gl.uniform1f(u_saturation_loc, parseFloat(sliders.saturation.el.value));
+    gl.uniform1f(u_temperature_loc, parseFloat(sliders.temperature.el.value));
+    gl.uniform1f(u_tint_loc, parseFloat(sliders.tint.el.value));
     gl.uniform1i(u_mode_loc, mode);
     gl.uniform1i(u_invert_enabled_loc, proxyHasAnalyzedBase ? 1 : 0);
     
     gl.uniform1f(u_highlights_loc, parseFloat(sliders.highlights.el.value));
     gl.uniform1f(u_shadows_loc, parseFloat(sliders.shadows.el.value));
-    gl.uniform1f(u_lut_opacity_loc, parseFloat(sliders.lutOpacity.el.value));
+    gl.uniform1f(u_lut_opacity_loc, parseFloat(sliders.lutOpacity.el.value) * LUT_CONTROL_SCALE);
     gl.uniform1i(u_has_lut_loc, hasLUT ? 1 : 0);
     gl.uniform1i(u_lut_is_1d_loc, is1DLUT ? 1 : 0);
     gl.uniform1i(u_lut3d_loc, 1);
@@ -1742,6 +1951,9 @@ function setMode(mode) {
         sliders.expr.el.disabled = false;
         sliders.expg.el.disabled = false;
         sliders.expb.el.disabled = false;
+        sliders.saturation.el.disabled = false;
+        sliders.temperature.el.disabled = false;
+        sliders.tint.el.disabled = false;
     } else {
         btnModeBw.classList.add('bg-[#28282c]', 'text-zinc-100', 'shadow-sm');
         btnModeBw.classList.remove('text-zinc-500', 'hover:text-zinc-300');
@@ -1750,6 +1962,9 @@ function setMode(mode) {
         sliders.expr.el.disabled = true;
         sliders.expg.el.disabled = true;
         sliders.expb.el.disabled = true;
+        sliders.saturation.el.disabled = true;
+        sliders.temperature.el.disabled = true;
+        sliders.tint.el.disabled = true;
     }
 }
 
@@ -1767,6 +1982,9 @@ function updateUIFromParams(params, geom) {
     
     sliders.exposure.el.value = params.exposure;
     sliders.gamma.el.value = params.gamma;
+    sliders.saturation.el.value = params.saturation ?? 0;
+    sliders.temperature.el.value = params.temperature ?? 0;
+    sliders.tint.el.value = params.tint ?? params.hue ?? 0;
     sliders.expr.el.value = params.exp_r;
     sliders.expg.el.value = params.exp_g;
     sliders.expb.el.value = params.exp_b;
@@ -1845,7 +2063,7 @@ for (const key in sliders) {
     const s = sliders[key];
     s.el.addEventListener('pointerdown', () => pushUndoState());
     s.el.addEventListener('input', (e) => {
-        s.val.textContent = parseFloat(e.target.value).toFixed(key === 'angle' ? 1 : 3);
+        s.val.textContent = parseFloat(e.target.value).toFixed(3);
         if (key === 'angle') {
             current_geom.angle = parseFloat(e.target.value);
         } else if (key === 'sprocketTolerance') {
@@ -1862,7 +2080,7 @@ for (const key in sliders) {
 }
 
 function setupEditableSliderValues() {
-    Object.values(sliders).forEach(({ el, val }) => {
+    Object.entries(sliders).forEach(([key, { el, val }]) => {
         if (!el || !val) return;
         val.classList.add('slider-value');
         val.contentEditable = 'plaintext-only';
@@ -2279,7 +2497,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
             document.getElementById('btn-promote-roll').classList.add('hidden');
             document.getElementById('btn-delete-rolls').classList.remove('hidden');
             btnEditRoll.classList.add('hidden');
-            btnDeleteCurrentRoll.classList.add('hidden');
+            btnDeleteRollImages.classList.add('hidden');
         } else {
             historyEmpty.classList.add('hidden');
             const filters = getActiveFilters();
@@ -2293,7 +2511,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 document.getElementById('btn-promote-roll').classList.remove('hidden');
                 document.getElementById('btn-delete-rolls').classList.add('hidden');
                 btnEditRoll.classList.remove('hidden');
-                btnDeleteCurrentRoll.classList.remove('hidden');
+                btnDeleteRollImages.classList.remove('hidden');
                 historyTitle.textContent = "Roll Contents";
                 
                 const currentRoll = allRolls.find(r => r.roll_id === historyRollViewId);
@@ -2401,7 +2619,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 document.getElementById('btn-promote-roll').classList.add('hidden');
                 document.getElementById('btn-delete-rolls').classList.remove('hidden');
                 btnEditRoll.classList.add('hidden');
-                btnDeleteCurrentRoll.classList.add('hidden');
+                btnDeleteRollImages.classList.add('hidden');
                 historyTitle.textContent = "Roll Archive";
                 
                 let filteredRolls = allRolls.filter(r => {
@@ -2533,6 +2751,8 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
             }
             filmstripContainer.appendChild(stripDiv);
         });
+        updateLibrarySelectionUI();
+        btnDeleteDevelopImage.disabled = importInProgress || getImageDeletionTargets([activeId]).length === 0;
         
     } catch (e) { console.error("Filmstrip error:", e); }
 }
@@ -2700,7 +2920,7 @@ async function selectImage(id) {
     // area overlay is shown once the lightweight state switch completes.
     isCalibrationMode = false;
     document.getElementById('calibration-overlay').classList.add('hidden');
-    document.getElementById('right-panel-blocker').classList.add('hidden');
+    setDevelopInspectorCalibrationLocked(false);
     btnAutoColor.disabled = true;
 
     try {
@@ -2739,7 +2959,7 @@ async function selectImage(id) {
                 canvasWrapper.style.width = '100%';
                 canvasWrapper.style.height = '100%';
                 activeId = id;
-                btnDeleteDevelopRoll.disabled = !getDevelopRollId();
+                btnDeleteDevelopImage.disabled = getImageDeletionTargets([activeId]).length === 0;
                 renderLibraryAndFilmstrip();
                 return;
             }
@@ -2753,7 +2973,7 @@ async function selectImage(id) {
         document.getElementById('preview-canvas').style.display = 'block';
 
         activeId = id;
-        btnDeleteDevelopRoll.disabled = !getDevelopRollId();
+        btnDeleteDevelopImage.disabled = getImageDeletionTargets([activeId]).length === 0;
         activeProxyIsFull = false;
         hasProcessedActiveImage = false;
         proxyPixels = null;
@@ -2827,7 +3047,7 @@ async function selectImage(id) {
         document.getElementById('calibration-overlay').classList.toggle('hidden', hasConfirmedFilmArea);
         // A batch-applied area is persisted edit state even if the target has
         // never rendered. It must reach Auto Invert without another save.
-        document.getElementById('right-panel-blocker').classList.toggle('hidden', hasConfirmedFilmArea);
+        setDevelopInspectorCalibrationLocked(isCalibrationMode);
         btnAutoColor.disabled = !hasConfirmedFilmArea;
         if (isCalibrationMode) {
             requestAnimationFrame(updateCalibrationPolygon);
@@ -3895,7 +4115,7 @@ function enterCalibrationMode() {
     calibrationRevision++;
     isCalibrationMode = true;
     document.getElementById('calibration-overlay').classList.remove('hidden');
-    document.getElementById('right-panel-blocker').classList.remove('hidden');
+    setDevelopInspectorCalibrationLocked(true);
     btnBatchApply.disabled = true;
     if (current_geom.calibration_points) {
         calibrationPoints = JSON.parse(JSON.stringify(current_geom.calibration_points));
@@ -4084,6 +4304,32 @@ async function showDeleteRollDialog(rollCount) {
     });
 }
 
+async function showDeleteImagesDialog(imageCount) {
+    return new Promise(resolve => {
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 bg-black/80 flex items-center justify-center z-[110] backdrop-blur-sm';
+        overlay.innerHTML = `
+            <div class="bg-[#1a1a1e] border border-[#28282c] rounded-lg p-6 max-w-md w-full mx-4 shadow-2xl">
+                <h3 class="text-zinc-100 font-bold mb-2">Delete ${imageCount} selected photo${imageCount === 1 ? '' : 's'}?</h3>
+                <p class="text-zinc-400 text-sm mb-2">Choose whether to remove the selected photo records from NexFilm or also delete their original source files.</p>
+                <p class="text-red-300 text-xs mb-6">Deleting source files is permanent. Files still referenced elsewhere will be kept.</p>
+                <div class="flex flex-wrap justify-end gap-3">
+                    <button data-delete-image-choice="cancel" class="px-4 py-2 text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">Cancel</button>
+                    <button data-delete-image-choice="catalog" class="px-4 py-2 text-xs font-bold bg-zinc-700 hover:bg-zinc-600 text-white rounded transition-colors">Remove from NexFilm</button>
+                    <button data-delete-image-choice="files" class="px-4 py-2 text-xs font-bold bg-red-900/70 hover:bg-red-800 border border-red-700/60 text-white rounded transition-colors">Delete Source Files</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        overlay.querySelectorAll('[data-delete-image-choice]').forEach(button => {
+            button.addEventListener('click', () => {
+                overlay.remove();
+                resolve(button.dataset.deleteImageChoice === 'cancel' ? null : button.dataset.deleteImageChoice);
+            });
+        });
+    });
+}
+
 btnResetColor.addEventListener('click', async () => {
     if (!activeId) return;
     
@@ -4102,6 +4348,9 @@ btnResetColor.addEventListener('click', async () => {
     
     sliders.exposure.el.value = 0;
     sliders.gamma.el.value = 1;
+    sliders.saturation.el.value = 0;
+    sliders.temperature.el.value = 0;
+    sliders.tint.el.value = 0;
     sliders.expr.el.value = 0;
     sliders.expg.el.value = 0;
     sliders.expb.el.value = 0;
@@ -4382,23 +4631,101 @@ const btnCopySettings = document.getElementById('btn-copy-settings');
 const btnPasteSettings = document.getElementById('btn-paste-settings');
 const btnWbEyedropper = document.getElementById('btn-wb-eyedropper');
 
+function closeCopySettingsModal() {
+    copySettingsContent.classList.add('scale-95');
+    copySettingsModal.classList.add('opacity-0', 'pointer-events-none');
+    copySettingsModal.setAttribute('aria-hidden', 'true');
+    btnCopySettings.focus();
+}
+
+function openCopySettingsModal() {
+    copySettingsModal.classList.remove('opacity-0', 'pointer-events-none');
+    copySettingsModal.setAttribute('aria-hidden', 'false');
+    setTimeout(() => {
+        copySettingsContent.classList.remove('scale-95');
+        btnConfirmCopySettings.focus();
+    }, 10);
+}
+
 btnCopySettings.addEventListener('click', () => {
     if (!activeId) return;
-    copiedSettings = saveCurrentState();
-    if (copiedSettings) {
-        btnPasteSettings.disabled = false;
-        showToast("Settings copied.", "success");
+    openCopySettingsModal();
+});
+
+btnCloseCopySettings.addEventListener('click', closeCopySettingsModal);
+btnCancelCopySettings.addEventListener('click', closeCopySettingsModal);
+copySettingsModal.addEventListener('click', event => {
+    if (event.target === copySettingsModal) closeCopySettingsModal();
+});
+copySettingsModal.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeCopySettingsModal();
+});
+
+btnConfirmCopySettings.addEventListener('click', () => {
+    if (!activeId) return;
+    const modules = Array.from(document.querySelectorAll('.copy-settings-module:checked'))
+        .map(input => input.value);
+    if (modules.length === 0) {
+        showToast("Select at least one settings group.", "error");
+        return;
     }
+    const params = saveCurrentState();
+    if (!params) return;
+    copiedSettings = createCopyPayload(params, current_geom, modules);
+    btnPasteSettings.disabled = false;
+    closeCopySettingsModal();
+    showToast(`${modules.length} settings group(s) copied.`, "success");
 });
 
 btnPasteSettings.addEventListener('click', async () => {
     if (!activeId || !copiedSettings) return;
+    const targetId = activeId;
+    const previousParams = cloneSettingsValue(saveCurrentState());
+    const previousGeom = cloneSettingsValue(current_geom);
+    const { params: nextParams, geom: nextGeom } = mergeCopyPayload(
+        previousParams,
+        previousGeom,
+        copiedSettings
+    );
+    const modules = new Set(copiedSettings.modules);
+
+    const geometryChanged = modules.has('crop') || modules.has('transform');
+    const workingColorspaceChanged = previousParams.working_colorspace !== nextParams.working_colorspace;
     pushUndoState();
-    updateUIFromParams(copiedSettings, current_geom);
-    await restoreLutForImage(copiedSettings);
-    await updateBackendParams();
-    requestRender();
-    showToast("Settings pasted.", "success");
+    try {
+        current_geom = nextGeom;
+        updateUIFromParams(nextParams, nextGeom);
+        if (modules.has('edit')) await restoreLutForImage(nextParams);
+        await updateBackendParams(targetId, nextParams);
+        if (geometryChanged) await persistGeometryQueued(targetId, nextGeom);
+
+        if (workingColorspaceChanged && hasProcessedActiveImage) {
+            proxyCache.delete(targetId);
+            readyProxyIds.delete(targetId);
+            activeProxyIsFull = false;
+            await reloadDevelopProxy(nextGeom, { showLoading: true });
+        } else {
+            updateCanvasTransform();
+            requestRender();
+        }
+        btnBatchApply.disabled = !current_geom?.calibration_points;
+        if (isCropMode) updateCropOverlay();
+        requestThumbnailSync();
+        showToast("Settings pasted.", "success");
+    } catch (error) {
+        current_geom = previousGeom;
+        updateUIFromParams(previousParams, previousGeom);
+        await restoreLutForImage(previousParams);
+        try {
+            await updateBackendParams(targetId, previousParams);
+            if (geometryChanged) await persistGeometryQueued(targetId, previousGeom);
+        } catch (rollbackError) {
+            console.error("Failed to roll back pasted settings", rollbackError);
+        }
+        updateCanvasTransform();
+        requestRender();
+        showToast(`Could not paste settings: ${error}`, "error");
+    }
 });
 
 btnWbEyedropper.addEventListener('click', () => {
@@ -4469,16 +4796,18 @@ previewCanvas.addEventListener('click', (e) => {
             -Math.log10(tG) - currentBaseDensity[1],
             -Math.log10(tB) - currentBaseDensity[2],
         ];
-        const currentExpG = parseFloat(sliders.expg.el.value);
+        const currentExpG = parseFloat(sliders.expg.el.value) * CHANNEL_CONTROL_SCALE;
         const [targetExpR, , targetExpB] = getNeutralExposureOffsets(rawDensity, currentExpG);
+        const sliderExpR = Math.max(-1, Math.min(1, targetExpR / CHANNEL_CONTROL_SCALE));
+        const sliderExpB = Math.max(-1, Math.min(1, targetExpB / CHANNEL_CONTROL_SCALE));
         
         pushUndoState();
         
-        sliders.expr.el.value = targetExpR;
-        sliders.expb.el.value = targetExpB;
+        sliders.expr.el.value = sliderExpR;
+        sliders.expb.el.value = sliderExpB;
         
-        sliders.expr.val.textContent = targetExpR.toFixed(3);
-        sliders.expb.val.textContent = targetExpB.toFixed(3);
+        sliders.expr.val.textContent = sliderExpR.toFixed(3);
+        sliders.expb.val.textContent = sliderExpB.toFixed(3);
         
         updateSliderTrack(sliders.expr.el);
         updateSliderTrack(sliders.expb.el);
@@ -4852,7 +5181,7 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
         await persistGeometryQueued(activeId, current_geom);
         isCalibrationMode = false;
         document.getElementById('calibration-overlay').classList.add('hidden');
-        document.getElementById('right-panel-blocker').classList.add('hidden');
+        setDevelopInspectorCalibrationLocked(false);
         btnAutoColor.disabled = false;
         btnBatchApply.disabled = false;
         if (activeProxyIsFull) requestRender();

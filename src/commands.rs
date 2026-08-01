@@ -3,8 +3,8 @@ use crate::app_state::{
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
 use crate::core_math::{
-    apply_homography, normalize_density_channel, shader_homography, sprocket_white_mask,
-    tone_density_channel,
+    apply_homography, apply_post_gamma_adjustments, normalize_density_channel, shader_homography,
+    sprocket_white_mask,
 };
 use crate::persistence::{self, MATH_VERSION, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
@@ -29,6 +29,8 @@ use tauri::{Emitter, Manager};
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 static RAYON_INIT: OnceLock<()> = OnceLock::new();
 static EXPORT_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const CHANNEL_CONTROL_SCALE: f32 = 0.5;
+const LUT_CONTROL_SCALE: f32 = 0.5;
 
 const FALLBACK_THUMB: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mM8c+bMfwAIGwK9t856VAAAAABJRU5ErkJggg==";
 const IMPORT_PREVIEW_LONG_EDGE: u32 = 1024;
@@ -2765,13 +2767,13 @@ fn render_shader_equivalent(
     let sprocket_target = sprocket_uv.and_then(|uv| sample_rgb16_nearest(source, uv));
     let tolerance = params.sprocket.sprocket_tolerance.unwrap_or(0.10);
     let feather = params.sprocket.sprocket_feather.unwrap_or(0.05);
-    let lut_opacity = params.lut.lut_opacity.clamp(0.0, 1.0);
+    let lut_opacity = params.lut.lut_opacity.clamp(0.0, 1.0) * LUT_CONTROL_SCALE;
     let pipeline = FilmPipeline::new(
         [base_color.base_r, base_color.base_g, base_color.base_b],
         [
-            params.exposure.exposure + params.exposure.exp_r,
-            params.exposure.exposure + params.exposure.exp_g,
-            params.exposure.exposure + params.exposure.exp_b,
+            params.exposure.exposure + params.exposure.exp_r * CHANNEL_CONTROL_SCALE,
+            params.exposure.exposure + params.exposure.exp_g * CHANNEL_CONTROL_SCALE,
+            params.exposure.exposure + params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
         ],
         params.film_mode.clone(),
     );
@@ -2800,32 +2802,51 @@ fn render_shader_equivalent(
                 raw[2] as f32 / 65535.0,
             ];
             let density = pipeline.process_pixel(&linear_rgb);
-            let toned = [
-                tone_density_channel(
+            let normalized = [
+                normalize_density_channel(
                     density[0],
                     params.density.d_min[0],
                     params.density.d_max[0],
-                    params.tone.highlights,
-                    params.tone.shadows,
+                    0.0,
+                    0.0,
+                    params.density.gamma,
                 ),
-                tone_density_channel(
+                normalize_density_channel(
                     density[1],
                     params.density.d_min[1],
                     params.density.d_max[1],
-                    params.tone.highlights,
-                    params.tone.shadows,
+                    0.0,
+                    0.0,
+                    params.density.gamma,
                 ),
-                tone_density_channel(
+                normalize_density_channel(
                     density[2],
                     params.density.d_min[2],
                     params.density.d_max[2],
-                    params.tone.highlights,
-                    params.tone.shadows,
+                    0.0,
+                    0.0,
+                    params.density.gamma,
                 ),
             ];
-            let baseline = toned.map(|value| value.powf(1.0 / params.density.gamma.max(1e-6)));
+            let (saturation, temperature, tint) = if params.film_mode == FilmMode::Color {
+                (
+                    params.tone.saturation,
+                    params.tone.temperature,
+                    params.tone.tint,
+                )
+            } else {
+                (0.0, 0.0, 0.0)
+            };
+            let baseline = apply_post_gamma_adjustments(
+                normalized,
+                params.tone.highlights,
+                params.tone.shadows,
+                saturation,
+                temperature,
+                tint,
+            );
             let mut rendered = if let Some(lut) = lut {
-                let mapped = lut.sample(toned);
+                let mapped = lut.sample(baseline);
                 [
                     baseline[0] + (mapped[0] - baseline[0]) * lut_opacity,
                     baseline[1] + (mapped[1] - baseline[1]) * lut_opacity,
@@ -3309,6 +3330,7 @@ pub async fn save_contact_sheet(
 #[derive(Default, Serialize)]
 pub struct DeleteRollsResult {
     pub removed_rolls: usize,
+    pub removed_images: usize,
     pub removed_records: usize,
     pub deleted_source_files: usize,
     pub missing_source_files: usize,
@@ -3416,6 +3438,7 @@ pub async fn delete_rolls(
 
     let mut result = DeleteRollsResult {
         removed_rolls: removed_roll_count,
+        removed_images: 0,
         removed_records: removed_record_count,
         deleted_source_files: 0,
         missing_source_files: 0,
@@ -3432,6 +3455,125 @@ pub async fn delete_rolls(
                 Some(normalize_path(&item.file_path))
             }))
             .collect();
+        delete_source_paths(source_paths, &protected_paths, &mut result);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn delete_images(
+    images: Vec<ImageKey>,
+    delete_source_files: Option<bool>,
+    state: State<'_, EngineState>,
+) -> Result<DeleteRollsResult, String> {
+    let mut seen = HashSet::new();
+    let images = images
+        .into_iter()
+        .filter(|image| !image.roll_id.is_empty() && !image.file_path.is_empty())
+        .filter(|image| seen.insert((image.roll_id.clone(), normalize_path(&image.file_path))))
+        .collect::<Vec<_>>();
+    if images.is_empty() {
+        return Ok(DeleteRollsResult::default());
+    }
+
+    let deleted_keys = images
+        .iter()
+        .map(|image| (image.roll_id.clone(), normalize_path(&image.file_path)))
+        .collect::<HashSet<_>>();
+    // Only paths proven to exist in NexFilm state are eligible for physical deletion.
+    let mut source_paths = HashMap::new();
+
+    let (updated_rolls, removed_from_rolls, removed_state_count) = {
+        let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
+        let mut updated = rolls.clone();
+        let mut removed_from_rolls = 0;
+        for roll in &mut updated {
+            let roll_id = roll.roll_id.clone();
+            roll.image_paths.retain(|path| {
+                let should_remove = deleted_keys.contains(&(roll_id.clone(), normalize_path(path)));
+                if should_remove {
+                    removed_from_rolls += 1;
+                    source_paths
+                        .entry(normalize_path(path))
+                        .or_insert_with(|| path.clone());
+                }
+                !should_remove
+            });
+        }
+
+        let image_keys = images
+            .iter()
+            .map(|image| (image.roll_id.clone(), image.file_path.clone()))
+            .collect::<Vec<_>>();
+        let mut connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open image database: {error}"))?;
+        let removed_state_count =
+            persistence::delete_images_and_update_rolls(&mut connection, &image_keys, &updated)
+                .map_err(|error| format!("Failed to delete images: {error}"))?;
+        *rolls = updated.clone();
+        (updated, removed_from_rolls, removed_state_count)
+    };
+    update_rolls_compatibility_mirror(&updated_rolls);
+
+    let ids_to_remove = state
+        .items
+        .iter()
+        .filter_map(|entry| {
+            let item = entry.value().read().ok()?;
+            if deleted_keys.contains(&(item.roll_id.clone(), normalize_path(&item.file_path))) {
+                source_paths
+                    .entry(normalize_path(&item.file_path))
+                    .or_insert_with(|| item.file_path.clone());
+                Some(entry.key().clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    let removed_ids = ids_to_remove.iter().cloned().collect::<HashSet<_>>();
+    for id in &ids_to_remove {
+        state.items.remove(id);
+    }
+    state
+        .item_order
+        .write()
+        .map_err(|error| error.to_string())?
+        .retain(|id| !removed_ids.contains(id));
+    state
+        .proxy_loaded_order
+        .write()
+        .map_err(|error| error.to_string())?
+        .retain(|id| !removed_ids.contains(id));
+    let mut active_id = state.active_id.write().map_err(|error| error.to_string())?;
+    if active_id
+        .as_ref()
+        .is_some_and(|id| removed_ids.contains(id))
+    {
+        *active_id = None;
+    }
+    drop(active_id);
+
+    let mut result = DeleteRollsResult {
+        removed_rolls: 0,
+        removed_images: removed_from_rolls
+            .max(removed_state_count)
+            .max(ids_to_remove.len()),
+        removed_records: ids_to_remove.len(),
+        deleted_source_files: 0,
+        missing_source_files: 0,
+        protected_source_files: 0,
+        failed_source_files: Vec::new(),
+    };
+    if delete_source_files.unwrap_or(false) {
+        let protected_paths = updated_rolls
+            .iter()
+            .flat_map(|roll| roll.image_paths.iter())
+            .map(|path| normalize_path(path))
+            .chain(state.items.iter().filter_map(|entry| {
+                let item = entry.value().read().ok()?;
+                Some(normalize_path(&item.file_path))
+            }))
+            .collect::<HashSet<_>>();
         delete_source_paths(source_paths, &protected_paths, &mut result);
     }
     Ok(result)
@@ -3910,9 +4052,9 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     let pipeline = FilmPipeline::new(
         [base_color.base_r, base_color.base_g, base_color.base_b],
         [
-            params.exposure.exposure + params.exposure.exp_r,
-            params.exposure.exposure + params.exposure.exp_g,
-            params.exposure.exposure + params.exposure.exp_b,
+            params.exposure.exposure + params.exposure.exp_r * CHANNEL_CONTROL_SCALE,
+            params.exposure.exposure + params.exposure.exp_g * CHANNEL_CONTROL_SCALE,
+            params.exposure.exposure + params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
         ],
         params.film_mode.clone(),
     );
@@ -3929,6 +4071,15 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     let gamma = params.density.gamma;
     let highlights = params.tone.highlights;
     let shadows = params.tone.shadows;
+    let (saturation, temperature, tint) = if params.film_mode == FilmMode::Color {
+        (
+            params.tone.saturation,
+            params.tone.temperature,
+            params.tone.tint,
+        )
+    } else {
+        (0.0, 0.0, 0.0)
+    };
 
     pristine_pixels
         .par_chunks(3)
@@ -3937,19 +4088,29 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             let true_density = [in_px[0], in_px[1], in_px[2]];
             let density = pipeline.apply_exposure(&true_density);
 
-            let final_r = normalize_density_channel(
-                density[0], d_min[0], d_max[0], highlights, shadows, gamma,
-            );
-            let final_g = normalize_density_channel(
-                density[1], d_min[1], d_max[1], highlights, shadows, gamma,
-            );
-            let final_b = normalize_density_channel(
-                density[2], d_min[2], d_max[2], highlights, shadows, gamma,
+            let gamma_corrected = [
+                normalize_density_channel(
+                    density[0], d_min[0], d_max[0], highlights, shadows, gamma,
+                ),
+                normalize_density_channel(
+                    density[1], d_min[1], d_max[1], highlights, shadows, gamma,
+                ),
+                normalize_density_channel(
+                    density[2], d_min[2], d_max[2], highlights, shadows, gamma,
+                ),
+            ];
+            let final_rgb = apply_post_gamma_adjustments(
+                gamma_corrected,
+                0.0,
+                0.0,
+                saturation,
+                temperature,
+                tint,
             );
 
-            out_px[0] = (final_r * 255.0).clamp(0.0, 255.0) as u8;
-            out_px[1] = (final_g * 255.0).clamp(0.0, 255.0) as u8;
-            out_px[2] = (final_b * 255.0).clamp(0.0, 255.0) as u8;
+            out_px[0] = (final_rgb[0] * 255.0).clamp(0.0, 255.0) as u8;
+            out_px[1] = (final_rgb[1] * 255.0).clamp(0.0, 255.0) as u8;
+            out_px[2] = (final_rgb[2] * 255.0).clamp(0.0, 255.0) as u8;
         });
 
     let (orig_width, orig_height) = (width, height);
@@ -4410,6 +4571,26 @@ mod export_contract_tests {
         let output = render_shader_equivalent(&source, &params, &geom, &white_base(), None);
         assert_eq!(output.get_pixel(0, 0)[0], u16::MAX);
         assert!(output.get_pixel(1, 1)[0] < 40000);
+    }
+
+    #[test]
+    fn black_and_white_export_ignores_color_only_controls() {
+        let source = ImageBuffer::from_pixel(2, 2, Rgb([4000, 12000, 30000]));
+        let mut params = neutral_params();
+        params.tone.saturation = 1.0;
+        params.tone.temperature = 1.0;
+        params.tone.tint = 1.0;
+
+        let output = render_shader_equivalent(
+            &source,
+            &params,
+            &GeometryState::default(),
+            &white_base(),
+            None,
+        );
+        let pixel = output.get_pixel(0, 0);
+        assert_eq!(pixel[0], pixel[1]);
+        assert_eq!(pixel[1], pixel[2]);
     }
 
     #[test]
