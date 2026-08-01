@@ -259,6 +259,16 @@ impl FilmItem {
 pub struct GeometryState {
     pub crop_rect: CropRect,
     pub angle: f32,
+    #[serde(default)]
+    pub perspective_vertical: f32,
+    #[serde(default)]
+    pub perspective_horizontal: f32,
+    #[serde(default)]
+    pub perspective_aspect: f32,
+    #[serde(default = "default_perspective_scale")]
+    pub perspective_scale: f32,
+    #[serde(default)]
+    pub constrain_crop: bool,
     pub flip_h: bool,
     pub flip_v: bool,
     pub rotate_90_count: i32,
@@ -273,6 +283,11 @@ impl Default for GeometryState {
         GeometryState {
             crop_rect: CropRect::default(),
             angle: 0.0,
+            perspective_vertical: 0.0,
+            perspective_horizontal: 0.0,
+            perspective_aspect: 0.0,
+            perspective_scale: default_perspective_scale(),
+            constrain_crop: false,
             flip_h: false,
             flip_v: false,
             rotate_90_count: 0,
@@ -280,6 +295,10 @@ impl Default for GeometryState {
             calibration_confirmed: false,
         }
     }
+}
+
+fn default_perspective_scale() -> f32 {
+    1.0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

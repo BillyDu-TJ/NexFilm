@@ -193,10 +193,10 @@
                 <!-- Transform Tool Bar -->
                 <div class="h-[48px] border-b border-[#28282c] flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm bg-[#1C1C1E]">
                     <div class="flex space-x-2">
-                        <button id="btn-crop-mode" class="toolbar-btn" disabled>Crop</button>
+                        <button id="btn-crop-mode" class="toolbar-btn" disabled>Crop &amp; Rotate</button>
+                        <button id="btn-perspective-mode" class="toolbar-btn" disabled>Perspective</button>
                         <button id="btn-recalibrate" class="toolbar-btn" disabled>Set Film Area</button>
-                        <button id="btn-reset-crop" class="toolbar-btn" disabled>Reset Crop</button>
-                        <button id="btn-rotate-mode" class="toolbar-btn" disabled>Straighten</button>
+                        <button id="btn-reset-crop" class="toolbar-btn" disabled>Reset Geometry</button>
                     </div>
                     <div class="w-px h-4 bg-zinc-700"></div>
                     <button id="btn-rotate-left" class="toolbar-btn" disabled>Rotate Left</button>
@@ -265,13 +265,10 @@
                         <svg id="crop-overlay" class="absolute top-0 left-0 w-full h-full pointer-events-none hidden z-10" style="overflow: visible;">
                             <!-- Outer Rotation Handles (Large invisible paths surrounding the box) -->
                             <rect id="rotate-handle-outer" x="-50%" y="-50%" width="200%" height="200%" fill="transparent" class="pointer-events-auto" style="cursor: grab;"></rect>
-                            <path id="crop-mask" fill="rgba(0,0,0,0.6)" fill-rule="evenodd" d=""></path>
-                            <rect id="crop-box" x="0" y="0" width="100%" height="100%" fill="transparent" stroke="rgba(255,255,255,0.9)" stroke-width="1.5" stroke-dasharray="4 4" class="pointer-events-auto cursor-move"></rect>
-                            <g id="crop-grid" opacity="0" class="transition-opacity duration-200 pointer-events-none">
-                                <line id="grid-v1" x1="33.33%" y1="0" x2="33.33%" y2="100%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
-                                <line id="grid-v2" x1="66.66%" y1="0" x2="66.66%" y2="100%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
-                                <line id="grid-h1" x1="0" y1="33.33%" x2="100%" y2="33.33%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
-                                <line id="grid-h2" x1="0" y1="66.66%" x2="100%" y2="66.66%" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+                            <path id="crop-mask" fill="rgba(0,0,0,0.6)" fill-rule="evenodd" d="" class="pointer-events-none"></path>
+                            <rect id="crop-box" x="0" y="0" width="100%" height="100%" fill="transparent" class="pointer-events-auto cursor-move"></rect>
+                            <g id="crop-grid" opacity="0.78" class="pointer-events-none">
+                                <path id="crop-grid-lines" d=""/>
                             </g>
                             <g id="crop-edges">
                                 <line class="crop-edge pointer-events-auto" data-pos="n" x1="0" y1="0" x2="100%" y2="0" stroke="transparent" stroke-width="16" vector-effect="non-scaling-stroke" style="cursor: ns-resize;"/>
@@ -289,6 +286,11 @@
                                 <rect class="crop-handle" data-pos="s" x="50%" y="100%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: ns-resize;" transform="translate(-4, -4)"/>
                                 <rect class="crop-handle" data-pos="se" x="100%" y="100%" width="8" height="8" fill="white" stroke="#18181b" stroke-width="1" style="cursor: nwse-resize;" transform="translate(-4, -4)"/>
                             </g>
+                        </svg>
+
+                        <svg id="perspective-overlay" class="absolute top-0 left-0 w-full h-full pointer-events-none hidden z-20" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                            <path d="M12.5 0V100 M25 0V100 M37.5 0V100 M50 0V100 M62.5 0V100 M75 0V100 M87.5 0V100 M0 12.5H100 M0 25H100 M0 37.5H100 M0 50H100 M0 62.5H100 M0 75H100 M0 87.5H100"/>
+                            <path class="perspective-grid-major" d="M50 0V100 M0 50H100"/>
                         </svg>
                     </div>
                 </div>
@@ -312,6 +314,45 @@
                         <p class="batch-apply-hint">仅在每张照片的胶片位置保持一致时使用。</p>
                     </div>
                 </div>
+
+                <aside id="perspective-panel" class="perspective-panel hidden" aria-hidden="true" aria-labelledby="perspective-panel-title">
+                    <div class="perspective-panel-header">
+                        <div>
+                            <h2 id="perspective-panel-title">Perspective</h2>
+                            <span>Geometry</span>
+                        </div>
+                        <button id="btn-close-perspective" class="perspective-icon-btn" type="button" title="Close perspective controls" aria-label="Close perspective controls">&times;</button>
+                    </div>
+                    <div class="perspective-panel-body">
+                        <div class="perspective-control">
+                            <div><label for="perspective-rotate">Rotate</label><output id="val-perspective-rotate" for="perspective-rotate">0.00&deg;</output></div>
+                            <input id="perspective-rotate" type="range" min="-45" max="45" step="0.01" value="0" class="custom-range silver-track" disabled>
+                        </div>
+                        <div class="perspective-control">
+                            <div><label for="perspective-vertical">Vertical</label><output id="val-perspective-vertical" for="perspective-vertical">0</output></div>
+                            <input id="perspective-vertical" type="range" min="-100" max="100" step="1" value="0" class="custom-range silver-track" disabled>
+                        </div>
+                        <div class="perspective-control">
+                            <div><label for="perspective-horizontal">Horizontal</label><output id="val-perspective-horizontal" for="perspective-horizontal">0</output></div>
+                            <input id="perspective-horizontal" type="range" min="-100" max="100" step="1" value="0" class="custom-range silver-track" disabled>
+                        </div>
+                        <div class="perspective-control">
+                            <div><label for="perspective-aspect">Aspect</label><output id="val-perspective-aspect" for="perspective-aspect">0</output></div>
+                            <input id="perspective-aspect" type="range" min="-100" max="100" step="1" value="0" class="custom-range silver-track" disabled>
+                        </div>
+                        <div class="perspective-control">
+                            <div><label for="perspective-scale">Scale</label><output id="val-perspective-scale" for="perspective-scale">100%</output></div>
+                            <input id="perspective-scale" type="range" min="50" max="200" step="1" value="100" class="custom-range silver-track" disabled>
+                        </div>
+                        <label class="perspective-toggle" for="perspective-constrain">
+                            <span><strong>Constrain Crop</strong><small>Keep transformed edges outside the frame</small></span>
+                            <input id="perspective-constrain" type="checkbox" disabled>
+                        </label>
+                    </div>
+                    <div class="perspective-panel-footer">
+                        <button id="btn-reset-perspective" type="button" disabled>Reset Perspective</button>
+                    </div>
+                </aside>
                 
                 <!-- Histogram / Waveform Area -->
                 <div class="px-6 py-5 border-b border-[#28282c] bg-[#1a1a1ef0] backdrop-blur sticky top-0 z-10 shadow-sm">

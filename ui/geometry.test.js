@@ -27,4 +27,21 @@ assert.deepEqual(
 );
 assert.deepEqual(geometry.resolveCalibrationRenderPoints(square, false), square);
 
+assert.deepEqual(geometry.normalizeGeometryState({}).crop_rect, { x: 0, y: 0, width: 1, height: 1 });
+assert.equal(geometry.normalizeGeometryState({}).perspective_scale, 1);
+const neutralPerspective = geometry.mapPerspectivePoint([0.2, 0.8], {});
+assert.ok(Math.abs(neutralPerspective[0] - 0.2) < 1e-12);
+assert.ok(Math.abs(neutralPerspective[1] - 0.8) < 1e-12);
+const constrainedScale = geometry.getConstrainedPerspectiveScale({
+    perspective_vertical: 60,
+    perspective_horizontal: -45,
+    perspective_aspect: 20,
+    perspective_scale: 1,
+});
+assert.ok(constrainedScale >= 1 && constrainedScale <= 3);
+const croppedConstrainedScale = geometry.getConstrainedPerspectiveScale({
+    crop_rect: { x: 0.25, y: 0.25, width: 0.5, height: 0.5 },
+});
+assert.ok(Math.abs(croppedConstrainedScale - 0.5) < 1e-12);
+
 console.log('Calibration edge geometry tests passed.');

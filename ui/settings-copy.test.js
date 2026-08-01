@@ -19,6 +19,8 @@ const currentGeom = {
 const sourceGeom = {
     crop_rect: { x: 0.1, y: 0.2, width: 0.7, height: 0.6 }, angle: 2.5, flip_h: true,
     flip_v: false, rotate_90_count: 1,
+    perspective_vertical: 24, perspective_horizontal: -12, perspective_aspect: 8,
+    perspective_scale: 1.18, constrain_crop: true,
     calibration_points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
     calibration_confirmed: true
 };

@@ -102,16 +102,83 @@
         return [sourceX / sourceWidth, sourceY / sourceHeight];
     }
 
+    function normalizeGeometryState(geom) {
+        const state = geom || {};
+        return {
+            ...state,
+            crop_rect: state.crop_rect || { x: 0, y: 0, width: 1, height: 1 },
+            angle: numberOrZero(state.angle),
+            perspective_vertical: numberOrZero(state.perspective_vertical),
+            perspective_horizontal: numberOrZero(state.perspective_horizontal),
+            perspective_aspect: numberOrZero(state.perspective_aspect),
+            perspective_scale: Number.isFinite(Number(state.perspective_scale))
+                && Number(state.perspective_scale) > 0 ? Number(state.perspective_scale) : 1,
+            constrain_crop: !!state.constrain_crop,
+            flip_h: !!state.flip_h,
+            flip_v: !!state.flip_v,
+            rotate_90_count: Math.trunc(numberOrZero(state.rotate_90_count)),
+        };
+    }
+
+    function mapPerspectivePoint(point, geom, scaleOverride) {
+        const state = normalizeGeometryState(geom);
+        const scale = Math.max(0.5, Math.min(3, Number(scaleOverride) || state.perspective_scale));
+        const aspectScale = Math.exp(Math.max(-100, Math.min(100, state.perspective_aspect)) * 0.0035);
+        const x = (numberOrZero(point[0]) * 2 - 1) / (scale * aspectScale);
+        const y = (numberOrZero(point[1]) * 2 - 1) / scale;
+        const denominator = 1
+            + Math.max(-100, Math.min(100, state.perspective_horizontal)) * 0.003 * x
+            + Math.max(-100, Math.min(100, state.perspective_vertical)) * 0.003 * y;
+        if (!Number.isFinite(denominator) || Math.abs(denominator) < 1e-6) return null;
+        const mapped = [(x / denominator + 1) * 0.5, (y / denominator + 1) * 0.5];
+        return mapped.every(Number.isFinite) ? mapped : null;
+    }
+
+    function getConstrainedPerspectiveScale(geom) {
+        const state = normalizeGeometryState(geom);
+        const crop = state.crop_rect;
+        const fits = scale => {
+            for (let index = 0; index <= 64; index++) {
+                const t = index / 64;
+                const cropX = crop.x + t * crop.width;
+                const cropY = crop.y + t * crop.height;
+                const samples = [
+                    [cropX, crop.y],
+                    [crop.x + crop.width, cropY],
+                    [crop.x + (1 - t) * crop.width, crop.y + crop.height],
+                    [crop.x, crop.y + (1 - t) * crop.height],
+                ];
+                for (const point of samples) {
+                    const mapped = mapPerspectivePoint(point, state, scale);
+                    if (!mapped || mapped[0] < 0 || mapped[0] > 1 || mapped[1] < 0 || mapped[1] > 1) return false;
+                }
+            }
+            return true;
+        };
+        if (fits(0.5)) return 0.5;
+        let low = 0.5;
+        let high = 3;
+        if (!fits(high)) return high;
+        for (let iteration = 0; iteration < 28; iteration++) {
+            const middle = (low + high) / 2;
+            if (fits(middle)) high = middle;
+            else low = middle;
+        }
+        return high;
+    }
+
     function mapDisplayPointToSource(point, cropRect, homography, width, height, geom) {
         if (!homography || homography.length < 9) return null;
         const crop = cropRect || { x: 0, y: 0, width: 1, height: 1 };
         const cropX = numberOrZero(crop.x) + numberOrZero(point[0]) * numberOrZero(crop.width);
         const cropY = numberOrZero(crop.y) + numberOrZero(point[1]) * numberOrZero(crop.height);
-        const divisor = homography[2] * cropX + homography[5] * cropY + homography[8];
+        const perspectivePoint = mapPerspectivePoint([cropX, cropY], geom);
+        if (!perspectivePoint) return null;
+        const divisor = homography[2] * perspectivePoint[0] + homography[5] * perspectivePoint[1] + homography[8];
         if (!Number.isFinite(divisor) || Math.abs(divisor) < 1e-8) return null;
         const orientedPoint = [
-            (homography[0] * cropX + homography[3] * cropY + homography[6]) / divisor,
-            (homography[1] * cropX + homography[4] * cropY + homography[7]) / divisor,
+            (homography[0] * perspectivePoint[0] + homography[3] * perspectivePoint[1] + homography[6]) / divisor,
+            (homography[1] * perspectivePoint[0] + homography[4] * perspectivePoint[1] + homography[7]) / divisor,
         ];
         return mapOrientedPointToSource(orientedPoint, width, height, geom);
     }
@@ -333,6 +400,9 @@
     }
 
     return {
+        normalizeGeometryState,
+        mapPerspectivePoint,
+        getConstrainedPerspectiveScale,
         getOrientedDimensions,
         mapOrientedPointToSource,
         mapDisplayPointToSource,

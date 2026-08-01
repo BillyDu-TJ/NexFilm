@@ -5,9 +5,19 @@ const {
     createTransformMatrix,
     invertDisplayPoint,
     mapDisplayPointToSource,
+    normalizeGeometryState,
+    mapPerspectivePoint,
+    getConstrainedPerspectiveScale,
     transformGeometryForQuarterTurn,
     transformGeometryForFlip,
 } = require('../ui/geometry.js');
+
+assert.equal(normalizeGeometryState({}).perspective_scale, 1);
+assert.deepEqual(mapPerspectivePoint([0.25, 0.75], {}), [0.25, 0.75]);
+assert.ok(getConstrainedPerspectiveScale({ perspective_vertical: 50 }) >= 1);
+assert.equal(getConstrainedPerspectiveScale({
+    crop_rect: { x: 0.25, y: 0.25, width: 0.5, height: 0.5 },
+}), 0.5);
 
 function assertClose(actual, expected, epsilon = 1e-12) {
     assert.ok(Math.abs(actual - expected) < epsilon, `${actual} != ${expected}`);

@@ -10,7 +10,11 @@
     ];
     const SPROCKET_PARAM_KEYS = ['sprocket_uv', 'sprocket_tolerance', 'sprocket_feather'];
     const CROP_GEOM_KEYS = ['crop_rect', 'calibration_points', 'calibration_confirmed'];
-    const TRANSFORM_GEOM_KEYS = ['angle', 'flip_h', 'flip_v', 'rotate_90_count'];
+    const TRANSFORM_GEOM_KEYS = [
+        'angle', 'perspective_vertical', 'perspective_horizontal',
+        'perspective_aspect', 'perspective_scale', 'constrain_crop',
+        'flip_h', 'flip_v', 'rotate_90_count'
+    ];
     const VALID_MODULES = new Set(['crop', 'edit', 'transform', 'sprocket']);
 
     function cloneSettingsValue(value) {

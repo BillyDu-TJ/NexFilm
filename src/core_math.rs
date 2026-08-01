@@ -177,6 +177,31 @@ pub fn apply_homography(matrix: &Homography3, uv: [f32; 2]) -> Option<[f32; 2]> 
     (x.is_finite() && y.is_finite()).then_some([x, y])
 }
 
+/// Maps an output UV back into the pre-perspective image. The frontend uses
+/// the same inverse mapping so Develop preview, sampling, thumbnails, and
+/// export stay pixel-consistent.
+#[inline]
+pub fn apply_perspective_uv(
+    uv: [f32; 2],
+    vertical: f32,
+    horizontal: f32,
+    aspect: f32,
+    scale: f32,
+) -> Option<[f32; 2]> {
+    let safe_scale = scale.clamp(0.5, 3.0);
+    let aspect_scale = (aspect.clamp(-100.0, 100.0) * 0.0035).exp();
+    let x = (uv[0] * 2.0 - 1.0) / (safe_scale * aspect_scale);
+    let y = (uv[1] * 2.0 - 1.0) / safe_scale;
+    let denominator = 1.0
+        + horizontal.clamp(-100.0, 100.0) * 0.003 * x
+        + vertical.clamp(-100.0, 100.0) * 0.003 * y;
+    if !denominator.is_finite() || denominator.abs() < 1e-6 {
+        return None;
+    }
+    let mapped = [(x / denominator + 1.0) * 0.5, (y / denominator + 1.0) * 0.5];
+    (mapped[0].is_finite() && mapped[1].is_finite()).then_some(mapped)
+}
+
 #[inline]
 pub fn shader_smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
     let range = edge1 - edge0;
@@ -205,8 +230,9 @@ pub fn sprocket_white_mask(luma_difference: f32, tolerance: f32, feather: f32) -
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_homography, apply_post_gamma_adjustments, neutral_density_bounds, neutralize_rgb,
-        normalize_density_channel, shader_homography, sprocket_white_mask,
+        apply_homography, apply_perspective_uv, apply_post_gamma_adjustments,
+        neutral_density_bounds, neutralize_rgb, normalize_density_channel, shader_homography,
+        sprocket_white_mask,
     };
 
     #[test]
@@ -238,6 +264,20 @@ mod tests {
         let adjusted = apply_post_gamma_adjustments([0.2, 0.5, 0.8], 0.0, 0.0, -1.0, 0.0, 0.0);
         assert!((adjusted[0] - adjusted[1]).abs() < 1e-6);
         assert!((adjusted[1] - adjusted[2]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn neutral_perspective_preserves_uv() {
+        let mapped = apply_perspective_uv([0.2, 0.8], 0.0, 0.0, 0.0, 1.0).unwrap();
+        assert!((mapped[0] - 0.2).abs() < 1e-6);
+        assert!((mapped[1] - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn perspective_and_scale_produce_finite_coordinates() {
+        let mapped = apply_perspective_uv([0.0, 1.0], 50.0, -35.0, 20.0, 1.25).unwrap();
+        assert!(mapped.iter().all(|value| value.is_finite()));
+        assert_ne!(mapped, [0.0, 1.0]);
     }
 
     #[test]

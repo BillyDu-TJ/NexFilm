@@ -66,7 +66,7 @@ const btnModeBw = document.getElementById('btn-mode-bw');
 
 // DOM: Crop & Transform
 const btnCropMode = document.getElementById('btn-crop-mode');
-const btnRotateMode = document.getElementById('btn-rotate-mode');
+const btnPerspectiveMode = document.getElementById('btn-perspective-mode');
 const btnRecalibrate = document.getElementById('btn-recalibrate');
 const btnAutoArea = document.getElementById('btn-auto-area');
 const btnBatchApply = document.getElementById('btn-batch-apply');
@@ -86,6 +86,18 @@ const cropGrid = document.getElementById('crop-grid');
 const cropEdges = document.getElementById('crop-edges');
 const cropHandles = document.getElementById('crop-handles');
 const rotateHandleOuter = document.getElementById('rotate-handle-outer');
+const perspectiveOverlay = document.getElementById('perspective-overlay');
+const perspectivePanel = document.getElementById('perspective-panel');
+const btnClosePerspective = document.getElementById('btn-close-perspective');
+const btnResetPerspective = document.getElementById('btn-reset-perspective');
+const perspectiveControls = {
+    angle: { el: document.getElementById('perspective-rotate'), val: document.getElementById('val-perspective-rotate') },
+    perspective_vertical: { el: document.getElementById('perspective-vertical'), val: document.getElementById('val-perspective-vertical') },
+    perspective_horizontal: { el: document.getElementById('perspective-horizontal'), val: document.getElementById('val-perspective-horizontal') },
+    perspective_aspect: { el: document.getElementById('perspective-aspect'), val: document.getElementById('val-perspective-aspect') },
+    perspective_scale: { el: document.getElementById('perspective-scale'), val: document.getElementById('val-perspective-scale') },
+};
+const perspectiveConstrain = document.getElementById('perspective-constrain');
 
 const batchApplyModal = document.getElementById('batch-apply-modal');
 const batchApplyModalContent = document.getElementById('batch-apply-modal-content');
@@ -134,9 +146,9 @@ let activeProxyIsFull = false;
 let hasProcessedActiveImage = false;
 
 let lastHistPixels = null;
-let current_geom = { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0 };
+let current_geom = NexFilmGeometry.normalizeGeometryState({});
 let isCropMode = false;
-let isRotateMode = false;
+let isPerspectiveMode = false;
 let currentImageWidth = 1;
 let currentImageHeight = 1;
 let zoomLevel = 1.0;
@@ -619,7 +631,7 @@ window.addEventListener('keydown', async (e) => {
         
         const prevState = undoStacks[activeId].pop();
         updateUIFromParams(prevState.params, prevState.geom);
-        current_geom = JSON.parse(JSON.stringify(prevState.geom));
+        current_geom = NexFilmGeometry.normalizeGeometryState(prevState.geom);
         updateCanvasTransform();
         requestRender();
         if (isCropMode) updateCropOverlay();
@@ -1021,6 +1033,12 @@ let u_has_lut_loc;
 let u_lut1d_loc;
 let u_image_loc;
 let u_crop_loc;
+let u_homography_loc;
+let u_perspective_loc;
+let u_sprocket_uv_loc;
+let u_sprocket_tolerance_loc;
+let u_sprocket_feather_loc;
+let u_calib_bounds_loc;
 let u_calib_pts_loc;
 let u_border_exposure_loc;
 let u_baseline_pass_loc;
@@ -1081,6 +1099,7 @@ function initWebGL() {
     uniform int u_lut_is_1d;
     
     uniform mat3 u_homography;
+    uniform vec4 u_perspective;
     uniform mat3 u_geometry_uv;
     uniform vec2 u_sprocket_uv;
     uniform float u_sprocket_tolerance;
@@ -1131,6 +1150,19 @@ function initWebGL() {
         return p.xy / p.z;
     }
 
+    vec2 applyPerspective(vec2 uv) {
+        float safeScale = clamp(u_perspective.w, 0.5, 3.0);
+        float aspectScale = exp(clamp(u_perspective.z, -100.0, 100.0) * 0.0035);
+        vec2 centered = vec2(
+            (uv.x * 2.0 - 1.0) / (safeScale * aspectScale),
+            (uv.y * 2.0 - 1.0) / safeScale
+        );
+        float divisor = 1.0
+            + clamp(u_perspective.y, -100.0, 100.0) * 0.003 * centered.x
+            + clamp(u_perspective.x, -100.0, 100.0) * 0.003 * centered.y;
+        return (centered / divisor + 1.0) * 0.5;
+    }
+
     vec2 mapOrientedToSource(vec2 uv) {
         vec3 p = u_geometry_uv * vec3(uv, 1.0);
         return p.xy / p.z;
@@ -1145,7 +1177,7 @@ function initWebGL() {
     }
 
     void main() {
-        vec2 oriented_uv = applyHomography(v_texcoord, u_homography);
+        vec2 oriented_uv = applyHomography(applyPerspective(v_texcoord), u_homography);
         vec2 warped_uv = mapOrientedToSource(oriented_uv);
         if (warped_uv.x < 0.0 || warped_uv.x > 1.0 || warped_uv.y < 0.0 || warped_uv.y > 1.0) {
             outColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -1293,6 +1325,7 @@ function initWebGL() {
     u_image_loc = gl.getUniformLocation(shaderProgram, "u_image");
     u_crop_loc = gl.getUniformLocation(shaderProgram, "u_crop");
     u_homography_loc = gl.getUniformLocation(shaderProgram, "u_homography");
+    u_perspective_loc = gl.getUniformLocation(shaderProgram, "u_perspective");
     u_sprocket_uv_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_uv");
     u_sprocket_tolerance_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_tolerance");
     u_sprocket_feather_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_feather");
@@ -1759,6 +1792,13 @@ function renderWebGL() {
     
     let homographyMat = getHomography(pts);
     gl.uniformMatrix3fv(u_homography_loc, false, homographyMat);
+    gl.uniform4f(
+        u_perspective_loc,
+        current_geom.perspective_vertical,
+        current_geom.perspective_horizontal,
+        current_geom.perspective_aspect,
+        current_geom.perspective_scale
+    );
     gl.uniform2fv(u_sprocket_uv_loc, currentSprocketUV);
     gl.uniform1f(u_sprocket_tolerance_loc, currentSprocketTolerance);
     gl.uniform1f(u_sprocket_feather_loc, currentSprocketFeather);
@@ -2000,6 +2040,7 @@ function updateDMinMaxDisplay() {
 }
 
 function updateUIFromParams(params, geom) {
+    current_geom = NexFilmGeometry.normalizeGeometryState(geom || current_geom);
     currentDMin = params.d_min.slice();
     currentDMax = params.d_max.slice();
     updateDMinMaxDisplay();
@@ -2032,6 +2073,7 @@ function updateUIFromParams(params, geom) {
         s.val.textContent = parseFloat(s.el.value).toFixed(2);
         updateSliderTrack(s.el);
     }
+    updatePerspectiveUI();
     setMode(params.film_mode === 'BW' ? 'B&W' : 'Color');
 }
 
@@ -2169,7 +2211,10 @@ function enableUI() {
     }
     sliders.lutOpacity.el.disabled = !hasLUT;
     btnCropMode.disabled = false;
-    btnRotateMode.disabled = false;
+    btnPerspectiveMode.disabled = false;
+    btnResetPerspective.disabled = false;
+    perspectiveConstrain.disabled = false;
+    Object.values(perspectiveControls).forEach(control => { control.el.disabled = false; });
     btnRecalibrate.disabled = false;
     btnAutoArea.disabled = false;
     btnBatchApply.disabled = !current_geom?.calibration_points;
@@ -2198,7 +2243,10 @@ function disableUI() {
     }
     sliders.lutOpacity.el.disabled = true;
     btnCropMode.disabled = true;
-    btnRotateMode.disabled = true;
+    btnPerspectiveMode.disabled = true;
+    btnResetPerspective.disabled = true;
+    perspectiveConstrain.disabled = true;
+    Object.values(perspectiveControls).forEach(control => { control.el.disabled = true; });
     btnRecalibrate.disabled = true;
     btnAutoArea.disabled = true;
     btnBatchApply.disabled = true;
@@ -3007,7 +3055,7 @@ async function selectImage(id) {
         proxyHeight = 0;
         readyProxyIds.delete(id);
         enableUI();
-        current_geom = JSON.parse(JSON.stringify(state.geom));
+        current_geom = NexFilmGeometry.normalizeGeometryState(state.geom);
         const selectionCalibrationRevision = ++calibrationRevision;
         btnBatchApply.disabled = !current_geom.calibration_points;
         updateUIFromParams(state.params, current_geom);
@@ -3604,7 +3652,7 @@ function updateCanvasTransform(w, h) {
     previewCanvas.style.objectFit = 'fill'; 
 
     let aspect;
-    if (isCropMode || isRotateMode) {
+    if (isCropMode) {
         aspect = orientedSize.width / orientedSize.height;
     } else {
         aspect = (orientedSize.width * rect.width) / (orientedSize.height * rect.height);
@@ -3631,7 +3679,7 @@ function updateCanvasTransform(w, h) {
     canvasWrapper.style.height = `${targetH}px`;
     dummyPusher.style.display = 'none'; canvasWrapper.style.transform = `translate(${panX}px, ${panY}px)`;
 
-    if (isCropMode || isRotateMode) {
+    if (isCropMode) {
         previewCanvas.style.width = '100%';
         previewCanvas.style.height = '100%';
         previewCanvas.style.left = '0';
@@ -3654,8 +3702,7 @@ function updateCanvasTransform(w, h) {
 btnCropMode.addEventListener('click', () => {
     isCropMode = !isCropMode;
     if (isCropMode) {
-        isRotateMode = false;
-        btnRotateMode.classList.remove('active');
+        setPerspectiveMode(false);
         btnCropMode.classList.add('active');
         cropOverlay.classList.remove('hidden');
         cropBox.classList.remove('hidden');
@@ -3671,24 +3718,85 @@ btnCropMode.addEventListener('click', () => {
     requestRender();
 });
 
-btnRotateMode.addEventListener('click', () => {
-    isRotateMode = !isRotateMode;
-    if (isRotateMode) {
+function formatPerspectiveValue(key, value) {
+    if (key === 'angle') return `${value.toFixed(2)}°`;
+    if (key === 'perspective_scale') return `${Math.round(value * 100)}%`;
+    return `${Math.round(value)}`;
+}
+
+function updatePerspectiveUI() {
+    current_geom = NexFilmGeometry.normalizeGeometryState(current_geom);
+    Object.entries(perspectiveControls).forEach(([key, control]) => {
+        const value = current_geom[key];
+        control.el.value = key === 'perspective_scale' ? String(value * 100) : String(value);
+        control.val.textContent = formatPerspectiveValue(key, value);
+        updateSliderTrack(control.el);
+    });
+    perspectiveConstrain.checked = current_geom.constrain_crop;
+}
+
+function setPerspectiveMode(enabled) {
+    isPerspectiveMode = !!enabled;
+    btnPerspectiveMode.classList.toggle('active', isPerspectiveMode);
+    perspectivePanel.classList.toggle('hidden', !isPerspectiveMode);
+    perspectivePanel.setAttribute('aria-hidden', String(!isPerspectiveMode));
+    perspectiveOverlay.classList.toggle('hidden', !isPerspectiveMode);
+    if (isPerspectiveMode) {
         isCropMode = false;
         btnCropMode.classList.remove('active');
-        btnRotateMode.classList.add('active');
-        cropOverlay.classList.remove('hidden');
-        cropBox.classList.add('hidden');
-        cropMask.classList.add('hidden');
-        cropEdges.classList.add('hidden');
-        cropHandles.classList.add('hidden');
-        updateCropOverlay();
-    } else {
-        btnRotateMode.classList.remove('active');
         cropOverlay.classList.add('hidden');
+        updatePerspectiveUI();
     }
     updateCanvasTransform();
     requestRender();
+}
+
+btnPerspectiveMode.addEventListener('click', () => setPerspectiveMode(!isPerspectiveMode));
+btnClosePerspective.addEventListener('click', () => setPerspectiveMode(false));
+
+function constrainPerspectiveScale() {
+    if (!current_geom.constrain_crop) return;
+    const minimumScale = NexFilmGeometry.getConstrainedPerspectiveScale({
+        ...current_geom,
+        perspective_scale: 1,
+    });
+    current_geom.perspective_scale = Math.max(current_geom.perspective_scale, minimumScale);
+}
+
+Object.entries(perspectiveControls).forEach(([key, control]) => {
+    control.el.addEventListener('pointerdown', pushUndoState);
+    control.el.addEventListener('input', event => {
+        const rawValue = Number.parseFloat(event.target.value);
+        current_geom[key] = key === 'perspective_scale' ? rawValue / 100 : rawValue;
+        constrainPerspectiveScale();
+        updatePerspectiveUI();
+        updateCanvasTransform();
+        requestRender();
+    });
+    control.el.addEventListener('change', sendGeometrySync);
+});
+
+perspectiveConstrain.addEventListener('change', () => {
+    pushUndoState();
+    current_geom.constrain_crop = perspectiveConstrain.checked;
+    constrainPerspectiveScale();
+    updatePerspectiveUI();
+    sendGeometrySync();
+});
+
+btnResetPerspective.addEventListener('click', () => {
+    if (!activeId) return;
+    pushUndoState();
+    Object.assign(current_geom, {
+        angle: 0,
+        perspective_vertical: 0,
+        perspective_horizontal: 0,
+        perspective_aspect: 0,
+        perspective_scale: 1,
+        constrain_crop: false,
+    });
+    updatePerspectiveUI();
+    sendGeometrySync();
 });
 
 
@@ -3799,6 +3907,13 @@ async function doAutoColor() {
     let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
     let homographyMat = getHomography(pts);
     gl.uniformMatrix3fv(u_homography_loc, false, homographyMat);
+    gl.uniform4f(
+        u_perspective_loc,
+        current_geom.perspective_vertical,
+        current_geom.perspective_horizontal,
+        current_geom.perspective_aspect,
+        current_geom.perspective_scale
+    );
     gl.uniform2fv(u_sprocket_uv_loc, new Float32Array([-1.0, -1.0])); // Disable target during calibration
     gl.uniform1f(u_sprocket_tolerance_loc, 0.0);
     
@@ -4121,6 +4236,11 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
     calibrationRevision++;
     current_geom.crop_rect = { x: 0, y: 0, width: 1, height: 1 };
     current_geom.angle = 0.0;
+    current_geom.perspective_vertical = 0.0;
+    current_geom.perspective_horizontal = 0.0;
+    current_geom.perspective_aspect = 0.0;
+    current_geom.perspective_scale = 1.0;
+    current_geom.constrain_crop = false;
     current_geom.flip_h = false;
     current_geom.flip_v = false;
     current_geom.rotate_90_count = 0;
@@ -4129,6 +4249,7 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
     btnBatchApply.disabled = true;
     currentSprocketUV = new Float32Array([-1.0, -1.0]);
     if (isCropMode) updateCropOverlay();
+    updatePerspectiveUI();
     await persistGeometryQueued(activeId, current_geom);
     await updateBackendParams();
     if (hasProcessedActiveImage) requestRender();
@@ -4399,27 +4520,37 @@ function getRenderRect() { return canvasWrapper.getBoundingClientRect(); }
 
 function updateCropOverlay() {
     if (!isCropMode) return;
-    const x = current_geom.crop_rect.x * 100, y = current_geom.crop_rect.y * 100;
-    const w = current_geom.crop_rect.width * 100, h = current_geom.crop_rect.height * 100;
+    const overlayRect = cropOverlay.getBoundingClientRect();
+    if (!overlayRect.width || !overlayRect.height) return;
+    const x = current_geom.crop_rect.x * overlayRect.width;
+    const y = current_geom.crop_rect.y * overlayRect.height;
+    const w = current_geom.crop_rect.width * overlayRect.width;
+    const h = current_geom.crop_rect.height * overlayRect.height;
 
-    cropBox.setAttribute('x', `${x}%`); cropBox.setAttribute('y', `${y}%`);
-    cropBox.setAttribute('width', `${w}%`); cropBox.setAttribute('height', `${h}%`);
+    cropBox.setAttribute('x', x); cropBox.setAttribute('y', y);
+    cropBox.setAttribute('width', w); cropBox.setAttribute('height', h);
 
-    const maskPath = `M0,0 H100% V100% H0 Z M${x}%,${y}% V${y + h}% H${x + w}% V${y}% Z`;
+    const maskPath = `M0,0 H${overlayRect.width} V${overlayRect.height} H0 Z M${x},${y} V${y + h} H${x + w} V${y} Z`;
     cropMask.setAttribute('d', maskPath);
 
-    document.getElementById('grid-v1').setAttribute('x1', `${x + w/3}%`); document.getElementById('grid-v1').setAttribute('x2', `${x + w/3}%`);
-    document.getElementById('grid-v1').setAttribute('y1', `${y}%`); document.getElementById('grid-v1').setAttribute('y2', `${y + h}%`);
-    document.getElementById('grid-v2').setAttribute('x1', `${x + w*2/3}%`); document.getElementById('grid-v2').setAttribute('x2', `${x + w*2/3}%`);
-    document.getElementById('grid-v2').setAttribute('y1', `${y}%`); document.getElementById('grid-v2').setAttribute('y2', `${y + h}%`);
-    document.getElementById('grid-h1').setAttribute('y1', `${y + h/3}%`); document.getElementById('grid-h1').setAttribute('y2', `${y + h/3}%`);
-    document.getElementById('grid-h1').setAttribute('x1', `${x}%`); document.getElementById('grid-h1').setAttribute('x2', `${x + w}%`);
-    document.getElementById('grid-h2').setAttribute('y1', `${y + h*2/3}%`); document.getElementById('grid-h2').setAttribute('y2', `${y + h*2/3}%`);
-    document.getElementById('grid-h2').setAttribute('x1', `${x}%`); document.getElementById('grid-h2').setAttribute('x2', `${x + w}%`);
+    const gridCommands = [];
+    for (let index = 1; index < 6; index++) {
+        const gridX = x + w * index / 6;
+        const gridY = y + h * index / 6;
+        gridCommands.push(`M${gridX},${y} V${y + h}`);
+        gridCommands.push(`M${x},${gridY} H${x + w}`);
+    }
+    document.getElementById('crop-grid-lines').setAttribute('d', gridCommands.join(' '));
 
     const setHandle = (pos, hx, hy) => {
         const handle = cropHandles.querySelector(`[data-pos="${pos}"]`);
-        if (handle) { handle.setAttribute('x', `${hx}%`); handle.setAttribute('y', `${hy}%`); }
+        if (handle) {
+            handle.removeAttribute('transform');
+            handle.setAttribute('x', hx - 5);
+            handle.setAttribute('y', hy - 5);
+            handle.setAttribute('width', 10);
+            handle.setAttribute('height', 10);
+        }
     };
     setHandle('nw', x, y); setHandle('n', x + w/2, y); setHandle('ne', x + w, y);
     setHandle('w', x, y + h/2); setHandle('e', x + w, y + h/2);
@@ -4428,10 +4559,10 @@ function updateCropOverlay() {
     const setEdge = (pos, x1, y1, x2, y2) => {
         const edge = cropEdges.querySelector(`[data-pos="${pos}"]`);
         if (!edge) return;
-        edge.setAttribute('x1', `${x1}%`);
-        edge.setAttribute('y1', `${y1}%`);
-        edge.setAttribute('x2', `${x2}%`);
-        edge.setAttribute('y2', `${y2}%`);
+        edge.setAttribute('x1', x1);
+        edge.setAttribute('y1', y1);
+        edge.setAttribute('x2', x2);
+        edge.setAttribute('y2', y2);
     };
     setEdge('n', x, y, x + w, y);
     setEdge('e', x + w, y, x + w, y + h);
@@ -4460,7 +4591,7 @@ function clampCropRect(rect) {
 }
 
 cropOverlay.addEventListener('pointerdown', (e) => {
-    if ((!isCropMode && !isRotateMode) || e.button !== 0) return;
+    if (!isCropMode || e.button !== 0) return;
     const target = e.target;
 
     if (target.classList.contains('crop-handle') && isCropMode) {
@@ -4469,7 +4600,7 @@ cropOverlay.addEventListener('pointerdown', (e) => {
         dragType = target.getAttribute('data-pos');
     } else if (target === cropBox && isCropMode) {
         dragType = 'box';
-    } else if (target === rotateHandleOuter || isRotateMode) {
+    } else if (target === rotateHandleOuter) {
         dragType = 'rotate';
     } else {
         return;
@@ -4483,6 +4614,7 @@ cropOverlay.addEventListener('pointerdown', (e) => {
     const rect = canvasWrapper.getBoundingClientRect();
     dragCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
     cropGrid.style.opacity = '1';
+    cropOverlay.classList.add('is-dragging');
     e.preventDefault();
 });
 
@@ -4501,7 +4633,9 @@ window.addEventListener('pointermove', (e) => {
         const currentRad = Math.atan2(e.clientY - dragCenter.y, e.clientX - dragCenter.x);
         let deltaDeg = (currentRad - startRad) * (180 / Math.PI);
         if (e.shiftKey) deltaDeg *= 0.1;
-        current_geom.angle = dragStartAngle - deltaDeg;
+        current_geom.angle = Math.max(-45, Math.min(45, dragStartAngle - deltaDeg));
+        updatePerspectiveUI();
+        updateCanvasTransform();
         requestRender();
         return;
     } else {
@@ -4534,7 +4668,8 @@ function finishCropDrag(e, persist) {
     }
     isDraggingCrop = false;
     activeCropPointerId = null;
-    cropGrid.style.opacity = '0';
+    cropGrid.style.opacity = '';
+    cropOverlay.classList.remove('is-dragging');
     if (!persist) {
         if (dragType === 'rotate') current_geom.angle = dragStartAngle;
         else current_geom.crop_rect = { ...dragStartRect };
@@ -5568,12 +5703,13 @@ canvasWrapper.parentElement.addEventListener('mousedown', e => {
         if (displayU >= 0 && displayU <= 1 && displayV >= 0 && displayV <= 1) {
             const tex_u = current_geom.crop_rect.x + displayU * current_geom.crop_rect.width;
             const tex_v = current_geom.crop_rect.y + displayV * current_geom.crop_rect.height;
-            
+            const perspectiveUv = NexFilmGeometry.mapPerspectivePoint([tex_u, tex_v], current_geom);
+            if (!perspectiveUv) return;
             let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
             let hMat = getHomography(pts);
-            let w_homo = hMat[2]*tex_u + hMat[5]*tex_v + hMat[8];
-            const raw_u = (hMat[0]*tex_u + hMat[3]*tex_v + hMat[6]) / w_homo;
-            const raw_v = (hMat[1]*tex_u + hMat[4]*tex_v + hMat[7]) / w_homo;
+            let w_homo = hMat[2]*perspectiveUv[0] + hMat[5]*perspectiveUv[1] + hMat[8];
+            const raw_u = (hMat[0]*perspectiveUv[0] + hMat[3]*perspectiveUv[1] + hMat[6]) / w_homo;
+            const raw_v = (hMat[1]*perspectiveUv[0] + hMat[4]*perspectiveUv[1] + hMat[7]) / w_homo;
             
             pushUndoState();
             currentSprocketUV = new Float32Array([raw_u, raw_v]);
@@ -5584,7 +5720,7 @@ canvasWrapper.parentElement.addEventListener('mousedown', e => {
         }
         return;
     }
-    if (!activeId || isCropMode || isRotateMode || isCalibrationMode) return;
+    if (!activeId || isCropMode || isPerspectiveMode || isCalibrationMode) return;
     if (e.button === 0 || e.button === 1) {
         isPanning = true;
         startPanX = e.clientX - panX;
@@ -5600,7 +5736,7 @@ window.addEventListener('mousemove', e => {
 });
 window.addEventListener('mouseup', () => isPanning = false);
 canvasWrapper.parentElement.addEventListener('dblclick', e => {
-    if (!activeId || isCropMode || isRotateMode || isCalibrationMode) return;
+    if (!activeId || isCropMode || isPerspectiveMode || isCalibrationMode) return;
     zoomLevel = 1.0; panX = 0; panY = 0;
     updateCanvasTransform();
 });

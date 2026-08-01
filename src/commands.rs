@@ -3,8 +3,8 @@ use crate::app_state::{
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
 use crate::core_math::{
-    apply_homography, apply_post_gamma_adjustments, neutral_density_bounds, neutralize_rgb,
-    normalize_density_channel, shader_homography, sprocket_white_mask,
+    apply_homography, apply_perspective_uv, apply_post_gamma_adjustments, neutral_density_bounds,
+    neutralize_rgb, normalize_density_channel, shader_homography, sprocket_white_mask,
 };
 use crate::persistence::{self, MATH_VERSION, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
@@ -2796,7 +2796,16 @@ fn render_shader_equivalent(
                 crop.x + (x as f32 + 0.5) / output_width as f32 * crop.width,
                 crop.y + (y as f32 + 0.5) / output_height as f32 * crop.height,
             ];
-            let Some(warped_uv) = apply_homography(&homography, crop_uv) else {
+            let Some(perspective_uv) = apply_perspective_uv(
+                crop_uv,
+                geom.perspective_vertical,
+                geom.perspective_horizontal,
+                geom.perspective_aspect,
+                geom.perspective_scale,
+            ) else {
+                return;
+            };
+            let Some(warped_uv) = apply_homography(&homography, perspective_uv) else {
                 return;
             };
             let Some(raw) = sample_rgb16_nearest(source, warped_uv) else {
