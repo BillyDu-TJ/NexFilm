@@ -25,3 +25,10 @@ rusqlite = { version = "0.40.1", features = ["bundled"] }
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }
+
+# Keep image processing responsive in `cargo tauri dev` while retaining debug symbols.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

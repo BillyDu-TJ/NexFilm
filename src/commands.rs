@@ -2690,17 +2690,99 @@ pub async fn update_tuning_parameters(
     Ok(())
 }
 
+fn gaussian_blur_rgb16_parallel(
+    source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+    sigma: f32,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    assert!(sigma > 0.0, "sigma must be > 0.0");
+    let (width, height) = source.dimensions();
+    if width == 0 || height == 0 {
+        return ImageBuffer::new(width, height);
+    }
+
+    let radius = (2.0 * sigma).ceil() as usize;
+    let kernel_len = radius * 2 + 1;
+    let sigma_squared = sigma.powi(2);
+    let normalization = (2.0 * std::f32::consts::PI).sqrt() * sigma;
+    let kernel = (0..kernel_len)
+        .map(|index| {
+            let distance = index as isize - radius as isize;
+            (-(distance as f32).powi(2) / (2.0 * sigma_squared)).exp() / normalization
+        })
+        .collect::<Vec<_>>();
+    let width = width as usize;
+    let height = height as usize;
+    let row_len = width * 3;
+    let source = source.as_raw();
+
+    let mut horizontal = vec![0u16; source.len()];
+    horizontal
+        .par_chunks_exact_mut(row_len)
+        .enumerate()
+        .for_each(|(row_index, output_row)| {
+            let source_row = &source[row_index * row_len..(row_index + 1) * row_len];
+            for x in 0..width {
+                let interior = x >= radius && x + radius < width;
+                let pixel_offset = x * 3;
+                for channel in 0..3 {
+                    let mut sum = 0.0;
+                    for (kernel_index, weight) in kernel.iter().enumerate() {
+                        let source_x = if interior {
+                            x + kernel_index - radius
+                        } else {
+                            x.saturating_add(kernel_index)
+                                .saturating_sub(radius)
+                                .min(width - 1)
+                        };
+                        sum += source_row[source_x * 3 + channel] as f32 * weight;
+                    }
+                    output_row[pixel_offset + channel] = sum.clamp(0.0, 65535.0) as u16;
+                }
+            }
+        });
+
+    let mut vertical = vec![0u16; source.len()];
+    vertical
+        .par_chunks_exact_mut(row_len)
+        .enumerate()
+        .for_each(|(row_index, output_row)| {
+            let interior = row_index >= radius && row_index + radius < height;
+            for x in 0..width {
+                let pixel_offset = x * 3;
+                for channel in 0..3 {
+                    let mut sum = 0.0;
+                    for (kernel_index, weight) in kernel.iter().enumerate() {
+                        let source_y = if interior {
+                            row_index + kernel_index - radius
+                        } else {
+                            row_index
+                                .saturating_add(kernel_index)
+                                .saturating_sub(radius)
+                                .min(height - 1)
+                        };
+                        sum +=
+                            horizontal[source_y * row_len + pixel_offset + channel] as f32 * weight;
+                    }
+                    output_row[pixel_offset + channel] = sum.clamp(0.0, 65535.0) as u16;
+                }
+            }
+        });
+
+    ImageBuffer::from_raw(width as u32, height as u32, vertical)
+        .expect("parallel Gaussian blur output dimensions should match source")
+}
+
 fn apply_usm(buffer: &mut ImageBuffer<Rgb<u16>, Vec<u16>>, sigma: f32, amount: f32) {
-    let blurred = imageproc::filter::gaussian_blur_f32(buffer, sigma);
+    let blurred = gaussian_blur_rgb16_parallel(buffer, sigma);
     buffer
-        .pixels_mut()
-        .zip(blurred.pixels())
-        .for_each(|(p, b)| {
-            for i in 0..3 {
-                let orig = p[i] as f32;
-                let blur = b[i] as f32;
-                let usm = orig + (orig - blur) * amount;
-                p[i] = usm.clamp(0.0, 65535.0) as u16;
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(blurred.as_raw().par_chunks_exact(3))
+        .for_each(|(pixel, blurred_pixel)| {
+            for channel in 0..3 {
+                let orig = pixel[channel] as f32;
+                let blur = blurred_pixel[channel] as f32;
+                pixel[channel] = (orig + (orig - blur) * amount).clamp(0.0, 65535.0) as u16;
             }
         });
 }
@@ -3143,11 +3225,14 @@ fn write_export_image(
         ExportFormat::Jpeg => {
             let (width, height) = buffer.dimensions();
             let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
-            for (source, target) in buffer.pixels().zip(out8.pixels_mut()) {
-                target[0] = (source[0] >> 8) as u8;
-                target[1] = (source[1] >> 8) as u8;
-                target[2] = (source[2] >> 8) as u8;
-            }
+            out8.as_mut()
+                .par_chunks_exact_mut(3)
+                .zip(buffer.as_raw().par_chunks_exact(3))
+                .for_each(|(target, source)| {
+                    target[0] = (source[0] >> 8) as u8;
+                    target[1] = (source[1] >> 8) as u8;
+                    target[2] = (source[2] >> 8) as u8;
+                });
             let mut cursor = Cursor::new(Vec::new());
             image::DynamicImage::ImageRgb8(out8)
                 .write_to(&mut cursor, ImageOutputFormat::Jpeg(quality as u8))
@@ -3161,11 +3246,14 @@ fn write_export_image(
         ExportFormat::Tiff8 => {
             let (width, height) = buffer.dimensions();
             let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
-            for (source, target) in buffer.pixels().zip(out8.pixels_mut()) {
-                target[0] = (source[0] >> 8) as u8;
-                target[1] = (source[1] >> 8) as u8;
-                target[2] = (source[2] >> 8) as u8;
-            }
+            out8.as_mut()
+                .par_chunks_exact_mut(3)
+                .zip(buffer.as_raw().par_chunks_exact(3))
+                .for_each(|(target, source)| {
+                    target[0] = (source[0] >> 8) as u8;
+                    target[1] = (source[1] >> 8) as u8;
+                    target[2] = (source[2] >> 8) as u8;
+                });
             image::DynamicImage::ImageRgb8(out8)
                 .save_with_format(path, image::ImageFormat::Tiff)
                 .map_err(|error| format!("Could not write {}: {error}", path.display()))
@@ -4786,9 +4874,9 @@ mod library_management_contract_tests {
 #[cfg(test)]
 mod export_contract_tests {
     use super::{
-        export_dimensions, render_shader_equivalent, reserve_export_path,
-        sanitize_export_file_stem, validate_export_color_space, write_export_image,
-        ExportConflictPolicy, ExportFormat,
+        export_dimensions, gaussian_blur_rgb16_parallel, render_shader_equivalent,
+        reserve_export_path, sanitize_export_file_stem, validate_export_color_space,
+        write_export_image, ExportConflictPolicy, ExportFormat,
     };
     use crate::app_state::{BaseColor, FilmMode, GeometryState, TuningParams};
     use image::{ColorType, GenericImageView, ImageBuffer, Rgb};
@@ -4808,6 +4896,20 @@ mod export_contract_tests {
             base_r: u16::MAX,
             base_g: u16::MAX,
             base_b: u16::MAX,
+        }
+    }
+
+    #[test]
+    fn parallel_gaussian_blur_matches_reference_filter() {
+        let mut source = ImageBuffer::new(11, 7);
+        for (index, pixel) in source.pixels_mut().enumerate() {
+            let value = (index as u16).wrapping_mul(997);
+            *pixel = Rgb([value, value.wrapping_mul(3), value.wrapping_mul(7)]);
+        }
+        for sigma in [0.8, 1.0, 1.7] {
+            let optimized = gaussian_blur_rgb16_parallel(&source, sigma);
+            let reference = imageproc::filter::gaussian_blur_f32(&source, sigma);
+            assert_eq!(optimized.as_raw(), reference.as_raw(), "sigma={sigma}");
         }
     }
 
@@ -4957,6 +5059,58 @@ mod export_contract_tests {
             assert_eq!(decoded.dimensions(), (3, 2));
             assert_eq!(decoded.color(), color);
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "manual performance benchmark"]
+    fn benchmark_single_nef_jpeg_export_pipeline() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("_DSC7333.NEF");
+        if !path.exists() {
+            return;
+        }
+        let path = path.to_string_lossy().to_string();
+        let decode_started = std::time::Instant::now();
+        let decoded =
+            super::decode_image_buffer(&path, super::DecodeMode::ExportFull, "linear-srgb")
+                .expect("NEF full decode should succeed");
+        let decode_elapsed = decode_started.elapsed();
+
+        let render_started = std::time::Instant::now();
+        let mut rendered = render_shader_equivalent(
+            &decoded,
+            &neutral_params(),
+            &GeometryState::default(),
+            &white_base(),
+            None,
+        );
+        let render_elapsed = render_started.elapsed();
+
+        let sharpen_started = std::time::Instant::now();
+        super::apply_usm(&mut rendered, 1.0, 0.5);
+        let sharpen_elapsed = sharpen_started.elapsed();
+
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-export-benchmark-{}",
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let encode_started = std::time::Instant::now();
+        super::write_export_image(
+            rendered,
+            &root.join("benchmark.jpg"),
+            super::ExportFormat::Jpeg,
+            100,
+        )
+        .unwrap();
+        let encode_elapsed = encode_started.elapsed();
+        println!(
+            "JPEG export benchmark: source={}x{}, decode={decode_elapsed:?}, render={render_elapsed:?}, sharpen={sharpen_elapsed:?}, encode={encode_elapsed:?}",
+            decoded.width(),
+            decoded.height()
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 }
