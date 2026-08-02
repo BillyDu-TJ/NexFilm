@@ -65,7 +65,7 @@ NexFilm Engine 用于把相机翻拍或扫描仪输出的胶片负片转换为�
 - **自动画面识别与自动校色**：支持自动识别胶片成像范围，并且自动进行校色。
 - **实时预览与几何工具**：使用 WebGL 进行交互预览，提供裁切、拉直、90 度旋转、水平/垂直翻转、直方图和波形图。
 - **LUT 工作流**：内置多款打印胶片/相纸风格 LUT，同时支持载入自定义 `.cube` LUT 并调节强度。
-- **批量导出**：支持 16 位 TIFF、8 位 TIFF、JPEG 和 PNG，可选择原始尺寸或 2048 px 长边、输出锐化、JPEG 质量和命名模板。
+- **批量导出**：支持 16/8 位 TIFF、16 位 PNG 和 JPEG，可选择原始尺寸或自定义长边、放大策略、四档输出锐化、JPEG 质量、命名模板和重名处理策略。
 - **接触印样导出**：按胶卷生成带胶片型号、拍摄日期、相机和画面编号的高质量 JPEG contact sheet。
 - **延迟 RAW 解码**：导入阶段优先提取嵌入预览，进入 Develop 后再准备 16 位线性代理，减少大批量导入时的等待。
 - **本地持久化**：编辑参数、几何信息、缩略图和胶卷元数据写入本地 SQLite，可在重启后继续编辑。
@@ -97,8 +97,8 @@ Library 和 Develop 只显示当前工作卷：软件启动时工作区为空，
 
 1. 回到 **Library**，点选需要输出的画面；需要全部输出时使用 **Select All**。
 2. 点击右上角 **Export**。
-3. 选择格式、尺寸、JPEG 质量、输出锐化和命名模板。当前输出色彩空间为 sRGB。
-4. 点击 **Select Output Folder** 并选择文件夹。导出会在后台执行，期间仍可继续浏览和编辑。
+3. 选择格式、尺寸、JPEG 质量、输出锐化、命名模板和重名处理策略。命名模板支持 {Roll}、{Camera}、{Film}、{Date}、{Original} 和 {Seq}。
+4. 点击 **Choose folder** 选择文件夹，确认摘要后选择 **Export frames**。导出会在后台执行，期间仍可继续浏览和编辑。
 
 16 位 TIFF 适合继续精修或存档；JPEG/PNG 更适合分享。正式批量输出前，请先导出一张检查裁切、颜色和锐化。
 
@@ -119,7 +119,7 @@ Library 和 Develop 只显示当前工作卷：软件启动时工作区为空，
 
 输入文件选择器支持常见相机 RAW（包括 DNG、NEF/NRW、CR2/CR3、ARW、RAF、RW2、ORF、PEF、3FR、IIQ、X3F 等）以及 TIFF、JPEG、PNG。RAW 兼容性取决于内置 LibRaw；尚未验证的相机型号可能无法正确解码，请通过 [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) 报告并注明相机型号、文件格式和错误信息。
 
-输出支持 16 位未压缩 TIFF、8 位 TIFF、JPEG 和 PNG。当前仅提供 sRGB 输出。
+输出支持 16 位 TIFF、8 位 TIFF、16 位 PNG 和 JPEG。尺寸缩放保持宽高比；默认不放大源图，并默认在重名时添加后缀而不覆盖。当前仅提供 sRGB 输出。
 
 ### 赞赏
 
@@ -272,7 +272,7 @@ NexFilm Engine converts camera-scanned or scanner-produced film negatives into p
 - **Automatic Edge Recognition and Automatic Reverse**, enable to regonize film area automaticlly, and demask with a click.
 - **Real-time WebGL preview and geometry tools**, including crop, straighten, quarter-turn rotation, horizontal/vertical flip, histogram, and waveform views.
 - **LUT workflow** with bundled print-film/paper looks, custom `.cube` LUT loading, and opacity control.
-- **Batch export** to 16-bit TIFF, 8-bit TIFF, JPEG, or PNG with original/2048 px sizing, output sharpening, JPEG quality, and filename tokens.
+- **Batch export** to 16-bit/8-bit TIFF, 16-bit PNG, or JPEG with original/custom long-edge sizing, optional enlargement, four sharpening presets, JPEG quality, filename tokens, and conflict policies.
 - **Contact sheet export** to a high-quality JPEG labeled with film stock, date, camera, and frame numbers.
 - **Deferred RAW decoding** that favors embedded previews during import and prepares a 16-bit linear proxy when a frame enters Develop.
 - **Local persistence** of editing parameters, geometry, thumbnails, and roll metadata in SQLite.
@@ -304,8 +304,8 @@ Library and Develop show only the current working roll. The workspace starts emp
 
 1. Return to **Library** and select the frames to export, or use **Select All**.
 2. Select **Export** in the upper-right corner.
-3. Choose format, size, JPEG quality, output sharpening, and filename template. The current output color space is sRGB.
-4. Select **Select Output Folder** and choose a destination. Export runs in the background, so browsing and editing can continue.
+3. Choose format, size, JPEG quality, output sharpening, filename template, and conflict policy. Templates support {Roll}, {Camera}, {Film}, {Date}, {Original}, and {Seq}.
+4. Select **Choose folder**, review the summary, and select **Export frames**. Export runs in the background, so browsing and editing can continue.
 
 Use 16-bit TIFF for further editing or archival output; JPEG/PNG are more convenient for sharing. Export one test frame before starting a full batch.
 
@@ -326,7 +326,7 @@ Use **Remove Roll** after selecting a frame in Library, while viewing a frame in
 
 The input picker supports common camera RAW formats, including DNG, NEF/NRW, CR2/CR3, ARW, RAF, RW2, ORF, PEF, 3FR, IIQ, and X3F, plus TIFF, JPEG, and PNG. RAW support depends on the bundled LibRaw version. For an unverified camera, report failures through [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) with the camera model, file format, and error message.
 
-Export formats are uncompressed 16-bit TIFF, 8-bit TIFF, JPEG, and PNG. Output is currently limited to sRGB.
+Export formats are 16-bit TIFF, 8-bit TIFF, 16-bit PNG, and JPEG. Resampling preserves aspect ratio and does not enlarge sources unless enabled. Output is currently limited to sRGB.
 
 ### Sponsorship
 

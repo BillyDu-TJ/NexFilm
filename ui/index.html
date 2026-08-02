@@ -878,66 +878,139 @@
     </div>
 
     <!-- Export Modal -->
-    <div id="export-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
-        <div class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[450px] flex flex-col transform scale-95 transition-transform duration-200" id="export-modal-content">
-            <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
-                <h2 class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Batch Export</h2>
-                <button id="btn-close-export" class="text-zinc-500 hover:text-zinc-200 transition-colors">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+    <div id="export-modal" class="fixed inset-0 z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200" aria-hidden="true">
+        <div id="export-modal-content" class="export-dialog transform scale-95 transition-transform duration-200" role="dialog" aria-modal="true" aria-labelledby="export-modal-title">
+            <div class="export-dialog-header">
+                <div>
+                    <h2 id="export-modal-title">Batch export</h2>
+                    <p id="export-modal-subtitle">Prepare a consistent set of finished frames.</p>
+                </div>
+                <button id="btn-close-export" class="export-icon-button" type="button" aria-label="Close export dialog" title="Close export dialog">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke-width="1.7" stroke-linecap="round"></path></svg>
                 </button>
             </div>
-            <div class="p-6 flex flex-col gap-6">
-                <div class="text-[12px] text-zinc-400 leading-relaxed">
-                    You are about to export selected images in their highest resolution.
-                    This process bypasses proxy caching and relies on the asynchronous on-demand reading engine.
+            <div class="export-dialog-body custom-scrollbar">
+                <div class="export-summary-bar">
+                    <div>
+                        <span class="export-summary-label">Selection</span>
+                        <strong id="export-selection-count">0 frames</strong>
+                    </div>
+                    <div class="export-summary-detail" id="export-output-summary">Choose a destination folder to continue.</div>
                 </div>
-                
-                <div class="flex flex-col gap-4 bg-[#121214] p-4 rounded-md border border-[#28282c]">
-                    <div class="flex items-center justify-between">
-                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Format</label>
-                        <select id="export-format" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
-                            <option value="tiff16_uncompressed">16-bit TIFF (Uncompressed)</option>
-                            <option value="tiff8">8-bit TIFF</option>
-                            <option value="jpeg100">JPEG (Quality 100)</option>
-                            <option value="png">PNG</option>
-                        </select>
-                    </div>
-                    <div class="flex items-center justify-between">
-                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Color Space</label>
-                        <select id="export-colorspace" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
-                            <option value="srgb">sRGB IEC61966-2.1</option>
-                        </select>
-                    </div>
-                    
-                    <div class="flex flex-col gap-2 mt-2">
-                        <div class="flex items-center justify-between">
-                            <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">JPEG Quality</label>
-                            <span id="export-quality-val" class="text-[12px] text-zinc-300">100</span>
+
+                <div class="export-settings-grid">
+                    <section class="export-settings-section" aria-labelledby="export-output-heading">
+                        <div class="export-section-heading">
+                            <h3 id="export-output-heading">Output</h3>
+                            <span>Color and detail</span>
                         </div>
-                        <input type="range" id="export-quality" min="1" max="100" value="100" class="w-full accent-zinc-500" oninput="document.getElementById('export-quality-val').textContent = this.value">
-                    </div>
+                        <label class="export-field">
+                            <span>Format</span>
+                            <select id="export-format">
+                                <option value="tiff16">TIFF · 16-bit</option>
+                                <option value="tiff8">TIFF · 8-bit</option>
+                                <option value="png">PNG · 16-bit</option>
+                                <option value="jpeg">JPEG · 8-bit</option>
+                            </select>
+                        </label>
+                        <label class="export-field">
+                            <span>Output color</span>
+                            <select id="export-colorspace">
+                                <option value="srgb">sRGB IEC 61966-2.1</option>
+                            </select>
+                        </label>
+                        <div class="export-field" id="export-quality-group">
+                            <div class="export-field-row">
+                                <span>JPEG quality</span>
+                                <output id="export-quality-val" for="export-quality">92</output>
+                            </div>
+                            <input type="range" id="export-quality" min="40" max="100" value="92" step="1">
+                            <div class="export-range-labels"><span>Smaller file</span><span>Maximum detail</span></div>
+                        </div>
+                        <label class="export-field">
+                            <span>Output sharpening</span>
+                            <select id="export-sharpening">
+                                <option value="none">None · preserve grain</option>
+                                <option value="low">Low · web and screens</option>
+                                <option value="standard" selected>Standard · balanced</option>
+                                <option value="high">High · small output</option>
+                            </select>
+                        </label>
+                    </section>
 
-                    <div class="flex items-center justify-between mt-2">
-                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Resampling</label>
-                        <select id="export-resample" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
-                            <option value="original">Original Size</option>
-                            <option value="long_edge_2048">Long Edge: 2048px</option>
-                        </select>
-                    </div>
-                    <div class="flex items-center justify-between mt-2">
-                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Output Sharpening</label>
-                        <input type="checkbox" id="export-usm" class="rounded border-[#28282c] bg-[#1C1C1E] text-zinc-300 focus:ring-0 w-4 h-4">
-                    </div>
-                    <div class="flex items-center justify-between mt-2">
-                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Naming Token</label>
-                        <input type="text" id="export-naming" value="{Roll}_{Seq}" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 w-[180px]">
-                    </div>
-                </div>
+                    <section class="export-settings-section" aria-labelledby="export-size-heading">
+                        <div class="export-section-heading">
+                            <h3 id="export-size-heading">Dimensions</h3>
+                            <span>Aspect ratio is preserved</span>
+                        </div>
+                        <label class="export-field">
+                            <span>Resize policy</span>
+                            <select id="export-resize-mode">
+                                <option value="original">Original dimensions</option>
+                                <option value="long_edge">Set long edge</option>
+                            </select>
+                        </label>
+                        <label class="export-field" id="export-long-edge-group">
+                            <span>Long edge (px)</span>
+                            <input id="export-long-edge" type="number" min="256" max="32768" step="1" value="2048" list="export-edge-presets">
+                            <datalist id="export-edge-presets">
+                                <option value="1024"></option>
+                                <option value="2048"></option>
+                                <option value="4096"></option>
+                                <option value="8192"></option>
+                            </datalist>
+                        </label>
+                        <label class="export-check-row">
+                            <input id="export-upscale" type="checkbox">
+                            <span>
+                                <strong>Allow enlargement</strong>
+                                <small>Upscale sources smaller than the target edge.</small>
+                            </span>
+                        </label>
+                        <div class="export-info-note">Full-resolution RAW decoding is used for every selected frame. Source scans are never overwritten.</div>
+                    </section>
 
-                <div class="flex justify-end gap-3 pt-2">
-                    <button id="btn-cancel-export" class="px-5 py-2 text-[12px] font-bold uppercase tracking-wider text-zinc-400 hover:text-zinc-200 transition-colors">Cancel</button>
-                    <button id="btn-confirm-export" class="px-6 py-2 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm">Select Output Folder</button>
+                    <section class="export-settings-section export-file-section" aria-labelledby="export-file-heading">
+                        <div class="export-section-heading">
+                            <h3 id="export-file-heading">Files</h3>
+                            <span>Names and existing files</span>
+                        </div>
+                        <label class="export-field">
+                            <span>Filename template</span>
+                            <input id="export-naming" type="text" value="{Roll}_{Seq}" maxlength="160" spellcheck="false" autocomplete="off">
+                        </label>
+                        <div class="export-token-hint">Tokens: <code>{Roll}</code> <code>{Camera}</code> <code>{Film}</code> <code>{Date}</code> <code>{Original}</code> <code>{Seq}</code></div>
+                        <div class="export-preview-row">
+                            <span>Preview</span>
+                            <code id="export-name-preview">Roll_001.tiff</code>
+                        </div>
+                        <label class="export-field">
+                            <span>When a file exists</span>
+                            <select id="export-conflict-policy">
+                                <option value="unique" selected>Keep both · add a suffix</option>
+                                <option value="overwrite">Replace existing file</option>
+                                <option value="skip">Skip existing file</option>
+                            </select>
+                        </label>
+                        <div class="export-info-note">Invalid filename characters are replaced automatically. Batch names remain unique even when a template is reused.</div>
+                    </section>
+
+                    <section class="export-settings-section export-destination-section" aria-labelledby="export-destination-heading">
+                        <div class="export-section-heading">
+                            <h3 id="export-destination-heading">Destination</h3>
+                            <span>Local folder</span>
+                        </div>
+                        <div class="export-destination-row">
+                            <input id="export-output-dir" type="text" readonly placeholder="No folder selected">
+                            <button id="btn-choose-export-dir" type="button">Choose folder</button>
+                        </div>
+                        <div class="export-info-note">The export runs in the background, so you can continue grading while the files are written.</div>
+                    </section>
                 </div>
+            </div>
+            <div class="export-dialog-footer">
+                <button id="btn-cancel-export" type="button">Cancel</button>
+                <button id="btn-confirm-export" type="button" disabled>Export frames</button>
             </div>
         </div>
     </div>
@@ -947,6 +1020,7 @@
     <script src="density-math.js"></script>
     <script src="histogram-math.js"></script>
     <script src="settings-copy.js"></script>
+    <script src="export-settings.js"></script>
     <script src="main.js"></script>
 </body>
 </html>

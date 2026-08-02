@@ -4,6 +4,12 @@ const { getContactSheetLayout, createContactSheetFilename } = window.NexFilmCont
 const { getNeutralExposureOffsets } = window.NexFilmDensity;
 const { getHistogramScale, getHistogramY } = window.NexFilmHistogram;
 const { cloneSettingsValue, createCopyPayload, mergeCopyPayload } = window.NexFilmSettingsCopy;
+const {
+    createExportInvokeArgs,
+    describeResize,
+    formatExportTemplate,
+    validateExportSettings,
+} = window.NexFilmExport;
 
 // DOM: Global
 const btnImport = document.getElementById('btn-import');
@@ -60,6 +66,24 @@ const exportModalContent = document.getElementById('export-modal-content');
 const btnCloseExport = document.getElementById('btn-close-export');
 const btnCancelExport = document.getElementById('btn-cancel-export');
 const btnConfirmExport = document.getElementById('btn-confirm-export');
+const btnChooseExportDir = document.getElementById('btn-choose-export-dir');
+const exportSelectionCount = document.getElementById('export-selection-count');
+const exportModalSubtitle = document.getElementById('export-modal-subtitle');
+const exportOutputSummary = document.getElementById('export-output-summary');
+const exportOutputDir = document.getElementById('export-output-dir');
+const exportFormat = document.getElementById('export-format');
+const exportColorSpace = document.getElementById('export-colorspace');
+const exportQualityGroup = document.getElementById('export-quality-group');
+const exportQuality = document.getElementById('export-quality');
+const exportQualityValue = document.getElementById('export-quality-val');
+const exportResizeMode = document.getElementById('export-resize-mode');
+const exportLongEdgeGroup = document.getElementById('export-long-edge-group');
+const exportLongEdge = document.getElementById('export-long-edge');
+const exportUpscale = document.getElementById('export-upscale');
+const exportSharpening = document.getElementById('export-sharpening');
+const exportNaming = document.getElementById('export-naming');
+const exportNamePreview = document.getElementById('export-name-preview');
+const exportConflictPolicy = document.getElementById('export-conflict-policy');
 
 const btnModeColor = document.getElementById('btn-mode-color');
 const btnModeBw = document.getElementById('btn-mode-bw');
@@ -404,6 +428,7 @@ function updateLibrarySelectionUI() {
             child.classList.remove('selected');
         }
     });
+    if (typeof updateExportDialogState === 'function') updateExportDialogState();
 }
 
 btnSelectAll.addEventListener('click', () => {
@@ -3523,6 +3548,146 @@ btnEditRoll.addEventListener('click', () => {
 // Export Modal Logic
 let exportInProgress = false;
 let exportProgressToast = null;
+let exportOutputDirectory = '';
+const EXPORT_SETTINGS_KEY = 'nexfilm-export-settings';
+const EXPORT_FORMAT_LABELS = {
+    jpeg: 'JPEG 8-bit',
+    png: 'PNG 16-bit',
+    tiff8: 'TIFF 8-bit',
+    tiff16: 'TIFF 16-bit',
+};
+
+function readExportPreferences() {
+    const defaults = {
+        format: 'tiff16',
+        colorSpace: 'srgb',
+        quality: 92,
+        resizeMode: 'original',
+        longEdge: 2048,
+        allowUpscale: false,
+        sharpening: 'standard',
+        namingTemplate: '{Roll}_{Seq}',
+        conflictPolicy: 'unique',
+    };
+    try {
+        const saved = JSON.parse(localStorage.getItem(EXPORT_SETTINGS_KEY) || '{}');
+        return { ...defaults, ...saved };
+    } catch (_) {
+        return defaults;
+    }
+}
+
+function persistExportPreferences(settings) {
+    try {
+        localStorage.setItem(EXPORT_SETTINGS_KEY, JSON.stringify(settings));
+    } catch (_) {
+        // Export remains usable when storage is unavailable.
+    }
+}
+
+function applyExportPreferences() {
+    const saved = readExportPreferences();
+    if (saved.format === 'jpeg100') saved.format = 'jpeg';
+    if (saved.format === 'tiff16_uncompressed') saved.format = 'tiff16';
+    if (exportFormat.querySelector('option[value="' + saved.format + '"]')) exportFormat.value = saved.format;
+    if (exportColorSpace.querySelector('option[value="' + saved.colorSpace + '"]')) exportColorSpace.value = saved.colorSpace;
+    if (['none', 'low', 'standard', 'high'].includes(saved.sharpening)) exportSharpening.value = saved.sharpening;
+    if (['original', 'long_edge'].includes(saved.resizeMode)) exportResizeMode.value = saved.resizeMode;
+    if (Number.isInteger(Number(saved.longEdge))) exportLongEdge.value = String(saved.longEdge);
+    exportQuality.value = String(Math.min(100, Math.max(40, Number(saved.quality) || 92)));
+    exportUpscale.checked = Boolean(saved.allowUpscale);
+    exportNaming.value = typeof saved.namingTemplate === 'string' ? saved.namingTemplate : '{Roll}_{Seq}';
+    if (['unique', 'overwrite', 'skip'].includes(saved.conflictPolicy)) exportConflictPolicy.value = saved.conflictPolicy;
+}
+
+function currentExportIds() {
+    const selected = new Set(selectedLibraryIds);
+    const ordered = allLibraryItems.filter(item => selected.has(item.id)).map(item => item.id);
+    selected.forEach(id => {
+        if (!ordered.includes(id)) ordered.push(id);
+    });
+    return ordered;
+}
+
+function pathStem(path) {
+    const name = String(path || '').replace(/\\/g, '/').split('/').pop() || 'Image';
+    return name.replace(/\.[^.]*$/, '') || 'Image';
+}
+
+function currentExportPreviewMetadata(ids) {
+    const item = findKnownItem(ids[0]);
+    const roll = item && typeof allRolls !== 'undefined'
+        ? allRolls.find(value => value.roll_id === item.roll_id)
+        : null;
+    return {
+        roll: roll && roll.roll_id,
+        camera: roll && roll.camera,
+        film: roll && roll.film_stock,
+        date: roll && roll.date,
+        original: item && pathStem(item.file_path),
+        seq: '001',
+    };
+}
+
+function exportFileExtension(format) {
+    return format === 'jpeg' ? 'jpg' : format === 'png' ? 'png' : 'tiff';
+}
+
+function collectExportSettings() {
+    return {
+        format: exportFormat.value,
+        colorSpace: exportColorSpace.value,
+        quality: Number(exportQuality.value) || 92,
+        resizeMode: exportResizeMode.value,
+        longEdge: Number(exportLongEdge.value) || 2048,
+        allowUpscale: exportUpscale.checked,
+        sharpening: exportSharpening.value,
+        namingTemplate: exportNaming.value,
+        conflictPolicy: exportConflictPolicy.value,
+    };
+}
+
+function updateExportDialogState() {
+    const ids = currentExportIds();
+    const settings = collectExportSettings();
+    const validationError = validateExportSettings(settings);
+    const isJpeg = settings.format === 'jpeg';
+    const isOriginal = settings.resizeMode === 'original';
+    exportSelectionCount.textContent = ids.length + (ids.length === 1 ? ' frame' : ' frames');
+    exportModalSubtitle.textContent = ids.length
+        ? 'Review output settings before writing the finished frames.'
+        : 'Select one or more frames in Library to begin.';
+    exportQuality.disabled = !isJpeg;
+    exportQualityGroup.classList.toggle('is-disabled', !isJpeg);
+    exportLongEdge.disabled = isOriginal;
+    exportLongEdgeGroup.classList.toggle('is-disabled', isOriginal);
+    exportQualityValue.textContent = String(settings.quality);
+    const metadata = currentExportPreviewMetadata(ids);
+    exportNamePreview.textContent = formatExportTemplate(settings.namingTemplate, metadata) + '.' + exportFileExtension(settings.format);
+    exportOutputDir.value = exportOutputDirectory;
+    exportOutputSummary.textContent = (exportOutputDirectory || 'Choose a destination folder to continue.')
+        + ' · ' + (EXPORT_FORMAT_LABELS[settings.format] || settings.format)
+        + ' · ' + describeResize(settings);
+    btnConfirmExport.disabled = exportInProgress || ids.length === 0 || !exportOutputDirectory || Boolean(validationError);
+    btnConfirmExport.title = validationError || (!exportOutputDirectory ? 'Choose an output folder first.' : '');
+    return validationError;
+}
+
+function saveCurrentExportPreferences() {
+    persistExportPreferences(collectExportSettings());
+    updateExportDialogState();
+}
+
+applyExportPreferences();
+[
+    exportFormat, exportColorSpace, exportResizeMode, exportLongEdge,
+    exportUpscale, exportSharpening, exportNaming, exportConflictPolicy,
+].forEach(element => element.addEventListener('change', saveCurrentExportPreferences));
+exportNaming.addEventListener('input', saveCurrentExportPreferences);
+exportQuality.addEventListener('input', () => {
+    exportQualityValue.textContent = exportQuality.value;
+    saveCurrentExportPreferences();
+});
 
 function showExportProgress(processed, total) {
     if (!exportProgressToast) {
@@ -3551,65 +3716,83 @@ listen('export_progress', (event) => {
     showExportProgress(processed, total);
 });
 
-btnExportDialog.addEventListener('click', () => {
+function openExportModal() {
     if (exportInProgress) {
         showToast('An export is already running. You can continue editing while it finishes.', 'error');
         return;
     }
+    updateExportDialogState();
     exportModal.classList.remove('opacity-0', 'pointer-events-none');
+    exportModal.setAttribute('aria-hidden', 'false');
     setTimeout(() => exportModalContent.classList.remove('scale-95'), 10);
+}
+
+btnExportDialog.addEventListener('click', () => {
+    openExportModal();
 });
 
 const closeExportModal = () => {
     exportModalContent.classList.add('scale-95');
     exportModal.classList.add('opacity-0', 'pointer-events-none');
+    exportModal.setAttribute('aria-hidden', 'true');
 };
 btnCloseExport.addEventListener('click', closeExportModal);
 btnCancelExport.addEventListener('click', closeExportModal);
+btnChooseExportDir.addEventListener('click', async () => {
+    const selected = await invoke('select_export_dir').catch(error => {
+        showToast('Could not choose an output folder: ' + error, 'error');
+        return null;
+    });
+    if (selected) {
+        exportOutputDirectory = selected;
+        updateExportDialogState();
+    }
+});
 
 btnConfirmExport.addEventListener('click', async () => {
+    const validationError = updateExportDialogState();
+    const exportIds = currentExportIds();
+    if (validationError || exportIds.length === 0 || !exportOutputDirectory) {
+        showToast(validationError || 'Choose an output folder and at least one frame.', 'error');
+        return;
+    }
+    const settings = collectExportSettings();
+    const outputDirectory = exportOutputDirectory;
+    const invokeArgs = createExportInvokeArgs(exportIds, outputDirectory, settings);
+    persistExportPreferences(settings);
+    exportInProgress = true;
+    btnConfirmExport.textContent = 'Exporting...';
+    btnConfirmExport.disabled = true;
     try {
-        btnConfirmExport.textContent = "Exporting...";
-        btnConfirmExport.disabled = true;
         await flushPendingBackendSync();
         if (activeProxyIsFull) captureActiveCanvasThumbnail();
         await flushPendingThumbnail();
-        const format = document.getElementById('export-format').value;
-        const colorSpace = document.getElementById('export-colorspace').value;
-        const resampleMode = document.getElementById('export-resample').value;
-        const applyUsm = document.getElementById('export-usm').checked;
-        const namingToken = document.getElementById('export-naming').value;
-        
-        const quality = parseInt(document.getElementById('export-quality').value) || 100;
-        const export_ids = Array.from(selectedLibraryIds);
-        if (export_ids.length === 0) {
-            showToast('Select at least one image to export.', 'error');
-            return;
-        }
-        const outputDir = await invoke('select_export_dir');
-        if (!outputDir) {
-            btnConfirmExport.textContent = "Select Output Folder";
-            btnConfirmExport.disabled = false;
-            return;
-        }
         closeExportModal();
-        exportInProgress = true;
-        showExportProgress(0, export_ids.length);
-        invoke('batch_export_images', { export_ids, outputDir, format, colorSpace, resampleMode, applyUsmFlag: applyUsm, namingToken, quality })
-            .then(count => showToast(`Successfully exported ${count} image(s) to:\n${outputDir}`, "success"))
-            .catch(error => showToast("Batch export failed: " + error, "error"))
-            .finally(() => {
-                exportInProgress = false;
-                clearExportProgress();
-                btnConfirmExport.textContent = "Select Output Folder";
-                btnConfirmExport.disabled = false;
-            });
-    } catch (e) { showToast("Batch export failed: " + e, "error"); } 
-    finally {
-        if (!exportInProgress) {
-            btnConfirmExport.textContent = "Select Output Folder";
-            btnConfirmExport.disabled = false;
-        }
+        showExportProgress(0, exportIds.length);
+        const result = await invoke('batch_export_images', invokeArgs);
+        const exported = Number(result && result.exported) || 0;
+        const skipped = Number(result && result.skipped) || 0;
+        const failed = Number(result && result.failed) || 0;
+        let message = 'Exported ' + exported + ' frame(s) to:\n'
+            + (result && result.outputDir ? result.outputDir : outputDirectory);
+        if (skipped) message += '\nSkipped ' + skipped + ' existing file(s).';
+        if (failed) message += '\nFailed ' + failed + ' frame(s).';
+        showToast(message, failed ? 'error' : 'success');
+        if (failed && result.errors && result.errors[0]) console.error('Export failure:', result.errors[0]);
+    } catch (error) {
+        showToast('Batch export failed: ' + error, 'error');
+    } finally {
+        exportInProgress = false;
+        clearExportProgress();
+        btnConfirmExport.textContent = 'Export frames';
+        updateExportDialogState();
+        if (exportModal.getAttribute('aria-hidden') === 'false') btnConfirmExport.disabled = false;
+    }
+});
+
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && exportModal.getAttribute('aria-hidden') === 'false' && !exportInProgress) {
+        closeExportModal();
     }
 });
 
@@ -5683,8 +5866,7 @@ document.getElementById('btn-export-roll').addEventListener('click', async () =>
         selectedLibraryIds.clear();
         rollItems.forEach(item => selectedLibraryIds.add(item.id));
         updateLibrarySelectionUI();
-        exportModal.classList.remove('opacity-0', 'pointer-events-none');
-        setTimeout(() => exportModalContent.classList.remove('scale-95'), 10);
+        openExportModal();
     } catch (error) {
         showToast('Could not load the roll for export: ' + error, 'error');
     }

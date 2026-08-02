@@ -2913,6 +2913,267 @@ struct ExportItemSnapshot {
     params: TuningParams,
     geom: GeometryState,
     base_color: BaseColor,
+    output_path: std::path::PathBuf,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExportFormat {
+    Jpeg,
+    Png,
+    Tiff8,
+    Tiff16,
+}
+
+impl ExportFormat {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "jpeg" | "jpeg100" => Ok(Self::Jpeg),
+            "png" => Ok(Self::Png),
+            "tiff8" => Ok(Self::Tiff8),
+            "tiff16" | "tiff16_uncompressed" => Ok(Self::Tiff16),
+            other => Err(format!("Unsupported export format: {other}")),
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            Self::Jpeg => "jpg",
+            Self::Png => "png",
+            Self::Tiff8 | Self::Tiff16 => "tiff",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ExportConflictPolicy {
+    Unique,
+    Overwrite,
+    Skip,
+}
+
+impl ExportConflictPolicy {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "unique" => Ok(Self::Unique),
+            "overwrite" => Ok(Self::Overwrite),
+            "skip" => Ok(Self::Skip),
+            other => Err(format!("Unsupported file conflict policy: {other}")),
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchExportResult {
+    exported: usize,
+    skipped: usize,
+    failed: usize,
+    output_dir: String,
+    errors: Vec<String>,
+}
+
+fn export_sharpening(value: &str) -> Result<Option<(f32, f32)>, String> {
+    match value {
+        "none" => Ok(None),
+        "low" => Ok(Some((0.8, 0.25))),
+        "standard" => Ok(Some((1.0, 0.5))),
+        "high" => Ok(Some((1.2, 0.8))),
+        other => Err(format!("Unsupported output sharpening preset: {other}")),
+    }
+}
+
+fn export_dimensions(
+    width: u32,
+    height: u32,
+    resize_mode: &str,
+    long_edge: u32,
+    allow_upscale: bool,
+) -> Result<(u32, u32), String> {
+    match resize_mode {
+        "original" => Ok((width, height)),
+        "long_edge" => {
+            if !(256..=32768).contains(&long_edge) {
+                return Err("Long edge must be between 256 and 32768 pixels".to_string());
+            }
+            let source_edge = width.max(height);
+            if source_edge == 0 || (!allow_upscale && source_edge <= long_edge) {
+                return Ok((width, height));
+            }
+            let scale = long_edge as f64 / source_edge as f64;
+            Ok((
+                ((width as f64 * scale).round() as u32).max(1),
+                ((height as f64 * scale).round() as u32).max(1),
+            ))
+        }
+        other => Err(format!("Unsupported resize mode: {other}")),
+    }
+}
+
+fn sanitize_export_file_stem(value: &str) -> String {
+    let replaced: String = value
+        .chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect();
+    let collapsed = replaced.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim().trim_end_matches(['.', ' ']);
+    let mut stem: String = if trimmed.is_empty() {
+        "Export".to_string()
+    } else {
+        trimmed.chars().take(180).collect()
+    };
+    let base = stem
+        .split('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let reserved = matches!(base.as_str(), "con" | "prn" | "aux" | "nul")
+        || (base.len() == 4
+            && (base.starts_with("com") || base.starts_with("lpt"))
+            && matches!(base.as_bytes()[3], b'1'..=b'9'));
+    if reserved {
+        stem.insert(0, '_');
+    }
+    stem
+}
+
+fn render_export_name(
+    template: &str,
+    snapshot: &ExportItemSnapshot,
+    roll: Option<&Roll>,
+    sequence: usize,
+) -> Result<String, String> {
+    if template.trim().is_empty() {
+        return Err("Filename template cannot be empty".to_string());
+    }
+    let original = std::path::Path::new(&snapshot.file_path)
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy();
+    let mut rendered = template.to_string();
+    let sequence = format!("{sequence:03}");
+    for (token, value) in [
+        (
+            "{Roll}",
+            roll.map(|value| value.roll_id.as_str()).unwrap_or("Roll"),
+        ),
+        (
+            "{Camera}",
+            roll.map(|value| value.camera.as_str()).unwrap_or("Camera"),
+        ),
+        (
+            "{Film}",
+            roll.map(|value| value.film_stock.as_str())
+                .unwrap_or("Film"),
+        ),
+        (
+            "{Date}",
+            roll.map(|value| value.date.as_str()).unwrap_or("Undated"),
+        ),
+        ("{Original}", original.as_ref()),
+        ("{Seq}", sequence.as_str()),
+    ] {
+        rendered = rendered.replace(token, value);
+    }
+    if rendered.contains('{') || rendered.contains('}') {
+        return Err(format!(
+            "Filename template contains an unknown token: {template}"
+        ));
+    }
+    Ok(sanitize_export_file_stem(&rendered))
+}
+
+fn reserve_export_path(
+    output_dir: &std::path::Path,
+    stem: &str,
+    extension: &str,
+    policy: ExportConflictPolicy,
+    reserved: &mut HashSet<String>,
+) -> Option<std::path::PathBuf> {
+    let base = output_dir.join(format!("{stem}.{extension}"));
+    let base_key = normalize_path(base.to_string_lossy().as_ref());
+    let batch_collision = reserved.contains(&base_key);
+    if batch_collision && policy == ExportConflictPolicy::Skip {
+        return None;
+    }
+    if !batch_collision {
+        match policy {
+            ExportConflictPolicy::Overwrite => {
+                reserved.insert(base_key);
+                return Some(base);
+            }
+            ExportConflictPolicy::Skip if base.exists() => return None,
+            ExportConflictPolicy::Skip | ExportConflictPolicy::Unique if !base.exists() => {
+                reserved.insert(base_key);
+                return Some(base);
+            }
+            ExportConflictPolicy::Unique => {}
+            ExportConflictPolicy::Skip => return None,
+        }
+    }
+
+    for suffix in 2..=100_000 {
+        let candidate = output_dir.join(format!("{stem} ({suffix}).{extension}"));
+        let key = normalize_path(candidate.to_string_lossy().as_ref());
+        if !candidate.exists() && !reserved.contains(&key) {
+            reserved.insert(key);
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn write_export_image(
+    buffer: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    path: &std::path::Path,
+    format: ExportFormat,
+    quality: u32,
+) -> Result<(), String> {
+    match format {
+        ExportFormat::Jpeg => {
+            let (width, height) = buffer.dimensions();
+            let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
+            for (source, target) in buffer.pixels().zip(out8.pixels_mut()) {
+                target[0] = (source[0] >> 8) as u8;
+                target[1] = (source[1] >> 8) as u8;
+                target[2] = (source[2] >> 8) as u8;
+            }
+            let mut cursor = Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgb8(out8)
+                .write_to(&mut cursor, ImageOutputFormat::Jpeg(quality as u8))
+                .map_err(|error| format!("JPEG encoding failed: {error}"))?;
+            std::fs::write(path, cursor.into_inner())
+                .map_err(|error| format!("Could not write {}: {error}", path.display()))
+        }
+        ExportFormat::Png => image::DynamicImage::ImageRgb16(buffer)
+            .save_with_format(path, image::ImageFormat::Png)
+            .map_err(|error| format!("Could not write {}: {error}", path.display())),
+        ExportFormat::Tiff8 => {
+            let (width, height) = buffer.dimensions();
+            let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
+            for (source, target) in buffer.pixels().zip(out8.pixels_mut()) {
+                target[0] = (source[0] >> 8) as u8;
+                target[1] = (source[1] >> 8) as u8;
+                target[2] = (source[2] >> 8) as u8;
+            }
+            image::DynamicImage::ImageRgb8(out8)
+                .save_with_format(path, image::ImageFormat::Tiff)
+                .map_err(|error| format!("Could not write {}: {error}", path.display()))
+        }
+        ExportFormat::Tiff16 => image::DynamicImage::ImageRgb16(buffer)
+            .save_with_format(path, image::ImageFormat::Tiff)
+            .map_err(|error| format!("Could not write {}: {error}", path.display())),
+    }
 }
 
 #[tauri::command]
@@ -2921,26 +3182,37 @@ pub async fn batch_export_images(
     output_dir: String,
     format: String,
     color_space: String,
-    resample_mode: String,
-    apply_usm_flag: bool,
-    naming_token: String,
+    resize_mode: String,
+    long_edge: u32,
+    allow_upscale: bool,
+    sharpening: String,
+    naming_template: String,
+    conflict_policy: String,
     quality: u32,
     state: State<'_, EngineState>,
     app_handle: tauri::AppHandle,
-) -> Result<usize, String> {
+) -> Result<BatchExportResult, String> {
     validate_export_color_space(&color_space)?;
-    if !std::path::Path::new(&output_dir).is_dir() {
+    let output_path = std::path::Path::new(&output_dir);
+    if !output_path.is_dir() {
         return Err(format!("Export directory does not exist: {output_dir}"));
     }
-    if !matches!(
-        format.as_str(),
-        "jpeg100" | "png" | "tiff8" | "tiff16_uncompressed"
-    ) {
-        return Err(format!("Unsupported export format: {format}"));
+    let export_format = ExportFormat::parse(&format)?;
+    let conflict_policy = ExportConflictPolicy::parse(&conflict_policy)?;
+    let sharpening = export_sharpening(&sharpening)?;
+    export_dimensions(1, 1, &resize_mode, long_edge, allow_upscale)?;
+    if export_format == ExportFormat::Jpeg && !(1..=100).contains(&quality) {
+        return Err("JPEG quality must be between 1 and 100".to_string());
     }
     let count = export_ids.len();
     if count == 0 {
-        return Ok(0);
+        return Ok(BatchExportResult {
+            exported: 0,
+            skipped: 0,
+            failed: 0,
+            output_dir,
+            errors: Vec::new(),
+        });
     }
     if EXPORT_ACTIVE.swap(true, Ordering::SeqCst) {
         return Err("Another export is already running".to_string());
@@ -2952,7 +3224,7 @@ pub async fn batch_export_images(
 
     // Freeze every roll-backed edit in one SQLite read transaction. The user can
     // continue editing after this point without changing the running export.
-    let export_snapshots = {
+    let mut export_snapshots = {
         let mut connection = persistence::open_connection()
             .map_err(|error| format!("Failed to open export database: {error}"))?;
         connection
@@ -2987,6 +3259,7 @@ pub async fn batch_export_images(
                 params,
                 geom,
                 base_color,
+                output_path: std::path::PathBuf::new(),
             });
         }
 
@@ -2995,6 +3268,28 @@ pub async fn batch_export_images(
             .map_err(|error| format!("Failed to finalize export snapshot: {error}"))?;
         snapshots
     };
+
+    // Resolve every output path before starting parallel work. This keeps
+    // duplicate templates deterministic and prevents workers racing to write
+    // the same file.
+    let mut reserved_paths = HashSet::new();
+    let mut skipped_count = 0;
+    for (index, snapshot) in export_snapshots.iter_mut().enumerate() {
+        let roll = rolls.iter().find(|roll| roll.roll_id == snapshot.roll_id);
+        let stem = render_export_name(&naming_template, snapshot, roll, index + 1)?;
+        if let Some(path) = reserve_export_path(
+            output_path,
+            &stem,
+            export_format.extension(),
+            conflict_policy,
+            &mut reserved_paths,
+        ) {
+            snapshot.output_path = path;
+        } else {
+            skipped_count += 1;
+        }
+    }
+    export_snapshots.retain(|snapshot| !snapshot.output_path.as_os_str().is_empty());
 
     // Parse every referenced LUT before starting any writes. A bad or missing
     // LUT must fail the export rather than silently changing the appearance.
@@ -3010,31 +3305,26 @@ pub async fn batch_export_images(
         }
     }
 
-    let exported =
-        tokio::task::spawn_blocking(move || {
-            let success_count = std::sync::atomic::AtomicUsize::new(0);
-            let failures = Mutex::new(Vec::<String>::new());
-            let _ = progress_app.emit(
-                "export_progress",
-                serde_json::json!({ "processed": 0, "total": count }),
-            );
-            let processed_count = std::sync::atomic::AtomicUsize::new(0);
+    let result = tokio::task::spawn_blocking(move || {
+        let success_count = std::sync::atomic::AtomicUsize::new(0);
+        let failures = Mutex::new(Vec::<String>::new());
+        let _ = progress_app.emit(
+            "export_progress",
+            serde_json::json!({ "processed": skipped_count, "total": count }),
+        );
+        let processed_count = std::sync::atomic::AtomicUsize::new(skipped_count);
 
-            export_snapshots
-                .par_iter()
-                .enumerate()
-                .for_each(|(seq_idx, snapshot)| {
-                let file_path = snapshot.file_path.clone();
-                let roll_id = snapshot.roll_id.clone();
-                let params_owned = snapshot.params.clone();
-                let geom_owned = snapshot.geom.clone();
-                let base_color_owned = snapshot.base_color.clone();
-                match decode_image_buffer(
-                    &file_path,
-                    DecodeMode::ExportFull,
-                    &params_owned.raw_decode.working_colorspace,
-                ) {
-                    Ok(original) => {
+        export_snapshots.par_iter().for_each(|snapshot| {
+            let file_path = snapshot.file_path.clone();
+            let params_owned = snapshot.params.clone();
+            let geom_owned = snapshot.geom.clone();
+            let base_color_owned = snapshot.base_color.clone();
+            match decode_image_buffer(
+                &file_path,
+                DecodeMode::ExportFull,
+                &params_owned.raw_decode.working_colorspace,
+            ) {
+                Ok(original) => {
                     let params = &params_owned;
                     let base_color = &base_color_owned;
 
@@ -3098,140 +3388,61 @@ pub async fn batch_export_images(
                         export_lut,
                     );
 
-                    if resample_mode == "long_edge_2048" {
-                        let (tw, th) = out_buffer.dimensions();
-                        let long_edge = tw.max(th);
-                        if long_edge > 2048 {
-                            let scale = 2048.0 / long_edge as f32;
-                            let nw = (tw as f32 * scale).ceil() as u32;
-                            let nh = (th as f32 * scale).ceil() as u32;
-                            out_buffer = image::imageops::resize(
-                                &out_buffer,
-                                nw,
-                                nh,
-                                image::imageops::FilterType::Lanczos3,
-                            );
-                        }
-                    }
                     let (width, height) = out_buffer.dimensions();
-
-                    if apply_usm_flag && !format.starts_with("tiff16") {
-                        apply_usm(&mut out_buffer, 1.0, 0.5);
+                    let (target_width, target_height) =
+                        export_dimensions(width, height, &resize_mode, long_edge, allow_upscale)
+                            .expect("export settings were validated before spawning workers");
+                    if (target_width, target_height) != (width, height) {
+                        out_buffer = image::imageops::resize(
+                            &out_buffer,
+                            target_width,
+                            target_height,
+                            image::imageops::FilterType::Lanczos3,
+                        );
                     }
 
-                    let file_stem = std::path::Path::new(&file_path)
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-
-                    let roll = rolls.iter().find(|roll| roll.roll_id == roll_id);
-                    let roll_name = roll
-                        .map(|r| r.roll_id.clone())
-                        .unwrap_or_else(|| "Roll".to_string());
-                    let camera_name = roll
-                        .map(|r| r.camera.clone())
-                        .unwrap_or_else(|| "Camera".to_string());
-                    let seq_str = format!("{:03}", seq_idx + 1);
-
-                    let mut final_name = naming_token.clone();
-                    final_name = final_name.replace("{Roll}", &roll_name);
-                    final_name = final_name.replace("{Camera}", &camera_name);
-                    final_name = final_name.replace("{Seq}", &seq_str);
-
-                    if final_name.trim().is_empty() {
-                        final_name = file_stem;
+                    if let Some((sigma, amount)) = sharpening {
+                        apply_usm(&mut out_buffer, sigma, amount);
                     }
-                    let file_stem = final_name;
 
-                    let out_path = match format.as_str() {
-                        "jpeg100" => {
-                            // JPEG is 8-bit, we must convert
-                            let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
-                            for (in_p, out_p) in out_buffer.pixels().zip(out8.pixels_mut()) {
-                                out_p[0] = (in_p[0] >> 8) as u8;
-                                out_p[1] = (in_p[1] >> 8) as u8;
-                                out_p[2] = (in_p[2] >> 8) as u8;
-                            }
-                            let path = std::path::Path::new(&output_dir)
-                                .join(format!("{}.jpg", file_stem));
-
-                            let mut cursor = std::io::Cursor::new(Vec::new());
-                            let jpeg_quality = quality.clamp(1, 100) as u8;
-                            if image::DynamicImage::ImageRgb8(out8.clone())
-                                .write_to(&mut cursor, image::ImageOutputFormat::Jpeg(jpeg_quality))
-                                .is_ok()
-                            {
-                                std::fs::write(&path, cursor.into_inner())
-                                    .map(|_| path)
-                                    .map_err(|e| image::ImageError::IoError(e))
-                            } else {
-                                Err(image::ImageError::IoError(std::io::Error::new(
-                                    std::io::ErrorKind::Other,
-                                    "JPEG Encoding Error",
-                                )))
-                            }
-                        }
-                        "png" => {
-                            let path = std::path::Path::new(&output_dir)
-                                .join(format!("{}.png", file_stem));
-                            out_buffer.save(&path).map(|_| path)
-                        }
-                        "tiff8" => {
-                            let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
-                            for (in_p, out_p) in out_buffer.pixels().zip(out8.pixels_mut()) {
-                                out_p[0] = (in_p[0] >> 8) as u8;
-                                out_p[1] = (in_p[1] >> 8) as u8;
-                                out_p[2] = (in_p[2] >> 8) as u8;
-                            }
-                            let path = std::path::Path::new(&output_dir)
-                                .join(format!("{}_8bit.tiff", file_stem));
-                            out8.save(&path).map(|_| path)
-                        }
-                        _ => {
-                            // tiff16_uncompressed or tiff16_lzw
-                            let path = std::path::Path::new(&output_dir)
-                                .join(format!("{}_16bit.tiff", file_stem));
-                            out_buffer.save(&path).map(|_| path)
-                        }
-                    };
-
-                    match out_path {
-                        Ok(_) => {
+                    match write_export_image(
+                        out_buffer,
+                        &snapshot.output_path,
+                        export_format,
+                        quality,
+                    ) {
+                        Ok(()) => {
                             success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                         }
-                        Err(error) => lock_mutex(&failures).push(format!(
-                            "Failed to write {}: {error}",
-                            file_path
-                        )),
+                        Err(error) => lock_mutex(&failures).push(error),
                     }
-                    }
-                    Err(error) => lock_mutex(&failures).push(format!(
-                        "Failed to decode {}: {error}",
-                        file_path
-                    )),
                 }
-                let processed =
-                    processed_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-                let _ = progress_app.emit(
-                    "export_progress",
-                    serde_json::json!({ "processed": processed, "total": count, "id": snapshot.id }),
-                );
+                Err(error) => {
+                    lock_mutex(&failures).push(format!("Failed to decode {}: {error}", file_path))
+                }
+            }
+            let processed = processed_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let _ = progress_app.emit(
+                "export_progress",
+                serde_json::json!({ "processed": processed, "total": count, "id": snapshot.id }),
+            );
         });
 
-            let failures = failures
-                .into_inner()
-                .unwrap_or_else(|error| error.into_inner());
-            if failures.is_empty() {
-                Ok(success_count.into_inner())
-            } else {
-                Err(failures.join("\n"))
-            }
-        })
-        .await
-        .map_err(|error| format!("Export worker failed: {error}"))??;
+        let failures = failures
+            .into_inner()
+            .unwrap_or_else(|error| error.into_inner());
+        BatchExportResult {
+            exported: success_count.into_inner(),
+            skipped: skipped_count,
+            failed: failures.len(),
+            output_dir,
+            errors: failures,
+        }
+    })
+    .await
+    .map_err(|error| format!("Export worker failed: {error}"))?;
 
-    Ok(exported)
+    Ok(result)
 }
 
 #[tauri::command]
@@ -4574,9 +4785,14 @@ mod library_management_contract_tests {
 
 #[cfg(test)]
 mod export_contract_tests {
-    use super::{render_shader_equivalent, validate_export_color_space};
+    use super::{
+        export_dimensions, render_shader_equivalent, reserve_export_path,
+        sanitize_export_file_stem, validate_export_color_space, write_export_image,
+        ExportConflictPolicy, ExportFormat,
+    };
     use crate::app_state::{BaseColor, FilmMode, GeometryState, TuningParams};
-    use image::{ImageBuffer, Rgb};
+    use image::{ColorType, GenericImageView, ImageBuffer, Rgb};
+    use std::collections::HashSet;
 
     fn neutral_params() -> TuningParams {
         let mut params = TuningParams::default();
@@ -4650,5 +4866,97 @@ mod export_contract_tests {
         assert_eq!(validate_export_color_space("srgb").unwrap(), "srgb");
         assert!(validate_export_color_space("rec2020").is_err());
         assert!(validate_export_color_space("prophoto").is_err());
+    }
+
+    #[test]
+    fn export_dimensions_preserve_aspect_ratio_and_respect_upscale_policy() {
+        assert_eq!(
+            export_dimensions(4000, 3000, "long_edge", 2048, false).unwrap(),
+            (2048, 1536)
+        );
+        assert_eq!(
+            export_dimensions(400, 300, "long_edge", 2048, false).unwrap(),
+            (400, 300)
+        );
+        assert_eq!(
+            export_dimensions(400, 300, "long_edge", 2048, true).unwrap(),
+            (2048, 1536)
+        );
+        assert!(export_dimensions(400, 300, "long_edge", 64, false).is_err());
+    }
+
+    #[test]
+    fn export_names_are_safe_for_windows_and_reserved_device_names() {
+        assert_eq!(
+            sanitize_export_file_stem("  Roll:01 / frame*  "),
+            "Roll_01 _ frame_"
+        );
+        assert_eq!(sanitize_export_file_stem("CON"), "_CON");
+        assert_eq!(sanitize_export_file_stem("..."), "Export");
+    }
+
+    #[test]
+    fn export_conflict_policy_allocates_unique_paths_without_races() {
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-export-path-test-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("frame.tiff"), b"existing").unwrap();
+        let mut reserved = HashSet::new();
+
+        let first = reserve_export_path(
+            &root,
+            "frame",
+            "tiff",
+            ExportConflictPolicy::Unique,
+            &mut reserved,
+        )
+        .unwrap();
+        let second = reserve_export_path(
+            &root,
+            "frame",
+            "tiff",
+            ExportConflictPolicy::Unique,
+            &mut reserved,
+        )
+        .unwrap();
+        assert_eq!(first.file_name().unwrap(), "frame (2).tiff");
+        assert_eq!(second.file_name().unwrap(), "frame (3).tiff");
+        assert!(reserve_export_path(
+            &root,
+            "frame",
+            "tiff",
+            ExportConflictPolicy::Skip,
+            &mut reserved,
+        )
+        .is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn export_encodes_all_supported_output_formats() {
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-export-format-test-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let source = ImageBuffer::from_pixel(3, 2, Rgb([12000, 30000, 50000]));
+        let cases = [
+            (ExportFormat::Jpeg, "frame.jpg", ColorType::Rgb8),
+            (ExportFormat::Png, "frame.png", ColorType::Rgb16),
+            (ExportFormat::Tiff8, "frame-8.tiff", ColorType::Rgb8),
+            (ExportFormat::Tiff16, "frame-16.tiff", ColorType::Rgb16),
+        ];
+        for (format, name, color) in cases {
+            let path = root.join(name);
+            write_export_image(source.clone(), &path, format, 92).unwrap();
+            let decoded = image::open(&path).unwrap();
+            assert_eq!(decoded.dimensions(), (3, 2));
+            assert_eq!(decoded.color(), color);
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 }

@@ -884,6 +884,121 @@ body > header > div:last-child button:hover { background: var(--control) !import
 #drag-overlay { background: color-mix(in srgb, var(--accent) 12%, transparent) !important; border-color: var(--accent) !important; }
 #drag-overlay > div { border: 1px solid var(--line-strong); border-radius: 6px !important; background: var(--panel) !important; }
 
+/* Export workflow */
+#export-modal {
+    padding: 24px;
+    background: rgba(0, 0, 0, .62) !important;
+    -webkit-backdrop-filter: blur(10px) !important;
+    backdrop-filter: blur(10px) !important;
+}
+#export-modal-content.export-dialog {
+    display: flex;
+    flex-direction: column;
+    width: min(780px, calc(100vw - 32px)) !important;
+    max-height: min(780px, calc(100vh - 32px));
+    overflow: hidden;
+    padding: 0 !important;
+    border: 1px solid var(--line-strong) !important;
+    border-radius: 7px !important;
+    background: var(--panel) !important;
+}
+.export-dialog-header,
+.export-dialog-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex: 0 0 auto;
+    padding: 18px 22px;
+    border-color: var(--line) !important;
+}
+.export-dialog-header { border-bottom: 1px solid var(--line); }
+.export-dialog-header h2 { margin: 0; color: var(--text); font-size: 18px !important; font-weight: 640 !important; letter-spacing: -.01em; }
+.export-dialog-header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.export-icon-button {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    border: 1px solid transparent !important;
+    border-radius: 4px !important;
+    background: transparent !important;
+    color: var(--muted);
+}
+.export-icon-button:hover { border-color: var(--line) !important; background: var(--control) !important; color: var(--text); }
+.export-icon-button svg { width: 18px; height: 18px; }
+.export-dialog-body { min-height: 0; overflow: auto; padding: 16px 22px 22px; }
+.export-summary-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    min-height: 52px;
+    padding: 11px 14px;
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    background: var(--panel-raised);
+}
+.export-summary-bar > div:first-child { display: flex; flex-direction: column; gap: 2px; }
+.export-summary-label { color: var(--subtle); font-size: 10px; font-weight: 600; }
+.export-summary-bar strong { color: var(--text); font-size: 14px; font-weight: 620; }
+.export-summary-detail { max-width: 52%; color: var(--muted); font-size: 11px; line-height: 1.4; text-align: right; }
+.export-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin-top: 14px; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--line); }
+.export-settings-section { min-width: 0; padding: 18px; background: var(--panel); }
+.export-file-section, .export-destination-section { grid-column: 1 / -1; }
+.export-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.export-section-heading h3 { margin: 0; color: var(--text); font-size: 13px; font-weight: 620; }
+.export-section-heading span { color: var(--subtle); font-size: 10px; }
+.export-field { display: grid; grid-template-columns: minmax(112px, .78fr) minmax(0, 1.22fr); align-items: center; gap: 12px; min-height: 34px; margin-bottom: 10px; }
+.export-field > span, .export-field-row > span, .export-preview-row > span { color: var(--muted); font-size: 12px; }
+.export-field select, .export-field input, .export-destination-row input {
+    width: 100%;
+    min-width: 0;
+    min-height: 34px;
+    padding: 0 9px;
+    border: 1px solid var(--line-strong) !important;
+    border-radius: 4px !important;
+    outline: 0;
+    background: var(--control) !important;
+    color: var(--text) !important;
+    font-size: 12px;
+}
+.export-field select:focus, .export-field input:focus, .export-destination-row input:focus { border-color: var(--accent) !important; }
+.export-field-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.export-field output { color: var(--text); font-family: var(--font-mono); font-size: 11px; }
+#export-quality-group { display: block; }
+#export-quality { width: 100%; min-height: 20px; accent-color: var(--accent); }
+.export-range-labels { display: flex; justify-content: space-between; color: var(--subtle); font-size: 10px; }
+.export-field.is-disabled { opacity: .45; }
+.export-check-row { display: flex; align-items: flex-start; gap: 9px; margin: 14px 0 10px 124px; cursor: pointer; }
+.export-check-row input { flex: 0 0 auto; width: 15px; height: 15px; margin-top: 1px; accent-color: var(--accent); }
+.export-check-row span { display: flex; flex-direction: column; gap: 3px; }
+.export-check-row strong { color: var(--text); font-size: 12px; font-weight: 560; }
+.export-check-row small { color: var(--subtle); font-size: 10px; line-height: 1.4; }
+.export-info-note { color: var(--subtle); font-size: 10px; line-height: 1.45; }
+.export-token-hint { margin: -2px 0 12px 124px; color: var(--subtle); font-size: 10px; line-height: 1.6; }
+.export-token-hint code { color: var(--accent); font-family: var(--font-mono); }
+.export-preview-row { display: grid; grid-template-columns: minmax(112px, .78fr) minmax(0, 1.22fr); align-items: center; gap: 12px; min-height: 32px; margin: -2px 0 12px; }
+.export-preview-row code { overflow: hidden; padding: 7px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-raised); color: var(--text); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.export-destination-row { display: flex; align-items: center; gap: 10px; }
+.export-destination-row input { flex: 1 1 auto; color: var(--muted) !important; }
+.export-destination-row button {
+    flex: 0 0 auto;
+    min-height: 34px;
+    padding: 0 13px;
+    border: 1px solid var(--line-strong) !important;
+    border-radius: 4px !important;
+    background: transparent;
+    color: var(--text);
+    font-size: 12px;
+}
+.export-destination-row button:hover { background: var(--control-hover); }
+.export-dialog-footer { justify-content: flex-end; gap: 10px; border-top: 1px solid var(--line); }
+.export-dialog-footer button { min-height: 34px; padding: 0 14px; border: 1px solid var(--line-strong) !important; border-radius: 4px !important; background: transparent; color: var(--muted); font-size: 12px; }
+.export-dialog-footer button:hover { background: var(--control); color: var(--text); }
+.export-dialog-footer #btn-confirm-export { border-color: var(--text) !important; background: var(--text); color: var(--panel); font-weight: 620; }
+.export-dialog-footer #btn-confirm-export:hover { border-color: var(--accent) !important; background: var(--accent); color: #17110d; }
+.export-dialog-footer #btn-confirm-export:disabled { cursor: not-allowed; opacity: .42; }
+
 /* Neutralize legacy Tailwind colors in light mode. */
 body[data-theme="light"] [class*="bg-\[\#1C1C1E\]"],
 body[data-theme="light"] [class*="bg-\[\#171719\]"],
@@ -920,6 +1035,19 @@ body[data-theme="light"] .sponsor-modal { background: rgba(30, 30, 28, .24) !imp
 }
 
 @media (max-width: 640px) {
+    #export-modal { padding: 16px; }
+    #export-modal-content.export-dialog { width: calc(100vw - 32px) !important; max-height: calc(100vh - 32px); }
+    .export-dialog-header, .export-dialog-footer { padding-left: 16px; padding-right: 16px; }
+    .export-dialog-body { padding: 12px 16px 16px; }
+    .export-settings-grid { grid-template-columns: 1fr; }
+    .export-file-section, .export-destination-section { grid-column: auto; }
+    .export-summary-bar { align-items: flex-start; flex-direction: column; gap: 4px; }
+    .export-summary-detail { max-width: none; text-align: left; }
+    .export-check-row, .export-token-hint { margin-left: 0; }
+    .export-field { grid-template-columns: 1fr; gap: 5px; align-items: start; }
+    .export-preview-row { grid-template-columns: 1fr; gap: 5px; }
+    .export-destination-row { align-items: stretch; flex-direction: column; }
+    .export-destination-row button { width: 100%; }
     .sponsor-modal { padding: 16px; }
     #sponsor-modal-content.sponsor-card { width: calc(100vw - 32px) !important; max-height: calc(100vh - 32px); }
     .sponsor-card-body { grid-template-columns: minmax(0, 1fr); padding: 18px !important; }
