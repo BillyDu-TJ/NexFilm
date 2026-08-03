@@ -19,7 +19,8 @@ test_picture/
 *.tif
 *.tiff
 *.png
-!ui/assets/sponsor-qr.jpg
+!ui/assets/author-sponsor-qr.jpg
+!ui/assets/uidesigner-sponsor-qr.jpg
 *.nef
 *.db
 *.db-journal
