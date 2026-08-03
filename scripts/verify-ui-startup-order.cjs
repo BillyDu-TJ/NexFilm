@@ -4,7 +4,7 @@ const path = require('node:path');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'ui', 'main.js'), 'utf8');
 
-const listenDeclaration = source.indexOf('const { listen } = window.__TAURI__.event;');
+const listenDeclaration = source.indexOf('const listen = tauriEvents?.listen');
 const firstListenCall = source.indexOf("listen('");
 assert.ok(listenDeclaration >= 0, 'Tauri listen declaration is missing');
 assert.ok(firstListenCall > listenDeclaration, 'Tauri listen is called before initialization');

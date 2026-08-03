@@ -302,6 +302,10 @@ body > header > div:last-child button:hover { background: var(--control) !import
 }
 #view-develop .w-px { height: 16px !important; margin: 0 6px; background: var(--line-strong) !important; }
 .toolbar-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
     min-height: 28px;
     padding: 0 9px !important;
     border: 0 !important;
@@ -330,6 +334,17 @@ body > header > div:last-child button:hover { background: var(--control) !import
     vector-effect: non-scaling-stroke;
     filter: drop-shadow(0 0 1px rgba(0, 0, 0, .95));
 }
+.toolbar-icon {
+    width: 13px;
+    height: 13px;
+    flex: 0 0 13px;
+    stroke: var(--accent);
+    stroke-width: 1.65;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+.toolbar-btn:hover:not(:disabled) .toolbar-icon,
+.toolbar-btn.active .toolbar-icon { stroke-width: 1.85; }
 #crop-grid-lines {
     fill: none;
     stroke: rgba(255, 255, 255, .52);
@@ -793,7 +808,7 @@ body > header > div:last-child button:hover { background: var(--control) !import
 }
 .sponsor-modal.is-open { visibility: visible; opacity: 1; pointer-events: auto; }
 #sponsor-modal-content.sponsor-card {
-    width: min(720px, calc(100vw - 48px)) !important;
+    width: min(860px, calc(100vw - 48px)) !important;
     max-height: calc(100vh - 48px);
     overflow: auto;
     border: 1px solid var(--line-strong) !important;
@@ -837,24 +852,48 @@ body > header > div:last-child button:hover { background: var(--control) !import
 .sponsor-close-button:hover { border-color: var(--line) !important; background: var(--control); color: var(--text); }
 .sponsor-close-button svg { width: 18px; height: 18px; }
 .sponsor-card-body {
-    display: grid;
-    grid-template-columns: minmax(0, 250px) minmax(0, 1fr);
-    gap: 24px;
-    align-items: center;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
     padding: 22px !important;
 }
+.sponsor-intro {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+}
+.sponsor-intro section { display: grid; align-content: start; }
+.sponsor-intro section + section { padding-left: 20px; border-left: 1px solid var(--line); }
+.sponsor-intro p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.sponsor-qr-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 22px;
+}
+.sponsor-person { display: grid; justify-items: center; gap: 10px; margin: 0; min-width: 0; }
+.sponsor-person figcaption { display: flex; align-items: baseline; justify-content: center; gap: 8px; }
+.sponsor-person figcaption strong { color: var(--text); font-size: 12px; font-weight: 700; }
+.sponsor-person figcaption span { color: var(--accent); font-size: 12px; font-weight: 600; }
 .sponsor-qr-frame {
+    width: min(250px, 100%);
     overflow: hidden;
     border: 1px solid var(--line-strong);
     border-radius: 5px;
     background: #fff;
 }
 .sponsor-qr-frame img { display: block; width: 100%; height: auto; }
-.sponsor-copy { min-width: 0; }
-.sponsor-copy section { display: grid; gap: 9px; }
-.sponsor-copy h3 { margin: 0; color: var(--text); font-size: 12px; font-weight: 650; }
-.sponsor-copy p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.72; }
-.sponsor-copy-divider { height: 1px; margin: 18px 0; background: var(--line); }
+.sponsor-contacts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+}
+.sponsor-contacts > div { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 10px; min-width: 0; }
+.sponsor-contacts strong { width: 100%; color: var(--text); font-size: 11px; font-weight: 700; }
+.sponsor-contacts span { color: var(--muted); font-size: 11px; }
+.sponsor-contacts a { color: var(--accent); font-size: 11px; text-decoration: none; overflow-wrap: anywhere; }
+.sponsor-contacts a:hover { text-decoration: underline; }
 
 .batch-target-options { display: grid; gap: 8px; }
 .batch-target-option {
@@ -1034,6 +1073,221 @@ body[data-theme="light"] .sponsor-modal { background: rgba(30, 30, 28, .24) !imp
     .roll-preview { width: 44%; min-width: 180px; }
 }
 
+
+@media (max-width: 1050px) {
+    .toolbar-btn {
+        width: 30px;
+        padding: 0 !important;
+    }
+    .toolbar-btn > span { display: none; }
+}
+
+/* Dark reference: the geometry above remains identical; only the surface
+ * tokens and control fills change to the exported Develop_dark palette. */
+body[data-theme="dark"] {
+    --figma-blue: #4893dd;
+    --figma-stone: #1f1f1f;
+    --figma-workspace: #0e0e0e;
+    --figma-control: #3b3b3b;
+    --figma-text: #e3e3f1;
+    --figma-muted: #8d8d8d;
+    --figma-line: rgba(226, 226, 244, .10);
+    --bg: #2b2b2b;
+    --chrome: #1f1f1f;
+    --panel: #2b2b2b;
+    --panel-raised: #3b3b3b;
+    --workspace: #0e0e0e;
+    --control: #3b3b3b;
+    --control-hover: #444;
+    --text: #e3e3f1;
+    --muted: #8d8d8d;
+    --subtle: #8d8d8d;
+    --line: rgba(226, 226, 244, .10);
+    --line-strong: rgba(226, 226, 244, .18);
+    --accent: #4893dd;
+    --accent-hover: #5aa0e7;
+    --accent-soft: rgba(72, 147, 221, .18);
+}
+body[data-theme="dark"] {
+    background: #2b2b2b !important;
+    color: var(--figma-text) !important;
+}
+body[data-theme="dark"] #native-menu-bar {
+    background: #282828 !important;
+    color: #8d8d8d !important;
+    border-bottom-color: rgba(226, 226, 244, .10) !important;
+}
+body[data-theme="dark"] > header { background: #282828 !important; }
+body[data-theme="dark"] > header .brand-mark {
+    content: url("assets/design-reference/nexfilm-logo-dark.svg") !important;
+    filter: none !important;
+}
+body[data-theme="dark"] > header nav button { color: #e3e3f1 !important; }
+body[data-theme="dark"] > header nav button:hover { background: #303030 !important; }
+body[data-theme="dark"] > header nav button.border-zinc-100 {
+    background: #0e0e0e !important;
+    border-bottom-color: #0e0e0e !important;
+    color: #4893dd !important;
+}
+body[data-theme="dark"] > header > div:last-child { background: #4893dd !important; }
+body[data-theme="dark"] > header > div:last-child button {
+    background: #1f1f1f !important;
+    color: #e3e3f1 !important;
+    box-shadow: inset 0 0 0 3px #4893dd !important;
+}
+body[data-theme="dark"] > header > div:last-child button:hover:not(:disabled) { background: #303030 !important; }
+body[data-theme="dark"] #btn-export-dialog { background: #4893dd !important; color: #1f1f1f !important; box-shadow: none !important; }
+body[data-theme="dark"] #btn-delete-develop-image {
+    background: #2b2b2b !important;
+    color: #e3e3f1 !important;
+    box-shadow: inset 0 0 0 1px #7f4242 !important;
+}
+body[data-theme="dark"] #views { background: #2b2b2b !important; }
+body[data-theme="dark"] #view-develop > div:first-child > div:first-child {
+    background: #1f1f1f !important;
+    box-shadow: none !important;
+}
+body[data-theme="dark"] #view-develop > div:first-child > div:first-child > div:first-child { background: #1f1f1f !important; }
+body[data-theme="dark"] #view-develop > div:first-child > div:first-child > div:first-child #btn-crop-mode { background: #1f1f1f !important; color: #e3e3f1 !important; }
+body[data-theme="dark"] #view-develop > div:first-child > div:first-child > div:first-child #btn-reset-crop { background: #8d8d8d !important; color: #1f1f1f !important; }
+body[data-theme="dark"] #view-develop > div:first-child > div:nth-child(2) { background: #0e0e0e !important; }
+body[data-theme="dark"] #filmstrip-container { background: #1f1f1f !important; box-shadow: none !important; }
+body[data-theme="dark"] .film-item { background: #1f1f1f !important; }
+body[data-theme="dark"] #view-develop > div:last-child > div:nth-of-type(2),
+body[data-theme="dark"] #view-develop > div:last-child > div:last-child { background: #2b2b2b !important; box-shadow: none !important; }
+body[data-theme="dark"] #view-develop > div:last-child > div:nth-of-type(2) .w-full { background: #0e0e0e !important; }
+body[data-theme="dark"] .viz-mode-tab { color: #e3e3f1 !important; }
+body[data-theme="dark"] .viz-mode-tab.active { color: #4893dd !important; background: #2b2b2b !important; }
+body[data-theme="dark"] #btn-copy-settings,
+body[data-theme="dark"] #btn-paste-settings,
+body[data-theme="dark"] .control-group button:not(.toolbar-btn) {
+    background: #3b3b3b !important;
+    color: #e3e3f1 !important;
+}
+body[data-theme="dark"] .control-group button#btn-auto-color { background: #4893dd !important; color: #1f1f1f !important; }
+body[data-theme="dark"] .control-group #btn-reset-color { background: #2b2b2b !important; color: #e3e3f1 !important; box-shadow: inset 0 0 0 2px #4893dd !important; }
+body[data-theme="dark"] .control-group > .flex.items-center.justify-between,
+body[data-theme="dark"] .control-group .bg-\[\#121214\],
+body[data-theme="dark"] .color-balance-group { background: #2b2b2b !important; border-color: #3b3b3b !important; }
+body[data-theme="dark"] #btn-mode-color { background: #2b2b2b !important; color: #e3e3f1 !important; }
+body[data-theme="dark"] #btn-mode-bw { background: #4a4a4a !important; color: #e3e3f1 !important; }
+body[data-theme="dark"] .control-group h3,
+body[data-theme="dark"] .color-balance-title { color: #8d8d8d !important; }
+body[data-theme="dark"] .control-group label { color: #e3e3f1 !important; }
+body[data-theme="dark"] .control-group [class*="text-zinc-400"],
+body[data-theme="dark"] .control-group [class*="text-zinc-500"] { color: #8d8d8d !important; }
+body[data-theme="dark"] .control-group [class*="text-red-400"] { color: #b75858 !important; }
+body[data-theme="dark"] .control-group [class*="text-emerald-400"] { color: #3f8f67 !important; }
+body[data-theme="dark"] .control-group [class*="text-blue-400"] { color: #4d75ad !important; }
+body[data-theme="dark"] .custom-range::-webkit-slider-runnable-track,
+body[data-theme="dark"] .slider::-webkit-slider-runnable-track,
+body[data-theme="dark"] .custom-range:disabled::-webkit-slider-runnable-track,
+body[data-theme="dark"] .slider:disabled::-webkit-slider-runnable-track {
+    background: linear-gradient(to right, var(--track-fill, #4893dd) 0%, var(--track-fill, #4893dd) var(--val), #5a5a5a var(--val), #5a5a5a 100%) !important;
+}
+body[data-theme="dark"] .custom-range::-webkit-slider-thumb,
+body[data-theme="dark"] .slider::-webkit-slider-thumb { background: #4893dd !important; }
+body[data-theme="dark"] #right-panel-blocker { background: rgba(43, 43, 43, .96) !important; }
+
+/* Micro-details from Frame 53 and the exported slider cards. */
+body[data-theme="light"] #view-develop > div:last-child > div:last-child,
+body[data-theme="light"] #view-develop > div:last-child > div:nth-of-type(2) { border-radius: 10px !important; }
+body[data-theme="light"] #btn-copy-settings,
+body[data-theme="light"] #btn-paste-settings,
+body[data-theme="light"] .control-group button:not(.toolbar-btn),
+body[data-theme="light"] .control-group > .flex.items-center.justify-between,
+body[data-theme="light"] .control-group .bg-\[\#121214\],
+body[data-theme="light"] .color-balance-group,
+body[data-theme="light"] .control-group select {
+    background: #ececea !important;
+    border-color: transparent !important;
+}
+body[data-theme="light"] #btn-mode-color { background: #fff !important; }
+body[data-theme="light"] #btn-mode-bw { background: #d4d4d4 !important; }
+body[data-theme="light"] .control-group .h-px { background: #d0d0d0 !important; }
+body[data-theme="light"] .control-group { border-top-color: #ececea !important; }
+body[data-theme="light"] .control-group label[class*="text-red-400"],
+body[data-theme="light"] .control-group label[class*="text-emerald-400"],
+body[data-theme="light"] .control-group label[class*="text-blue-400"] { color: var(--figma-text) !important; }
+body[data-theme="light"] .temperature-track::-webkit-slider-runnable-track {
+    height: 8px !important;
+    margin-top: -2px !important;
+    border: 0 !important;
+    border-radius: 2px !important;
+    background: linear-gradient(to right, #4893dd 0%, #8ebfe6 28%, #d4d4d4 50%, #efb35d 74%, #d9682f 100%) !important;
+}
+body[data-theme="light"] .tint-track::-webkit-slider-runnable-track {
+    height: 8px !important;
+    margin-top: -2px !important;
+    border: 0 !important;
+    border-radius: 2px !important;
+    background: linear-gradient(to right, #3f8f67 0%, #8bc79e 28%, #d4d4d4 50%, #b989c8 74%, #874ca2 100%) !important;
+}
+body[data-theme="light"] .temperature-track::-webkit-slider-thumb,
+body[data-theme="light"] .tint-track::-webkit-slider-thumb {
+    width: 8px !important;
+    height: 20px !important;
+    margin-top: -6px !important;
+    border-radius: 2px !important;
+    background: #3f3f46 !important;
+}
+body[data-theme="dark"] #btn-copy-settings,
+body[data-theme="dark"] #btn-paste-settings,
+body[data-theme="dark"] .control-group button:not(.toolbar-btn),
+body[data-theme="dark"] .control-group > .flex.items-center.justify-between,
+body[data-theme="dark"] .control-group .bg-\[\#121214\],
+body[data-theme="dark"] .color-balance-group,
+body[data-theme="dark"] .control-group select { border-radius: 10px !important; }
+body[data-theme="dark"] .control-group { border-top-color: #3b3b3b !important; }
+body[data-theme="dark"] .control-group label[class*="text-red-400"],
+body[data-theme="dark"] .control-group label[class*="text-emerald-400"],
+body[data-theme="dark"] .control-group label[class*="text-blue-400"] { color: var(--figma-text) !important; }
+body[data-theme="dark"] .temperature-track::-webkit-slider-runnable-track {
+    height: 8px !important;
+    margin-top: -2px !important;
+    border: 0 !important;
+    border-radius: 2px !important;
+    background: linear-gradient(to right, #4893dd 0%, #8ebfe6 28%, #3b3b3b 50%, #efb35d 74%, #d9682f 100%) !important;
+}
+body[data-theme="dark"] .tint-track::-webkit-slider-runnable-track {
+    height: 8px !important;
+    margin-top: -2px !important;
+    border: 0 !important;
+    border-radius: 2px !important;
+    background: linear-gradient(to right, #3f8f67 0%, #8bc79e 28%, #3b3b3b 50%, #b989c8 74%, #874ca2 100%) !important;
+}
+body[data-theme="dark"] .temperature-track::-webkit-slider-thumb,
+body[data-theme="dark"] .tint-track::-webkit-slider-thumb {
+    width: 8px !important;
+    height: 20px !important;
+    margin-top: -6px !important;
+    border-radius: 2px !important;
+    background: #3f3f46 !important;
+}
+
+body[data-theme="light"] #develop-inspector input.custom-range:not(.temperature-track):not(.tint-track),
+body[data-theme="light"] #develop-inspector input.slider {
+    background-image:
+        repeating-linear-gradient(to right, transparent 0, transparent calc(10% - 1px), rgba(20, 20, 22, .18) calc(10% - 1px), rgba(20, 20, 22, .18) 10%),
+        linear-gradient(to right, var(--track-fill, #0a5aa8) 0%, var(--track-fill, #0a5aa8) var(--val), #d4d4d4 var(--val), #d4d4d4 100%) !important;
+    background-size: 100% 7px, 100% 4px !important;
+    background-position: center top, center center !important;
+    background-repeat: no-repeat !important;
+}
+body[data-theme="dark"] #develop-inspector input.custom-range:not(.temperature-track):not(.tint-track),
+body[data-theme="dark"] #develop-inspector input.slider {
+    background-image:
+        repeating-linear-gradient(to right, transparent 0, transparent calc(10% - 1px), rgba(226, 226, 244, .18) calc(10% - 1px), rgba(226, 226, 244, .18) 10%),
+        linear-gradient(to right, var(--track-fill, #4893dd) 0%, var(--track-fill, #4893dd) var(--val), #5a5a5a var(--val), #5a5a5a 100%) !important;
+    background-size: 100% 7px, 100% 4px !important;
+    background-position: center top, center center !important;
+    background-repeat: no-repeat !important;
+}
+body[data-theme="light"] #develop-inspector input.custom-range:not(.temperature-track):not(.tint-track)::-webkit-slider-runnable-track,
+body[data-theme="light"] #develop-inspector input.slider::-webkit-slider-runnable-track,
+body[data-theme="dark"] #develop-inspector input.custom-range:not(.temperature-track):not(.tint-track)::-webkit-slider-runnable-track,
+body[data-theme="dark"] #develop-inspector input.slider::-webkit-slider-runnable-track { background: transparent !important; }
+
 @media (max-width: 640px) {
     #export-modal { padding: 16px; }
     #export-modal-content.export-dialog { width: calc(100vw - 32px) !important; max-height: calc(100vh - 32px); }
@@ -1050,10 +1304,1041 @@ body[data-theme="light"] .sponsor-modal { background: rgba(30, 30, 28, .24) !imp
     .export-destination-row button { width: 100%; }
     .sponsor-modal { padding: 16px; }
     #sponsor-modal-content.sponsor-card { width: calc(100vw - 32px) !important; max-height: calc(100vh - 32px); }
-    .sponsor-card-body { grid-template-columns: minmax(0, 1fr); padding: 18px !important; }
+    .sponsor-card-body { padding: 18px !important; }
+    .sponsor-intro,
+    .sponsor-qr-grid,
+    .sponsor-contacts { grid-template-columns: minmax(0, 1fr); }
+    .sponsor-intro section + section { padding: 16px 0 0; border-top: 1px solid var(--line); border-left: 0; }
     .sponsor-qr-frame { width: min(240px, 100%); margin: 0 auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {
     .sponsor-modal, .sponsor-card { transition: none !important; }
+}
+
+/* -------------------------------------------------------------------------
+   NEXFILM / Figma visual system
+   ------------------------------------------------------------------------- */
+:root {
+    --bg: #25272a;
+    --chrome: #1d1f22;
+    --panel: #2b2d30;
+    --panel-raised: #32353a;
+    --workspace: #111315;
+    --control: #3a3d42;
+    --control-hover: #454950;
+    --text: #f4f6f8;
+    --muted: #aeb5bf;
+    --subtle: #737b86;
+    --line: rgba(255, 255, 255, .11);
+    --line-strong: rgba(255, 255, 255, .2);
+    --accent: #2388ff;
+    --accent-hover: #4b9eff;
+    --accent-soft: rgba(35, 136, 255, .18);
+    --danger: #e26f73;
+    --radius: 4px;
+    --motion-fast: 140ms;
+    --motion-base: 190ms;
+    --ease-standard: cubic-bezier(.2, .7, .2, 1);
+    --ease-emphasized: cubic-bezier(.22, 1, .36, 1);
+}
+
+body[data-theme="light"] {
+    --bg: #e7e9ec;
+    --chrome: #f7f8fa;
+    --panel: #f4f5f6;
+    --panel-raised: #ffffff;
+    --workspace: #d9dde2;
+    --control: #e5e8ec;
+    --control-hover: #d9dde3;
+    --text: #1d2228;
+    --muted: #69727d;
+    --subtle: #929aa5;
+    --line: rgba(22, 30, 40, .13);
+    --line-strong: rgba(22, 30, 40, .22);
+    --accent: #1677e8;
+    --accent-hover: #0d63c9;
+    --accent-soft: rgba(22, 119, 232, .12);
+    --danger: #be5258;
+}
+
+html, body { background: var(--bg) !important; }
+body { color: var(--text) !important; }
+
+/* The reference uses compact desktop chrome and restrained separators. */
+#native-menu-bar {
+    height: 30px !important;
+    background: var(--chrome) !important;
+    border-bottom-color: var(--line) !important;
+}
+#native-menu-bar > div:first-child { color: var(--text) !important; }
+body > header {
+    height: 58px !important;
+    padding: 0 18px !important;
+    background: var(--chrome) !important;
+}
+body > header > div:first-child { gap: 24px !important; }
+body > header .text-\[14px\] {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 13px !important;
+    letter-spacing: .12em !important;
+}
+body > header .brand-mark { width: 24px; height: 18px; flex: 0 0 auto; object-fit: contain; }
+body > header .brand-name { color: var(--text); }
+body > header nav { gap: 4px !important; }
+body > header nav button {
+    min-width: 72px;
+    height: 32px !important;
+    align-self: center;
+    padding: 0 12px !important;
+    border: 1px solid transparent !important;
+    border-radius: 4px !important;
+    font-size: 12px !important;
+    color: var(--muted) !important;
+    transition: color var(--motion-fast) var(--ease-standard),
+        background var(--motion-fast) var(--ease-standard),
+        border-color var(--motion-fast) var(--ease-standard);
+}
+body > header nav button:hover { background: var(--control); color: var(--text) !important; }
+body > header nav button.border-zinc-100 {
+    color: var(--text) !important;
+    background: var(--accent-soft) !important;
+    border-color: color-mix(in srgb, var(--accent) 55%, transparent) !important;
+}
+body > header > div:last-child { gap: 6px !important; }
+body > header > div:last-child button {
+    min-height: 30px;
+    padding: 0 11px !important;
+    border-radius: 4px !important;
+    font-size: 11px !important;
+    transition: color var(--motion-fast) var(--ease-standard),
+        background var(--motion-fast) var(--ease-standard),
+        border-color var(--motion-fast) var(--ease-standard),
+        transform var(--motion-fast) var(--ease-standard);
+}
+body > header > div:last-child button:hover { transform: translateY(-1px); }
+#btn-import { color: var(--text) !important; border-color: var(--line-strong) !important; }
+#btn-export-dialog { background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; }
+#btn-export-dialog:hover { background: var(--accent-hover) !important; border-color: var(--accent-hover) !important; color: #fff !important; }
+
+/* Views fade and lift together instead of popping between display states. */
+#views > [id^="view-"] {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transform: translateY(5px);
+    transition: opacity var(--motion-base) var(--ease-standard),
+        transform var(--motion-base) var(--ease-emphasized),
+        visibility 0s linear var(--motion-base);
+}
+#views > [id^="view-"].is-active {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+    transform: translateY(0);
+    transition-delay: 0s;
+    z-index: 30;
+}
+#views > [id^="view-"].is-leaving {
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(-3px);
+}
+
+/* Library and Rolls share the light, gallery-like spacing from the reference. */
+#view-library > div:first-child,
+#view-history > div:last-child > div:first-child {
+    height: 52px !important;
+    padding: 0 20px !important;
+    background: var(--panel) !important;
+}
+#view-library > div:first-child > div:first-child,
+#history-view-title {
+    font-size: 14px !important;
+    font-weight: 620 !important;
+    letter-spacing: .01em !important;
+}
+#view-library > div:nth-child(2), #view-history > div:last-child > div:nth-child(2) {
+    padding: 20px !important;
+    background: var(--panel) !important;
+}
+#library-grid, #history-internal-grid { gap: 10px !important; }
+.library-item {
+    aspect-ratio: 4 / 3 !important;
+    background: color-mix(in srgb, var(--panel-raised) 76%, var(--workspace)) !important;
+    outline: 1px solid transparent;
+    outline-offset: 2px;
+    transition: opacity var(--motion-fast) var(--ease-standard),
+        outline-color var(--motion-fast) var(--ease-standard),
+        transform var(--motion-fast) var(--ease-emphasized);
+    animation: nexfilm-item-in 220ms var(--ease-emphasized) both;
+}
+.library-item:hover { outline-color: var(--line-strong); transform: translateY(-2px); }
+.library-item.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
+.library-item img { transition: opacity var(--motion-base) var(--ease-standard), transform var(--motion-base) var(--ease-emphasized); }
+.library-item:hover img { opacity: .96; transform: scale(1.015); }
+#library-empty svg, #history-empty svg { color: var(--accent) !important; }
+#library-empty button, #history-empty button { background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; }
+#library-empty button:hover, #history-empty button:hover { background: var(--accent-hover) !important; }
+
+#view-history > div:first-child {
+    width: 216px !important;
+    padding: 20px 16px !important;
+    background: var(--panel-raised) !important;
+}
+#view-history > div:first-child h2 { margin-bottom: 20px !important; font-size: 13px !important; }
+#view-history > div:first-child h3 { margin-bottom: 10px !important; font-size: 11px !important; }
+#view-history label { min-height: 25px; align-items: center; border-radius: 3px; transition: background var(--motion-fast) var(--ease-standard), color var(--motion-fast) var(--ease-standard); }
+#view-history label:hover { background: var(--control); color: var(--text) !important; }
+.roll-row { min-height: 156px; gap: 24px; padding: 16px 0; transition: background var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-emphasized); animation: nexfilm-item-in 220ms var(--ease-emphasized) both; }
+.roll-row:hover { transform: translateX(2px); }
+.roll-title { font-size: 17px; }
+.roll-format { color: var(--accent); }
+.roll-preview { width: min(38%, 460px); min-width: 240px; }
+
+/* Develop keeps the image dominant and the inspector dense. */
+#view-develop > div:first-child { background: var(--workspace) !important; }
+#view-develop > div:first-child > div:first-child {
+    height: 44px !important;
+    padding: 0 12px !important;
+    background: var(--chrome) !important;
+}
+.toolbar-btn { min-height: 28px; padding: 0 8px !important; border-radius: 3px !important; color: var(--muted) !important; }
+.toolbar-btn:hover:not(:disabled) { background: var(--control) !important; color: var(--text) !important; }
+.toolbar-btn.active { background: var(--accent-soft) !important; color: var(--accent) !important; }
+#view-develop > div:first-child > div:nth-child(2) { padding: 20px !important; background: var(--workspace) !important; }
+#canvas-wrapper { box-shadow: 0 16px 40px rgba(0, 0, 0, .34); transition: transform var(--motion-base) var(--ease-emphasized), opacity var(--motion-base) var(--ease-standard); }
+#filmstrip-container { height: 98px !important; padding: 10px 14px !important; gap: 8px !important; background: var(--chrome) !important; }
+.film-item { width: 96px !important; height: 66px !important; border-radius: 3px !important; outline: 1px solid transparent; outline-offset: 2px; transition: opacity var(--motion-fast) var(--ease-standard), outline-color var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-emphasized); animation: nexfilm-item-in 180ms var(--ease-emphasized) both; }
+.film-item:hover { transform: translateY(-2px) !important; }
+.film-item.active { outline: 2px solid var(--accent); outline-offset: 2px; }
+#view-develop > div:last-child { width: 328px !important; background: var(--panel) !important; }
+#view-develop > div:last-child > div:nth-of-type(2) { padding: 16px 18px !important; }
+#view-develop > div:last-child > div:nth-of-type(2) .w-full { height: 108px !important; }
+#view-develop > div:last-child > div:last-child { padding: 16px 18px !important; gap: 19px !important; }
+.control-group { padding-top: 18px !important; }
+.control-group h3 { margin-bottom: 14px !important; font-size: 11px !important; }
+.control-group label { font-size: 11px !important; }
+.control-group button:not(.toolbar-btn), #btn-copy-settings, #btn-paste-settings { min-height: 29px; }
+#btn-auto-color { background: var(--accent) !important; border-color: var(--accent) !important; color: #fff !important; }
+#btn-auto-color:hover { background: var(--accent-hover) !important; }
+#right-panel-blocker h3 { color: var(--accent) !important; }
+.calib-edge-dot { stroke: var(--accent) !important; }
+.calib-dot { fill: var(--accent) !important; }
+#calibration-polygon { fill: var(--accent-soft) !important; stroke: var(--accent) !important; }
+#calibration-grid { stroke: color-mix(in srgb, var(--accent) 52%, transparent) !important; }
+
+/* Inputs, notices and modal surfaces use the same blue focus language. */
+input[type="range"]::-webkit-slider-thumb { border-color: var(--accent) !important; }
+input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 4px var(--accent-soft); }
+select:focus, input:focus { border-color: var(--accent) !important; }
+#toast-container > div { border-left-color: var(--accent) !important; }
+#drag-overlay { border-color: var(--accent) !important; }
+
+@keyframes nexfilm-item-in {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@media (max-width: 780px) {
+    body > header { padding: 0 10px !important; }
+    body > header > div:first-child { gap: 10px !important; }
+    body > header nav button { min-width: 58px; padding: 0 8px !important; }
+    body > header > div:last-child button { padding: 0 8px !important; }
+    #view-develop > div:last-child { width: 286px !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #views > [id^="view-"], .library-item, .film-item, .roll-row, #canvas-wrapper, button, img { animation: none !important; transition-duration: 1ms !important; }
+}
+
+/*
+ * Figma Light desktop reference.  These rules deliberately live last: the
+ * application markup keeps Tailwind utility classes for behavior, while this
+ * layer makes the shared chrome and Develop workspace follow the source file.
+ */
+:root,
+body[data-theme="light"],
+body[data-theme="dark"] {
+    --figma-blue: #0a5aa8;
+    --figma-stone: #fafaf9;
+    --figma-workspace: #dadada;
+    --figma-control: #ececea;
+    --figma-text: #3b3b3b;
+    --figma-muted: #939398;
+    --figma-line: rgba(20, 20, 22, .101961);
+    --bg: #fff;
+    --chrome: #fff;
+    --panel: #fff;
+    --panel-raised: #fff;
+    --workspace: var(--figma-workspace);
+    --control: var(--figma-control);
+    --control-hover: #d4d4d4;
+    --text: var(--figma-text);
+    --muted: var(--figma-muted);
+    --subtle: var(--figma-muted);
+    --line: var(--figma-line);
+    --line-strong: rgba(23, 23, 23, .18);
+    --accent: var(--figma-blue);
+    --accent-hover: #074e91;
+    --accent-soft: rgba(10, 90, 168, .13);
+    --font-ui: Montserrat, "Segoe UI", Arial, sans-serif;
+    --font-mono: Montserrat, "Segoe UI", Arial, sans-serif;
+}
+
+body {
+    background: #fff !important;
+    color: var(--figma-text) !important;
+    font-family: Montserrat, "Segoe UI", Arial, sans-serif !important;
+    font-size: 12px !important;
+    font-weight: 500;
+}
+body .uppercase { text-transform: none !important; }
+body .tracking-widest,
+body .tracking-wider,
+body [class*="tracking-["] { letter-spacing: 0 !important; }
+button,
+input,
+select { font-family: inherit !important; }
+button:focus-visible,
+input:focus-visible,
+select:focus-visible { outline: 2px solid var(--figma-blue) !important; outline-offset: 2px !important; }
+
+/* Figma top menu and application navigation. */
+#native-menu-bar {
+    height: 32px !important;
+    min-height: 32px !important;
+    padding: 0 32px !important;
+    gap: 40px !important;
+    background: var(--figma-stone) !important;
+    color: var(--figma-muted) !important;
+    border: 0 !important;
+    border-bottom: 2px solid var(--figma-line) !important;
+    border-radius: 0 0 20px 20px !important;
+    box-shadow: none !important;
+    font-size: 10px !important;
+    font-weight: 500 !important;
+}
+#native-menu-bar > div:first-child {
+    color: var(--figma-blue) !important;
+    font-size: 10px !important;
+    font-weight: 900 !important;
+    letter-spacing: 0 !important;
+    text-transform: uppercase !important;
+}
+#native-menu-bar > div:not(:first-child) { padding: 4px 0 !important; }
+#native-menu-bar > div:hover { color: var(--figma-text) !important; background: transparent !important; }
+#native-menu-bar .group > div {
+    border: 1px solid var(--figma-line) !important;
+    border-radius: 8px !important;
+    background: #fff !important;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, .12) !important;
+}
+#native-menu-bar .group > div > div:hover { background: var(--figma-control) !important; }
+#theme-value { color: var(--figma-blue) !important; }
+
+body > header {
+    height: 58px !important;
+    min-height: 58px !important;
+    padding: 0 32px !important;
+    background: #fff !important;
+    border: 0 !important;
+    box-shadow: none !important;
+}
+body > header > div:first-child { height: 100% !important; gap: 40px !important; }
+body > header .text-\[14px\] {
+    display: flex !important;
+    align-items: center !important;
+    width: 56px !important;
+    height: 36px !important;
+    color: transparent !important;
+    font-size: 0 !important;
+    letter-spacing: 0 !important;
+}
+body > header .brand-mark {
+    display: block !important;
+    width: 56px !important;
+    height: 36px !important;
+    object-fit: contain !important;
+}
+body > header .brand-name,
+body > header .brand-mark + span,
+body > header .text-\[14px\] > span { display: none !important; }
+body > header .h-6 { display: none !important; }
+body > header nav {
+    height: 100% !important;
+    align-items: flex-end !important;
+    gap: 39px !important;
+}
+body > header nav button {
+    height: 50px !important;
+    min-width: 76px;
+    padding: 0 10px !important;
+    border: 0 !important;
+    border-bottom: 8px solid transparent !important;
+    border-radius: 20px 20px 0 0 !important;
+    background: transparent !important;
+    color: var(--figma-text) !important;
+    font-size: 16px !important;
+    font-weight: 500 !important;
+    line-height: 42px !important;
+    text-transform: none !important;
+}
+body > header nav button:hover { background: #f3f3f3 !important; color: var(--figma-text) !important; }
+body > header nav button.border-zinc-100 {
+    border-bottom-color: var(--figma-workspace) !important;
+    background: var(--figma-workspace) !important;
+    color: var(--figma-blue) !important;
+    font-weight: 700 !important;
+}
+body > header nav button:focus-visible { outline: none !important; }
+body > header > div:last-child {
+    width: 320px !important;
+    flex: 0 0 320px !important;
+    height: 32px !important;
+    gap: 10px !important;
+    overflow: visible !important;
+    border-radius: 10px !important;
+    background: var(--figma-blue) !important;
+}
+body > header > div:last-child button {
+    width: 100px !important;
+    min-width: 100px !important;
+    height: 32px !important;
+    min-height: 32px !important;
+    padding: 0 10px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: #fff !important;
+    color: #18181b !important;
+    box-shadow: inset 0 0 0 3px var(--figma-blue) !important;
+    font-size: 12px !important;
+    font-weight: 800 !important;
+    white-space: nowrap;
+}
+body > header > div:last-child button:hover:not(:disabled) { background: #f4f4f4 !important; transform: none !important; }
+#btn-export-dialog { min-width: 100px !important; }
+#btn-export-dialog {
+    background: var(--figma-blue) !important;
+    color: #fff !important;
+    box-shadow: none !important;
+}
+#btn-export-dialog:hover:not(:disabled) { background: #074e91 !important; color: #fff !important; }
+#btn-delete-develop-image {
+    position: absolute;
+    right: 338px;
+    background: #fff !important;
+    color: #b91c1c !important;
+    box-shadow: inset 0 0 0 1px #fecaca !important;
+}
+
+/* Main canvas, transform bar and filmstrip. */
+#views {
+    background: var(--figma-workspace) !important;
+    border-radius: 20px 20px 0 0 !important;
+    overflow: hidden !important;
+}
+#views > [id^="view-"] { border-radius: 20px 20px 0 0 !important; }
+#view-develop { padding: 10px !important; gap: 10px !important; }
+#view-develop > div:first-child {
+    min-width: 0 !important;
+    border-radius: 10px !important;
+    background: transparent !important;
+}
+#view-develop > div:first-child > div:first-child {
+    height: 46px !important;
+    min-height: 46px !important;
+    justify-content: flex-start !important;
+    gap: 8px !important;
+    padding: 0 14px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: var(--figma-control) !important;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .25) !important;
+}
+#view-develop > div:first-child > div:first-child > div:first-child {
+    gap: 0 !important;
+    padding: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+}
+#view-develop > div:first-child > div:first-child > div:first-child #btn-crop-mode {
+    padding-right: 8px !important;
+    border-radius: 3px !important;
+    background: #fff !important;
+}
+#view-develop > div:first-child > div:first-child > div:first-child #btn-reset-crop {
+    border-radius: 3px !important;
+    background: #a1a1aa !important;
+    color: #fff !important;
+}
+#view-develop > div:first-child > div:first-child > div:first-child #btn-reset-crop .toolbar-icon { stroke: #fff !important; }
+#view-develop > div:first-child > div:first-child > div:first-child #btn-perspective-mode { order: 4; margin-left: 2px; }
+#view-develop > div:first-child > div:first-child > div:first-child #btn-recalibrate { order: 3; }
+#view-develop .w-px {
+    width: 1px !important;
+    height: 20px !important;
+    margin: 0 2px !important;
+    background: var(--figma-line) !important;
+}
+.toolbar-btn {
+    min-height: 28px !important;
+    padding: 0 8px !important;
+    border-radius: 3px !important;
+    background: transparent !important;
+    color: var(--figma-text) !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    white-space: nowrap !important;
+}
+.toolbar-btn:hover:not(:disabled),
+.toolbar-btn.active { background: rgba(255, 255, 255, .72) !important; color: var(--figma-blue) !important; }
+.toolbar-btn:disabled { opacity: 1 !important; color: var(--figma-text) !important; }
+.toolbar-icon { width: 11px !important; height: 11px !important; color: var(--figma-blue) !important; stroke: var(--figma-blue) !important; stroke-width: 1.8 !important; }
+#btn-flip-h .toolbar-icon { width: 10px !important; }
+#btn-flip-v .toolbar-icon { width: 12px !important; }
+#btn-crop-mode .toolbar-icon,
+#btn-reset-crop .toolbar-icon,
+#btn-recalibrate .toolbar-icon,
+#btn-perspective-mode .toolbar-icon { display: none !important; }
+#view-develop > div:first-child > div:nth-child(2) {
+    padding: 20px !important;
+    border-radius: 10px !important;
+    background: var(--figma-workspace) !important;
+}
+#canvas-wrapper { box-shadow: 0 14px 28px rgba(0, 0, 0, .24) !important; }
+#missing-file-ui { background: var(--figma-workspace) !important; }
+#filmstrip-container {
+    height: 104px !important;
+    min-height: 104px !important;
+    margin-top: 10px !important;
+    padding: 16px !important;
+    gap: 8px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: var(--figma-stone) !important;
+    box-shadow: 0 0 10px rgba(0, 0, 0, .25) !important;
+}
+.film-item {
+    width: 108px !important;
+    height: 72px !important;
+    border-radius: 3px !important;
+    background: var(--figma-control) !important;
+    opacity: 1 !important;
+}
+.film-item.active { outline: 3px solid var(--figma-blue) !important; outline-offset: 0 !important; }
+
+/* Inspector: discrete cards and compact Figma controls. */
+#view-develop > div:last-child,
+#develop-inspector {
+    width: 360px !important;
+    min-width: 360px !important;
+    gap: 10px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    overflow-y: auto !important;
+}
+#develop-inspector::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+}
+#view-develop > div:last-child > div:nth-of-type(2),
+#view-develop > div:last-child > div:last-child {
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: #fff !important;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .25) !important;
+}
+#view-develop > div:last-child > div:nth-of-type(2) {
+    position: static !important;
+    padding: 24px !important;
+}
+#view-develop > div:last-child > div:nth-of-type(2) > div:first-child { margin-bottom: 0 !important; }
+#viz-title { display: none !important; }
+#viz-mode-tabs {
+    display: flex !important;
+    align-items: flex-end !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+}
+.viz-mode-tab {
+    flex: 0 0 84px;
+    width: 84px !important;
+    min-height: 29px !important;
+    padding: 0 8px !important;
+    border: 0 !important;
+    border-radius: 5px 5px 0 0 !important;
+    background: transparent !important;
+    color: var(--figma-text) !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+}
+.viz-mode-tab.active {
+    background: var(--figma-workspace) !important;
+    color: var(--figma-blue) !important;
+    font-weight: 700 !important;
+}
+#view-develop > div:last-child > div:nth-of-type(2) .w-full {
+    height: 116px !important;
+    border: 0 !important;
+    border-radius: 5px !important;
+    background: var(--figma-workspace) !important;
+}
+#view-develop > div:last-child > div:last-child {
+    padding: 24px 24px 28px !important;
+    gap: 18px !important;
+}
+#view-develop > div:last-child > div:last-child > .flex:first-child { gap: 12px !important; }
+#btn-copy-settings,
+#btn-paste-settings {
+    height: 30px !important;
+    min-height: 30px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: rgba(23, 23, 23, .10) !important;
+    color: #18181b !important;
+    box-shadow: none !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+}
+.control-group {
+    padding-top: 18px !important;
+    border-color: var(--figma-line) !important;
+    border-top-width: 3px !important;
+}
+.control-group h3 {
+    margin-bottom: 16px !important;
+    color: var(--figma-muted) !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+}
+.control-group h3 svg { color: var(--figma-muted) !important; }
+.control-group label { color: var(--figma-text) !important; font-size: 12px !important; font-weight: 500 !important; }
+.control-group [class*="text-zinc-400"],
+.control-group [class*="text-zinc-500"] { color: var(--figma-muted) !important; }
+.control-group button:not(.toolbar-btn),
+#btn-mode-color,
+#btn-mode-bw {
+    min-height: 32px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: rgba(23, 23, 23, .10) !important;
+    color: var(--figma-text) !important;
+    box-shadow: none !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+}
+.control-group button#btn-auto-color {
+    background: var(--figma-blue) !important;
+    color: #fff !important;
+    box-shadow: none !important;
+}
+#develop-inspector button:disabled,
+#develop-inspector input:disabled,
+#develop-inspector select:disabled { opacity: 1 !important; }
+.control-group #btn-reset-color { background: #fff !important; box-shadow: inset 0 0 0 2px var(--figma-blue) !important; }
+.control-group > .flex.items-center.justify-between {
+    padding: 3px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: rgba(23, 23, 23, .10) !important;
+}
+#btn-mode-color,
+#btn-mode-bw { min-height: 28px !important; background: transparent !important; }
+#btn-mode-color { background: #fff !important; }
+.control-group .bg-\[\#121214\] {
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: rgba(23, 23, 23, .10) !important;
+}
+#select-colorspace {
+    width: 122px !important;
+    height: 30px !important;
+    min-height: 30px !important;
+    padding: 0 26px 0 8px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: #fff !important;
+    color: #939398 !important;
+    font-size: 12px !important;
+    font-weight: 400 !important;
+}
+#select-colorspace:hover { background: var(--figma-control) !important; }
+.control-group .h-px { background: rgba(23, 23, 23, .45) !important; }
+.control-group [class*="text-red-400"] { color: #ef4444 !important; }
+.control-group [class*="text-emerald-400"] { color: #16a34a !important; }
+.control-group [class*="text-blue-400"] { color: #64748b !important; }
+.color-balance-group {
+    gap: 14px !important;
+    padding: 10px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: rgba(23, 23, 23, .10) !important;
+}
+.color-balance-title { color: var(--figma-muted) !important; font-size: 10px !important; font-weight: 500 !important; text-transform: none !important; }
+.custom-range,
+.slider { height: 18px !important; opacity: 1 !important; }
+.custom-range:disabled,
+.slider:disabled { cursor: default !important; opacity: 1 !important; }
+.custom-range::-webkit-slider-runnable-track,
+.slider::-webkit-slider-runnable-track,
+.custom-range:disabled::-webkit-slider-runnable-track,
+.slider:disabled::-webkit-slider-runnable-track {
+    height: 4px !important;
+    background: linear-gradient(to right, var(--track-fill, var(--figma-blue)) 0%, var(--track-fill, var(--figma-blue)) var(--val), #d4d4d4 var(--val), #d4d4d4 100%) !important;
+}
+.custom-range::-webkit-slider-thumb,
+.slider::-webkit-slider-thumb {
+    width: 6px !important;
+    height: 20px !important;
+    margin-top: -8px !important;
+    border: 0 !important;
+    border-radius: 2px !important;
+    background: var(--figma-blue) !important;
+    box-shadow: none !important;
+}
+.red-track { --track-fill: #c96565; }
+.green-track { --track-fill: #4c9a78; }
+.blue-track { --track-fill: #668bd4; }
+.temperature-track::-webkit-slider-runnable-track,
+.tint-track::-webkit-slider-runnable-track { height: 5px !important; border: 0 !important; }
+.temperature-track::-webkit-slider-thumb,
+.tint-track::-webkit-slider-thumb { background: #3f3f46 !important; }
+#right-panel-blocker { border-radius: 10px !important; background: rgba(255, 255, 255, .94) !important; }
+
+@media (max-width: 1100px) {
+    body > header { padding: 0 16px !important; }
+    body > header > div:first-child { gap: 18px !important; }
+    body > header nav { gap: 4px !important; }
+    body > header nav button { min-width: 64px; font-size: 14px !important; }
+    #view-develop > div:last-child,
+    #develop-inspector { width: 320px !important; min-width: 320px !important; }
+    .toolbar-btn { padding: 0 6px !important; }
+}
+
+@media (max-width: 780px) {
+    #native-menu-bar { padding: 0 16px !important; gap: 18px !important; }
+    body > header > div:last-child button { min-width: 32px !important; font-size: 0 !important; }
+    body > header > div:last-child button::first-letter { font-size: 12px !important; }
+    #view-develop { padding: 6px !important; gap: 6px !important; }
+    #view-develop > div:last-child,
+    #develop-inspector { width: 286px !important; min-width: 286px !important; }
+    .toolbar-btn > span { display: none; }
+}
+
+/* Dark uses the same Figma geometry as Light; only the reference palette changes. */
+body[data-theme="dark"] {
+    --figma-blue: #4893dd;
+    --figma-stone: #282828;
+    --figma-workspace: #0e0e0e;
+    --figma-control: #1f1f1f;
+    --figma-text: #e3e3f1;
+    --figma-muted: #8d8d8d;
+    --figma-line: rgba(226, 226, 244, .10);
+    --bg: #282828;
+    --chrome: #282828;
+    --panel: #2b2b2b;
+    --panel-raised: #2b2b2b;
+    --workspace: #0e0e0e;
+    --control: #3b3b3b;
+    --control-hover: #4a4a4a;
+    --text: #e3e3f1;
+    --muted: #8d8d8d;
+    --subtle: #8d8d8d;
+    --line: rgba(226, 226, 244, .10);
+    --line-strong: rgba(226, 226, 244, .18);
+    --accent: #4893dd;
+    --accent-hover: #68a8e7;
+    --accent-soft: rgba(72, 147, 221, .18);
+    background: #282828 !important;
+    color: #e3e3f1 !important;
+}
+body[data-theme="dark"] #native-menu-bar,
+body[data-theme="dark"] > header { background: #282828 !important; }
+body[data-theme="dark"] #native-menu-bar .group > div {
+    border-color: rgba(226, 226, 244, .10) !important;
+    background: #2b2b2b !important;
+}
+body[data-theme="dark"] #native-menu-bar .group > div > div:hover,
+body[data-theme="dark"] > header nav button:hover { background: #303030 !important; }
+body[data-theme="dark"] > header .brand-mark {
+    content: url("assets/design-reference/nexfilm-logo-dark.svg") !important;
+}
+body[data-theme="dark"] > header nav button { color: #e3e3f1 !important; }
+body[data-theme="dark"] > header nav button.border-zinc-100 {
+    border-bottom-color: #0e0e0e !important;
+    background: #0e0e0e !important;
+    color: #4893dd !important;
+}
+body[data-theme="dark"] > header > div:last-child { background: #4893dd !important; }
+body[data-theme="dark"] > header > div:last-child button {
+    background: #1f1f1f !important;
+    color: #e3e3f1 !important;
+    box-shadow: inset 0 0 0 3px #4893dd !important;
+}
+body[data-theme="dark"] > header > div:last-child button:hover:not(:disabled) { background: #303030 !important; }
+body[data-theme="dark"] #btn-export-dialog { background: #4893dd !important; color: #1f1f1f !important; box-shadow: none !important; }
+body[data-theme="dark"] #btn-delete-develop-image {
+    background: #2b2b2b !important;
+    color: #e3e3f1 !important;
+    box-shadow: inset 0 0 0 1px #7f4242 !important;
+}
+body[data-theme="dark"] #views { background: #2b2b2b !important; }
+body[data-theme="dark"] #view-develop > div:first-child > div:first-child,
+body[data-theme="dark"] #filmstrip-container {
+    background: #1f1f1f !important;
+    box-shadow: none !important;
+}
+body[data-theme="dark"] #view-develop > div:first-child > div:first-child > div:first-child { background: transparent !important; }
+body[data-theme="dark"] #view-develop > div:first-child > div:first-child > div:first-child #btn-crop-mode {
+    background: #1f1f1f !important;
+    color: #e3e3f1 !important;
+}
+body[data-theme="dark"] #view-develop > div:first-child > div:first-child > div:first-child #btn-reset-crop {
+    background: #8d8d8d !important;
+    color: #1f1f1f !important;
+}
+body[data-theme="dark"] #view-develop > div:first-child > div:nth-child(2),
+body[data-theme="dark"] #missing-file-ui { background: #0e0e0e !important; }
+body[data-theme="dark"] .film-item { background: #1f1f1f !important; }
+body[data-theme="dark"] #view-develop > div:last-child > div:nth-of-type(2),
+body[data-theme="dark"] #view-develop > div:last-child > div:last-child {
+    background: #2b2b2b !important;
+    box-shadow: none !important;
+}
+body[data-theme="dark"] .viz-mode-tab { color: #e3e3f1 !important; }
+body[data-theme="dark"] .viz-mode-tab.active { background: #2b2b2b !important; color: #4893dd !important; }
+body[data-theme="dark"] #view-develop > div:last-child > div:nth-of-type(2) .w-full { background: #0e0e0e !important; }
+body[data-theme="dark"] #btn-copy-settings,
+body[data-theme="dark"] #btn-paste-settings,
+body[data-theme="dark"] .control-group button:not(.toolbar-btn),
+body[data-theme="dark"] .control-group > .flex.items-center.justify-between,
+body[data-theme="dark"] .control-group .bg-\[\#121214\],
+body[data-theme="dark"] .color-balance-group,
+body[data-theme="dark"] .control-group select {
+    border-color: transparent !important;
+    background: #3b3b3b !important;
+    color: #e3e3f1 !important;
+}
+body[data-theme="dark"] .control-group button#btn-auto-color { background: #4893dd !important; color: #1f1f1f !important; }
+body[data-theme="dark"] .control-group #btn-reset-color,
+body[data-theme="dark"] #btn-mode-color { background: #2b2b2b !important; color: #e3e3f1 !important; }
+body[data-theme="dark"] .control-group #btn-reset-color { box-shadow: inset 0 0 0 2px #4893dd !important; }
+body[data-theme="dark"] #btn-mode-bw { background: #4a4a4a !important; color: #e3e3f1 !important; }
+body[data-theme="dark"] .control-group { border-top-color: #3b3b3b !important; }
+body[data-theme="dark"] .control-group h3,
+body[data-theme="dark"] .color-balance-title,
+body[data-theme="dark"] .control-group [class*="text-zinc-400"],
+body[data-theme="dark"] .control-group [class*="text-zinc-500"] { color: #8d8d8d !important; }
+body[data-theme="dark"] .control-group label { color: #e3e3f1 !important; }
+body[data-theme="dark"] #right-panel-blocker { background: rgba(43, 43, 43, .96) !important; }
+body[data-theme="dark"] #select-colorspace {
+    background: #3b3b3b !important;
+    color: #8d8d8d !important;
+}
+
+/* Keep the Frame 54/55 color-balance swatches above the generic range rules. */
+body[data-theme="light"] #develop-inspector .temperature-track::-webkit-slider-runnable-track,
+body[data-theme="dark"] #develop-inspector .temperature-track::-webkit-slider-runnable-track {
+    height: 8px !important;
+    margin-top: -2px !important;
+    border: 0 !important;
+    border-radius: 2px !important;
+    background: linear-gradient(to right, #407acb 0%, #86b8e2 25%, #c9cbc6 50%, #e3a862 75%, #ce6e3e 100%) !important;
+}
+body[data-theme="light"] #develop-inspector .tint-track::-webkit-slider-runnable-track,
+body[data-theme="dark"] #develop-inspector .tint-track::-webkit-slider-runnable-track {
+    height: 8px !important;
+    margin-top: -2px !important;
+    border: 0 !important;
+    border-radius: 2px !important;
+    background: linear-gradient(to right, #54a06b 0%, #93c29f 25%, #c9cbc6 50%, #a983bd 75%, #80539e 100%) !important;
+}
+body[data-theme="light"] #develop-inspector .temperature-track::-webkit-slider-thumb,
+body[data-theme="light"] #develop-inspector .tint-track::-webkit-slider-thumb,
+body[data-theme="dark"] #develop-inspector .temperature-track::-webkit-slider-thumb,
+body[data-theme="dark"] #develop-inspector .tint-track::-webkit-slider-thumb {
+    width: 6px !important;
+    height: 20px !important;
+    margin-top: -6px !important;
+    border-radius: 2px !important;
+    background: #3f3f46 !important;
+}
+
+/* Final geometry pass: the inspector rail and adjacent action control are
+ * structural UI, so keep them independent from the older utility overrides. */
+body.font-sans,
+body.font-sans button,
+body.font-sans input,
+body.font-sans select,
+body.font-sans textarea {
+    font-family: "Montserrat", "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif !important;
+}
+:lang(zh-CN),
+:lang(zh-CN) button,
+:lang(zh-CN) input,
+:lang(zh-CN) select,
+:lang(zh-CN) textarea,
+body[data-locale="zh-CN"],
+body[data-locale="zh-CN"] button,
+body[data-locale="zh-CN"] input,
+body[data-locale="zh-CN"] select,
+body[data-locale="zh-CN"] textarea {
+    font-family: "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif !important;
+}
+
+#develop-module-nav {
+    flex: 0 0 18px;
+    width: 18px;
+    min-width: 18px;
+    align-self: stretch;
+    margin: 10px 0;
+    padding: 10px 4px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
+    gap: 8px;
+    border-radius: 10px;
+    background: #fff;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .18);
+    z-index: 12;
+}
+.module-nav-btn {
+    position: relative;
+    flex: 1 1 0;
+    width: 10px;
+    min-height: 18px;
+    margin: 0 auto;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    cursor: pointer;
+    transition: background-color 140ms ease, transform 140ms ease;
+}
+.module-nav-btn::before {
+    content: "";
+    position: absolute;
+    inset: 50% 2px auto;
+    height: 2px;
+    border-radius: 2px;
+    background: #c9c9c9;
+    transform: translateY(-50%);
+    transition: background-color 140ms ease, height 140ms ease, box-shadow 140ms ease;
+}
+.module-nav-btn:hover,
+.module-nav-btn:focus-visible { background: rgba(10, 90, 168, .10); outline: none; }
+.module-nav-btn:hover::before,
+.module-nav-btn:focus-visible::before { background: var(--figma-blue); }
+.module-nav-btn.is-active::before {
+    inset: 50% 0 auto;
+    height: 5px;
+    background: var(--figma-blue);
+    box-shadow: 0 0 4px rgba(10, 90, 168, .45);
+}
+
+#develop-inspector {
+    scroll-padding-top: 12px;
+    overscroll-behavior: contain;
+}
+#develop-inspector > #inspector-scopes,
+#develop-inspector > div:last-child {
+    border: 0 !important;
+}
+.inspector-action-segment {
+    display: grid !important;
+    grid-template-columns: 3fr 1fr;
+    gap: 0 !important;
+    overflow: hidden;
+    border-radius: 10px;
+    background: var(--figma-blue);
+    outline: none !important;
+    box-shadow: inset 0 0 0 2px var(--figma-blue) !important;
+}
+.inspector-action-segment #btn-auto-color,
+.inspector-action-segment #btn-reset-color {
+    min-width: 0;
+    border: 0 !important;
+    border-radius: 0 !important;
+    outline: none !important;
+    margin: 0 !important;
+}
+.inspector-action-segment #btn-auto-color { border-radius: 10px 0 0 10px !important; }
+.inspector-action-segment #btn-reset-color {
+    border-radius: 0 10px 10px 0 !important;
+    box-shadow: none !important;
+}
+
+body[data-theme="light"] #develop-module-nav { background: #fff; }
+body[data-theme="dark"] #develop-module-nav {
+    background: #282828;
+    box-shadow: none;
+}
+body[data-theme="dark"] .module-nav-btn::before { background: #5a5a5a; }
+body[data-theme="dark"] .module-nav-btn:hover,
+body[data-theme="dark"] .module-nav-btn:focus-visible { background: rgba(72, 147, 221, .14); }
+body[data-theme="dark"] .inspector-action-segment { background: #4893dd; box-shadow: inset 0 0 0 2px #4893dd !important; }
+body[data-theme="dark"] .inspector-action-segment #btn-reset-color { background: #2b2b2b !important; color: #e3e3f1 !important; }
+
+/* Keep the scope card pinned while the inspector content scrolls. Older
+ * structural rules set this block to static; this is the final layout rule. */
+#develop-inspector > #inspector-scopes {
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 20 !important;
+    flex: 0 0 auto !important;
+    background: var(--panel) !important;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .14) !important;
+}
+
+/* Figma's active top-level tab has two 20px corner pieces that continue the
+ * grey tab into the header baseline. */
+body > header nav { position: relative; gap: 39px !important; overflow: visible !important; }
+body > header nav button.border-zinc-100 {
+    position: relative !important;
+    overflow: visible !important;
+    border-bottom-width: 8px !important;
+    border-bottom-color: var(--figma-workspace) !important;
+    border-radius: 20px 20px 0 0 !important;
+}
+body > header nav button.border-zinc-100::before,
+body > header nav button.border-zinc-100::after {
+    content: "";
+    position: absolute;
+    bottom: -8px;
+    width: 20px;
+    height: 20px;
+    background: var(--figma-workspace);
+    pointer-events: none;
+}
+body > header nav button.border-zinc-100::before {
+    left: -20px;
+    border-top-right-radius: 20px;
+}
+body > header nav button.border-zinc-100::after {
+    right: -20px;
+    border-top-left-radius: 20px;
+}
+body[data-theme="dark"] > header nav button.border-zinc-100::before,
+body[data-theme="dark"] > header nav button.border-zinc-100::after { background: #282828; }
+
+@media (max-width: 780px) {
+    body > header > div:last-child {
+        width: auto !important;
+        flex-basis: auto !important;
+        gap: 4px !important;
+        background: transparent !important;
+    }
+    body > header > div:last-child button { width: 32px !important; }
+    #develop-module-nav { flex-basis: 16px; width: 16px; min-width: 16px; padding-inline: 3px; }
+    #view-develop { gap: 6px !important; }
 }

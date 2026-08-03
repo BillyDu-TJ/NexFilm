@@ -1,5 +1,11 @@
-const invoke = window.__TAURI__.core.invoke;
-const { listen } = window.__TAURI__.event;
+const tauriCore = window.__TAURI__?.core;
+const tauriEvents = window.__TAURI__?.event;
+const invoke = tauriCore?.invoke ?? (async () => {
+    throw new Error('Tauri runtime unavailable in browser preview');
+});
+const listen = tauriEvents?.listen ?? (async () => () => {});
+const i18n = window.NexFilmI18n;
+const i18nText = (key, vars = {}) => i18n?.t(key, vars) ?? key;
 const { getContactSheetLayout, createContactSheetFilename } = window.NexFilmContactSheet;
 const { getNeutralExposureOffsets } = window.NexFilmDensity;
 const { getHistogramScale, getHistogramY } = window.NexFilmHistogram;
@@ -35,7 +41,6 @@ const btnCloseSponsor = document.getElementById('btn-close-sponsor');
 const libraryGrid = document.getElementById('library-grid');
 const libraryEmpty = document.getElementById('library-empty');
 const btnSelectAll = document.getElementById('btn-select-all');
-const btnDeselectAll = document.getElementById('btn-deselect-all');
 const librarySelectionCount = document.getElementById('library-selection-count');
 const btnDeleteLibraryImages = document.getElementById('btn-delete-library-images');
 const btnDeleteDevelopImage = document.getElementById('btn-delete-develop-image');
@@ -48,7 +53,10 @@ const canvasWrapper = document.getElementById('canvas-wrapper');
 const previewCanvas = document.getElementById('preview-canvas');
 const dummyPusher = document.getElementById('dummy-pusher');
 const developInspector = document.getElementById('develop-inspector');
+const inspectorControls = document.getElementById('inspector-controls');
 const rightPanelBlocker = document.getElementById('right-panel-blocker');
+const developModuleNav = document.getElementById('develop-module-nav');
+const developModuleSlider = document.getElementById('develop-module-slider');
 
 // DOM: Visualization
 const histCanvas = document.getElementById('histogram-canvas');
@@ -158,6 +166,12 @@ const sliders = {
     sprocketFeather: { el: document.getElementById('sprocket-feather'), val: document.getElementById('val-sprocket-feather') }
 };
 
+const twoDecimalSliderKeys = new Set([
+    'masterDmin', 'masterDmax', 'exposure', 'gamma', 'saturation', 'highlights', 'shadows',
+    'temperature', 'tint', 'sprocketTolerance', 'sprocketFeather'
+]);
+const formatSliderValue = (key, value) => Number.parseFloat(value).toFixed(twoDecimalSliderKeys.has(key) ? 2 : 3);
+
 const imageStates = new Map();
 let copiedSettings = null;
 let isEyedropperActive = false;
@@ -169,7 +183,6 @@ let proxyHeight = 0;
 let activeProxyIsFull = false;
 let hasProcessedActiveImage = false;
 
-let lastHistPixels = null;
 let current_geom = NexFilmGeometry.normalizeGeometryState({});
 let isCropMode = false;
 let isPerspectiveMode = false;
@@ -177,7 +190,7 @@ let currentImageWidth = 1;
 let currentImageHeight = 1;
 let zoomLevel = 1.0;
 
-let originalFilmOptions = null;
+let originalFilmOptions = document.getElementById('roll-film-select')?.innerHTML || null;
 let missingFileId = null;
 let totalImportCount = 0;
 let currentImportCount = 0;
@@ -209,6 +222,10 @@ let isWaveform = false;
 let lastPixels = null;
 const HIST_W = 256;
 const HIST_H = 256;
+const histogramPixels = new Uint8Array(HIST_W * HIST_H * 4);
+let histogramReadbackReady = false;
+let lastHistogramReadAt = 0;
+let sliderDragActive = false;
 
 // Library Multi-Selection State
 let allLibraryItems = [];
@@ -349,7 +366,7 @@ function appendMissingSourceBadge(container, item) {
     if (!item?.file_missing) return;
     const badge = document.createElement('div');
     badge.className = 'absolute right-1 top-1 bg-red-950/90 border border-red-700/70 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-red-200';
-    badge.textContent = 'Source Missing';
+    badge.textContent = i18nText('status.sourceMissing');
     container.appendChild(badge);
 }
 
@@ -395,29 +412,27 @@ let calibrationRevision = 0;
 const filmAreaDetectionPromises = new Map();
 
 function setDevelopInspectorCalibrationLocked(locked) {
-    if (locked) developInspector.scrollTop = 0;
+    if (locked && inspectorControls) inspectorControls.scrollTop = 0;
     developInspector.classList.toggle('calibration-locked', locked);
     rightPanelBlocker.classList.toggle('hidden', !locked);
 }
 
 function updateLibrarySelectionUI() {
     const selectedTargets = getImageDeletionTargets(selectedLibraryIds);
-    librarySelectionCount.textContent = `${selectedLibraryIds.size} selected`;
+    librarySelectionCount.textContent = i18nText('library.selectedCount', { count: selectedLibraryIds.size });
     if (selectedLibraryIds.size > 0) {
         btnExportDialog.disabled = false;
-        btnExportDialog.textContent = 'Export (' + selectedLibraryIds.size + ')';
-        btnDeselectAll.classList.remove('hidden');
+        btnExportDialog.textContent = `${i18nText('actions.export')} (${selectedLibraryIds.size})`;
     } else {
         btnExportDialog.disabled = true;
-        btnExportDialog.textContent = 'Export';
-        btnDeselectAll.classList.add('hidden');
+        btnExportDialog.textContent = `${i18nText('actions.export')} (0)`;
     }
     
     btnDeleteLibraryImages.disabled = importInProgress || selectedTargets.length === 0;
     btnDeleteRollImages.disabled = importInProgress || selectedTargets.length === 0;
     btnDeleteRollImages.textContent = selectedTargets.length > 0
-        ? `Delete Selected (${selectedTargets.length})`
-        : 'Delete Selected';
+        ? `${i18nText('actions.deleteSelected')} (${selectedTargets.length})`
+        : i18nText('actions.deleteSelected');
 
     // update visuals
     document.querySelectorAll('#library-grid .library-item[data-id], #history-internal-grid .library-item[data-id]').forEach(child => {
@@ -435,12 +450,6 @@ btnSelectAll.addEventListener('click', () => {
     allLibraryItems.forEach(item => selectedLibraryIds.add(item.id));
     updateLibrarySelectionUI();
 });
-
-btnDeselectAll.addEventListener('click', () => {
-    selectedLibraryIds.clear();
-    updateLibrarySelectionUI();
-});
-
 
 // Routing
 let currentView = 'library'; // Tracks active view: 'library' | 'develop' | 'history'
@@ -532,22 +541,42 @@ function switchView(viewName) {
     ];
 
     views.forEach(v => {
-        // 彻底清理旧的 Tailwind opacity 或 z-index 隐藏逻辑，只保留 display 切换
-        v.el.classList.remove('opacity-0', 'pointer-events-none');
-        if (v.name === viewName) {
+        const isActive = v.name === viewName;
+        const hideTimer = v.el.__nexfilmHideTimer;
+        if (hideTimer) window.clearTimeout(hideTimer);
+
+        // Keep the old view mounted for the short exit transition. This makes
+        // navigation feel continuous without changing any view-specific state.
+        if (isActive) {
             v.el.style.display = 'flex';
+            v.el.classList.remove('is-leaving', 'opacity-0', 'pointer-events-none');
+            v.el.classList.add('is-active');
+            v.el.setAttribute('aria-hidden', 'false');
             v.nav.classList.add('text-zinc-100', 'border-zinc-100');
             v.nav.classList.remove('text-zinc-500', 'border-transparent');
         } else {
-            v.el.style.display = 'none';
+            const wasVisible = v.el.style.display !== 'none';
+            v.el.classList.remove('is-active', 'opacity-0', 'pointer-events-none');
+            v.el.classList.toggle('is-leaving', wasVisible);
+            v.el.setAttribute('aria-hidden', 'true');
             v.nav.classList.remove('text-zinc-100', 'border-zinc-100');
-            v.nav.classList.add('text-zinc-500', 'border-transparent'); 
+            v.nav.classList.add('text-zinc-500', 'border-transparent');
+            if (wasVisible) {
+                v.el.__nexfilmHideTimer = window.setTimeout(() => {
+                    if (currentView !== v.name && !v.el.classList.contains('is-active')) {
+                        v.el.style.display = 'none';
+                        v.el.classList.remove('is-leaving');
+                    }
+                }, 190);
+            } else {
+                v.el.style.display = 'none';
+            }
         }
     });
 
     const isDevelop = viewName === 'develop';
-    document.getElementById('btn-export-roll').classList.toggle('hidden', !isDevelop);
-    btnDeleteDevelopImage.classList.toggle('hidden', !isDevelop);
+    document.getElementById('btn-export-roll').classList.remove('hidden');
+    btnDeleteDevelopImage.classList.toggle('hidden', !isDevelop || !activeId);
     btnDeleteDevelopImage.disabled = importInProgress || getImageDeletionTargets([activeId]).length === 0;
 
     if (isDevelop) {
@@ -555,6 +584,7 @@ function switchView(viewName) {
         if (activeId) {
             enableUI();
         }
+        requestModuleNavSync();
         requestRender();
     } else {
         // When leaving develop view, disable all tuning UI to prevent
@@ -570,6 +600,112 @@ navLibrary.addEventListener('click', () => {
     renderLibraryAndFilmstrip();
 });
 navDevelop.addEventListener('click', () => switchView('develop'));
+
+const moduleNavButtons = developModuleNav
+    ? Array.from(developModuleNav.querySelectorAll('.module-nav-btn'))
+    : [];
+let moduleNavFrame = 0;
+
+function syncDevelopModuleNav() {
+    moduleNavFrame = 0;
+    if (!developInspector || !inspectorControls || moduleNavButtons.length === 0) return;
+    const controlsPanel = inspectorControls;
+    if (controlsPanel && developModuleNav) {
+        developModuleNav.style.setProperty('--module-nav-offset', `${Math.round(controlsPanel.offsetTop)}px`);
+    }
+    const maxScroll = Math.max(0, controlsPanel.scrollHeight - controlsPanel.clientHeight);
+    const progress = maxScroll > 0 ? controlsPanel.scrollTop / maxScroll : 0;
+    if (developModuleSlider && developModuleNav) {
+        const travel = Math.max(0, developModuleNav.clientHeight - developModuleSlider.offsetHeight - 12);
+        developModuleSlider.style.setProperty('--module-slider-y', `${Math.round(progress * travel)}px`);
+        developModuleSlider.setAttribute('aria-valuenow', String(Math.round(progress * 100)));
+    }
+    const controlsTop = controlsPanel.getBoundingClientRect().top;
+    const activationLine = controlsTop + Math.min(64, controlsPanel.clientHeight * 0.14);
+    let activeButton = moduleNavButtons[0];
+    for (const button of moduleNavButtons) {
+        const target = document.getElementById(button.dataset.target);
+        if (!target) continue;
+        if (target.getBoundingClientRect().top <= activationLine) activeButton = button;
+    }
+    for (const button of moduleNavButtons) {
+        const isActive = button === activeButton;
+        button.classList.toggle('is-active', isActive);
+        if (isActive) button.setAttribute('aria-current', 'location');
+        else button.removeAttribute('aria-current');
+    }
+}
+
+function requestModuleNavSync() {
+    if (moduleNavFrame) return;
+    moduleNavFrame = requestAnimationFrame(syncDevelopModuleNav);
+}
+
+moduleNavButtons.forEach(button => {
+    button.addEventListener('click', () => {
+        if (!inspectorControls) return;
+        const target = document.getElementById(button.dataset.target);
+        if (!target) return;
+        const targetTop = target.id === 'inspector-scopes'
+            ? 0
+            : target.getBoundingClientRect().top - inspectorControls.getBoundingClientRect().top + inspectorControls.scrollTop;
+        const controlOffset = target.id === 'inspector-scopes' ? 0 : 12;
+        inspectorControls.scrollTo({
+            top: Math.max(0, targetTop - controlOffset),
+            behavior: 'smooth'
+        });
+        button.classList.add('is-active');
+        requestModuleNavSync();
+    });
+});
+
+let moduleSliderPointerId = null;
+
+function scrollDevelopFromSlider(clientY) {
+    if (!developModuleNav || !developModuleSlider || !inspectorControls) return;
+    const rect = developModuleNav.getBoundingClientRect();
+    const thumbHeight = developModuleSlider.offsetHeight;
+    const travel = Math.max(1, rect.height - thumbHeight - 12);
+    const progress = Math.min(1, Math.max(0, (clientY - rect.top - 6 - thumbHeight / 2) / travel));
+    const maxScroll = Math.max(0, inspectorControls.scrollHeight - inspectorControls.clientHeight);
+    inspectorControls.scrollTop = progress * maxScroll;
+    requestModuleNavSync();
+}
+
+developModuleSlider?.addEventListener('pointerdown', event => {
+    moduleSliderPointerId = event.pointerId;
+    developModuleSlider.setPointerCapture(event.pointerId);
+    developModuleSlider.classList.add('is-dragging');
+    scrollDevelopFromSlider(event.clientY);
+    event.preventDefault();
+});
+developModuleSlider?.addEventListener('pointermove', event => {
+    if (event.pointerId === moduleSliderPointerId) scrollDevelopFromSlider(event.clientY);
+});
+developModuleSlider?.addEventListener('pointerup', event => {
+    if (event.pointerId !== moduleSliderPointerId) return;
+    moduleSliderPointerId = null;
+    developModuleSlider.classList.remove('is-dragging');
+    developModuleSlider.releasePointerCapture(event.pointerId);
+});
+developModuleSlider?.addEventListener('pointercancel', event => {
+    if (event.pointerId !== moduleSliderPointerId) return;
+    moduleSliderPointerId = null;
+    developModuleSlider.classList.remove('is-dragging');
+});
+developModuleSlider?.addEventListener('keydown', event => {
+    if (!inspectorControls) return;
+    const maxScroll = Math.max(0, inspectorControls.scrollHeight - inspectorControls.clientHeight);
+    const steps = { ArrowUp: -48, ArrowDown: 48, PageUp: -inspectorControls.clientHeight * .8, PageDown: inspectorControls.clientHeight * .8 };
+    if (event.key in steps) inspectorControls.scrollBy({ top: steps[event.key], behavior: 'smooth' });
+    else if (event.key === 'Home') inspectorControls.scrollTo({ top: 0, behavior: 'smooth' });
+    else if (event.key === 'End') inspectorControls.scrollTo({ top: maxScroll, behavior: 'smooth' });
+    else return;
+    event.preventDefault();
+});
+inspectorControls?.addEventListener('scroll', requestModuleNavSync, { passive: true });
+window.addEventListener('resize', requestModuleNavSync);
+requestModuleNavSync();
 
 let sponsorLastFocusedElement = null;
 
@@ -865,6 +1001,7 @@ btnDeleteDevelopImage.addEventListener('click', () => requestImageDeletion([acti
 btnDeleteRollImages.addEventListener('click', () => requestImageDeletion(selectedLibraryIds));
 
 function showToast(message, type = "error") {
+    message = i18n?.translateLegacy(message) ?? message;
     const toast = document.createElement('div');
     toast.className = `px-4 py-3 rounded shadow-lg flex items-center gap-3 transform transition-all duration-300 translate-x-full ${type === 'error' ? 'bg-red-900/90 text-red-100 border border-red-700/50' : 'bg-zinc-800/90 text-zinc-100 border border-zinc-700/50'}`;
     toast.innerHTML = `
@@ -1595,8 +1732,10 @@ function drawHistogram(pixels) {
     // flatten the useful distribution. Endpoint peaks remain visible, capped.
     const maxVal = getHistogramScale([rHist, gHist, bHist]);
 
-    histCanvas.width = histCanvas.offsetWidth;
-    histCanvas.height = histCanvas.offsetHeight;
+    const histWidth = histCanvas.offsetWidth;
+    const histHeight = histCanvas.offsetHeight;
+    if (histCanvas.width !== histWidth) histCanvas.width = histWidth;
+    if (histCanvas.height !== histHeight) histCanvas.height = histHeight;
     const w = histCanvas.width, h = histCanvas.height;
     
     histCtx.clearRect(0, 0, w, h);
@@ -1634,8 +1773,10 @@ function drawHistogram(pixels) {
 }
 
 function drawWaveform(pixels) {
-    waveCanvas.width = waveCanvas.offsetWidth * 2;
-    waveCanvas.height = waveCanvas.offsetHeight * 2;
+    const waveWidth = waveCanvas.offsetWidth * 2;
+    const waveHeight = waveCanvas.offsetHeight * 2;
+    if (waveCanvas.width !== waveWidth) waveCanvas.width = waveWidth;
+    if (waveCanvas.height !== waveHeight) waveCanvas.height = waveHeight;
     const w = waveCanvas.width, h = waveCanvas.height;
     
     waveCtx.clearRect(0, 0, w, h);
@@ -1848,23 +1989,26 @@ function renderWebGL() {
         }
     }
 
-    // Render to FBO for Histogram. Keep readback at the visualization cadence;
-    // the main canvas itself remains fully GPU-driven for 60fps slider motion.
-    gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.viewport(0, 0, HIST_W, HIST_H);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-    
-    const pixels = new Uint8Array(HIST_W * HIST_H * 4);
+    // Histogram readback stalls the GPU. During slider drags keep the main
+    // canvas fully GPU-driven and only sample the small scope buffer at a
+    // lower cadence; the final pointer-up render refreshes it immediately.
     const now = performance.now();
-    if (now - lastVizTime >= 33) {
-        gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-    } else if (lastHistPixels) {
-        pixels.set(lastHistPixels);
-    } else {
-        gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    // gl.readPixels synchronizes the GPU with the CPU. It is useful for the
+    // scopes, but doing it during a range drag makes the preview feel sticky.
+    // Keep the preview GPU-only until the pointer is released, then force one
+    // readback in the next frame.
+    const shouldRefreshViz = !sliderDragActive
+        && (!histogramReadbackReady || now - lastHistogramReadAt >= 33);
+    if (shouldRefreshViz) {
+        gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+        gl.viewport(0, 0, HIST_W, HIST_H);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, histogramPixels);
+        histogramReadbackReady = true;
+        lastHistogramReadAt = now;
+        requestAnimationFrame(() => updateDataViz(histogramPixels));
     }
-    lastHistPixels = pixels;
 
     // Render to Main Canvas
     const orientedSize = NexFilmGeometry.getOrientedDimensions(
@@ -1874,12 +2018,16 @@ function renderWebGL() {
     );
     if (!isCropMode) {
         gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
-        gl.canvas.width = Math.max(1, Math.round(orientedSize.width * current_geom.crop_rect.width));
-        gl.canvas.height = Math.max(1, Math.round(orientedSize.height * current_geom.crop_rect.height));
+        const nextWidth = Math.max(1, Math.round(orientedSize.width * current_geom.crop_rect.width));
+        const nextHeight = Math.max(1, Math.round(orientedSize.height * current_geom.crop_rect.height));
+        if (gl.canvas.width !== nextWidth) gl.canvas.width = nextWidth;
+        if (gl.canvas.height !== nextHeight) gl.canvas.height = nextHeight;
     } else {
         gl.uniform4f(u_crop_loc, 0.0, 0.0, 1.0, 1.0);
-        gl.canvas.width = Math.max(1, Math.round(orientedSize.width));
-        gl.canvas.height = Math.max(1, Math.round(orientedSize.height));
+        const nextWidth = Math.max(1, Math.round(orientedSize.width));
+        const nextHeight = Math.max(1, Math.round(orientedSize.height));
+        if (gl.canvas.width !== nextWidth) gl.canvas.width = nextWidth;
+        if (gl.canvas.height !== nextHeight) gl.canvas.height = nextHeight;
     }
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
@@ -1887,9 +2035,7 @@ function renderWebGL() {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-    requestAnimationFrame(() => updateDataViz(pixels));
-    
-    scheduleInstantThumbnailUpdate();
+    if (!sliderDragActive) scheduleInstantThumbnailUpdate();
 }
 
 const PROXY_CACHE_LIMIT = 8; // Matches backend MAX_PROXY_CACHE
@@ -2069,8 +2215,8 @@ function updateUIFromParams(params, geom) {
     currentDMin = params.d_min.slice();
     currentDMax = params.d_max.slice();
     updateDMinMaxDisplay();
-    sliders.masterDmin.el.value = 0; sliders.masterDmin.val.textContent = "0.000"; lastMasterDmin = 0;
-    sliders.masterDmax.el.value = 0; sliders.masterDmax.val.textContent = "0.000"; lastMasterDmax = 0;
+    sliders.masterDmin.el.value = 0; sliders.masterDmin.val.textContent = "0.00"; lastMasterDmin = 0;
+    sliders.masterDmax.el.value = 0; sliders.masterDmax.val.textContent = "0.00"; lastMasterDmax = 0;
     
     sliders.exposure.el.value = params.exposure;
     sliders.gamma.el.value = params.gamma;
@@ -2095,7 +2241,7 @@ function updateUIFromParams(params, geom) {
     
     for (const key in sliders) {
         const s = sliders[key];
-        s.val.textContent = parseFloat(s.el.value).toFixed(2);
+        s.val.textContent = formatSliderValue(key, s.el.value);
         updateSliderTrack(s.el);
     }
     updatePerspectiveUI();
@@ -2154,9 +2300,25 @@ function scheduleBackendSync(key) {
 
 for (const key in sliders) {
     const s = sliders[key];
-    s.el.addEventListener('pointerdown', () => pushUndoState());
+    const endSliderInteraction = () => {
+        if (!sliderDragActive) return;
+        sliderDragActive = false;
+        histogramReadbackReady = false;
+        requestRender();
+        scheduleInstantThumbnailUpdate();
+    };
+    s.el.addEventListener('pointerdown', (event) => {
+        sliderDragActive = true;
+        pushUndoState();
+        if (event.currentTarget?.setPointerCapture && event.pointerId != null) {
+            event.currentTarget.setPointerCapture(event.pointerId);
+        }
+    });
+    s.el.addEventListener('pointerup', endSliderInteraction);
+    s.el.addEventListener('pointercancel', endSliderInteraction);
+    s.el.addEventListener('lostpointercapture', endSliderInteraction);
     s.el.addEventListener('input', (e) => {
-        s.val.textContent = parseFloat(e.target.value).toFixed(3);
+        s.val.textContent = formatSliderValue(key, e.target.value);
         if (key === 'angle') {
             current_geom.angle = parseFloat(e.target.value);
         } else if (key === 'sprocketTolerance') {
@@ -2181,7 +2343,7 @@ function setupEditableSliderValues() {
         val.title = 'Click to enter a value';
 
         const restoreValue = () => {
-            val.textContent = Number.parseFloat(el.value).toFixed(3);
+            val.textContent = formatSliderValue(key, el.value);
         };
         const commitValue = () => {
             if (el.disabled) {
@@ -2354,10 +2516,11 @@ async function updateFilterSidebar() {
         try { userCameras = await invoke('get_user_cameras'); } catch(e) {}
         const allCams = new Set([...cameras, ...userCameras]);
         selCamera.innerHTML = `
-            <option value="">Select Camera...</option>
+            <option value="">${i18nText('common.selectCamera')}</option>
             ${Array.from(allCams).map(c => `<option value="${c}">${c}</option>`).join('')}
-            <option value="__new__">+ Add New...</option>
+            <option value="__new__">${i18nText('common.addNew')}</option>
         `;
+        i18n?.apply(selCamera);
     }
 
     const selFilm = document.getElementById('roll-film-select');
@@ -2371,13 +2534,14 @@ async function updateFilterSidebar() {
             const baseStr = addIdx !== -1 ? originalFilmOptions.substring(0, addIdx) : originalFilmOptions;
             
             selFilm.innerHTML = baseStr + 
-                `<optgroup label="User Defined">` + 
+                `<optgroup label="${i18nText('formats.userDefined')}">` +
                 userFilms.map(f => `<option value="${f}">${f}</option>`).join('') +
                 `</optgroup>` +
-                `<option value="__new__">+ Add New...</option>`;
+                `<option value="__new__">${i18nText('common.addNew')}</option>`;
         } else {
             selFilm.innerHTML = originalFilmOptions;
         }
+        i18n?.apply(selFilm);
     }
 
     
@@ -2611,7 +2775,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 document.getElementById('btn-delete-rolls').classList.add('hidden');
                 btnEditRoll.classList.remove('hidden');
                 btnDeleteRollImages.classList.remove('hidden');
-                historyTitle.textContent = "Roll Contents";
+                historyTitle.textContent = i18nText('history.rollContents');
                 
                 const currentRoll = allRolls.find(r => r.roll_id === historyRollViewId);
                 if (currentRoll) {
@@ -2635,7 +2799,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                         console.error("Failed to load or import roll filmstrip", e);
                     }
                     
-                    document.getElementById('history-view-title').textContent = "Roll Contents";
+                    document.getElementById('history-view-title').textContent = i18nText('history.rollContents');
 
                     currentRoll.image_paths.forEach(path => {
                         const existingItem = items.find(i =>
@@ -2702,7 +2866,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                             if (!existingItem.rendered_thumbnail_base64) {
                                 const undeveloped = document.createElement('div');
                                 undeveloped.className = 'absolute inset-x-0 bottom-0 bg-black/75 px-2 py-1 text-center text-[9px] font-bold tracking-widest text-zinc-400';
-                                undeveloped.textContent = existingItem.state_available === false ? 'No Saved State' : 'Undeveloped';
+                                undeveloped.textContent = existingItem.state_available === false ? i18nText('status.noSavedState') : i18nText('status.undeveloped');
                                 libDiv.appendChild(undeveloped);
                             }
                         }
@@ -2719,7 +2883,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 document.getElementById('btn-delete-rolls').classList.remove('hidden');
                 btnEditRoll.classList.add('hidden');
                 btnDeleteRollImages.classList.add('hidden');
-                historyTitle.textContent = "Roll Archive";
+                historyTitle.textContent = i18nText('history.archive');
                 
                 let filteredRolls = allRolls.filter(r => {
                     if (filters.formats.length > 0 && !filters.formats.includes(r.format)) return false;
@@ -2729,7 +2893,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 });
                 if (isDeleteMode) {
                     document.getElementById('delete-action-bar').classList.remove('hidden');
-                    document.getElementById('delete-count').textContent = `${selectedRollIds.size} SELECTED FOR DELETION`;
+                    document.getElementById('delete-count').textContent = `${selectedRollIds.size} ${i18nText('history.selectedForDeletion').toUpperCase()}`;
                 } else {
                     document.getElementById('delete-action-bar').classList.add('hidden');
                 }
@@ -2778,16 +2942,16 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                                 <span data-roll-camera></span>
                                 <span data-roll-date></span>
                             </div>
-                            <button type="button" class="roll-edit-action">Edit Info</button>
+                            <button type="button" class="roll-edit-action">${i18nText('actions.editInfoShort')}</button>
                         </div>
                         <div class="roll-preview">
                             ${thumbSrc ? `<img src="${thumbSrc}" alt="" class="w-full h-full object-cover">` : `<div class="roll-preview-empty"></div>`}
                         </div>
                     `;
-                    card.querySelector('.roll-title').textContent = roll.film_stock || 'Unknown Film';
-                    card.querySelector('.roll-format').textContent = `${roll.format || '135'} format`;
-                    card.querySelector('[data-roll-camera]').textContent = roll.camera || 'Unknown camera';
-                    card.querySelector('[data-roll-date]').textContent = roll.date || 'Unknown date';
+                    card.querySelector('.roll-title').textContent = roll.film_stock || i18nText('status.unknownFilm');
+                    card.querySelector('.roll-format').textContent = `${roll.format || '135'} ${i18nText('common.formatSuffix')}`;
+                    card.querySelector('[data-roll-camera]').textContent = roll.camera || i18nText('common.unknown');
+                    card.querySelector('[data-roll-date]').textContent = roll.date || i18nText('common.unknown');
                     card.querySelector('.roll-edit-action').addEventListener('click', event => {
                         event.stopPropagation();
                         openRollMetadataEditor(roll);
@@ -2894,7 +3058,7 @@ document.getElementById('btn-history-back').addEventListener('click', () => {
 let currentImageRequestToken = 0;
 
 // ═══════════════════════════════════════════════════════════════════
-//  Optimistic UI: thumbnail placeholder ("李代桃僵")
+//  Optimistic UI: show a thumbnail placeholder while the source is decoded.
 //  Shows instantly (<16ms) while the 16-bit proxy loads in background.
 // ═══════════════════════════════════════════════════════════════════
 
@@ -3187,11 +3351,11 @@ const doImportSingle = async () => {
     let importStarted = false;
     let transientIds = [];
     try {
-        btnImport.textContent = "Importing...";
+        btnImport.textContent = i18nText('develop.importing');
         btnImport.disabled = true;
         btnImportTriggers.forEach(btn => { 
             btn.dataset.originalText = btn.dataset.originalText || btn.textContent;
-            btn.textContent = "Importing..."; 
+            btn.textContent = i18nText('develop.importing');
             btn.disabled = true; 
         });
         
@@ -3248,11 +3412,11 @@ const doImportRoll = async () => {
         }
 
         document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
-        btnImport.textContent = "Importing...";
+        btnImport.textContent = i18nText('develop.importing');
         btnImport.disabled = true;
         btnImportTriggers.forEach(btn => { 
             btn.dataset.originalText = btn.dataset.originalText || btn.textContent;
-            btn.textContent = "Importing..."; 
+            btn.textContent = i18nText('develop.importing');
             btn.disabled = true; 
         });
         
@@ -3313,7 +3477,7 @@ document.getElementById('btn-continue-roll').addEventListener('click', async () 
     allRolls.forEach(r => {
         const opt = document.createElement('option');
         opt.value = r.roll_id;
-        opt.textContent = `${r.film_stock} (${r.date || 'Unknown Date'}) - ${r.camera || 'Unknown Camera'}`;
+        opt.textContent = `${r.film_stock} (${r.date || i18nText('common.unknown')}) - ${r.camera || i18nText('common.unknown')}`;
         select.appendChild(opt);
     });
     
@@ -3359,7 +3523,7 @@ document.getElementById('btn-confirm-continue').addEventListener('click', async 
         );
         const missingStateCount = roll.image_paths.filter(path => !persistedPaths.has(normalizePath(path))).length;
         if (missingStateCount > 0) {
-            showToast(`${missingStateCount} frame(s) have no saved archive state and were not re-imported.`, "error");
+            showToast(i18nText('errors.archiveStateMissing', { count: missingStateCount }), "error");
         }
         await renderLibraryAndFilmstrip();
         switchView('history');
@@ -3450,8 +3614,8 @@ document.getElementById('btn-import-single').addEventListener('click', doImportS
 document.getElementById('btn-import-by-roll').addEventListener('click', () => {
     document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
     editingRollId = null;
-    document.getElementById('roll-metadata-title').textContent = 'Roll Metadata';
-    document.getElementById('btn-confirm-roll-meta').textContent = 'Select Images';
+    document.getElementById('roll-metadata-title').textContent = i18nText('history.rollMetadata');
+    document.getElementById('btn-confirm-roll-meta').textContent = i18nText('actions.selectImages');
     document.getElementById('roll-format').value = '135';
     if (!document.getElementById('roll-date').value) {
         const now = new Date();
@@ -3490,8 +3654,8 @@ function setRollMetadataSelect(selectId, inputId, value) {
 function openRollMetadataEditor(roll) {
     if (!roll) return;
     editingRollId = roll.roll_id;
-    document.getElementById('roll-metadata-title').textContent = 'Edit Roll Info';
-    document.getElementById('btn-confirm-roll-meta').textContent = 'Save Changes';
+    document.getElementById('roll-metadata-title').textContent = i18nText('common.editRollInfo');
+    document.getElementById('btn-confirm-roll-meta').textContent = i18nText('common.saveChanges');
     document.getElementById('roll-format').value = roll.format || '135';
     document.getElementById('roll-date').value = roll.date || '';
     setRollMetadataSelect('roll-camera-select', 'roll-camera-input', roll.camera);
@@ -3653,10 +3817,10 @@ function updateExportDialogState() {
     const validationError = validateExportSettings(settings);
     const isJpeg = settings.format === 'jpeg';
     const isOriginal = settings.resizeMode === 'original';
-    exportSelectionCount.textContent = ids.length + (ids.length === 1 ? ' frame' : ' frames');
+    exportSelectionCount.textContent = i18nText(ids.length === 1 ? 'export.frameCount.one' : 'export.frameCount.other', { count: ids.length });
     exportModalSubtitle.textContent = ids.length
-        ? 'Review output settings before writing the finished frames.'
-        : 'Select one or more frames in Library to begin.';
+        ? i18nText('export.reviewSettings')
+        : i18nText('export.selectFrames');
     exportQuality.disabled = !isJpeg;
     exportQualityGroup.classList.toggle('is-disabled', !isJpeg);
     exportLongEdge.disabled = isOriginal;
@@ -3665,11 +3829,14 @@ function updateExportDialogState() {
     const metadata = currentExportPreviewMetadata(ids);
     exportNamePreview.textContent = formatExportTemplate(settings.namingTemplate, metadata) + '.' + exportFileExtension(settings.format);
     exportOutputDir.value = exportOutputDirectory;
-    exportOutputSummary.textContent = (exportOutputDirectory || 'Choose a destination folder to continue.')
+    const resizeDescription = settings.resizeMode === 'long_edge'
+        ? `${settings.longEdge} px ${i18nText('export.longEdgeSuffix')}${settings.allowUpscale ? `, ${i18nText('export.enlargementAllowed')}` : ''}`
+        : i18nText('export.originalShort');
+    exportOutputSummary.textContent = (exportOutputDirectory || i18nText('export.chooseDestination'))
         + ' · ' + (EXPORT_FORMAT_LABELS[settings.format] || settings.format)
-        + ' · ' + describeResize(settings);
+        + ' · ' + resizeDescription;
     btnConfirmExport.disabled = exportInProgress || ids.length === 0 || !exportOutputDirectory || Boolean(validationError);
-    btnConfirmExport.title = validationError || (!exportOutputDirectory ? 'Choose an output folder first.' : '');
+    btnConfirmExport.title = validationError || (!exportOutputDirectory ? i18nText('export.chooseDestination') : '');
     return validationError;
 }
 
@@ -3695,7 +3862,7 @@ function showExportProgress(processed, total) {
         exportProgressToast.className = 'fixed bottom-6 right-6 z-[100] w-72 border border-[#3A3A3C] bg-[#1C1C1E] p-4 shadow-2xl';
         exportProgressToast.innerHTML = `
             <div class="mb-3 flex items-center justify-between text-[11px] font-bold tracking-widest text-zinc-200">
-                <span>Exporting</span><span id="export-progress-text">0 / 0</span>
+        <span>${i18nText('export.exporting')}</span><span id="export-progress-text">0 / 0</span>
             </div>
             <div class="h-1.5 overflow-hidden bg-zinc-800"><div id="export-progress-bar" class="h-full bg-zinc-200" style="width:0%"></div></div>`;
         document.body.appendChild(exportProgressToast);
@@ -3761,7 +3928,7 @@ btnConfirmExport.addEventListener('click', async () => {
     const invokeArgs = createExportInvokeArgs(exportIds, outputDirectory, settings);
     persistExportPreferences(settings);
     exportInProgress = true;
-    btnConfirmExport.textContent = 'Exporting...';
+    btnConfirmExport.textContent = i18nText('export.exporting');
     btnConfirmExport.disabled = true;
     try {
         await flushPendingBackendSync();
@@ -3773,10 +3940,12 @@ btnConfirmExport.addEventListener('click', async () => {
         const exported = Number(result && result.exported) || 0;
         const skipped = Number(result && result.skipped) || 0;
         const failed = Number(result && result.failed) || 0;
-        let message = 'Exported ' + exported + ' frame(s) to:\n'
-            + (result && result.outputDir ? result.outputDir : outputDirectory);
-        if (skipped) message += '\nSkipped ' + skipped + ' existing file(s).';
-        if (failed) message += '\nFailed ' + failed + ' frame(s).';
+        let message = i18nText('errors.exportSummary', {
+            count: exported,
+            path: result && result.outputDir ? result.outputDir : outputDirectory,
+        });
+        if (skipped) message += '\n' + i18nText('export.skippedSummary', { count: skipped });
+        if (failed) message += '\n' + i18nText('export.failedSummary', { count: failed });
         showToast(message, failed ? 'error' : 'success');
         if (failed && result.errors && result.errors[0]) console.error('Export failure:', result.errors[0]);
     } catch (error) {
@@ -3784,7 +3953,7 @@ btnConfirmExport.addEventListener('click', async () => {
     } finally {
         exportInProgress = false;
         clearExportProgress();
-        btnConfirmExport.textContent = 'Export frames';
+        btnConfirmExport.textContent = i18nText('actions.exportFrames');
         updateExportDialogState();
         if (exportModal.getAttribute('aria-hidden') === 'false') btnConfirmExport.disabled = false;
     }
@@ -3805,7 +3974,7 @@ sliders.masterDmin.el.addEventListener('input', (e) => {
     let delta = current - lastMasterDmin;
     lastMasterDmin = current;
     currentDMin[0] += delta; currentDMin[1] += delta; currentDMin[2] += delta;
-    sliders.masterDmin.val.textContent = current.toFixed(3);
+    sliders.masterDmin.val.textContent = formatSliderValue('masterDmin', current);
     updateDMinMaxDisplay(); requestRender();
 });
 sliders.masterDmax.el.addEventListener('input', (e) => {
@@ -3813,7 +3982,7 @@ sliders.masterDmax.el.addEventListener('input', (e) => {
     let delta = current - lastMasterDmax;
     lastMasterDmax = current;
     currentDMax[0] += delta; currentDMax[1] += delta; currentDMax[2] += delta;
-    sliders.masterDmax.val.textContent = current.toFixed(3);
+    sliders.masterDmax.val.textContent = formatSliderValue('masterDmax', current);
     updateDMinMaxDisplay(); requestRender();
 });
 
@@ -4492,7 +4661,7 @@ function setAutoAreaBusy(id, busy) {
     if (id !== activeId) return;
     btnAutoArea.disabled = busy || !activeId;
     btnAutoArea.toggleAttribute('aria-busy', busy);
-    btnAutoArea.textContent = busy ? 'Detecting...' : 'Auto Area';
+    btnAutoArea.textContent = busy ? i18nText('develop.detecting') : i18nText('develop.autoArea');
 }
 
 function applyFilmAreaDetection(result) {
@@ -4514,7 +4683,7 @@ async function initializeDefaultFilmArea(id, requestToken, revision) {
         }
         applyFilmAreaDetection(result);
         if (!isSafeDefaultFilmAreaDetection(result)) {
-            showToast("自动探测结果需要确认，请手动微调并保存。", "info");
+            showToast(i18nText('errors.autoAreaLowConfidence'), "info");
             return;
         }
 
@@ -4553,7 +4722,7 @@ btnAutoArea.addEventListener('click', async () => {
         pushUndoState();
         applyFilmAreaDetection(result);
         if (result.confidence === 'low') {
-            showToast("自动探测置信度较低，请手动微调。", "info");
+            showToast(i18nText('errors.autoAreaLowConfidence'), "info");
         } else {
             showToast("Film area detected. Review the corners before saving.", "success");
         }
@@ -4587,11 +4756,11 @@ async function showConfirm(message) {
         overlay.className = 'fixed inset-0 bg-black/80 flex items-center justify-center z-50 backdrop-blur-sm';
         overlay.innerHTML = `
             <div class="bg-[#1a1a1e] border border-[#28282c] rounded-lg p-6 max-w-sm w-full mx-4 shadow-2xl">
-                <h3 class="text-zinc-100 font-bold mb-2">Confirm Action</h3>
-                <p class="text-zinc-400 text-sm mb-6">${message}</p>
+                <h3 class="text-zinc-100 font-bold mb-2">${i18nText('confirm.actionTitle')}</h3>
+                <p class="text-zinc-400 text-sm mb-6">${i18n?.translateLegacy(message) ?? message}</p>
                 <div class="flex justify-end gap-3">
-                    <button id="btn-confirm-cancel" class="px-4 py-2 text-xs font-bold tracking-wider uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">Cancel</button>
-                    <button id="btn-confirm-ok" class="px-4 py-2 text-xs font-bold tracking-wider uppercase bg-red-900/50 hover:bg-red-800/60 border border-red-700/50 text-white rounded transition-colors">Reset</button>
+                    <button id="btn-confirm-cancel" class="px-4 py-2 text-xs font-bold tracking-wider uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">${i18nText('actions.cancel')}</button>
+                    <button id="btn-confirm-ok" class="px-4 py-2 text-xs font-bold tracking-wider uppercase bg-red-900/50 hover:bg-red-800/60 border border-red-700/50 text-white rounded transition-colors">${i18nText('actions.reset')}</button>
                 </div>
             </div>
         `;
@@ -4614,13 +4783,13 @@ async function showDeleteRollDialog(rollCount) {
         overlay.className = 'fixed inset-0 bg-black/80 flex items-center justify-center z-[110] backdrop-blur-sm';
         overlay.innerHTML = `
             <div class="bg-[#1a1a1e] border border-[#28282c] rounded-lg p-6 max-w-md w-full mx-4 shadow-2xl">
-                <h3 class="text-zinc-100 font-bold mb-2">Remove ${rollCount} roll${rollCount === 1 ? '' : 's'}?</h3>
-                <p class="text-zinc-400 text-sm mb-2">Choose whether to remove only the NexFilm catalog records or also delete the original source files.</p>
-                <p class="text-red-300 text-xs mb-6">Deleting source files is permanent. Files still referenced by another roll will be kept.</p>
+                <h3 class="text-zinc-100 font-bold mb-2">${i18nText('delete.rollTitle', { count: rollCount, suffix: rollCount === 1 ? '' : 's' })}</h3>
+                <p class="text-zinc-400 text-sm mb-2">${i18nText('delete.rollChoice')}</p>
+                <p class="text-red-300 text-xs mb-6">${i18nText('delete.permanent')}</p>
                 <div class="flex flex-wrap justify-end gap-3">
-                    <button data-delete-choice="cancel" class="px-4 py-2 text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">Cancel</button>
-                    <button data-delete-choice="catalog" class="px-4 py-2 text-xs font-bold bg-zinc-700 hover:bg-zinc-600 text-white rounded transition-colors">Remove Records</button>
-                    <button data-delete-choice="files" class="px-4 py-2 text-xs font-bold bg-red-900/70 hover:bg-red-800 border border-red-700/60 text-white rounded transition-colors">Delete Source Files</button>
+                    <button data-delete-choice="cancel" class="px-4 py-2 text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">${i18nText('actions.cancel')}</button>
+                    <button data-delete-choice="catalog" class="px-4 py-2 text-xs font-bold bg-zinc-700 hover:bg-zinc-600 text-white rounded transition-colors">${i18nText('delete.removeRecords')}</button>
+                    <button data-delete-choice="files" class="px-4 py-2 text-xs font-bold bg-red-900/70 hover:bg-red-800 border border-red-700/60 text-white rounded transition-colors">${i18nText('delete.sourceFiles')}</button>
                 </div>
             </div>
         `;
@@ -4640,13 +4809,13 @@ async function showDeleteImagesDialog(imageCount) {
         overlay.className = 'fixed inset-0 bg-black/80 flex items-center justify-center z-[110] backdrop-blur-sm';
         overlay.innerHTML = `
             <div class="bg-[#1a1a1e] border border-[#28282c] rounded-lg p-6 max-w-md w-full mx-4 shadow-2xl">
-                <h3 class="text-zinc-100 font-bold mb-2">Delete ${imageCount} selected photo${imageCount === 1 ? '' : 's'}?</h3>
-                <p class="text-zinc-400 text-sm mb-2">Choose whether to remove the selected photo records from NexFilm or also delete their original source files.</p>
-                <p class="text-red-300 text-xs mb-6">Deleting source files is permanent. Files still referenced elsewhere will be kept.</p>
+                <h3 class="text-zinc-100 font-bold mb-2">${i18nText('delete.photoTitle', { count: imageCount, suffix: imageCount === 1 ? '' : 's' })}</h3>
+                <p class="text-zinc-400 text-sm mb-2">${i18nText('delete.photoChoice')}</p>
+                <p class="text-red-300 text-xs mb-6">${i18nText('delete.permanent')}</p>
                 <div class="flex flex-wrap justify-end gap-3">
-                    <button data-delete-image-choice="cancel" class="px-4 py-2 text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">Cancel</button>
-                    <button data-delete-image-choice="catalog" class="px-4 py-2 text-xs font-bold bg-zinc-700 hover:bg-zinc-600 text-white rounded transition-colors">Remove from NexFilm</button>
-                    <button data-delete-image-choice="files" class="px-4 py-2 text-xs font-bold bg-red-900/70 hover:bg-red-800 border border-red-700/60 text-white rounded transition-colors">Delete Source Files</button>
+                    <button data-delete-image-choice="cancel" class="px-4 py-2 text-xs font-bold bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">${i18nText('actions.cancel')}</button>
+                    <button data-delete-image-choice="catalog" class="px-4 py-2 text-xs font-bold bg-zinc-700 hover:bg-zinc-600 text-white rounded transition-colors">${i18nText('delete.removeFromNexfilm')}</button>
+                    <button data-delete-image-choice="files" class="px-4 py-2 text-xs font-bold bg-red-900/70 hover:bg-red-800 border border-red-700/60 text-white rounded transition-colors">${i18nText('delete.sourceFiles')}</button>
                 </div>
             </div>
         `;
@@ -4673,8 +4842,8 @@ btnResetColor.addEventListener('click', async () => {
     currentDMax = [2.0, 2.0, 2.0];
     updateDMinMaxDisplay();
     
-    sliders.masterDmin.el.value = 0; sliders.masterDmin.val.textContent = "0.000"; lastMasterDmin = 0;
-    sliders.masterDmax.el.value = 0; sliders.masterDmax.val.textContent = "0.000"; lastMasterDmax = 0;
+    sliders.masterDmin.el.value = 0; sliders.masterDmin.val.textContent = "0.00"; lastMasterDmin = 0;
+    sliders.masterDmax.el.value = 0; sliders.masterDmax.val.textContent = "0.00"; lastMasterDmax = 0;
     
     sliders.exposure.el.value = 0;
     sliders.gamma.el.value = 1;
@@ -4690,7 +4859,7 @@ btnResetColor.addEventListener('click', async () => {
     
     for (const key in sliders) {
         const s = sliders[key];
-        s.val.textContent = parseFloat(s.el.value).toFixed(3);
+        s.val.textContent = formatSliderValue(key, s.el.value);
         updateSliderTrack(s.el);
     }
     
@@ -4928,7 +5097,7 @@ btnConfirmBatchApply.addEventListener('click', async () => {
 
     const previousLabel = btnConfirmBatchApply.textContent;
     btnConfirmBatchApply.disabled = true;
-    btnConfirmBatchApply.textContent = 'Applying...';
+    btnConfirmBatchApply.textContent = i18nText('common.applying');
     try {
         // Batch Apply is an explicit commit point: persist the current draft
         // before the backend transaction reads its geometry as the source.
@@ -5172,7 +5341,7 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
     const btnExportContactSheet = document.getElementById('btn-export-contact-sheet');
     
     try {
-        btnExportContactSheet.textContent = "Generating...";
+        btnExportContactSheet.textContent = i18nText('common.generating');
         btnExportContactSheet.disabled = true;
 
         const currentRoll = allRolls.find(r => r.roll_id === historyRollViewId);
@@ -5350,7 +5519,7 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
         console.error(e);
         showToast("Failed to generate contact sheet: " + e, "error");
     } finally {
-        btnExportContactSheet.textContent = "Export Contact Sheet";
+        btnExportContactSheet.textContent = i18nText('actions.exportContactSheet');
         btnExportContactSheet.disabled = false;
     }
 });
@@ -5567,7 +5736,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     const loadingOverlay = document.createElement('div');
     loadingOverlay.id = 'startup-loading';
     loadingOverlay.className = 'absolute inset-0 bg-[#121214] z-50 flex flex-col items-center justify-center text-zinc-400 gap-4';
-    loadingOverlay.innerHTML = '<svg class="animate-spin h-10 w-10 text-orange-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><div class="tracking-widest text-sm uppercase font-bold text-zinc-300">Loading Library...</div>';
+    loadingOverlay.innerHTML = `<svg class="animate-spin h-10 w-10 text-orange-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg><div class="tracking-widest text-sm uppercase font-bold text-zinc-300">${i18nText('develop.loadingLibrary')}</div>`;
     document.body.appendChild(loadingOverlay);
 
     try {
@@ -5712,7 +5881,7 @@ listen('import_error', (event) => {
     const txt = document.getElementById('precache-text');
     const pct = totalImportCount > 0 ? (currentImportCount / totalImportCount) * 100 : 0;
     if (bar) bar.style.width = `${pct}%`;
-    if (txt) txt.textContent = `${currentImportCount} / ${totalImportCount} (${importFailedCount} failed)`;
+    if (txt) txt.textContent = `${currentImportCount} / ${totalImportCount} (${i18nText('import.failedSuffix', { count: importFailedCount })})`;
     showToast(`Import failed: ${payload.message || 'database persistence failed'}`, 'error');
     renderLibraryAndFilmstrip(true);
 });
@@ -5770,10 +5939,10 @@ listen('tauri://drag-leave', (event) => {
 function restoreImportButtons() {
     importInProgress = false;
     setImportManagementBusy(false);
-    btnImport.textContent = "Import Roll";
+    btnImport.textContent = i18nText('actions.importRoll');
     btnImport.disabled = false;
     btnImportTriggers.forEach(btn => {
-        btn.textContent = btn.dataset.originalText || "Import Roll";
+        btn.textContent = btn.dataset.i18n ? i18nText(btn.dataset.i18n) : (btn.dataset.originalText || i18nText('actions.importRoll'));
         btn.disabled = false;
     });
 }
@@ -5788,11 +5957,11 @@ function initImportToast(count) {
         precacheToast = document.createElement('div');
         precacheToast.className = 'fixed bottom-4 right-4 bg-[#1C1C1E] border border-[#28282c] shadow-lg rounded p-4 z-50 flex flex-col gap-2 w-64';
         precacheToast.innerHTML = `
-            <div class="text-[11px] font-bold tracking-wider text-zinc-300">Importing Frames</div>
+            <div class="text-[11px] font-bold tracking-wider text-zinc-300">${i18nText('develop.importingFrames')}</div>
             <div class="w-full h-1 bg-zinc-800 rounded overflow-hidden">
                 <div class="h-full bg-blue-500 transition-all duration-300" id="precache-bar" style="width: 0%"></div>
             </div>
-            <div class="text-[10px] text-zinc-500" id="precache-text">Scanning files...</div>
+            <div class="text-[10px] text-zinc-500" id="precache-text">${i18nText('common.scanning')}</div>
         `;
         document.body.appendChild(precacheToast);
     }
@@ -5805,7 +5974,7 @@ const handleDrop = async (event) => {
     const paths = droppedPaths;
     if (paths.length > 0) {
         let transientIds = [];
-        btnImport.textContent = 'Importing...';
+        btnImport.textContent = i18nText('develop.importing');
         btnImport.disabled = true;
         initImportToast(paths.length);
         try {
@@ -5923,29 +6092,34 @@ canvasWrapper.parentElement.addEventListener('dblclick', e => {
     updateCanvasTransform();
 });
 
-let isChinese = false;
 document.getElementById('menu-lang-toggle').addEventListener('click', () => {
-    isChinese = !isChinese;
-    document.getElementById('menu-lang-toggle').querySelector('span').textContent = isChinese ? 'Language: ZH-CN' : 'Language: EN';
-    if(isChinese) {
-        navLibrary.textContent = '图库';
-        navDevelop.textContent = '冲洗';
-        navHistory.textContent = '历史卷';
-        navSponsor.textContent = '赞赏';
-    } else {
-        navLibrary.textContent = 'Library';
-        navDevelop.textContent = 'Develop';
-        navHistory.textContent = 'Rolls';
-        navSponsor.textContent = 'Sponsor';
-    }
+    const nextLocale = i18n?.getLocale() === 'zh-CN' ? 'en' : 'zh-CN';
+    i18n?.setLocale(nextLocale);
 });
-let isDarkTheme = localStorage.getItem('nexfilm-theme') !== 'light';
+if (i18n) {
+    i18n.onChange(() => {
+        i18n.apply();
+        updateLibrarySelectionUI();
+        updateExportDialogState();
+        if (typeof renderLibraryAndFilmstrip === 'function') renderLibraryAndFilmstrip(true);
+    });
+}
+// The shipped workspace follows the light Figma reference by default.
+// Respect an explicit dark preference when the user has already chosen it.
+const savedTheme = localStorage.getItem('nexfilm-theme');
+let isDarkTheme = savedTheme === 'dark';
 
 function applyTheme(theme) {
     isDarkTheme = theme !== 'light';
     document.body.dataset.theme = isDarkTheme ? 'dark' : 'light';
+    const brandMark = document.querySelector('.brand-mark');
+    if (brandMark) {
+        brandMark.src = isDarkTheme
+            ? 'assets/design-reference/nexfilm-logo-dark.svg'
+            : 'assets/design-reference/nexfilm-logo.svg';
+    }
     const label = document.getElementById('theme-value') || document.getElementById('menu-theme-toggle')?.querySelector('span');
-    if (label) label.textContent = isDarkTheme ? 'Dark' : 'Light';
+    if (label) label.textContent = i18nText(isDarkTheme ? 'theme.dark' : 'theme.light');
     localStorage.setItem('nexfilm-theme', isDarkTheme ? 'dark' : 'light');
 }
 

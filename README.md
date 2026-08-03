@@ -123,13 +123,17 @@ Library 和 Develop 只显示当前工作卷：软件启动时工作区为空，
 
 ### 赞赏
 
-如果 NexFilm 对你的胶片工作流有帮助，可以通过收款码支持项目的持续开发。赞赏完全自愿，不影响软件功能、开源许可或问题处理优先级。
+如果 NexFilm 对你的胶片工作流有所帮助，欢迎分别支持软件作者与 UI 设计师。赞赏完全自愿，不影响软件功能、开源许可或问题处理优先级。
 
-作者开发本软件纯属为爱发电，自费开发。如果你喜欢，欢迎给作者买卷胶片，或者帮我回回血。
+<table align="center">
+  <tr>
+    <td align="center"><strong>软件作者 Billy_Du</strong><br><img src="ui/assets/author-sponsor-qr.jpg" width="240" alt="Billy_Du 收款码"></td>
+    <td align="center"><strong>UI 设计师 lonely-xmw</strong><br><img src="ui/assets/uidesigner-sponsor-qr.jpg" width="240" alt="lonely-xmw 收款码"></td>
+  </tr>
+</table>
 
-<p align="center">
-  <img src="ui/assets/sponsor-qr.jpg" width="240" alt="赞赏 NexFilm / Sponsor NexFilm">
-</p>
+- 作者联系方式：GitHub [@BillyDu-TJ](https://github.com/BillyDu-TJ)，邮箱 [790704944@qq.com](mailto:790704944@qq.com) / [duzhongtao188@gmail.com](mailto:duzhongtao188@gmail.com)
+- UI 设计师联系方式：GitHub [@lxmw44426-tech](https://github.com/lxmw44426-tech)，邮箱 [lxmw44426@gmail.com](mailto:lxmw44426@gmail.com)
 
 ### 数据、隐私与备份
 
@@ -227,7 +231,7 @@ DMG 会生成在对应目标目录的 `release/bundle/dmg/` 下。跨架构构�
 ### 作者、联系与许可
 
 - 作者：Billy_Du (GitHub：[@BillyDu-TJ](https://github.com/BillyDu-TJ))
-- 特别鸣谢：UI设计由 lonely-xmw (Github: [@lxmw44426-tech](https://github.com/lxmw44426-tech))
+- 特别鸣谢：UI设计由 lonely-xmw (Github: [@lxmw44426-tech](https://github.com/lxmw44426-tech)，邮箱：[lxmw44426@gmail.com](mailto:lxmw44426@gmail.com))
 - 鸣谢与参考：去色罩的理论参考了知乎 `@黄昊Haosky` 与 `@V777` 两位大佬。他们为科学去色罩提供了坚实的理论基础。
 - 联系邮箱：[790704944@qq.com](mailto:790704944@qq.com) 或者 [duzhongtao188@gmail.com](mailto:duzhongtao188@gmail.com)
 - 问题反馈：[GitHub Issues](https://github.com/BillyDu-TJ/NexFilm/issues)
@@ -330,11 +334,17 @@ Export formats are 16-bit TIFF, 8-bit TIFF, 16-bit PNG, and JPEG. Resampling pre
 
 ### Sponsorship
 
-If NexFilm helps your film workflow, you can support its continued development through the payment QR code below. Sponsorship is optional and does not affect features, licensing, or issue priority.
+If NexFilm helps your film workflow, you may support the author and UI designer separately. Sponsorship is entirely optional and does not affect features, licensing, or issue priority.
 
-<p align="center">
-  <img src="ui/assets/sponsor-qr.jpg" width="240" alt="赞赏 NexFilm / Sponsor NexFilm">
-</p>
+<table align="center">
+  <tr>
+    <td align="center"><strong>Author: Billy_Du</strong><br><img src="ui/assets/author-sponsor-qr.jpg" width="240" alt="Billy_Du payment QR code"></td>
+    <td align="center"><strong>UI Designer: lonely-xmw</strong><br><img src="ui/assets/uidesigner-sponsor-qr.jpg" width="240" alt="lonely-xmw payment QR code"></td>
+  </tr>
+</table>
+
+- Author contact: GitHub [@BillyDu-TJ](https://github.com/BillyDu-TJ), email [790704944@qq.com](mailto:790704944@qq.com) / [duzhongtao188@gmail.com](mailto:duzhongtao188@gmail.com)
+- UI designer contact: GitHub [@lxmw44426-tech](https://github.com/lxmw44426-tech), email [lxmw44426@gmail.com](mailto:lxmw44426@gmail.com)
 
 ### Data, privacy, and backups
 
@@ -432,7 +442,7 @@ Search existing [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) before op
 ### Author, contact, and license
 
 - Author: Billy_Du (GitHub: [@BillyDu-TJ](https://github.com/BillyDu-TJ))
-- Special Thank：UI Design: lonely-xmw (Github: [@lxmw44426-tech](https://github.com/lxmw44426-tech))
+- Special Thank：UI Design: lonely-xmw (GitHub: [@lxmw44426-tech](https://github.com/lxmw44426-tech), email: [lxmw44426@gmail.com](mailto:lxmw44426@gmail.com))
 - Acknowledgement：The theory of demask comes from Zhihu User `@黄昊Haosky` and `@V777`. They laid a solid theoretical foundation for scientific demask algorithm.
 - Email: [790704944@qq.com](mailto:790704944@qq.com) or [duzhongtao188@gmail.com](mailto:duzhongtao188@gmail.com)
 - Support: [GitHub Issues](https://github.com/BillyDu-TJ/NexFilm/issues)

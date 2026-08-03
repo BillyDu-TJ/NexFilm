@@ -25,3 +25,4 @@ test_picture/
 *.db-journal
 *.db-shm
 *.db-wal
+*.svg

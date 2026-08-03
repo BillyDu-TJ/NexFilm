@@ -1,0 +1,1293 @@
+/*
+ * Responsive application shell aligned to the exported Figma reference.
+ * The existing stylesheet owns feature-level controls and dialogs; this file
+ * owns page geometry, shared surfaces, and the final visual tokens.
+ */
+
+:root,
+body[data-theme="light"] {
+    --ui-brand: #0b5fae;
+    --ui-brand-hover: #084f92;
+    --ui-workspace: #dadada;
+    --ui-surface: #ffffff;
+    --ui-surface-soft: #ececeb;
+    --ui-control: #e4e4e4;
+    --ui-text: #383838;
+    --ui-muted: #99999f;
+    --ui-line: #dedede;
+    --ui-danger: #d81f26;
+    --ui-shadow: 0 2px 9px rgba(0, 0, 0, .18);
+    --ui-radius: 10px;
+    --ui-nav-height: 58px;
+    --ui-tab-height: 50px;
+    --ui-tab-top-radius: 20px;
+    --ui-tab-inverse-radius: 20px;
+    --ui-gap: clamp(6px, .7vw, 10px);
+    --ui-page-pad: clamp(6px, .7vw, 10px);
+}
+
+body[data-theme="dark"] {
+    --ui-brand: #4893dd;
+    --ui-brand-hover: #65a6e5;
+    --ui-workspace: #0e0e0e;
+    --ui-surface: #2b2b2b;
+    --ui-surface-soft: #1f1f1f;
+    --ui-control: #3b3b3b;
+    --ui-text: #e3e3f1;
+    --ui-muted: #8d8d8d;
+    --ui-line: rgba(226, 226, 244, .12);
+    --ui-danger: #e26f73;
+    --ui-shadow: none;
+}
+
+html,
+body {
+    min-width: 0;
+    min-height: 100%;
+    overflow: hidden;
+}
+
+body {
+    display: grid !important;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    background: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
+    font-family: Montserrat, "Noto Sans SC", "Segoe UI", sans-serif !important;
+    font-size: 12px !important;
+}
+
+/* The rounded workspace must reveal the white app shell at its top corners. */
+body[data-theme="light"] {
+    background: var(--ui-surface) !important;
+}
+
+button,
+input,
+select {
+    min-width: 0;
+    font: inherit;
+}
+
+.menu-trigger,
+.menu-item {
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+#native-menu-bar {
+    display: flex !important;
+    align-items: center;
+    padding: 7px clamp(18px, 2.25vw, 32px) !important;
+    gap: clamp(18px, 2.8vw, 40px) !important;
+    height: auto !important;
+    min-height: 0 !important;
+    border: 0 !important;
+    border-bottom: 3px solid var(--ui-control) !important;
+    border-radius: 0 0 20px 20px !important;
+    background: color-mix(in srgb, var(--ui-surface) 92%, var(--ui-workspace)) !important;
+    box-shadow: none !important;
+    color: var(--ui-muted) !important;
+    font-size: 10px !important;
+    line-height: 1.4;
+}
+
+#native-menu-bar .menu-brand {
+    color: var(--ui-brand) !important;
+    font-weight: 900;
+    text-transform: uppercase;
+}
+
+#native-menu-bar .menu-group {
+    padding: 0 !important;
+}
+
+#native-menu-bar .menu-trigger {
+    display: inline-flex;
+    align-items: center;
+    padding: 0 !important;
+    white-space: nowrap;
+}
+
+#native-menu-bar .menu-trigger:hover,
+#native-menu-bar .menu-trigger:focus-visible {
+    color: var(--ui-text);
+}
+
+#native-menu-bar .menu-group > div {
+    min-width: max-content;
+    padding: 4px !important;
+    border: 1px solid var(--ui-line) !important;
+    border-radius: 8px !important;
+    background: var(--ui-surface) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+#native-menu-bar .menu-item {
+    width: 100%;
+    padding: 7px 10px !important;
+    border-radius: 5px;
+    text-align: left;
+    white-space: nowrap;
+}
+
+#native-menu-bar .menu-item:hover,
+#native-menu-bar .menu-item:focus-visible {
+    background: var(--ui-control) !important;
+    color: var(--ui-text) !important;
+}
+
+body > header {
+    display: flex !important;
+    align-items: flex-end !important;
+    min-width: 0;
+    height: var(--ui-nav-height) !important;
+    min-height: var(--ui-nav-height) !important;
+    padding: 0 clamp(18px, 2.25vw, 32px) !important;
+    border: 0 !important;
+    background: var(--ui-surface) !important;
+    box-shadow: none !important;
+}
+
+body > header > div:first-child {
+    height: 100%;
+    min-width: 0;
+    gap: clamp(20px, 2.7vw, 40px) !important;
+}
+
+body > header .text-\[14px\] {
+    display: flex !important;
+    align-items: center !important;
+    width: auto !important;
+    height: auto !important;
+    font-size: 0 !important;
+}
+
+body > header .brand-mark {
+    width: 56px !important;
+    height: 38px !important;
+    object-fit: contain;
+}
+
+body > header .brand-name,
+body > header .text-\[14px\] > span,
+body > header .h-6 {
+    display: none !important;
+}
+
+body > header nav {
+    display: flex;
+    align-items: flex-end !important;
+    gap: clamp(8px, 2.6vw, 38px) !important;
+    overflow: visible !important;
+}
+
+body > header nav button {
+    align-self: flex-end;
+    min-width: 89px !important;
+    height: var(--ui-tab-height) !important;
+    padding: 0 10px 8px !important;
+    border: 0 !important;
+    border-bottom: 8px solid transparent !important;
+    border-radius: var(--ui-tab-top-radius) var(--ui-tab-top-radius) 0 0 !important;
+    background: transparent !important;
+    color: var(--ui-text) !important;
+    font-size: 16px !important;
+    font-weight: 500 !important;
+    line-height: 42px !important;
+}
+
+body > header nav button:hover {
+    background: var(--ui-surface-soft) !important;
+}
+
+body > header nav button.border-zinc-100 {
+    border-bottom-color: var(--ui-workspace) !important;
+    background: var(--ui-workspace) !important;
+    color: var(--ui-brand) !important;
+    font-weight: 700 !important;
+}
+
+body > header nav button.border-zinc-100::before,
+body > header nav button.border-zinc-100::after {
+    bottom: -8px !important;
+    width: var(--ui-tab-inverse-radius) !important;
+    height: var(--ui-tab-inverse-radius) !important;
+    border-radius: 0 !important;
+    background-color: transparent !important;
+}
+
+body > header nav button.border-zinc-100::before {
+    left: calc(-1 * var(--ui-tab-inverse-radius)) !important;
+    background-image: radial-gradient(
+        circle at top left,
+        transparent var(--ui-tab-inverse-radius),
+        var(--ui-workspace) calc(var(--ui-tab-inverse-radius) + .5px)
+    ) !important;
+}
+
+body > header nav button.border-zinc-100::after {
+    right: calc(-1 * var(--ui-tab-inverse-radius)) !important;
+    background-image: radial-gradient(
+        circle at top right,
+        transparent var(--ui-tab-inverse-radius),
+        var(--ui-workspace) calc(var(--ui-tab-inverse-radius) + .5px)
+    ) !important;
+}
+
+body > header > .header-actions {
+    align-self: center;
+    display: flex;
+    width: auto !important;
+    min-width: 0 !important;
+    flex: 0 0 auto !important;
+    height: auto !important;
+    gap: 10px !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+}
+
+body > header .export-actions {
+    display: grid;
+    grid-template-columns: repeat(3, 96px);
+    flex: 0 0 auto;
+    align-items: center;
+    width: 308px !important;
+    height: 32px;
+    gap: 10px;
+    overflow: hidden;
+    border-radius: 10px;
+    background: var(--ui-brand);
+}
+
+body > header .export-actions > button {
+    display: flex;
+    flex: 0 0 96px !important;
+    align-items: center;
+    justify-content: center;
+    width: 96px !important;
+    min-width: 96px !important;
+    height: 32px !important;
+    min-height: 0 !important;
+    padding: 3px 8px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: #fff !important;
+    color: var(--ui-text) !important;
+    box-shadow: inset 0 0 0 3px var(--ui-brand) !important;
+    font-size: 12px !important;
+    font-weight: 900 !important;
+    line-height: 1 !important;
+    letter-spacing: 0 !important;
+    text-transform: none !important;
+    white-space: nowrap;
+}
+
+body > header .export-actions > :is(#btn-export-roll, #btn-import, #btn-export-dialog) {
+    box-sizing: border-box !important;
+    width: 96px !important;
+    min-width: 96px !important;
+    max-width: 96px !important;
+    height: 32px !important;
+    flex: 0 0 96px !important;
+    font-weight: 900 !important;
+}
+
+body[data-theme="light"] > header .export-actions > :is(#btn-export-roll, #btn-import) {
+    background: #fff !important;
+    color: var(--ui-text) !important;
+}
+
+body > header .export-actions > button.hidden {
+    display: none !important;
+}
+
+body > header .export-actions > #btn-export-dialog {
+    background: var(--ui-brand) !important;
+    color: #fff !important;
+    box-shadow: none !important;
+}
+
+body[data-theme="dark"] > header .export-actions > #btn-export-roll,
+body[data-theme="dark"] > header .export-actions > #btn-import {
+    background: #1f1f1f !important;
+    color: #e3e3f1 !important;
+    box-shadow: inset 0 0 0 3px var(--ui-brand) !important;
+}
+
+#btn-delete-develop-image {
+    position: static !important;
+    color: var(--ui-danger) !important;
+}
+
+#views {
+    display: grid !important;
+    grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+    min-width: 0;
+    min-height: 0;
+    padding: var(--ui-page-pad) !important;
+    border-radius: 20px 20px 0 0 !important;
+    background: var(--ui-workspace) !important;
+    background-clip: padding-box !important;
+    /* box-shadow: 0 -7px 16px rgba(0, 0, 0, .16) !important; */
+    overflow: visible !important;
+}
+
+#views > [id^="view-"] {
+    position: relative !important;
+    inset: auto !important;
+    grid-area: 1 / 1;
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
+    border-radius: var(--ui-radius) !important;
+}
+
+#view-library {
+    gap: var(--ui-gap);
+    overflow: visible !important;
+    background: transparent !important;
+}
+
+.view-toolbar {
+    flex: 0 0 auto;
+    min-width: 0;
+    height: auto !important;
+    padding: 6px 18px !important;
+    border: 0 !important;
+    border-radius: var(--ui-radius) !important;
+    background: var(--ui-surface-soft) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+body[data-theme="light"] #view-library > .library-toolbar {
+    background: var(--ui-surface-soft) !important;
+}
+
+body[data-theme="dark"] #view-library > .library-toolbar {
+    background: var(--ui-surface-soft) !important;
+}
+
+.library-toolbar-actions {
+    flex: 0 0 auto;
+    gap: 10px !important;
+}
+
+.library-toolbar > h1,
+#history-view-title {
+    margin: 0;
+    color: var(--ui-brand) !important;
+    font-size: 18px !important;
+    font-weight: 800 !important;
+}
+
+#library-selection-count {
+    min-width: 92px;
+    color: var(--ui-muted) !important;
+    font-size: 16px !important;
+    font-weight: 600 !important;
+    text-align: right;
+    white-space: nowrap;
+}
+
+#btn-select-all,
+#btn-deselect-all,
+#btn-delete-library-images {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    min-height: 32px;
+    padding: 6px 10px !important;
+    border-radius: 5px !important;
+    background: var(--ui-surface) !important;
+    font-size: 16px !important;
+    font-weight: 500 !important;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+#btn-select-all,
+#btn-deselect-all {
+    min-width: 108px;
+}
+
+#btn-delete-library-images {
+    min-width: 160px;
+}
+
+#btn-select-all,
+#btn-deselect-all {
+    color: var(--ui-muted) !important;
+}
+
+#btn-delete-library-images {
+    color: var(--ui-danger) !important;
+}
+
+#btn-delete-library-images:disabled {
+    color: var(--ui-muted) !important;
+    background: var(--ui-surface) !important;
+    opacity: .45 !important;
+    cursor: not-allowed !important;
+}
+
+@media (max-width: 760px) {
+    #btn-select-all,
+    #btn-delete-library-images {
+        flex-basis: auto;
+        width: auto;
+    }
+}
+
+.view-content {
+    min-width: 0;
+    min-height: 0;
+    margin: 0 !important;
+    padding: clamp(16px, 1.6vw, 24px) !important;
+    border: 0 !important;
+    border-radius: var(--ui-radius) !important;
+    background: var(--ui-surface) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+.library-content:has(#library-empty:not(.hidden)) {
+    padding: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#library-grid,
+#history-internal-grid {
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 1fr)) !important;
+    gap: clamp(8px, .75vw, 12px) !important;
+}
+
+.library-item {
+    min-width: 0;
+    aspect-ratio: 4 / 3 !important;
+    border: 0 !important;
+    border-radius: 4px !important;
+    background: var(--ui-surface-soft) !important;
+    outline: 0 solid transparent !important;
+    outline-offset: -2px !important;
+}
+
+.library-item:hover {
+    outline: 1px solid var(--ui-muted) !important;
+}
+
+.library-item:hover img {
+    opacity: 1 !important;
+    transform: none !important;
+}
+
+.library-item.selected {
+    outline: 3px solid var(--ui-brand) !important;
+}
+
+#library-empty,
+#history-empty {
+    color: var(--ui-muted) !important;
+}
+
+#library-empty svg,
+#history-empty svg {
+    width: clamp(56px, 5vw, 76px) !important;
+    height: auto !important;
+    color: var(--ui-muted) !important;
+}
+
+#library-empty .text-sm,
+#history-empty .text-sm {
+    color: var(--ui-text) !important;
+    font-size: clamp(18px, 1.7vw, 24px) !important;
+    font-weight: 800 !important;
+}
+
+#library-empty .text-\[11px\] {
+    max-width: 36rem !important;
+    color: var(--ui-muted) !important;
+    font-size: clamp(13px, 1.15vw, 16px) !important;
+    font-weight: 600 !important;
+}
+
+#library-empty button,
+#history-empty button {
+    min-height: 0 !important;
+    margin-top: 0 !important;
+    padding: 8px 18px !important;
+    border: 0 !important;
+    border-radius: var(--ui-radius) !important;
+    background: #c8c8c8 !important;
+    color: #343434 !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+}
+
+#view-history.is-active {
+    display: grid !important;
+    grid-template-columns: minmax(180px, 16vw) minmax(0, 1fr);
+    gap: var(--ui-gap);
+}
+
+#view-history > div:first-child {
+    width: auto !important;
+    min-width: 0;
+    padding: clamp(14px, 1.25vw, 18px) !important;
+    border: 0 !important;
+    border-radius: var(--ui-radius) !important;
+    background: var(--ui-surface) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+#view-history > div:last-child {
+    min-width: 0;
+    margin: 0 !important;
+    gap: var(--ui-gap);
+}
+
+body[data-theme] #view-history > div:last-child > .history-toolbar {
+    flex: 0 0 auto !important;
+    height: auto !important;
+    padding: 6px 18px !important;
+    background: var(--ui-surface-soft) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+body[data-theme] #view-history > div:last-child > .history-content {
+    flex: 1 1 auto;
+    height: auto !important;
+    min-height: 0;
+    padding: 16px !important;
+}
+
+#view-develop.is-active {
+    display: grid !important;
+}
+
+#view-develop {
+    grid-template-columns: minmax(0, 1fr) clamp(24px, 2.1vw, 30px) minmax(300px, 25vw);
+    grid-template-rows: minmax(0, 1fr) auto;
+    gap: var(--ui-gap) !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    background: transparent !important;
+}
+
+#view-develop > div:first-child {
+    grid-column: 1;
+    grid-row: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--ui-gap);
+    overflow: visible !important;
+    background: transparent !important;
+}
+
+#view-develop > div:first-child > div:first-child {
+    flex: 0 0 auto;
+    height: auto !important;
+    min-height: 0 !important;
+    padding: 9px 14px !important;
+    border: 0 !important;
+    border-radius: var(--ui-radius) !important;
+    background: var(--ui-surface-soft) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+.toolbar-btn {
+    min-height: 0 !important;
+    padding: 5px 8px !important;
+    border-radius: 3px !important;
+    color: var(--ui-text) !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+}
+
+.transform-tools {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.crop-tools {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    overflow: hidden;
+    border-radius: 4px;
+    background: #fff;
+    margin-right: 6px;
+}
+
+.crop-tools > .toolbar-btn {
+    height: 27px !important;
+    padding: 5px 14px !important;
+    border-radius: 0 !important;
+}
+
+.crop-tools > #btn-crop-mode {
+    min-width: 58px;
+    background: #fff !important;
+}
+
+.crop-tools > #btn-reset-crop {
+    min-width: 84px;
+    border-radius: 4px !important;
+    background: #99999f !important;
+    color: #fff !important;
+}
+
+#view-develop .transform-tools {
+    gap: 14px !important;
+}
+
+body[data-theme="dark"] .crop-tools > #btn-crop-mode {
+    background: #1f1f1f !important;
+    color: #e3e3f1 !important;
+}
+
+body[data-theme="dark"] .crop-tools {
+    background: #1f1f1f;
+}
+
+body[data-theme="dark"] .crop-tools > #btn-reset-crop {
+    background: #8d8d8d !important;
+    color: #1f1f1f !important;
+}
+
+.toolbar-btn:hover:not(:disabled),
+.toolbar-btn.active {
+    background: var(--ui-surface) !important;
+    color: var(--ui-brand) !important;
+}
+
+.toolbar-icon {
+    color: var(--ui-brand) !important;
+    stroke: var(--ui-brand) !important;
+}
+
+.toolbar-icon-fill {
+    stroke: none !important;
+}
+
+#btn-rotate-left .toolbar-icon,
+#btn-rotate-right .toolbar-icon,
+#btn-flip-h .toolbar-icon,
+#btn-flip-v .toolbar-icon {
+    stroke: none !important;
+}
+
+#view-develop > div:first-child > div:nth-child(2) {
+    min-height: 0;
+    padding: clamp(12px, 1.4vw, 20px) !important;
+    border-radius: var(--ui-radius) !important;
+    background: var(--ui-workspace) !important;
+}
+
+/* Keep the scope tabs physically joined to the visualization surface. */
+#inspector-scopes > div:first-child {
+    margin-bottom: 0 !important;
+}
+
+#inspector-scopes > div:last-child {
+    border-radius: 0 5px 5px 5px !important;
+}
+
+#canvas-wrapper {
+    max-width: 100%;
+    max-height: 100%;
+    box-shadow: none !important;
+}
+
+#filmstrip-container {
+    grid-column: 1 / 3;
+    grid-row: 2;
+    flex: 0 0 auto;
+    height: auto !important;
+    min-height: clamp(88px, 11vh, 104px) !important;
+    margin: 0 !important;
+    padding: clamp(10px, 1vw, 14px) !important;
+    gap: 8px !important;
+    border: 0 !important;
+    border-radius: var(--ui-radius) !important;
+    background: var(--ui-surface) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+.film-item {
+    flex: 0 0 clamp(84px, 7.5vw, 108px);
+    width: auto !important;
+    height: auto !important;
+    aspect-ratio: 3 / 2;
+    border-radius: 3px !important;
+    background: var(--ui-surface-soft) !important;
+}
+
+.film-item.active {
+    outline: 3px solid var(--ui-brand) !important;
+    outline-offset: -3px !important;
+}
+
+#develop-module-nav {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: stretch;
+    width: auto !important;
+    min-width: 0 !important;
+    margin: 0 !important;
+    padding: 10px 4px;
+    border-radius: var(--ui-radius);
+    background: var(--ui-surface);
+    box-shadow: var(--ui-shadow);
+}
+
+.module-nav-btn {
+    width: 100%;
+}
+
+#develop-inspector {
+    grid-column: 3;
+    grid-row: 1 / 3;
+    width: calc(100% + 16px) !important;
+    height: calc(100% + 16px) !important;
+    min-width: 0 !important;
+    margin: -8px !important;
+    padding: 8px !important;
+    gap: var(--ui-gap) !important;
+    border: 0 !important;
+    border-radius: var(--ui-radius) !important;
+    background: transparent !important;
+    box-shadow: none !important;
+    overflow: hidden !important;
+}
+
+#develop-inspector > #inspector-scopes,
+#develop-inspector > div:last-child {
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: var(--ui-radius) !important;
+    background: var(--ui-surface) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+#develop-inspector > #inspector-scopes {
+    position: sticky !important;
+    top: 0 !important;
+    flex: 0 0 auto !important;
+    padding: clamp(16px, 1.7vw, 24px) !important;
+}
+
+#develop-inspector > #inspector-scopes .w-full {
+    height: auto !important;
+    aspect-ratio: 2.7 / 1;
+    border: 0 !important;
+    border-radius: 5px !important;
+    background: var(--ui-workspace) !important;
+}
+
+#develop-inspector > #inspector-controls {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
+    padding: clamp(16px, 1.7vw, 24px) !important;
+    gap: 18px !important;
+}
+
+#develop-inspector.calibration-locked > #inspector-controls {
+    overflow: hidden !important;
+}
+
+#btn-copy-settings,
+#btn-paste-settings,
+.control-group button:not(.toolbar-btn) {
+    min-height: 0 !important;
+    padding-block: 7px !important;
+    border: 0 !important;
+    border-radius: var(--ui-radius) !important;
+    background: var(--ui-control) !important;
+    color: var(--ui-text) !important;
+}
+
+.inspector-action-segment {
+    border-radius: var(--ui-radius) !important;
+    background: var(--ui-brand) !important;
+    box-shadow: inset 0 0 0 2px var(--ui-brand) !important;
+}
+
+.control-group button#btn-auto-color {
+    background: var(--ui-brand) !important;
+    color: #fff !important;
+}
+
+.control-group #btn-reset-color {
+    background: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
+}
+
+.control-group,
+.control-group h3 {
+    border-color: var(--ui-line) !important;
+}
+
+@media (max-width: 1100px) {
+    body > header nav button {
+        min-width: 58px !important;
+        padding-inline: 7px !important;
+        font-size: 14px !important;
+    }
+
+    #view-develop {
+        grid-template-columns: minmax(0, 1fr) clamp(22px, 2.4vw, 26px) minmax(280px, 30vw);
+    }
+
+    .toolbar-btn > span {
+        display: none;
+    }
+
+    #btn-crop-mode .toolbar-icon,
+    #btn-reset-crop .toolbar-icon,
+    #btn-recalibrate .toolbar-icon,
+    #btn-perspective-mode .toolbar-icon {
+        display: block !important;
+    }
+}
+
+@media (max-width: 760px) {
+    #native-menu-bar {
+        padding-inline: 14px !important;
+        gap: 16px !important;
+    }
+
+    body > header {
+        padding-inline: 10px !important;
+    }
+
+    body > header > div:first-child {
+        gap: 10px !important;
+    }
+
+    body > header .brand-mark {
+        width: 42px !important;
+    }
+
+    body > header nav {
+        gap: 0 !important;
+    }
+
+    body > header nav button {
+        min-width: 48px !important;
+        font-size: 12px !important;
+    }
+
+    #view-history.is-active {
+        grid-template-columns: minmax(150px, 28vw) minmax(0, 1fr);
+    }
+
+    #view-develop {
+        grid-template-columns: minmax(0, 1fr) clamp(20px, 3vw, 24px);
+        grid-template-rows: minmax(420px, 62vh) auto minmax(480px, 70vh);
+        height: auto !important;
+        gap: 6px !important;
+    }
+
+    #view-develop > div:first-child {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    #develop-module-nav {
+        grid-column: 2;
+        grid-row: 1;
+    }
+
+    #filmstrip-container {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
+
+    body[data-theme] #view-develop > #develop-inspector {
+        grid-column: 1 / -1;
+        grid-row: 3;
+        width: auto !important;
+        min-width: 0 !important;
+        height: auto !important;
+    }
+
+    #views:has(#view-develop.is-active) {
+        display: block !important;
+        overflow-y: auto !important;
+    }
+}
+
+@media (max-width: 520px) {
+    body > header {
+        display: grid !important;
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto auto;
+        align-items: stretch !important;
+        height: auto !important;
+        min-height: 0 !important;
+        padding-bottom: 6px !important;
+    }
+
+    body > header > div:first-child {
+        grid-row: 1;
+        width: auto;
+        height: auto;
+        justify-content: space-between;
+        gap: 4px !important;
+    }
+
+    body > header .brand-mark {
+        width: 34px !important;
+    }
+
+    body > header nav {
+        flex: 1 1 auto;
+        justify-content: space-between;
+    }
+
+    body > header nav button {
+        flex: 1 1 0;
+        min-width: 0 !important;
+        height: auto !important;
+        line-height: 1.35 !important;
+        padding-inline: 4px !important;
+    }
+
+    body > header > .header-actions {
+        grid-row: 2;
+        width: 100% !important;
+        align-self: stretch !important;
+        justify-content: flex-end;
+    }
+
+    body > header .export-actions > #btn-export-dialog {
+        display: flex !important;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #views > [id^="view-"],
+    .library-item,
+    .film-item {
+        animation: none !important;
+        transition: none !important;
+    }
+}
+
+/* The active scope tab and canvas form one continuous surface. */
+#inspector-scopes:has(#btn-viz-histogram.active) > div:last-child {
+    border-radius: 0 5px 5px 5px !important;
+}
+
+#inspector-scopes:has(#btn-viz-waveform.active) > div:last-child {
+    border-radius: 5px 0 5px 5px !important;
+}
+
+/* Frame 53 / 60: main inspector controls. */
+body[data-theme="light"] {
+    --inspector-panel: #e4e4e4;
+    --inspector-field: #ffffff;
+    --inspector-standalone: #e4e4e4;
+}
+
+body[data-theme="dark"] {
+    --inspector-panel: #2b2b2b;
+    --inspector-field: #3b3b3b;
+    --inspector-standalone: #2b2b2b;
+}
+
+#inspector-actions .inspector-action-segment {
+    display: grid !important;
+    grid-template-columns: minmax(0, 3.3fr) minmax(0, 1fr) !important;
+    gap: 10px !important;
+    padding: 3px !important;
+    overflow: hidden !important;
+    border-radius: 11px !important;
+    background: var(--ui-brand) !important;
+    box-shadow: inset 0 0 0 2px var(--ui-brand) !important;
+}
+
+#inspector-actions .inspector-action-segment > button {
+    min-width: 0 !important;
+    min-height: 27px !important;
+    margin: 0 !important;
+    padding: 6px 10px !important;
+    border: 0 !important;
+    border-radius: 9px !important;
+    outline: 0 !important;
+    box-shadow: none !important;
+}
+
+#inspector-actions #btn-auto-color {
+    background: var(--ui-brand) !important;
+    color: #ffffff !important;
+}
+
+#inspector-actions #btn-reset-color {
+    background: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
+}
+
+#inspector-printer > h3 {
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#inspector-input {
+    padding: 10px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: var(--inspector-panel) !important;
+}
+
+#inspector-input > h3,
+#inspector-print > h3 {
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#inspector-input > h3 {
+    margin-bottom: 12px !important;
+}
+
+#inspector-input > div,
+#inspector-input > div > div {
+    gap: 10px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+}
+
+#inspector-input #select-colorspace {
+    flex: 0 1 47%;
+    width: auto !important;
+    min-width: 0 !important;
+    min-height: 30px !important;
+    padding-inline: 10px 28px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background-color: var(--inspector-field) !important;
+    color: var(--ui-muted) !important;
+    box-shadow: none !important;
+}
+
+#inspector-print {
+    border-top: 3px solid var(--ui-control) !important;
+    background: transparent !important;
+}
+
+#inspector-print > h3 {
+    margin-bottom: 20px !important;
+}
+
+#inspector-print #select-builtin-lut,
+#inspector-print #btn-load-lut {
+    width: 100% !important;
+    min-height: 31px !important;
+    padding: 6px 10px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: var(--inspector-standalone) !important;
+    color: var(--ui-text) !important;
+    box-shadow: none !important;
+}
+
+#inspector-print #select-builtin-lut {
+    padding-right: 30px !important;
+    color: var(--ui-muted) !important;
+}
+
+body[data-theme="dark"] #inspector-actions #btn-reset-color {
+    background: #2b2b2b !important;
+    color: #e3e3f1 !important;
+}
+
+body[data-theme="dark"] #inspector-print {
+    border-top-color: #3b3b3b !important;
+}
+
+/* Frame 53 / 60: the module locator occupies only the upper inspector area. */
+@media (min-width: 761px) {
+    #develop-module-nav {
+        align-self: start !important;
+        height: calc(100% - var(--module-nav-offset, 0px)) !important;
+        margin-top: var(--module-nav-offset, 0px) !important;
+        position: relative !important;
+        overflow: visible !important;
+    }
+}
+
+/* Evenly spaced ticks and a rounded precision track. Temperature and Tint
+ * intentionally retain their existing unticked gradient tracks. */
+body[data-theme="light"] #develop-inspector input.custom-range:not(.temperature-track):not(.tint-track),
+body[data-theme="light"] #develop-inspector input.slider {
+    --slider-tick: rgba(20, 20, 22, .18);
+    background-image:
+        linear-gradient(var(--slider-tick), var(--slider-tick)),
+        linear-gradient(var(--slider-tick), var(--slider-tick)),
+        repeating-linear-gradient(to right, var(--slider-tick) 0 1px, transparent 1px 10%) !important;
+    background-size: 1px 7px, 1px 7px, calc(100% - 1px) 7px !important;
+    background-position: left top, right top, left top !important;
+    background-repeat: no-repeat !important;
+}
+
+body[data-theme="dark"] #develop-inspector input.custom-range:not(.temperature-track):not(.tint-track),
+body[data-theme="dark"] #develop-inspector input.slider {
+    --slider-tick: rgba(226, 226, 244, .18);
+    background-image:
+        linear-gradient(var(--slider-tick), var(--slider-tick)),
+        linear-gradient(var(--slider-tick), var(--slider-tick)),
+        repeating-linear-gradient(to right, var(--slider-tick) 0 1px, transparent 1px 10%) !important;
+    background-size: 1px 7px, 1px 7px, calc(100% - 1px) 7px !important;
+    background-position: left top, right top, left top !important;
+    background-repeat: no-repeat !important;
+}
+
+body[data-theme] #develop-inspector input.custom-range:not(.temperature-track):not(.tint-track)::-webkit-slider-runnable-track,
+body[data-theme] #develop-inspector input.slider::-webkit-slider-runnable-track,
+body[data-theme] #develop-inspector input.custom-range:not(.temperature-track):not(.tint-track):disabled::-webkit-slider-runnable-track,
+body[data-theme] #develop-inspector input.slider:disabled::-webkit-slider-runnable-track {
+    height: 4px !important;
+    border: 0 !important;
+    border-radius: 999px !important;
+    background: linear-gradient(
+        to right,
+        var(--track-fill, var(--ui-brand)) 0%,
+        var(--track-fill, var(--ui-brand)) var(--val),
+        color-mix(in srgb, var(--ui-muted) 38%, transparent) var(--val),
+        color-mix(in srgb, var(--ui-muted) 38%, transparent) 100%
+    ) !important;
+}
+
+
+#develop-module-nav .module-nav-steps {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-around;
+    width: 100%;
+    height: 100%;
+    gap: 8px;
+}
+
+#develop-module-nav .module-nav-btn {
+    flex: 1 1 0;
+}
+
+.module-nav-slider {
+    --module-slider-y: 0px;
+    position: absolute;
+    z-index: 3;
+    top: 6px;
+    left: 50%;
+    width: 38px;
+    height: 25px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--ui-brand) 72%, white);
+    box-shadow: 0 2px 5px rgba(0, 0, 0, .22);
+    cursor: grab;
+    touch-action: none;
+    transform: translate(-50%, var(--module-slider-y));
+}
+
+.module-nav-slider:hover,
+.module-nav-slider:focus-visible,
+.module-nav-slider.is-dragging {
+    background: var(--ui-brand);
+    outline: none;
+}
+
+.module-nav-slider.is-dragging {
+    cursor: grabbing;
+}
+
+/* Final dark hierarchy pass. Keep the workspace near-black so the charcoal
+ * panels and cards retain the separation shown in the reference screens. */
+body[data-theme="dark"] {
+    --ui-workspace: #0e0e0e;
+    --ui-surface: #2b2b2b;
+    --ui-surface-soft: #1f1f1f;
+    --ui-control: #414143;
+    --ui-line: rgba(226, 226, 244, .12);
+    --ui-shadow: 0 2px 9px rgba(0, 0, 0, .38);
+}
+
+body[data-theme="dark"] #views {
+    background: var(--ui-workspace) !important;
+}
+
+body[data-theme="dark"] #view-library > .library-toolbar,
+body[data-theme="dark"] #view-history .history-toolbar,
+body[data-theme="dark"] #view-develop > div:first-child > div:first-child,
+body[data-theme="dark"] #filmstrip-container {
+    background: var(--ui-surface-soft) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+body[data-theme="dark"] .library-content,
+body[data-theme="dark"] .library-content:has(#library-empty:not(.hidden)),
+body[data-theme="dark"] #view-history > div:first-child,
+body[data-theme="dark"] #view-history .history-content,
+body[data-theme="dark"] #develop-inspector > #inspector-scopes,
+body[data-theme="dark"] #develop-inspector > #inspector-controls,
+body[data-theme="dark"] #develop-module-nav {
+    background: var(--ui-surface) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+body[data-theme="dark"] .library-item,
+body[data-theme="dark"] .film-item {
+    background: var(--ui-surface-soft) !important;
+}
+
+body[data-theme="dark"] #develop-inspector > #inspector-scopes .w-full,
+body[data-theme="dark"] #view-develop > div:first-child > div:nth-child(2) {
+    background: var(--ui-workspace) !important;
+}
+
+body[data-theme="dark"] #btn-select-all,
+body[data-theme="dark"] #btn-deselect-all,
+body[data-theme="dark"] #btn-delete-library-images,
+body[data-theme="dark"] #btn-copy-settings,
+body[data-theme="dark"] #btn-paste-settings {
+    background: var(--ui-control) !important;
+}
+
+body[data-theme="dark"] #btn-delete-library-images:disabled {
+    background: color-mix(in srgb, var(--ui-control) 58%, var(--ui-surface-soft)) !important;
+}
+
+body[data-theme="dark"] .roll-row {
+    border-color: var(--ui-line) !important;
+}
+
+/* Dark detail fixes: give the scopes card a readable lower edge and keep the
+ * blue header button ring free from legacy black borders/outlines. */
+body[data-theme="dark"] #develop-inspector > #inspector-scopes {
+    box-shadow: 0 7px 12px rgba(0, 0, 0, .42) !important;
+}
+
+body[data-theme="dark"] > header .export-actions > :is(#btn-export-roll, #btn-import) {
+    appearance: none;
+    border: 0 !important;
+    outline: 0 !important;
+    background-clip: border-box !important;
+    box-shadow: inset 0 0 0 3px var(--ui-brand) !important;
+}

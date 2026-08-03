@@ -3,10 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>NexFilm - Film Workspace</title>
-    <meta name="theme-color" content="#0b0e10">
+    <title data-i18n="app.title">NexFilm - Film Workspace</title>
+    <meta name="theme-color" content="#ffffff">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;600;700&display=swap">
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="reference.css">
     <script>
         window.addEventListener('error', function(event) {
             const err = document.createElement('div');
@@ -22,7 +26,7 @@
         });
     </script>
 </head>
-<body data-theme="dark" class="text-zinc-300 h-screen w-screen overflow-hidden font-sans selection:bg-zinc-700 flex flex-col bg-[#121214]">
+<body data-theme="light" class="text-zinc-300 h-screen w-screen overflow-hidden font-sans selection:bg-zinc-700 flex flex-col bg-[#121214]">
     
     <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
 
@@ -36,53 +40,59 @@
     </div>
 
     <!-- Native Menu Bar -->
-    <div id="native-menu-bar" class="h-[28px] shrink-0 bg-[#121214] border-b border-[#28282c] flex items-center px-4 text-[12px] text-zinc-400 gap-4 z-50 relative select-none">
-        <div class="font-bold text-zinc-200">NexFilm</div>
-        <div class="hover:text-zinc-100 cursor-pointer px-2 py-1 relative group">
-            Settings
+    <nav id="native-menu-bar" aria-label="Application menu" class="shrink-0 bg-[#121214] border-b border-[#28282c] flex items-center px-4 text-[12px] text-zinc-400 gap-4 z-50 relative select-none">
+        <span class="menu-brand font-bold text-zinc-200">NexFilm</span>
+        <div class="menu-group hover:text-zinc-100 px-2 py-1 relative group">
+            <button type="button" class="menu-trigger" data-i18n="menu.settingsShort">setting</button>
             <div class="absolute left-0 top-full mt-0 hidden group-hover:block bg-[#1C1C1E] border border-[#28282c] shadow-lg rounded w-48 py-1 z-50">
-                <div class="px-4 py-1.5 hover:bg-zinc-800 cursor-pointer flex justify-between items-center" id="menu-lang-toggle">
-                    <span>Language: EN</span>
-                </div>
-                <div class="px-4 py-1.5 hover:bg-zinc-800 cursor-pointer flex justify-between items-center" id="menu-theme-toggle">
-                    <span>Theme</span>
-                    <span id="theme-value">Dark</span>
-                </div>
+                <button type="button" class="menu-item px-4 py-1.5 hover:bg-zinc-800 flex justify-between items-center" id="menu-lang-toggle">
+                    <span data-i18n="menu.language">Language: EN</span>
+                </button>
+                <button type="button" class="menu-item px-4 py-1.5 hover:bg-zinc-800 flex justify-between items-center" id="menu-theme-toggle">
+                    <span data-i18n="menu.theme">Theme</span>
+                    <span id="theme-value" data-i18n="theme.dark">Dark</span>
+                </button>
             </div>
         </div>
-        <div class="hover:text-zinc-100 cursor-pointer px-2 py-1">View</div>
-        <div class="hover:text-zinc-100 cursor-pointer px-2 py-1">Help</div>
-    </div>
+        <button type="button" class="menu-trigger px-2 py-1" data-i18n="menu.view">View</button>
+        <button type="button" class="menu-trigger px-2 py-1" data-i18n="menu.help">Help</button>
+    </nav>
 
     <!-- Global Header -->
-    <header class="h-[56px] shrink-0 border-b border-[#28282c] flex items-center justify-between px-6 shadow-md z-20 bg-[#1C1C1E]">
+    <header class="shrink-0 border-b border-[#28282c] flex items-center justify-between px-6 shadow-md z-20 bg-[#1C1C1E]">
         <div class="flex items-center gap-6 h-full">
-            <div class="text-[14px] font-black tracking-[0.25em] text-zinc-200">NEXFILM <span class="text-zinc-500 font-normal">v2.0</span></div>
+            <div class="text-[14px] font-black tracking-[0.25em] text-zinc-200">
+                <img class="brand-mark" src="assets/design-reference/nexfilm-logo.svg" alt="" aria-hidden="true">
+                <span class="brand-name">NEXFILM</span>
+                <span class="text-zinc-500 font-normal">v2.0</span>
+            </div>
             <div class="h-6 w-px bg-zinc-700"></div>
             <nav class="flex h-full gap-2">
-                <button id="nav-library" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-100 border-zinc-100">Library</button>
-                <button id="nav-develop" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Develop</button>
-                <button id="nav-history" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Rolls</button>
-                <button id="nav-sponsor" type="button" aria-haspopup="dialog" aria-controls="sponsor-modal" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Sponsor</button>
+                <button id="nav-library" data-i18n="nav.library" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-100 border-zinc-100">Library</button>
+                <button id="nav-develop" data-i18n="nav.develop" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Develop</button>
+                <button id="nav-history" data-i18n="nav.rolls" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Rolls</button>
+                <button id="nav-sponsor" data-i18n="nav.sponsor" type="button" aria-haspopup="dialog" aria-controls="sponsor-modal" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Sponsor</button>
             </nav>
         </div>
-        <div class="flex items-center gap-4">
-            <button id="btn-delete-develop-image" class="hidden px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-transparent hover:bg-red-950/40 text-red-300 rounded transition-colors border border-red-800/60 disabled:opacity-40 disabled:cursor-not-allowed" disabled>Delete Photo</button>
-            <button id="btn-export-roll" class="hidden px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Export Roll</button>
-            <button id="btn-import" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
-            <button id="btn-export-dialog" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed" disabled>Export</button>
+        <div class="header-actions flex items-center gap-4">
+            <button id="btn-delete-develop-image" data-i18n="actions.deletePhoto" class="hidden px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-transparent hover:bg-red-950/40 text-red-300 rounded transition-colors border border-red-800/60 disabled:opacity-40 disabled:cursor-not-allowed" disabled>Delete Photo</button>
+            <div class="export-actions" role="group" aria-label="Roll export actions">
+                <button id="btn-export-roll" data-i18n="actions.exportRoll" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Export Roll</button>
+                <button id="btn-import" data-i18n="actions.importRoll" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
+                <button id="btn-export-dialog" data-i18n-key="actions.export" class="px-4 py-1.5 text-[11px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed" disabled>Export (0)</button>
+            </div>
         </div>
     </header>
 
     <!-- VIEWS -->
-    <div id="views" class="flex-1 relative overflow-hidden bg-[#121214]">
+    <main id="views" class="flex-1 relative overflow-hidden bg-[#121214]">
         
         <!-- ============================== -->
         <!-- VIEW: HISTORY FILMS            -->
         <!-- ============================== -->
-        <div id="view-history" class="absolute inset-0 flex z-10 transition-opacity duration-300" style="display: none;">
+        <section id="view-history" class="flex z-10 transition-opacity duration-300" style="display: none;" aria-labelledby="history-view-title">
             <!-- Left Filter Sidebar -->
-            <div class="w-[260px] h-full bg-[#171719] border-r border-[#28282c] shrink-0 flex flex-col p-6 overflow-y-auto z-10 custom-scrollbar">
+            <div class="bg-[#171719] border-r border-[#28282c] shrink-0 flex flex-col p-6 overflow-y-auto z-10 custom-scrollbar">
                 <h2 class="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase mb-6">Library Filter</h2>
                 <div class="mb-6">
                     <h3 class="text-[11px] font-bold tracking-widest text-zinc-400 uppercase mb-3">Format</h3>
@@ -112,7 +122,7 @@
             </div>
 
             <!-- Right Main Area (History Films) -->
-            <div class="flex-1 flex flex-col h-full overflow-hidden bg-[#121214] relative">
+            <div class="flex-1 flex flex-col overflow-hidden bg-[#121214] relative">
                 
                 <!-- Delete Action Bar -->
                 <div id="delete-action-bar" class="absolute bottom-8 left-1/2 -translate-x-1/2 bg-red-900/90 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-4 z-50 backdrop-blur border border-red-700/50 hidden">
@@ -122,7 +132,7 @@
                     <button id="btn-cancel-delete" class="px-4 py-1.5 bg-transparent hover:bg-red-800 rounded text-xs font-bold tracking-widest uppercase transition-colors">Cancel</button>
                 </div>
 
-                <div class="h-[48px] border-b border-[#28282c] flex items-center justify-between px-8 bg-[#1C1C1E] shrink-0">
+                <div class="view-toolbar history-toolbar border-b border-[#28282c] flex items-center justify-between px-8 bg-[#1C1C1E] shrink-0">
                     <div class="flex items-center gap-4">
                         <button id="btn-history-back" class="hidden text-zinc-400 hover:text-zinc-100 transition-colors">
                             <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"></path></svg>
@@ -137,13 +147,13 @@
                         <button id="btn-export-contact-sheet" class="hidden px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Export Contact Sheet</button>
                     </div>
                 </div>
-                <div class="flex-1 p-8 overflow-y-auto custom-scrollbar">
+                <div class="view-content history-content flex-1 p-8 overflow-y-auto custom-scrollbar">
                     <div id="history-empty" class="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-4 hidden">
                         <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                         </svg>
                         <div class="font-medium tracking-widest text-sm uppercase">No archived rolls</div>
-                        <button class="btn-import-trigger px-6 py-2 mt-4 text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
+                        <button data-i18n="actions.importRoll" class="btn-import-trigger px-6 py-2 mt-4 text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
                     </div>
                     <!-- Roll Cards (1 per row) -->
                     <div id="library-rolls-grid" class="flex flex-col gap-6 hidden">
@@ -153,57 +163,82 @@
                     </div>
                 </div>
             </div>
-        </div>
+        </section>
 
         <!-- ============================== -->
         <!-- VIEW: LIBRARY                  -->
         <!-- ============================== -->
-        <div id="view-library" class="absolute inset-0 flex flex-col z-20 transition-opacity duration-300" style="display: flex;">
-            <div class="h-[48px] border-b border-[#28282c] flex items-center justify-between px-8 bg-[#1C1C1E] shrink-0">
-                <div class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">All frames</div>
-                <div class="flex items-center gap-4">
+        <section id="view-library" class="flex flex-col z-20 transition-opacity duration-300 is-active" style="display: flex;" aria-hidden="false" aria-labelledby="library-view-title">
+            <div class="view-toolbar library-toolbar border-b border-[#28282c] flex items-center justify-between px-8 bg-[#1C1C1E] shrink-0">
+                <h1 id="library-view-title" data-i18n="library.allFrames" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">All Frames</h1>
+                <div class="library-toolbar-actions flex items-center gap-4">
                     <span id="library-selection-count" class="text-[11px] text-zinc-400 font-medium">0 selected</span>
-                    <button id="btn-delete-library-images" class="text-[10px] font-bold tracking-widest text-red-400 hover:text-red-300 uppercase transition-colors disabled:opacity-40 disabled:cursor-not-allowed" disabled>Delete Selected</button>
-                    <button id="btn-select-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors">Select All</button>
-                    <button id="btn-deselect-all" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors hidden">Deselect All</button>
+                    <button id="btn-select-all" type="button" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors">Select All</button>
+                    <button id="btn-delete-library-images" type="button" class="text-[10px] font-bold tracking-widest uppercase transition-colors disabled:cursor-not-allowed" disabled>Delete Selected</button>
                 </div>
             </div>
-            <div class="flex-1 p-8 overflow-y-auto custom-scrollbar">
+            <div class="view-content library-content flex-1 p-8 overflow-y-auto custom-scrollbar">
                 <div id="library-empty" class="w-full h-full flex flex-col items-center justify-center text-zinc-600 gap-4">
                     <svg xmlns="http://www.w3.org/2000/svg" class="h-16 w-16 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
                     <div class="font-medium tracking-widest text-sm uppercase">Your library is ready</div>
                     <div class="text-[11px] text-zinc-500 max-w-xs text-center leading-relaxed">Import a roll to keep frames, camera and film stock together, or add a loose scan for a quick edit.</div>
-                    <button class="btn-import-trigger px-6 py-2 mt-4 text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import From Disk</button>
+                    <button data-i18n="actions.importDisk" class="btn-import-trigger px-6 py-2 mt-4 text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import From Disk</button>
                 </div>
                 <div id="library-grid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 hidden">
                     <!-- Library Items -->
                 </div>
             </div>
-        </div>
+        </section>
 
         <!-- ============================== -->
         <!-- VIEW: DEVELOP                  -->
         <!-- ============================== -->
-        <div id="view-develop" class="absolute inset-0 flex transition-opacity duration-300 z-10" style="display: none;">
+        <section id="view-develop" class="flex transition-opacity duration-300 z-10" style="display: none;" aria-label="Develop workspace">
             
             <!-- Left Workspace -->
-            <div class="flex-1 flex flex-col h-full overflow-hidden">
+            <div class="flex-1 flex flex-col overflow-hidden">
                 <!-- Transform Tool Bar -->
-                <div class="h-[48px] border-b border-[#28282c] flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm bg-[#1C1C1E]">
-                    <div class="flex space-x-2">
-                        <button id="btn-crop-mode" class="toolbar-btn" disabled>Crop &amp; Rotate</button>
-                        <button id="btn-perspective-mode" class="toolbar-btn" disabled>Perspective</button>
-                        <button id="btn-recalibrate" class="toolbar-btn" disabled>Set Film Area</button>
-                        <button id="btn-reset-crop" class="toolbar-btn" disabled>Reset Geometry</button>
+                <div class="border-b border-[#28282c] flex items-center justify-center gap-4 shrink-0 z-20 shadow-sm bg-[#1C1C1E]">
+                    <div class="transform-tools">
+                        <div class="crop-tools" role="group" aria-label="Crop controls">
+                        <button id="btn-crop-mode" class="toolbar-btn" title="Crop" data-i18n-title="develop.crop" aria-label="Crop" data-i18n-aria-label="develop.crop" disabled>
+                            <svg class="toolbar-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 2v14a2 2 0 0 0 2 2h14M18 22V8a2 2 0 0 0-2-2H2"/></svg>
+                            <span data-i18n="develop.crop">Crop</span>
+                        </button>
+                        <button id="btn-reset-crop" class="toolbar-btn" title="Reset Crop" data-i18n-title="develop.resetCrop" aria-label="Reset Crop" data-i18n-aria-label="develop.resetCrop" disabled>
+                            <svg class="toolbar-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+                            <span data-i18n="develop.resetCrop">Reset Crop</span>
+                        </button>
+                        </div>
+                        <button id="btn-perspective-mode" class="toolbar-btn" title="Straighten" data-i18n-title="develop.straighten" aria-label="Straighten" data-i18n-aria-label="develop.straighten" disabled>
+                            <svg class="toolbar-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 5h16M6.5 19h11L20 5H4l2.5 14Z"/><path d="M12 5v14"/></svg>
+                            <span data-i18n="develop.straighten">Straighten</span>
+                        </button>
+                        <button id="btn-recalibrate" class="toolbar-btn" title="Set Film Area" data-i18n-title="develop.setFilmArea" aria-label="Set Film Area" data-i18n-aria-label="develop.setFilmArea" disabled>
+                            <svg class="toolbar-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><circle cx="12" cy="12" r="3"/></svg>
+                            <span data-i18n="develop.setFilmArea">Set Film Area</span>
+                        </button>
                     </div>
                     <div class="w-px h-4 bg-zinc-700"></div>
-                    <button id="btn-rotate-left" class="toolbar-btn" disabled>Rotate Left</button>
-                    <button id="btn-rotate-right" class="toolbar-btn" disabled>Rotate Right</button>
+                    <button id="btn-rotate-left" class="toolbar-btn" title="Rotate Left" data-i18n-title="develop.rotateLeft" aria-label="Rotate Left" data-i18n-aria-label="develop.rotateLeft" disabled>
+                        <svg class="toolbar-icon" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M6.28571 11C5.84048 11 5.40397 10.9389 4.97619 10.8167C4.54841 10.6944 4.14683 10.5111 3.77143 10.2667L4.53095 9.50714C4.80159 9.65555 5.08532 9.76695 5.38214 9.84133C5.67897 9.91571 5.98016 9.95273 6.28571 9.95238C7.30714 9.95238 8.17352 9.59654 8.88486 8.88486C9.59619 8.17317 9.95203 7.30679 9.95238 6.28571C9.95273 5.26463 9.59706 4.39825 8.88538 3.68657C8.1737 2.97489 7.30714 2.61905 6.28571 2.61905H6.20714L7.01905 3.43095L6.28571 4.19048L4.19048 2.09524L6.28571 0L7.01905 0.759524L6.20714 1.57143H6.28571C7.59524 1.57143 8.70833 2.02976 9.625 2.94643C10.5417 3.8631 11 4.97619 11 6.28571C11 6.94048 10.8757 7.55386 10.627 8.12586C10.3784 8.69786 10.0423 9.19548 9.61872 9.61871C9.19513 10.042 8.69751 10.3781 8.12586 10.627C7.55421 10.876 6.94083 11.0003 6.28571 11ZM3.14286 9.42857L0 6.28571L3.14286 3.14286L6.28571 6.28571L3.14286 9.42857Z" fill="currentColor"/></svg>
+                        <span data-i18n="develop.rotateLeft">Rotate Left</span>
+                    </button>
+                    <button id="btn-rotate-right" class="toolbar-btn" title="Rotate Right" data-i18n-title="develop.rotateRight" aria-label="Rotate Right" data-i18n-aria-label="develop.rotateRight" disabled>
+                        <svg class="toolbar-icon" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M4.71429 11C4.05952 11 3.44632 10.8757 2.87467 10.627C2.30302 10.3784 1.8054 10.0423 1.38181 9.61872C0.958223 9.19513 0.621937 8.69751 0.372953 8.12586C0.123969 7.55421 -0.000348473 6.94083 7.33627e-07 6.28571C7.33627e-07 4.97619 0.458334 3.8631 1.375 2.94643C2.29167 2.02976 3.40476 1.57143 4.71429 1.57143H4.79286L3.98095 0.759524L4.71429 0L6.80952 2.09524L4.71429 4.19048L3.98095 3.43095L4.79286 2.61905H4.71429C3.69286 2.61905 2.82648 2.97489 2.11514 3.68657C1.40381 4.39825 1.04797 5.26464 1.04762 6.28571C1.04727 7.30679 1.40311 8.17335 2.11514 8.88538C2.82718 9.59741 3.69356 9.95308 4.71429 9.95238C5.01984 9.95238 5.32103 9.91519 5.61786 9.84081C5.91468 9.76643 6.19841 9.65521 6.46905 9.50714L7.22857 10.2667C6.85317 10.5111 6.45159 10.6944 6.02381 10.8167C5.59603 10.9389 5.15952 11 4.71429 11ZM7.85714 9.42857L4.71429 6.28571L7.85714 3.14286L11 6.28571L7.85714 9.42857Z" fill="currentColor"/></svg>
+                        <span data-i18n="develop.rotateRight">Rotate Right</span>
+                    </button>
                     <div class="w-px h-4 bg-zinc-700"></div>
-                    <button id="btn-flip-h" class="toolbar-btn" disabled>Flip Horizontal</button>
-                    <button id="btn-flip-v" class="toolbar-btn" disabled>Flip Vertical</button>
+                    <button id="btn-flip-h" class="toolbar-btn" title="Flip Horizontal" data-i18n-title="develop.flipHorizontal" aria-label="Flip Horizontal" data-i18n-aria-label="develop.flipHorizontal" disabled>
+                        <svg class="toolbar-icon" viewBox="29 23 10 11" fill="none" aria-hidden="true"><path d="M29 31.6281V25.3719C29 24.5011 29 24.0657 29.271 23.923C29.5425 23.7797 29.8885 24.0335 30.581 24.5395L31.372 25.1176C31.68 25.3427 31.834 25.4553 31.917 25.62C32 25.7853 32 25.9792 32 26.3665V30.6335C32 31.0208 32 31.2147 31.917 31.38C31.834 31.5452 31.68 31.6578 31.372 31.8829L30.581 32.461C29.8885 32.9665 29.5425 33.2198 29.271 33.077C29 32.9338 29 32.4989 29 31.6281ZM39 31.6281V25.3719C39 24.5011 39 24.0657 38.729 23.923C38.4575 23.7797 38.1115 24.0335 37.419 24.5395L36.628 25.1176C36.32 25.3427 36.166 25.4553 36.083 25.62C36 25.7853 36 25.9792 36 26.3665V30.6335C36 31.0208 36 31.2147 36.083 31.38C36.166 31.5452 36.32 31.6578 36.628 31.8829L37.4185 32.461C38.1115 32.9665 38.4575 33.2198 38.7285 33.077C38.9995 32.9343 39 32.4989 39 31.6281Z" fill="currentColor"/><path fill-rule="evenodd" clip-rule="evenodd" d="M34 23C34.0995 23 34.1948 23.0404 34.2652 23.1124C34.3355 23.1844 34.375 23.282 34.375 23.3837V25.4302C34.375 25.532 34.3355 25.6296 34.2652 25.7016C34.1948 25.7735 34.0995 25.814 34 25.814C33.9005 25.814 33.8052 25.7735 33.7348 25.7016C33.6645 25.6296 33.625 25.532 33.625 25.4302V23.3837C33.625 23.282 33.6645 23.1844 33.7348 23.1124C33.8052 23.0404 33.9005 23 34 23ZM34 27.093C34.0995 27.093 34.1948 27.1335 34.2652 27.2054C34.3355 27.2774 34.375 27.375 34.375 27.4767V29.5233C34.375 29.625 34.3355 29.7226 34.2652 29.7946C34.1948 29.8665 34.0995 29.907 34 29.907C33.9005 29.907 33.8052 29.8665 33.7348 29.7946C33.6645 29.7226 33.625 29.625 33.625 29.5233V27.4767C33.625 27.375 33.6645 27.2774 33.7348 27.2054C33.8052 27.1335 33.9005 27.093 34 27.093ZM34 31.186C34.0995 31.186 34.1948 31.2265 34.2652 31.2984C34.3355 31.3704 34.375 31.468 34.375 31.5698V33.6163C34.375 33.718 34.3355 33.8156 34.2652 33.8876C34.1948 33.9596 34.0995 34 34 34C33.9005 34 33.8052 33.9596 33.7348 33.8876C33.6645 33.8156 33.625 33.718 33.625 33.6163V31.5698C33.625 31.468 33.6645 31.3704 33.7348 31.2984C33.8052 31.2265 33.9005 31.186 34 31.186Z" fill="currentColor"/></svg>
+                        <span data-i18n="develop.flipHorizontal">Flip Horizontal</span>
+                    </button>
+                    <button id="btn-flip-v" class="toolbar-btn" title="Flip Vertical" data-i18n-title="develop.flipVertical" aria-label="Flip Vertical" data-i18n-aria-label="develop.flipVertical" disabled>
+                        <svg class="toolbar-icon" viewBox="29 23 12 11" fill="none" aria-hidden="true"><path d="M38.4125 34H31.5875C30.6376 34 30.1626 34 30.0069 33.7019C29.8506 33.4032 30.1274 33.0226 30.6794 32.2609L31.3101 31.3908C31.5557 31.052 31.6785 30.8826 31.8582 30.7913C32.0385 30.7 32.25 30.7 32.6726 30.7H37.3274C37.75 30.7 37.9615 30.7 38.1418 30.7913C38.322 30.8826 38.4448 31.052 38.6904 31.3908L39.3211 32.2604C39.8726 33.0226 40.1488 33.4033 39.9931 33.7014C39.8374 33.9995 39.3624 34 38.4125 34ZM38.4125 23H31.5875C30.6376 23 30.1626 23 30.0069 23.2981C29.8506 23.5968 30.1274 23.9774 30.6794 24.7391L31.3101 25.6092C31.5557 25.948 31.6785 26.1174 31.8582 26.2087C32.0385 26.3 32.25 26.3 32.6726 26.3H37.3274C37.75 26.3 37.9615 26.3 38.1418 26.2087C38.322 26.1174 38.4448 25.948 38.6904 25.6092L39.3211 24.7391C39.8726 23.9774 40.1488 23.5968 39.9931 23.2981C39.8368 23 39.3624 23 38.4125 23Z" fill="currentColor"/><path fill-rule="evenodd" clip-rule="evenodd" d="M29 28.5C29 28.3906 29.0441 28.2857 29.1226 28.2083C29.2011 28.131 29.3076 28.0875 29.4186 28.0875H31.6512C31.7622 28.0875 31.8687 28.131 31.9472 28.2083C32.0257 28.2857 32.0698 28.3906 32.0698 28.5C32.0698 28.6094 32.0257 28.7143 31.9472 28.7917C31.8687 28.869 31.7622 28.9125 31.6512 28.9125H29.4186C29.3076 28.9125 29.2011 28.869 29.1226 28.7917C29.0441 28.7143 29 28.6094 29 28.5ZM33.4651 28.5C33.4651 28.3906 33.5092 28.2857 33.5877 28.2083C33.6662 28.131 33.7727 28.0875 33.8837 28.0875H36.1163C36.2273 28.0875 36.3338 28.131 36.4123 28.2083C36.4908 28.2857 36.5349 28.3906 36.5349 28.5C36.5349 28.6094 36.4908 28.7143 36.4123 28.7917C36.3338 28.869 36.2273 28.9125 36.1163 28.9125H33.8837C33.7727 28.9125 33.6662 28.869 33.5877 28.7917C33.5092 28.7143 33.4651 28.6094 33.4651 28.5ZM37.9302 28.5C37.9302 28.3906 37.9743 28.2857 38.0528 28.2083C38.1313 28.131 38.2378 28.0875 38.3488 28.0875H40.5814C40.6924 28.0875 40.7989 28.131 40.8774 28.2083C40.9559 28.2857 41 28.3906 41 28.5C41 28.6094 40.9559 28.7143 40.8774 28.7917C40.7989 28.869 40.6924 28.9125 40.5814 28.9125H38.3488C38.2378 28.9125 38.1313 28.869 38.0528 28.7917C37.9743 28.7143 37.9302 28.6094 37.9302 28.5Z" fill="currentColor"/></svg>
+                        <span data-i18n="develop.flipVertical">Flip Vertical</span>
+                    </button>
                 </div>
 
                 <!-- Main Preview -->
@@ -215,7 +250,7 @@
                         <!-- Missing File UI -->
                         <div id="missing-file-ui" class="absolute inset-0 bg-[#121214] flex-col items-center justify-center hidden z-40">
                             <svg class="w-16 h-16 text-red-500/50 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                            <div class="text-zinc-300 font-bold uppercase tracking-widest text-[13px] mb-2">文件已丢失 / File Missing</div>
+                <div class="text-zinc-300 font-bold uppercase tracking-widest text-[13px] mb-2" data-i18n="status.fileMissingTitle">文件已丢失 / File Missing</div>
                             <div class="text-zinc-500 text-[11px] mb-6 max-w-sm text-center leading-relaxed">The original file has been moved or deleted. Please locate the file to continue editing.</div>
                             <button id="btn-locate-file" class="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-[11px] font-bold uppercase tracking-widest rounded border border-zinc-700/50 shadow-lg transition-colors pointer-events-auto">Locate File</button>
                         </div>
@@ -295,23 +330,39 @@
                     </div>
                 </div>
                 
-                <!-- Filmstrip Carousel -->
-                <div id="filmstrip-container" class="h-[120px] shrink-0 border-t border-[#28282c] flex items-center px-6 gap-3 overflow-x-auto custom-scrollbar bg-[#1C1C1E]">
-                    <!-- Dynamically populated by JS -->
-                </div>
             </div>
             
+            <!-- Quick module navigation -->
+            <nav id="develop-module-nav" class="develop-module-nav" aria-label="Develop modules">
+                <div class="module-nav-steps">
+                    <button type="button" class="module-nav-btn is-active" data-target="inspector-scopes" aria-label="Scopes" title="Scopes"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-actions" aria-label="Actions" title="Actions"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-density" aria-label="Density Limits" title="Density Limits"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-printer" aria-label="Printer Lights" title="Printer Lights"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-aesthetics" aria-label="Aesthetics" title="Aesthetics"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-sprocket" aria-label="Sprocket Settings" title="Sprocket Settings"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-input" aria-label="Input Color Science" title="Input Color Science"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-print" aria-label="Print Film Emulation" title="Print Film Emulation"><span aria-hidden="true"></span></button>
+                </div>
+                <button id="develop-module-slider" class="module-nav-slider" type="button" role="scrollbar" aria-controls="develop-inspector" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Scroll develop controls" title="Drag to scroll develop controls"></button>
+            </nav>
+
+            <!-- Filmstrip Carousel -->
+            <div id="filmstrip-container" class="shrink-0 border-t border-[#28282c] flex items-center px-6 gap-3 overflow-x-auto custom-scrollbar bg-[#1C1C1E]">
+                <!-- Dynamically populated by JS -->
+            </div>
+
             <!-- Right Sidebar -->
-            <div id="develop-inspector" class="w-[340px] h-full border-l border-[#28282c] shrink-0 flex flex-col shadow-2xl overflow-y-auto custom-scrollbar z-10 bg-[#1C1C1E] relative">
+            <div id="develop-inspector" class="border-l border-[#28282c] shrink-0 flex flex-col shadow-2xl z-10 bg-[#1C1C1E] relative">
                 
                 <div id="right-panel-blocker" class="absolute inset-0 z-50 bg-[#1C1C1E]/80 backdrop-blur-[4px] hidden flex flex-col items-center justify-center p-6 text-center">
                     <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Film Area</h3>
-                    <p class="film-area-description">拖动四角或四边，框定胶片实际成像区域。完成后再运行自动反相与校色。</p>
+                    <p class="film-area-description" data-i18n="develop.filmAreaDescription">拖动四角或四边，框定胶片实际成像区域。完成后再运行自动反相与校色。</p>
                     <div class="film-area-actions">
-                        <button id="btn-auto-area" class="film-area-action film-area-action-secondary" title="Detect film area from cached thumbnail" disabled>Auto Area</button>
+                        <button id="btn-auto-area" class="film-area-action film-area-action-secondary" title="Detect film area from cached thumbnail" data-i18n-title="develop.autoArea" disabled>Auto Area</button>
                         <button id="btn-confirm-calibration" class="film-area-action film-area-action-primary">Save Area</button>
-                        <button id="btn-batch-apply" class="film-area-action film-area-action-secondary" title="Apply film area to other frames" disabled>Batch Apply</button>
-                        <p class="batch-apply-hint">仅在每张照片的胶片位置保持一致时使用。</p>
+                        <button id="btn-batch-apply" class="film-area-action film-area-action-secondary" title="Apply film area to other frames" data-i18n-title="develop.batchApply" disabled>Batch Apply</button>
+                        <p class="batch-apply-hint" data-i18n="develop.batchHint">仅在每张照片的胶片位置保持一致时使用。</p>
                     </div>
                 </div>
 
@@ -321,7 +372,7 @@
                             <h2 id="perspective-panel-title">Perspective</h2>
                             <span>Geometry</span>
                         </div>
-                        <button id="btn-close-perspective" class="perspective-icon-btn" type="button" title="Close perspective controls" aria-label="Close perspective controls">&times;</button>
+                        <button id="btn-close-perspective" class="perspective-icon-btn" type="button" title="Close perspective controls" data-i18n-title="actions.close" aria-label="Close perspective controls" data-i18n-aria-label="actions.close">&times;</button>
                     </div>
                     <div class="perspective-panel-body">
                         <div class="perspective-control">
@@ -355,7 +406,7 @@
                 </aside>
                 
                 <!-- Histogram / Waveform Area -->
-                <div class="px-6 py-5 border-b border-[#28282c] bg-[#1a1a1ef0] backdrop-blur sticky top-0 z-10 shadow-sm">
+                <div id="inspector-scopes" class="px-6 py-5 border-b border-[#28282c] bg-[#1a1a1ef0] backdrop-blur sticky top-0 z-10 shadow-sm">
                     <div class="flex justify-between items-center gap-3 mb-3">
                         <h2 class="text-[10px] font-bold text-zinc-500 tracking-[0.2em] uppercase" id="viz-title">Scopes</h2>
                         <div id="viz-mode-tabs" class="viz-mode-tabs" role="tablist" aria-label="Scope display">
@@ -369,7 +420,7 @@
                     </div>
                 </div>
 
-                <div class="p-6 flex flex-col gap-7">
+                <div id="inspector-controls" class="p-6 flex flex-col gap-7 overflow-y-auto custom-scrollbar">
                     <!-- Copy / Paste Settings -->
                     <div class="flex gap-2">
                         <button id="btn-copy-settings" class="flex-1 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Copy Settings</button>
@@ -377,15 +428,15 @@
                     </div>
 
                     <!-- Auto Invert -->
-                    <div class="control-group border-t border-[#28282c] pt-6">
-                        <div class="flex gap-2">
+                    <div id="inspector-actions" class="control-group border-t border-[#28282c] pt-6">
+                        <div class="inspector-segmented inspector-action-segment">
                             <button id="btn-auto-color" class="flex-[3] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Auto Invert</button>
                             <button id="btn-reset-color" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Reset</button>
                         </div>
                     </div>
 
                     <!-- Color Mode -->
-                    <div class="control-group border-t border-[#28282c] pt-6">
+                    <div id="inspector-mode" class="control-group border-t border-[#28282c] pt-6">
                         <div class="flex items-center justify-between bg-[#121214] p-1 rounded-md border border-[#28282c]">
                             <button id="btn-mode-color" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all bg-[#28282c] text-zinc-100 shadow-sm disabled:opacity-50">Color</button>
                             <button id="btn-mode-bw" class="flex-1 text-[10px] font-bold tracking-widest uppercase py-2 rounded transition-all text-zinc-500 hover:text-zinc-300 disabled:opacity-50">B&W</button>
@@ -393,7 +444,7 @@
                     </div>
 
                     <!-- Density Targets -->
-                    <div class="control-group border-t border-[#28282c] pt-6">
+                    <div id="inspector-density" class="control-group border-t border-[#28282c] pt-6">
                         <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
                             <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
                             Density Limits
@@ -402,14 +453,14 @@
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Master D-Min</label>
-                                    <span id="val-master-dmin" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                    <span id="val-master-dmin" class="text-[10px] font-mono text-zinc-400">0.00</span>
                                 </div>
                                 <input type="range" id="master-dmin" class="w-full custom-range silver-track" min="-0.50" max="0.50" step="0.002" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Master D-Max</label>
-                                    <span id="val-master-dmax" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                    <span id="val-master-dmax" class="text-[10px] font-mono text-zinc-400">0.00</span>
                                 </div>
                                 <input type="range" id="master-dmax" class="w-full custom-range silver-track" min="-0.50" max="0.50" step="0.002" value="0.00" disabled>
                             </div>
@@ -436,13 +487,13 @@
                     </div>
 
                     <!-- Printer Lights -->
-                    <div class="control-group border-t border-[#28282c] pt-6">
+                    <div id="inspector-printer" class="control-group border-t border-[#28282c] pt-6">
                         <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center justify-between gap-2">
                             <span class="flex items-center gap-2">
                                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"></path></svg>
                                 Printer Lights
                             </span>
-                            <button id="btn-wb-eyedropper" class="text-zinc-400 hover:text-white p-1" title="White Balance Eyedropper" disabled>
+                            <button id="btn-wb-eyedropper" class="text-zinc-400 hover:text-white p-1" title="White Balance Eyedropper" data-i18n-title="develop.whiteBalancePicker" disabled>
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
                             </button>
                         </h3>
@@ -472,7 +523,7 @@
                     </div>
 
                     <!-- Aesthetics -->
-                    <div class="control-group border-t border-[#28282c] pt-6">
+                    <div id="inspector-aesthetics" class="control-group border-t border-[#28282c] pt-6">
                         <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
                             <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
                             Aesthetics
@@ -481,35 +532,35 @@
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Exposure</label>
-                                    <span id="val-exposure" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                    <span id="val-exposure" class="text-[10px] font-mono text-zinc-400">0.00</span>
                                 </div>
                                 <input type="range" id="exposure" class="w-full custom-range silver-track" min="-1.50" max="1.50" step="0.001" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Gamma</label>
-                                    <span id="val-gamma" class="text-[10px] font-mono text-zinc-400">1.000</span>
+                                    <span id="val-gamma" class="text-[10px] font-mono text-zinc-400">1.00</span>
                                 </div>
                                 <input type="range" id="gamma" class="w-full custom-range silver-track" min="0.10" max="3.00" step="0.002" value="1.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Saturation</label>
-                                    <span id="val-saturation" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                    <span id="val-saturation" class="text-[10px] font-mono text-zinc-400">0.00</span>
                                 </div>
                                 <input type="range" id="saturation" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Highlights</label>
-                                    <span id="val-highlights" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                    <span id="val-highlights" class="text-[10px] font-mono text-zinc-400">0.00</span>
                                 </div>
                                 <input type="range" id="highlights" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Shadows</label>
-                                    <span id="val-shadows" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                    <span id="val-shadows" class="text-[10px] font-mono text-zinc-400">0.00</span>
                                 </div>
                                 <input type="range" id="shadows" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
                             </div>
@@ -518,14 +569,14 @@
                                 <div class="slider-container">
                                     <div class="flex justify-between items-center mb-2">
                                         <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Temperature</label>
-                                        <span id="val-temperature" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                        <span id="val-temperature" class="text-[10px] font-mono text-zinc-400">0.00</span>
                                     </div>
                                     <input type="range" id="temperature" class="w-full custom-range temperature-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
                                 </div>
                                 <div class="slider-container">
                                     <div class="flex justify-between items-center mb-2">
                                         <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Tint</label>
-                                        <span id="val-tint" class="text-[10px] font-mono text-zinc-400">0.000</span>
+                                        <span id="val-tint" class="text-[10px] font-mono text-zinc-400">0.00</span>
                                     </div>
                                     <input type="range" id="tint" class="w-full custom-range tint-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
                                 </div>
@@ -534,12 +585,12 @@
                     </div>
 
                     <!-- Sprocket Settings -->
-                    <div class="control-group border-t border-[#28282c] pt-6">
+                    <div id="inspector-sprocket" class="control-group border-t border-[#28282c] pt-6">
                         <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
                             Sprocket Settings
                         </h3>
                         <div class="flex flex-col gap-5">
-                            <button id="btn-sprocket-picker" title="Sample a sprocket hole to remove perforations from the positive border" class="w-full px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Sample Sprocket Hole</button>
+                            <button id="btn-sprocket-picker" title="Sample a sprocket hole to remove perforations from the positive border" data-i18n-title="develop.sampleSprocket" class="w-full px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Sample Sprocket Hole</button>
                             <div>
                                 <div class="flex justify-between mb-1.5">
                                     <span class="text-[10px] font-bold tracking-widest uppercase text-zinc-400">Sprocket Tolerance</span>
@@ -564,7 +615,7 @@
                     </div>
 
                     <!-- Input Color Science -->
-                    <div class="control-group border-t border-[#28282c] pt-6 pb-6">
+                    <div id="inspector-input" class="control-group border-t border-[#28282c] pt-6 pb-6">
                         <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2 cursor-pointer">
                             Input Color Science
                         </h3>
@@ -580,7 +631,7 @@
                     </div>
                     
                     <!-- Print Film Emulation -->
-                    <div class="control-group border-t border-[#28282c] pt-6 pb-6">
+                    <div id="inspector-print" class="control-group border-t border-[#28282c] pt-6 pb-6">
                         <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2 cursor-pointer">
                             Print Film Emulation
                         </h3>
@@ -601,17 +652,18 @@
                         </div>
                     </div>
                 </div>
+                </div>
             </div>
-        </div>
-    </div>
+        </section>
+    </main>
 
     <!-- Sponsor Modal -->
     <div id="sponsor-modal" class="sponsor-modal" aria-hidden="true">
         <section id="sponsor-modal-content" class="sponsor-card" role="dialog" aria-modal="true" aria-labelledby="sponsor-modal-title" tabindex="-1">
             <div class="sponsor-card-header">
                 <div>
-                    <div class="sponsor-card-kicker">Support NexFilm</div>
-                    <h2 id="sponsor-modal-title">赞赏 / Sponsor</h2>
+                    <div class="sponsor-card-kicker" data-i18n="sponsor.support">Support NexFilm</div>
+                    <h2 id="sponsor-modal-title" data-i18n="sponsor.title">Sponsor NexFilm</h2>
                 </div>
                 <button id="btn-close-sponsor" type="button" class="sponsor-close-button" title="Close" aria-label="Close sponsor dialog">
                     <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -620,21 +672,51 @@
                 </button>
             </div>
             <div class="sponsor-card-body">
-                <div class="sponsor-qr-frame">
-                    <img src="assets/sponsor-qr.jpg" alt="赞赏 NexFilm / Sponsor NexFilm payment QR code">
-                </div>
-                <div class="sponsor-copy">
+                <div class="sponsor-intro">
                     <section lang="zh-CN">
-                        <h3>中文</h3>
-                        <p>如果 NexFilm 对你的胶片工作流有帮助，可以通过收款码支持项目的持续开发。赞赏完全自愿，不影响软件功能、开源许可或问题处理优先级。</p>
-                        <p>作者开发本软件纯属为爱发电，自费开发。如果你喜欢，欢迎给作者买卷胶片，或者帮我回回血。</p>
+                        <p>如果 NexFilm 对你的胶片工作流有所帮助，欢迎分别支持软件作者与 UI 设计师。赞赏完全自愿，不影响软件功能、开源许可或问题处理优先级。</p>
                     </section>
-                    <div class="sponsor-copy-divider" aria-hidden="true"></div>
                     <section lang="en">
-                        <h3>English</h3>
-                        <p>If NexFilm helps your film workflow, you can support its continued development through the payment QR code below. Sponsorship is optional and does not affect features, licensing, or issue priority.</p>
+                        <p>If NexFilm helps your film workflow, you may support the author and UI designer separately. Sponsorship is entirely optional and does not affect features, licensing, or issue priority.</p>
                     </section>
                 </div>
+
+                <div class="sponsor-qr-grid">
+                    <figure class="sponsor-person">
+                        <figcaption>
+                            <strong>Author</strong>
+                            <span>Billy_Du</span>
+                        </figcaption>
+                        <div class="sponsor-qr-frame">
+                            <img src="assets/author-sponsor-qr.jpg" alt="Billy_Du payment QR code" data-i18n-alt="sponsor.authorQrAlt">
+                        </div>
+                    </figure>
+                    <figure class="sponsor-person">
+                        <figcaption>
+                            <strong>UI Designer</strong>
+                            <span>lonely-xmw</span>
+                        </figcaption>
+                        <div class="sponsor-qr-frame">
+                            <img src="assets/uidesigner-sponsor-qr.jpg" alt="lonely-xmw payment QR code" data-i18n-alt="sponsor.designerQrAlt">
+                        </div>
+                    </figure>
+                </div>
+
+                <footer class="sponsor-contacts">
+                    <div>
+                        <strong>Author Contact</strong>
+                        <span>Billy_Du</span>
+                        <a href="https://github.com/BillyDu-TJ" target="_blank" rel="noreferrer">GitHub @BillyDu-TJ</a>
+                        <a href="mailto:790704944@qq.com">790704944@qq.com</a>
+                        <a href="mailto:duzhongtao188@gmail.com">duzhongtao188@gmail.com</a>
+                    </div>
+                    <div>
+                        <strong>UI Designer Contact</strong>
+                        <span>lonely-xmw</span>
+                        <a href="https://github.com/lxmw44426-tech" target="_blank" rel="noreferrer">GitHub @lxmw44426-tech</a>
+                        <a href="mailto:lxmw44426@gmail.com">lxmw44426@gmail.com</a>
+                    </div>
+                </footer>
             </div>
         </section>
     </div>
@@ -669,9 +751,9 @@
                     <button id="btn-cancel-copy-settings" type="button" class="px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">Cancel</button>
                     <button id="btn-confirm-copy-settings" type="button" class="px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors">Copy</button>
                 </div>
+                </div>
             </div>
         </div>
-    </div>
 
     <!-- Import Choice Modal -->
     <div id="import-choice-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
@@ -767,7 +849,7 @@
                                 <option value="">Select Camera...</option>
                                 <option value="__new__">+ Add New...</option>
                             </select>
-                            <input type="text" id="roll-camera-input" placeholder="Type new camera" class="hidden bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 mt-1">
+                            <input type="text" id="roll-camera-input" placeholder="Type new camera" data-i18n-placeholder="common.typeCamera" class="hidden bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 mt-1">
                         </div>
                     </div>
                     <div class="flex items-center justify-between">
@@ -830,7 +912,7 @@
                                 </optgroup>
                                 <option value="__new__">+ Add New...</option>
                             </select>
-                            <input type="text" id="roll-film-input" placeholder="Type new film stock" class="hidden bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 mt-1">
+                            <input type="text" id="roll-film-input" placeholder="Type new film stock" data-i18n-placeholder="common.typeFilm" class="hidden bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 mt-1">
                         </div>
                     </div>
                     <div class="flex items-center justify-between">
@@ -1001,7 +1083,7 @@
                             <span>Local folder</span>
                         </div>
                         <div class="export-destination-row">
-                            <input id="export-output-dir" type="text" readonly placeholder="No folder selected">
+                            <input id="export-output-dir" type="text" readonly placeholder="No folder selected" data-i18n-placeholder="export.noFolder">
                             <button id="btn-choose-export-dir" type="button">Choose folder</button>
                         </div>
                         <div class="export-info-note">The export runs in the background, so you can continue grading while the files are written.</div>
@@ -1021,6 +1103,7 @@
     <script src="histogram-math.js"></script>
     <script src="settings-copy.js"></script>
     <script src="export-settings.js"></script>
+    <script src="i18n.js"></script>
     <script src="main.js"></script>
 </body>
 </html>
