@@ -92,9 +92,16 @@
         <!-- ============================== -->
         <section id="view-history" class="flex z-10 transition-opacity duration-300" style="display: none;" aria-labelledby="history-view-title">
             <!-- Left Filter Sidebar -->
-            <div class="bg-[#171719] border-r border-[#28282c] shrink-0 flex flex-col p-6 overflow-y-auto z-10 custom-scrollbar">
-                <h2 class="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase mb-6">Library Filter</h2>
-                <div class="mb-6">
+            <aside id="history-filter-sidebar" class="bg-[#171719] border-r border-[#28282c] shrink-0 flex flex-col p-6 overflow-y-auto z-10 custom-scrollbar" aria-labelledby="roll-filter-title">
+                <div class="roll-filter-heading">
+                    <h2 id="roll-filter-title" class="text-[10px] font-bold tracking-[0.2em] text-zinc-500 uppercase">Library Filter</h2>
+                    <button id="btn-clear-roll-filters" type="button">Clear</button>
+                </div>
+                <div class="roll-filter-stats" aria-live="polite">
+                    <span><strong id="roll-filter-roll-count">0</strong>rolls</span>
+                    <span><strong id="roll-filter-frame-count">0</strong>frames</span>
+                </div>
+                <div class="roll-filter-group mb-6">
                     <h3 class="text-[11px] font-bold tracking-widest text-zinc-400 uppercase mb-3">Format</h3>
                     <div class="flex flex-col gap-2" id="filter-format-list">
                         <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="135" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 135 (35mm)</label>
@@ -111,15 +118,15 @@
                         <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]"><input type="checkbox" value="8x10" class="filter-checkbox rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0"> 8x10</label>
                     </div>
                 </div>
-                <div class="mb-6">
+                <div class="roll-filter-group mb-6">
                     <h3 class="text-[11px] font-bold tracking-widest text-zinc-400 uppercase mb-3">Camera</h3>
                     <div class="flex flex-col gap-2" id="filter-camera-list"></div>
                 </div>
-                <div class="mb-6">
+                <div class="roll-filter-group mb-6">
                     <h3 class="text-[11px] font-bold tracking-widest text-zinc-400 uppercase mb-3">Date</h3>
                     <div class="flex flex-col gap-2" id="filter-date-list"></div>
                 </div>
-            </div>
+            </aside>
 
             <!-- Right Main Area (History Films) -->
             <div class="flex-1 flex flex-col overflow-hidden bg-[#121214] relative">
@@ -675,9 +682,14 @@
                 <div class="sponsor-intro">
                     <section lang="zh-CN">
                         <p>如果 NexFilm 对你的胶片工作流有所帮助，欢迎分别支持软件作者与 UI 设计师。赞赏完全自愿，不影响软件功能、开源许可或问题处理优先级。</p>
+                        <p><br></p>
+                        软件作者和UI设计师均为在校大学生，我们的开发纯属热爱。您也可以在 Github 上为本项目点上 Star。</p>
+                        <p><br></p>
+                        <p>Github 地址：https://github.com/BillyDu-TJ/NexFilm</p>
                     </section>
                     <section lang="en">
                         <p>If NexFilm helps your film workflow, you may support the author and UI designer separately. Sponsorship is entirely optional and does not affect features, licensing, or issue priority.</p>
+                        <p>Both the author and UI designer are college students, and we develop this software out of passion. You can also give this project a Star on <a href="https://github.com/BillyDu-TJ/NexFilm" target="_blank" rel="noreferrer">Github</a>.</p>
                     </section>
                 </div>
 
@@ -756,53 +768,56 @@
         </div>
 
     <!-- Import Choice Modal -->
-    <div id="import-choice-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
-        <div class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[320px] flex flex-col transform scale-95 transition-transform duration-200" id="import-choice-content">
-            <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
+    <div id="import-choice-modal" class="import-modal fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
+        <div class="import-dialog bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[320px] flex flex-col transform scale-95 transition-transform duration-200" id="import-choice-content" role="dialog" aria-modal="true" aria-labelledby="import-choice-title">
+            <div class="import-dialog-header px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
                 <div>
-                    <h2 class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Import Method</h2>
+                    <h2 id="import-choice-title" class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Import Method</h2>
                     <p class="text-[11px] text-zinc-500 mt-1 normal-case tracking-normal">Choose how these scans should be organized.</p>
                 </div>
-                <button id="btn-close-import-choice" class="text-zinc-500 hover:text-zinc-200 transition-colors">
+                <button id="btn-close-import-choice" class="import-close-btn text-zinc-500 hover:text-zinc-200 transition-colors" type="button" aria-label="Close">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
             </div>
-            <div class="p-6 flex flex-col gap-4">
+            <div class="import-choice-list p-6 flex flex-col gap-4">
                 <button id="btn-import-by-roll" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
                     <span class="text-zinc-100">Import by Roll</span>
                     <span class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Group images with camera and film stock metadata.</span>
+                    <img class="import-choice-art" src="assets/design-reference/import-roll.png" alt="">
                 </button>
                 <button id="btn-import-single" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
                     <span class="text-zinc-100">Loose Import</span>
                     <span class="text-[10px] text-zinc-400 font-normal">Add images directly without creating a roll</span>
+                    <img class="import-choice-art" src="assets/design-reference/import-loose.png" alt="">
                 </button>
                 <button id="btn-continue-roll" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
                     <span class="text-zinc-100">Continue Editing Roll</span>
                     <span class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Select an existing roll from the archive to continue editing its photos.</span>
+                    <img class="import-choice-art" src="assets/design-reference/import-continue.png" alt="">
                 </button>
             </div>
         </div>
     </div>
 
     <!-- Continue Roll Modal -->
-    <div id="continue-roll-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
-        <div class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[450px] flex flex-col transform scale-95 transition-transform duration-200" id="continue-roll-content">
-            <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
-                <h2 class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Select Roll</h2>
-                <button id="btn-close-continue-roll" class="text-zinc-500 hover:text-zinc-200 transition-colors">
+    <div id="continue-roll-modal" class="import-modal fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
+        <div class="import-dialog bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[450px] flex flex-col transform scale-95 transition-transform duration-200" id="continue-roll-content" role="dialog" aria-modal="true" aria-labelledby="continue-roll-title">
+            <div class="import-dialog-header px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
+                <h2 id="continue-roll-title" class="import-dialog-back-title text-[13px] font-bold tracking-widest uppercase text-zinc-100">Select Roll</h2>
+                <button id="btn-close-continue-roll" class="import-close-btn text-zinc-500 hover:text-zinc-200 transition-colors" type="button" aria-label="Close">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
             </div>
-            <div class="p-6 flex flex-col gap-6">
-                <div class="flex flex-col gap-4 bg-[#121214] p-4 rounded-md border border-[#28282c]">
-                    <div class="flex items-center justify-between">
-                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Roll Archive</label>
+            <div class="import-dialog-body p-6 flex flex-col gap-6">
+                <div class="import-form-card flex flex-col gap-4 bg-[#121214] p-4 rounded-md border border-[#28282c]">
+                    <div class="import-form-row flex items-center justify-between">
+                        <label for="continue-roll-select" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Roll Archive</label>
                         <select id="continue-roll-select" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 w-[200px]">
                             <!-- Options populated via JS -->
                         </select>
                     </div>
                 </div>
-                <button id="btn-confirm-continue" class="w-full px-4 py-3 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm">
+                <button id="btn-confirm-continue" class="import-primary-btn w-full px-4 py-3 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm">
                     Open & Edit
                 </button>
             </div>
@@ -810,20 +825,19 @@
     </div>
 
     <!-- Roll Metadata Modal -->
-    <div id="roll-metadata-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
-        <div class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[450px] flex flex-col transform scale-95 transition-transform duration-200" id="roll-metadata-content">
-            <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
-                <h2 id="roll-metadata-title" class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Roll Metadata</h2>
-                <button id="btn-close-roll-meta" class="text-zinc-500 hover:text-zinc-200 transition-colors">
+    <div id="roll-metadata-modal" class="import-modal fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
+        <div class="import-dialog bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[450px] flex flex-col transform scale-95 transition-transform duration-200" id="roll-metadata-content" role="dialog" aria-modal="true" aria-labelledby="roll-metadata-title">
+            <div class="import-dialog-header px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
+                <h2 id="roll-metadata-title" class="import-dialog-back-title text-[13px] font-bold tracking-widest uppercase text-zinc-100">Roll Metadata</h2>
+                <button id="btn-close-roll-meta" class="import-close-btn text-zinc-500 hover:text-zinc-200 transition-colors" type="button" aria-label="Close">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
             </div>
-            <div class="p-6 flex flex-col gap-6">
-                <div class="flex flex-col gap-4 bg-[#121214] p-4 rounded-md border border-[#28282c]">
-                    <div class="flex items-center justify-between">
-                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Format</label>
+            <div class="import-dialog-body p-6 flex flex-col gap-6">
+                <div class="import-form-card flex flex-col gap-4 bg-[#121214] p-4 rounded-md border border-[#28282c]">
+                    <div class="import-form-row flex items-center justify-between">
+                        <label for="roll-format" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Format</label>
                         <select id="roll-format" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
-                            <option value="Loose">Loose Import</option>
                             <option value="135">135 (35mm)</option>
                             <option value="135 Half-frame">135 Half-frame</option>
                             <option value="APS">APS</option>
@@ -842,8 +856,8 @@
                             </optgroup>
                         </select>
                     </div>
-                    <div class="flex items-center justify-between relative">
-                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Camera</label>
+                    <div class="import-form-row flex items-center justify-between relative">
+                        <label for="roll-camera-select" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Camera</label>
                         <div class="flex flex-col gap-1 w-48">
                             <select id="roll-camera-select" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
                                 <option value="">Select Camera...</option>
@@ -852,8 +866,8 @@
                             <input type="text" id="roll-camera-input" placeholder="Type new camera" data-i18n-placeholder="common.typeCamera" class="hidden bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 mt-1">
                         </div>
                     </div>
-                    <div class="flex items-center justify-between">
-                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Film Stock</label>
+                    <div class="import-form-row flex items-center justify-between">
+                        <label for="roll-film-select" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Film Stock</label>
                         <div class="flex flex-col gap-1 w-48">
                             <select id="roll-film-select" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
                                 <option value="">Select Film...</option>
@@ -876,6 +890,8 @@
                                     <option value="Cinestill 100D">Cinestill 100D</option>
                                     <option value="Cinestill 400D">Cinestill 400D</option>
                                     <option value="Cinestill 800T">Cinestill 800T</option>
+                                    <option value="Lucky C200">Lucky C200</option>
+                                    <option value="Lucky C400">Lucky C400</option>
                                 </optgroup>
                                 <optgroup label="B&W Negative">
                                     <option value="Kodak TMAX 100">Kodak TMAX 100</option>
@@ -896,6 +912,8 @@
                                     <option value="Fomapan 100">Fomapan 100</option>
                                     <option value="Fomapan 200">Fomapan 200</option>
                                     <option value="Fomapan 400">Fomapan 400</option>
+                                    <option value="Lucky SHD 100">Lucky SHD 100</option>
+                                    <option value="Lucky SHD 400">Lucky SHD 400</option>
                                 </optgroup>
                                 <optgroup label="Slide/Reversal">
                                     <option value="Fujifilm Velvia 50">Fujifilm Velvia 50</option>
@@ -906,6 +924,7 @@
                                 </optgroup>
                                 <optgroup label="Cinema">
                                     <option value="Kodak 5203 50D">Kodak 5203 50D</option>
+                                    <option value="Kodak 5206 200D">Kodak 5206 200D</option>
                                     <option value="Kodak 5207 250D">Kodak 5207 250D</option>
                                     <option value="Kodak 5213 200T">Kodak 5213 200T</option>
                                     <option value="Kodak 5219 500T">Kodak 5219 500T</option>
@@ -915,15 +934,15 @@
                             <input type="text" id="roll-film-input" placeholder="Type new film stock" data-i18n-placeholder="common.typeFilm" class="hidden bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 mt-1">
                         </div>
                     </div>
-                    <div class="flex items-center justify-between">
-                        <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Date</label>
+                    <div class="import-form-row flex items-center justify-between">
+                        <label for="roll-date" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Date</label>
                         <input type="date" id="roll-date" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 w-48">
                     </div>
                 </div>
 
-                <div class="flex justify-end gap-3 pt-2">
-                    <button id="btn-cancel-roll-meta" class="px-5 py-2 text-[12px] font-bold uppercase tracking-wider text-zinc-400 hover:text-zinc-200 transition-colors">Cancel</button>
-                    <button id="btn-confirm-roll-meta" class="px-6 py-2 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm">Select Images</button>
+                <div class="import-dialog-footer flex justify-end gap-3 pt-2">
+                    <button id="btn-cancel-roll-meta" class="import-secondary-btn px-5 py-2 text-[12px] font-bold uppercase tracking-wider text-zinc-400 hover:text-zinc-200 transition-colors">Cancel</button>
+                    <button id="btn-confirm-roll-meta" class="import-primary-btn px-6 py-2 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm">Select Images</button>
                 </div>
             </div>
         </div>
@@ -1105,5 +1124,6 @@
     <script src="export-settings.js"></script>
     <script src="i18n.js"></script>
     <script src="main.js"></script>
+    <script src="import-controls.js"></script>
 </body>
 </html>

@@ -21,6 +21,9 @@ test_picture/
 *.png
 !ui/assets/author-sponsor-qr.jpg
 !ui/assets/uidesigner-sponsor-qr.jpg
+!ui/assets/design-reference/import-roll.png
+!ui/assets/design-reference/import-loose.png
+!ui/assets/design-reference/import-continue.png
 *.nef
 *.db
 *.db-journal

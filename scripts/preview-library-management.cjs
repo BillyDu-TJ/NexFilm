@@ -4,7 +4,7 @@ const path = require('node:path');
 
 const root = path.join(__dirname, '..', 'ui');
 const port = Number(process.env.NEXFILM_PREVIEW_PORT || 4177);
-const qrBase64 = fs.readFileSync(path.join(root, 'assets', 'sponsor-qr.jpg')).toString('base64');
+const qrBase64 = fs.readFileSync(path.join(root, 'assets', 'author-sponsor-qr.jpg')).toString('base64');
 
 const mock = `
 <script>

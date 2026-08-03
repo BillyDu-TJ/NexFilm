@@ -1863,12 +1863,12 @@ pub async fn get_roll_previews(
 ) -> Result<Vec<String>, String> {
     let rolls = state.rolls.read().unwrap();
     if let Some(roll) = rolls.iter().find(|r| r.roll_id == roll_id) {
-        return Ok(collect_rendered_roll_previews(roll, &state, 3));
+        return Ok(collect_roll_previews(roll, &state, 8));
     }
     Ok(Vec::new())
 }
 
-fn collect_rendered_roll_previews(roll: &Roll, state: &EngineState, limit: usize) -> Vec<String> {
+fn collect_roll_previews(roll: &Roll, state: &EngineState, limit: usize) -> Vec<String> {
     let mut previews = Vec::with_capacity(limit.min(roll.image_paths.len()));
     for path in &roll.image_paths {
         for entry in state.items.iter() {
@@ -1876,11 +1876,8 @@ fn collect_rendered_roll_previews(roll: &Roll, state: &EngineState, limit: usize
             if item.roll_id == roll.roll_id
                 && normalize_path(&item.file_path) == normalize_path(path)
             {
-                if let Some(thumbnail) = item
-                    .rendered_thumbnail_base64
-                    .as_deref()
-                    .filter(|thumbnail| !thumbnail.is_empty())
-                {
+                let thumbnail = item.preferred_thumbnail();
+                if !thumbnail.is_empty() {
                     previews.push(thumbnail.to_string());
                 }
                 break;
@@ -1926,7 +1923,7 @@ mod history_contract_tests {
     }
 
     #[test]
-    fn roll_card_skips_orange_thumbs_and_finds_later_rendered_frames() {
+    fn roll_card_uses_the_first_frames_in_roll_order() {
         let state = EngineState::new();
         let roll = Roll {
             roll_id: "roll-a".into(),
@@ -1960,8 +1957,8 @@ mod history_contract_tests {
         );
 
         assert_eq!(
-            collect_rendered_roll_previews(&roll, &state, 3),
-            vec!["positive-second", "positive-third"]
+            collect_roll_previews(&roll, &state, 3),
+            vec!["orange-first", "positive-second", "positive-third"]
         );
     }
 

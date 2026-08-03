@@ -197,9 +197,24 @@ let currentImportCount = 0;
 let importFailedCount = 0;
 let importInProgress = false;
 
-window.addEventListener('resize', () => {
-    if (activeId) updateCanvasTransform();
-});
+let developLayoutFrame = null;
+function requestDevelopLayoutSync() {
+    if (developLayoutFrame !== null) cancelAnimationFrame(developLayoutFrame);
+    developLayoutFrame = requestAnimationFrame(() => {
+        developLayoutFrame = null;
+        if (activeId) {
+            updateCanvasTransform();
+            requestRender();
+        }
+        requestModuleNavSync();
+    });
+}
+
+window.addEventListener('resize', requestDevelopLayoutSync);
+if (typeof ResizeObserver !== 'undefined' && canvasWrapper?.parentElement) {
+    const developWorkspaceObserver = new ResizeObserver(requestDevelopLayoutSync);
+    developWorkspaceObserver.observe(canvasWrapper.parentElement);
+}
 
 canvasWrapper.parentElement.addEventListener('wheel', (e) => {
     if (!activeId) return;
@@ -574,18 +589,16 @@ function switchView(viewName) {
         }
     });
 
-    const isDevelop = viewName === 'develop';
     document.getElementById('btn-export-roll').classList.remove('hidden');
-    btnDeleteDevelopImage.classList.toggle('hidden', !isDevelop || !activeId);
-    btnDeleteDevelopImage.disabled = importInProgress || getImageDeletionTargets([activeId]).length === 0;
+    btnDeleteDevelopImage.classList.add('hidden');
+    btnDeleteDevelopImage.disabled = true;
 
-    if (isDevelop) {
+    if (viewName === 'develop') {
         // Re-enable UI if there's an active image (e.g., user switched away and came back)
         if (activeId) {
             enableUI();
         }
-        requestModuleNavSync();
-        requestRender();
+        requestDevelopLayoutSync();
     } else {
         // When leaving develop view, disable all tuning UI to prevent
         // orphaned slider event handlers from firing on stale state.
@@ -2461,6 +2474,18 @@ let activeImportViewPaths = null;
 const rollPreviewCache = new Map();
 const ROLL_PREVIEW_CACHE_MS = 15_000;
 
+function isLooseImportRoll(roll) {
+    if (!roll) return false;
+    return roll.format === 'Loose'
+        || roll.film_stock === 'Loose Import'
+        || roll.roll_id === 'LOOSE_DEFAULT'
+        || /^loose_/i.test(roll.roll_id || '');
+}
+
+function getVisibleArchiveRolls() {
+    return allRolls.filter(roll => !isLooseImportRoll(roll));
+}
+
 function getRollPreviewCacheKey(roll) {
     const paths = roll.image_paths || [];
     return `${roll.roll_id}:${paths.length}:${paths[0] || ''}`;
@@ -2486,7 +2511,8 @@ async function updateFilterSidebar() {
     let dates = new Set();
     let films = new Set();
     
-    allRolls.forEach(r => {
+    const archiveRolls = getVisibleArchiveRolls();
+    archiveRolls.forEach(r => {
         if(r.camera) cameras.add(r.camera);
         if(r.date) dates.add(r.date);
         if(r.film_stock) films.add(r.film_stock);
@@ -2502,11 +2528,59 @@ async function updateFilterSidebar() {
     }
     
     if (dateList) {
-        dateList.innerHTML = Array.from(dates).map(d => `
-            <label class="flex items-center gap-2 cursor-pointer text-zinc-300 text-[12px]">
-                <input type="checkbox" value="${d}" class="filter-checkbox filter-date rounded bg-zinc-800 border-zinc-700 text-zinc-300 focus:ring-0" ${activeDates.has(d) ? 'checked' : ''}> ${d}
-            </label>
-        `).join('');
+        const expandedYears = new Set(
+            Array.from(dateList.querySelectorAll('.roll-date-year[open]')).map(group => group.dataset.year)
+        );
+        const datesByYear = new Map();
+        Array.from(dates).sort((a, b) => b.localeCompare(a)).forEach(date => {
+            const year = /^\d{4}/.test(date) ? date.slice(0, 4) : i18nText('common.unknown');
+            if (!datesByYear.has(year)) datesByYear.set(year, []);
+            datesByYear.get(year).push(date);
+        });
+
+        dateList.replaceChildren();
+        Array.from(datesByYear.entries())
+            .sort(([yearA], [yearB]) => yearB.localeCompare(yearA))
+            .forEach(([year, yearDates], index) => {
+                const group = document.createElement('details');
+                group.className = 'roll-date-year';
+                group.dataset.year = year;
+                group.open = expandedYears.has(year) || yearDates.some(date => activeDates.has(date)) || index === 0;
+
+                const summary = document.createElement('summary');
+                const yearCheckbox = document.createElement('input');
+                yearCheckbox.type = 'checkbox';
+                yearCheckbox.className = 'filter-year-checkbox';
+                yearCheckbox.checked = yearDates.every(date => activeDates.has(date));
+                yearCheckbox.indeterminate = !yearCheckbox.checked && yearDates.some(date => activeDates.has(date));
+                yearCheckbox.setAttribute('aria-label', `${year} dates`);
+                yearCheckbox.addEventListener('click', event => event.stopPropagation());
+                yearCheckbox.addEventListener('change', () => {
+                    group.querySelectorAll('.filter-date').forEach(input => { input.checked = yearCheckbox.checked; });
+                    renderLibraryAndFilmstrip();
+                });
+                const yearLabel = document.createElement('span');
+                yearLabel.textContent = year;
+                summary.append(yearCheckbox, yearLabel);
+
+                const children = document.createElement('div');
+                children.className = 'roll-date-children';
+                yearDates.forEach(date => {
+                    const label = document.createElement('label');
+                    const checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.value = date;
+                    checkbox.className = 'filter-checkbox filter-date';
+                    checkbox.checked = activeDates.has(date);
+                    const text = document.createElement('span');
+                    text.textContent = date;
+                    label.append(checkbox, text);
+                    children.appendChild(label);
+                });
+
+                group.append(summary, children);
+                dateList.appendChild(group);
+            });
     }
     
     // Populate Selects for Metadata Modal
@@ -2547,8 +2621,31 @@ async function updateFilterSidebar() {
     
     
     document.querySelectorAll('.filter-checkbox').forEach(cb => {
-        cb.addEventListener('change', renderLibraryAndFilmstrip);
+        cb.onchange = renderLibraryAndFilmstrip;
     });
+
+    const filters = getActiveFilters();
+    const visibleRolls = archiveRolls.filter(roll => {
+        if (filters.formats.length && !filters.formats.includes(roll.format)) return false;
+        if (filters.cameras.length && !filters.cameras.includes(roll.camera)) return false;
+        if (filters.dates.length && !filters.dates.includes(roll.date)) return false;
+        return true;
+    });
+    const rollCount = document.getElementById('roll-filter-roll-count');
+    const frameCount = document.getElementById('roll-filter-frame-count');
+    if (rollCount) rollCount.textContent = visibleRolls.length;
+    if (frameCount) frameCount.textContent = visibleRolls.reduce((total, roll) => total + (roll.image_paths?.length || 0), 0);
+
+    const clearFilters = document.getElementById('btn-clear-roll-filters');
+    if (clearFilters) {
+        clearFilters.onclick = () => {
+            document.querySelectorAll('#history-filter-sidebar input[type="checkbox"]').forEach(input => {
+                input.checked = false;
+                input.indeterminate = false;
+            });
+            renderLibraryAndFilmstrip();
+        };
+    }
 }
 
 function getActiveFilters() {
@@ -2726,6 +2823,9 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
         const historyTitle = document.getElementById('history-view-title');
         const btnExportContactSheet = document.getElementById('btn-export-contact-sheet');
         const historyEmpty = document.getElementById('history-empty');
+        const historyView = document.getElementById('view-history');
+        historyView.classList.toggle('history-detail', Boolean(historyRollViewId));
+        const archiveRolls = getVisibleArchiveRolls();
         
         if (cleanupLibraryVirtualizer) cleanupLibraryVirtualizer();
         libraryGrid.innerHTML = '';
@@ -2751,7 +2851,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
         }
         
         // --- Populate HISTORY FILMS View ---
-        if (allRolls.length === 0) {
+        if (archiveRolls.length === 0) {
             historyEmpty.classList.remove('hidden');
             libraryRollsGrid.classList.add('hidden');
             historyInternalGrid.classList.add('hidden');
@@ -2885,7 +2985,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 btnDeleteRollImages.classList.add('hidden');
                 historyTitle.textContent = i18nText('history.archive');
                 
-                let filteredRolls = allRolls.filter(r => {
+                let filteredRolls = archiveRolls.filter(r => {
                     if (filters.formats.length > 0 && !filters.formats.includes(r.format)) return false;
                     if (filters.cameras.length > 0 && !filters.cameras.includes(r.camera)) return false;
                     if (filters.dates.length > 0 && !filters.dates.includes(r.date)) return false;
@@ -2903,22 +3003,22 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                     const previewCacheKey = getRollPreviewCacheKey(roll);
                     const cachedPreview = rollPreviewCache.get(previewCacheKey);
                     const hasFreshPreview = cachedPreview && Date.now() - cachedPreview.cachedAt < ROLL_PREVIEW_CACHE_MS;
-                    let thumbSrc = hasFreshPreview ? cachedPreview.src : '';
+                    let previewSources = hasFreshPreview ? (cachedPreview.sources || []) : [];
                     if (!hasFreshPreview) {
                         try {
                             const previews = await invoke('get_roll_previews', { rollId: roll.roll_id });
                             if (renderVersion !== currentVersion) return;
-                            if (previews && previews.length > 0) {
-                                thumbSrc = `data:image/jpeg;base64,${previews[0]}`;
-                            }
-                            rollPreviewCache.set(previewCacheKey, { src: thumbSrc, cachedAt: Date.now() });
+                            previewSources = (previews || []).slice(0, 8).map(preview =>
+                                preview.startsWith('data:') ? preview : `data:image/jpeg;base64,${preview}`
+                            );
+                            rollPreviewCache.set(previewCacheKey, { sources: previewSources, cachedAt: Date.now() });
                         } catch (e) {
                             console.error(e);
                         }
                     }
                     
                     const card = document.createElement('div');
-                    card.className = "roll-row group cursor-pointer flex w-full";
+                    card.className = "roll-card group cursor-pointer";
                     if (isDeleteMode && selectedRollIds.has(roll.roll_id)) {
                         card.classList.add('delete-selected');
                     }
@@ -2935,20 +3035,30 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                         }
                     };
                     card.innerHTML = `
+                        <div class="roll-preview-grid" aria-hidden="true">
+                            ${Array.from({ length: 8 }, (_, index) => previewSources[index]
+                                ? `<img src="${previewSources[index]}" alt="" loading="lazy">`
+                                : '<span class="roll-preview-empty"></span>'
+                            ).join('')}
+                        </div>
                         <div class="roll-summary">
-                            <div class="roll-title"></div>
+                            <div class="roll-title-row">
+                                <div class="roll-title"></div>
+                                <span class="roll-frame-count"></span>
+                            </div>
                             <div class="roll-format"></div>
                             <div class="roll-meta">
-                                <span data-roll-camera></span>
-                                <span data-roll-date></span>
+                                <span><small>Camera</small><span data-roll-camera></span></span>
+                                <span><small>Captured</small><span data-roll-date></span></span>
                             </div>
-                            <button type="button" class="roll-edit-action">${i18nText('actions.editInfoShort')}</button>
-                        </div>
-                        <div class="roll-preview">
-                            ${thumbSrc ? `<img src="${thumbSrc}" alt="" class="w-full h-full object-cover">` : `<div class="roll-preview-empty"></div>`}
+                            <div class="roll-card-actions">
+                                <span class="roll-view-action">View archive →</span>
+                                <button type="button" class="roll-edit-action">${i18nText('actions.editInfoShort')}</button>
+                            </div>
                         </div>
                     `;
                     card.querySelector('.roll-title').textContent = roll.film_stock || i18nText('status.unknownFilm');
+                    card.querySelector('.roll-frame-count').textContent = `${roll.image_paths?.length || 0} frames`;
                     card.querySelector('.roll-format').textContent = `${roll.format || '135'} ${i18nText('common.formatSuffix')}`;
                     card.querySelector('[data-roll-camera]').textContent = roll.camera || i18nText('common.unknown');
                     card.querySelector('[data-roll-date]').textContent = roll.date || i18nText('common.unknown');
@@ -2988,6 +3098,13 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 selectedLibraryIds.clear();
                 selectedLibraryIds.add(item.id);
                 updateLibrarySelectionUI();
+            };
+            stripDiv.oncontextmenu = event => {
+                event.preventDefault();
+                selectedLibraryIds.clear();
+                selectedLibraryIds.add(item.id);
+                updateLibrarySelectionUI();
+                void requestImageDeletion([item.id]);
             };
             stripDiv.dataset.id = item.id;
             
@@ -3469,17 +3586,19 @@ document.getElementById('btn-continue-roll').addEventListener('click', async () 
     const select = document.getElementById('continue-roll-select');
     select.innerHTML = '';
     
-    if (allRolls.length === 0) {
+    const editableRolls = getVisibleArchiveRolls();
+    if (editableRolls.length === 0) {
         showToast("No rolls in archive to continue.", "error");
         return;
     }
     
-    allRolls.forEach(r => {
+    editableRolls.forEach(r => {
         const opt = document.createElement('option');
         opt.value = r.roll_id;
         opt.textContent = `${r.film_stock} (${r.date || i18nText('common.unknown')}) - ${r.camera || i18nText('common.unknown')}`;
         select.appendChild(opt);
     });
+    window.NexFilmImportControls?.sync(true);
     
     document.getElementById('continue-roll-modal').classList.remove('opacity-0', 'pointer-events-none');
 });
@@ -3621,6 +3740,7 @@ document.getElementById('btn-import-by-roll').addEventListener('click', () => {
         const now = new Date();
         document.getElementById('roll-date').value = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
     }
+    window.NexFilmImportControls?.sync(true);
     document.getElementById('roll-metadata-modal').classList.remove('opacity-0', 'pointer-events-none');
     setTimeout(() => document.getElementById('roll-metadata-content').classList.remove('scale-95'), 10);
 });
@@ -3660,6 +3780,7 @@ function openRollMetadataEditor(roll) {
     document.getElementById('roll-date').value = roll.date || '';
     setRollMetadataSelect('roll-camera-select', 'roll-camera-input', roll.camera);
     setRollMetadataSelect('roll-film-select', 'roll-film-input', roll.film_stock);
+    window.NexFilmImportControls?.sync(true);
     document.getElementById('roll-metadata-modal').classList.remove('opacity-0', 'pointer-events-none');
     requestAnimationFrame(() => document.getElementById('roll-metadata-content').classList.remove('scale-95'));
 }
@@ -4012,8 +4133,11 @@ function updateCanvasTransform(w, h) {
     if (isNaN(aspect) || aspect === 0) aspect = 1;
 
     const parent = canvasWrapper.parentElement;
-    const availableW = parent.clientWidth - 64; // p-8 padding
-    const availableH = parent.clientHeight - 64;
+    const parentStyle = getComputedStyle(parent);
+    const horizontalPadding = parseFloat(parentStyle.paddingLeft) + parseFloat(parentStyle.paddingRight);
+    const verticalPadding = parseFloat(parentStyle.paddingTop) + parseFloat(parentStyle.paddingBottom);
+    const availableW = Math.max(1, parent.clientWidth - horizontalPadding);
+    const availableH = Math.max(1, parent.clientHeight - verticalPadding);
     
     let targetW, targetH;
     if (availableW / availableH > aspect) {
