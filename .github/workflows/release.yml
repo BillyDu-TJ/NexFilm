@@ -31,6 +31,13 @@ jobs:
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Tauri dependencies (Ubuntu only)
+        # 只有在 Linux 机器上才运行这步
+        if: runner.os == 'Linux' 
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
       - name: Run checks and verifications
         run: |
           cargo fmt --check

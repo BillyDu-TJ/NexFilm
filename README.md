@@ -106,7 +106,7 @@ Library 与 Develop 显示当前工作卷；历史胶卷保存在 **Rolls**。�
 
 ### 数据、隐私与备份
 
-- Windows 正式版数据目录：<code>%APPDATA%\NexFilm Engine\</code>
+- Windows 正式版数据目录：<code>%APPDATA%\NexFilm Engine\\</code>
 - macOS 正式版数据目录：<code>~/Library/Application Support/NexFilm Engine/</code>
 - Debug 构建默认在仓库工作目录保存数据
 - 主要数据库文件：<code>nexfilm_user.db</code>；<code>rolls.json</code> 是兼容镜像
@@ -275,7 +275,7 @@ Exports are 16-bit TIFF, 8-bit TIFF, 16-bit PNG, or 8-bit JPEG. NexFilm can embe
 
 ### Data, privacy, and backups
 
-- Windows release data: <code>%APPDATA%\NexFilm Engine\</code>
+- Windows release data: <code>%APPDATA%\NexFilm Engine\\</code>
 - macOS release data: <code>~/Library/Application Support/NexFilm Engine/</code>
 - Debug builds: repository working directory
 - Main database: <code>nexfilm_user.db</code>; <code>rolls.json</code> is a compatibility mirror
