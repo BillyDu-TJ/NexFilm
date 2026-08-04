@@ -59,7 +59,7 @@ NexFilm Engine 用于把相机翻拍或扫描仪输出的胶片负片转换为�
 
 ### 主要功能
 
-- **基于 Cineon 思路的密度域校色**：在线性透射率上进行 `-log10(T)` 密度转换、片基扣除和 Status M 串扰校正，并提供 D-Min、D-Max、曝光、Gamma、高光、阴影及分通道调节。
+- **基于 Cineon 思路的密度域校色**：在线性透射率上进行 `-log10(T)` 密度转换、片基扣除和 Status M 思路的经验去串扰，并提供 D-Min、D-Max、曝光、Gamma、高光、阴影及分通道调节。
 - **自动识别胶片边缘**：从导入预览中自动检测胶片范围，也可手动拖动四角进行透视校准；已确认的范围可批量应用到同卷其他画面。
 - **按卷生命周期管理**：按画幅、相机、胶片型号和日期导入，支持胶卷归档、筛选、继续编辑、追加画面、缺失文件重定位和整卷删除。
 - **自动画面识别与自动校色**：支持自动识别胶片成像范围，并且自动进行校色。
@@ -117,9 +117,54 @@ Library 和 Develop 只显示当前工作卷：软件启动时工作区为空，
 
 ### 支持的文件与输出
 
-输入文件选择器支持常见相机 RAW（包括 DNG、NEF/NRW、CR2/CR3、ARW、RAF、RW2、ORF、PEF、3FR、IIQ、X3F 等）以及 TIFF、JPEG、PNG。RAW 兼容性取决于内置 LibRaw；尚未验证的相机型号可能无法正确解码，请通过 [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) 报告并注明相机型号、文件格式和错误信息。
+输入文件选择器支持常见相机 RAW（包括 DNG、NEF/NRW、CR2/CR3、ARW、RAF、RW2、ORF、PEF、3FR、IIQ、X3F 等）、Hasselblad/Imacon 扫描仪 FFF，以及 TIFF、JPEG、PNG。RAW 兼容性取决于内置 LibRaw；尚未验证的相机型号可能无法正确解码，请通过 [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) 报告并注明相机型号、文件格式和错误信息。
 
-输出支持 16 位 TIFF、8 位 TIFF、16 位 PNG 和 JPEG。尺寸缩放保持宽高比；默认不放大源图，并默认在重名时添加后缀而不覆盖。当前仅提供 sRGB 输出。
+输出支持 16 位 TIFF、8 位 TIFF、16 位 PNG 和 JPEG。可选择带有匹配 ICC 配置文件的 sRGB、Display P3、Adobe RGB (1998)、Rec.2020、ProPhoto RGB、ACEScg 或 ACES2065-1 输出。尺寸缩放保持宽高比；默认不放大源图，并默认在重名时添加后缀而不覆盖。
+
+### v1.1 目标色彩管线（设计草案）
+
+> [!IMPORTANT]
+> 本节是 v1.1 的实现约束，不代表当前版本已经完成。Linear ProPhoto RGB 是统一的广色域正片工作空间，但不是“绝对光子数据”，也不应在未经验证时直接等同于胶片密度的测量域。内部主处理缓冲区应使用 `f32` 并保留超出 `[0, 1]` 的值；16 位整数只适合作为有明确定标和范围的缓存或文件格式。
+
+#### 1. 输入识别与线性化
+
+- **相机 RAW / 带拜尔阵列的 FFF**：解码为 Camera Native 线性响应；使用与相机、翻拍光源匹配的 DCP/输入配置文件，或 LibRaw 相机矩阵作为后备。密度分支只使用色度校准部分，不烘焙 DCP 的 Look Table、Tone Curve 或主观风格。
+- **扫描仪 FFF**：按文件内容而不是仅按扩展名识别扫描仪 RGB。优先通过内嵌或指定的扫描仪 ICC 完成 TRC 反解和色彩变换；只有在没有可靠配置文件且编码曲线已知时，才使用 Gamma 1.8 等显式后备，避免重复去 Gamma。
+- **带 ICC 的 TIFF/JPEG/PNG**：由内嵌配置文件一次性完成 TRC 反解，并经 PCS 转换到 Linear ProPhoto RGB。
+- **无 ICC 的 JPEG/PNG**：默认按 sRGB 解释，同时在元数据中记录该假设。
+- **无 ICC 的专业 TIFF**：不得静默猜测；要求用户选择输入配置文件和传递函数，例如“Adobe RGB，Gamma 2.2”或“Scanner RGB，Linear”。
+
+该阶段应同时保留输入配置文件、白点、传递函数和设备标识。UI 中的 **Input Space** 表示源数据的解释方式；**Working Space: Linear ProPhoto RGB** 是固定的正片调色空间，两者不是同一个选项。
+
+#### 2. 透射率与密度
+
+1. 在可能时使用暗场和无片光源参考计算相对透射率：`T = (scan - dark) / (light - dark)`；没有参考帧时必须把结果标记为相对测量。
+2. 在经过标定且保持正值的 **Density Input RGB** 中计算 `D = -log10(max(T, epsilon))`，并记录被下限替代的无效样本。不能以“ProPhoto 色域很大”为由假设变换后一定没有负值。
+3. 扣除同一采集条件下的片基密度：`D_net = D_image - D_base`。
+4. 彩色负片可应用已标定的设备/光源/胶片密度变换；未标定时使用 Identity 或明确标为 **Legacy Estimate** 的兼容矩阵。
+5. 黑白负片在密度域合并为单通道。`0.2126 / 0.7152 / 0.0722` 只对应 Linear sRGB/Rec.709 坐标；若密度输入域改变，权重也必须由该域或实测响应推导，不能原样照搬。
+
+这里必须保留一个关键约束：一般情况下 `-log10(Ax) != A[-log10(x)]`。因此不能用普通 RGB 基变换把现有矩阵从 Linear sRGB “换算”到 Linear ProPhoto。v1.1 可以把 Linear ProPhoto 作为统一交换与调色空间，但密度计算应留在经过验证的正值采集域；只有测试证明满足误差目标后，才能把 Linear ProPhoto 直接定义为 Density Input RGB。
+
+#### 3. 反相与正片重建
+
+- Rust 后端在统一密度数据上生成 65,536 档直方图，估计有效 D-Min/D-Max，并排除边框、齿孔、裁切外区域和无效样本。
+- D-Min/D-Max 归一化、曝光、高光、阴影、白平衡及分通道参数必须声明作用域。当前兼容路径产生显示参考的正片信号；未来若要得到真正的场景线性 ProPhoto，应加入胶片型号/冲洗条件相关的特性曲线或经过验证的重建模型，不能只把归一化密度改名为“线性光”。
+- Auto Invert 的估计值和用户调整保持可逆、可复制，并记录所用输入配置文件、密度校准配置和算法版本。
+
+#### 4. 风格与输出
+
+- LUT 必须声明预期输入域和传递函数；不明域的 `.cube` 只能作为显示参考风格使用。
+- 场景线性路径执行 `Linear ProPhoto -> 目标线性 RGB -> 目标 OETF`；显示参考兼容路径必须先按其实际传递函数解码，再转换到目标空间。整个输出链只应用一次 OETF，避免重复 Gamma。
+- WebGL 预览转换到显示 sRGB；导出可写入 16 位 TIFF/PNG 或 8 位 JPEG，并嵌入与像素编码一致的 ICC。量化和锐化只发生在最终输出端。
+
+#### Status M 与标定边界
+
+Status M 本质上是一组规定光谱响应的彩色密度测量条件，不是一个对所有相机、灯板和胶片都通用的去串扰矩阵。当前硬编码矩阵没有配套的测量数据、适用设备和误差报告，因此在工程上应视为绑定于当前处理域的经验估计；切换密度域后不能默认继续使用。
+
+可行的标定方式是采集带参考 Status M 或光谱数据的透射目标、控制条或分层阶梯片，在固定相机、镜头、ISO、灯板光谱与曝光条件下获得 RAW 测量，然后拟合 `D_reference = A * D_capture + b`。应使用独立验证样本报告密度残差和最终色差，并把结果保存为带设备、光源、胶片及冲洗条件标识的版本化校准配置。
+
+24 色卡适合建立相机/光源 DCP 或拟合端到端正片色彩，但不足以单独辨识负片三层染料串扰。RGB 窄谱灯板可以增加可观测性，但必须分别拍摄 R、G、B 三次、测量或记录各通道 SPD，并固定 RAW 曝光流程；一张三色合成白光照片无法独立求出三路响应。公开的胶片特性曲线和控制条目标值可以作为参考，不能替代本机采集系统与实物样本的成对测量。
 
 ### 赞赏
 
@@ -270,7 +315,7 @@ NexFilm Engine converts camera-scanned or scanner-produced film negatives into p
 
 ### Features
 
-- **Cineon-inspired density-domain grading** using `-log10(T)` density conversion, film-base subtraction, Status M crosstalk correction, D-Min/D-Max, exposure, gamma, highlights, shadows, and per-channel controls.
+- **Cineon-inspired density-domain grading** using `-log10(T)` density conversion, film-base subtraction, an empirical Status-M-inspired crosstalk transform, D-Min/D-Max, exposure, gamma, highlights, shadows, and per-channel controls.
 - **Automatic film-edge detection**, manual four-corner perspective calibration, and batch application of a confirmed film area to other frames.
 - **Roll lifecycle management** with format, camera, film stock, and date metadata; archive filters; continue editing; append frames; relocate missing files; and roll deletion.
 - **Automatic Edge Recognition and Automatic Reverse**, enable to regonize film area automaticlly, and demask with a click.
@@ -328,9 +373,54 @@ Use **Remove Roll** after selecting a frame in Library, while viewing a frame in
 
 ### Supported files and output
 
-The input picker supports common camera RAW formats, including DNG, NEF/NRW, CR2/CR3, ARW, RAF, RW2, ORF, PEF, 3FR, IIQ, and X3F, plus TIFF, JPEG, and PNG. RAW support depends on the bundled LibRaw version. For an unverified camera, report failures through [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) with the camera model, file format, and error message.
+The input picker supports common camera RAW formats, including DNG, NEF/NRW, CR2/CR3, ARW, RAF, RW2, ORF, PEF, 3FR, IIQ, and X3F, plus Hasselblad/Imacon scanner FFF, TIFF, JPEG, and PNG. RAW support depends on the bundled LibRaw version. For an unverified camera, report failures through [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) with the camera model, file format, and error message.
 
-Export formats are 16-bit TIFF, 8-bit TIFF, 16-bit PNG, and JPEG. Resampling preserves aspect ratio and does not enlarge sources unless enabled. Output is currently limited to sRGB.
+Export formats are 16-bit TIFF, 8-bit TIFF, 16-bit PNG, and JPEG. Output can be encoded as sRGB, Display P3, Adobe RGB (1998), Rec.2020, ProPhoto RGB, ACEScg, or ACES2065-1 with a matching embedded ICC profile. Resampling preserves aspect ratio and does not enlarge sources unless enabled.
+
+### v1.1 target color pipeline (design draft)
+
+> [!IMPORTANT]
+> This section defines v1.1 implementation constraints; it does not describe a completed feature. Linear ProPhoto RGB is the common wide-gamut positive-image working space, not “absolute photon data,” and it must not automatically be treated as the film-density measurement domain. Primary processing buffers should be `f32` and preserve values outside `[0, 1]`; 16-bit integers are suitable only for explicitly scaled caches or file formats.
+
+#### 1. Source identification and linearization
+
+- **Camera RAW / mosaiced FFF**: decode Camera Native linear responses and use a camera-and-light-specific DCP/input profile, with the LibRaw camera matrix as a fallback. The density branch uses only the colorimetric calibration and does not bake in a DCP Look Table, Tone Curve, or creative look.
+- **Scanner FFF**: identify scanner RGB from file contents, not the extension alone. Prefer an embedded or selected scanner ICC to invert the TRC and transform color in one operation. Use an explicit Gamma 1.8 fallback only when no reliable profile exists and that encoding is known, avoiding double gamma removal.
+- **Profiled TIFF/JPEG/PNG**: invert the embedded profile's TRC once and transform through the PCS into Linear ProPhoto RGB.
+- **Unprofiled JPEG/PNG**: assume sRGB and record that assumption in metadata.
+- **Unprofiled professional TIFF**: never guess silently. Require an input profile and transfer-function choice such as “Adobe RGB, Gamma 2.2” or “Scanner RGB, Linear.”
+
+The pipeline retains the input profile, white point, transfer function, and device identity. **Input Space** describes how source samples are interpreted; fixed **Working Space: Linear ProPhoto RGB** describes positive-image grading. They are not the same setting.
+
+#### 2. Transmittance and density
+
+1. Where available, compute relative transmittance from dark and clear-light references: `T = (scan - dark) / (light - dark)`. Mark results as relative measurements when references are absent.
+2. Compute `D = -log10(max(T, epsilon))` in a calibrated, positive **Density Input RGB**, and track samples replaced by the lower bound. A large ProPhoto gamut does not guarantee non-negative transformed samples.
+3. Subtract film-base density captured under the same conditions: `D_net = D_image - D_base`.
+4. Color negatives may use a calibrated device/light/film density transform. Otherwise use Identity or a compatibility matrix explicitly named **Legacy Estimate**.
+5. Combine black-and-white negatives in the density domain. The `0.2126 / 0.7152 / 0.0722` weights are specific to Linear sRGB/Rec.709 coordinates; another density domain requires derived or measured weights.
+
+The core constraint is that, in general, `-log10(Ax) != A[-log10(x)]`. An ordinary RGB basis change therefore cannot convert the existing matrix from Linear sRGB to Linear ProPhoto. v1.1 may use Linear ProPhoto as the common interchange and grading space, but density computation stays in a validated positive capture domain unless testing demonstrates that Linear ProPhoto itself meets the defined error target as Density Input RGB.
+
+#### 3. Inversion and positive reconstruction
+
+- The Rust backend builds a 65,536-bin histogram over canonical density data, estimates effective D-Min/D-Max, and excludes borders, sprocket holes, cropped regions, and invalid samples.
+- D-Min/D-Max normalization, exposure, highlight/shadow shaping, white balance, and per-channel controls must declare their signal domain. The compatibility path produces a display-referred positive signal. A genuinely scene-linear ProPhoto path requires a film-stock/process characteristic curve or another validated reconstruction model; normalized density cannot merely be renamed “linear light.”
+- Auto Invert estimates and user adjustments remain reversible and copyable, with the input profile, density calibration, and algorithm version recorded alongside them.
+
+#### 4. Look and output rendering
+
+- A LUT must declare its expected input domain and transfer function. A `.cube` with unknown assumptions is treated only as a display-referred look.
+- A scene-linear path performs `Linear ProPhoto -> linear destination RGB -> destination OETF`. A display-referred compatibility path first decodes its actual transfer function before conversion. Apply the OETF exactly once to avoid double gamma.
+- WebGL preview converts to display sRGB. Export writes 16-bit TIFF/PNG or 8-bit JPEG with an ICC matching the pixel encoding. Quantization and output sharpening occur only at the final output boundary.
+
+#### Status M and calibration boundary
+
+Status M is a specified set of spectral responses for color-density measurement, not a universal crosstalk matrix for every camera, light panel, and film. The current hard-coded matrix has no accompanying measurement dataset, device scope, or error report, so it is an empirical estimate bound to the current processing domain. It must not be assumed valid after that domain changes.
+
+A defensible calibration captures transmissive targets, control strips, or dye-layer step samples with reference Status M or spectral measurements. Acquire RAW measurements with fixed camera, lens, ISO, light-panel spectrum, and exposure, then fit `D_reference = A * D_capture + b`. Report density residuals and final color error on held-out samples, and store the result as a versioned calibration profile identified by device, illuminant, film stock, and process.
+
+A 24-patch ColorChecker is useful for a camera/illuminant DCP or end-to-end positive color fit, but it cannot isolate negative-film dye-layer crosstalk by itself. A narrow-band RGB light panel improves observability only when R, G, and B are captured separately, each SPD is measured or recorded, and the RAW exposure procedure is fixed. One synthesized-white capture cannot identify the three responses independently. Published film curves and control-strip aims are useful references, but they do not replace paired measurements from the actual capture system and physical samples.
 
 ### Sponsorship
 

@@ -1,5 +1,6 @@
 pub mod app_state;
 pub mod batch_settings;
+pub mod color_science;
 pub mod commands;
 pub mod core_math;
 pub mod film_border;

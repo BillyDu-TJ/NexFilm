@@ -1,6 +1,6 @@
 # NexFilm Refactor Progress
 
-Last updated: 2026-07-22
+Last updated: 2026-08-04
 
 ## Completed In The Current Worktree
 
@@ -9,11 +9,25 @@ Last updated: 2026-07-22
   files without a thumbnail IFD; no inversion or auto color runs during import.
 - Develop proxy decoding uses explicit half-size, 16-bit, gamma 1.0, no-auto-bright LibRaw settings.
 - Embedded and rendered thumbnails are stored separately and rendered previews are preferred by Library, Develop, History, and contact sheets.
-- Per-image tuning state includes LUT path/opacity and RAW working color space.
+- Per-image tuning state includes LUT path/opacity and the versioned density-capture contract.
 - Export reads persisted roll parameters, rejects missing LUTs, runs in `spawn_blocking`, emits progress, prevents concurrent export jobs, and leaves the UI usable.
 - CPU export mirrors the shader order for crop UV, calibration homography, nearest RAW sampling, sprocket masking, density/tone math, gamma, and LUT application.
 - Export quality controls JPEG encoding only; it no longer silently resizes every output.
-- Unsupported unprofiled wide-gamut export choices were removed. Current output contract is sRGB.
+- Film density is always measured in fixed linear-sRGB capture coordinates, so a
+  user-selected gamut cannot change the result of `-log10(T)`. Professional export
+  spaces share one colour-science module: sRGB, Display P3, Adobe RGB (1998),
+  Rec.2020, ProPhoto RGB and ACES variants use explicit primaries, reference whites,
+  Bradford adaptation, transfer functions and ICC profiles. Export embeds the
+  selected profile in JPEG, PNG and TIFF.
+- Direct JPEG/PNG/TIFF inputs use a recognized embedded ICC profile for decoding;
+  unprofiled scanner TIFFs retain the existing linear-scan contract.
+- Hasselblad/Imacon scanner `.FFF` files are recognized as multi-page TIFF
+  containers: the reduced page supplies a fast import preview while the 16-bit
+  RGB main page follows a dedicated non-RAW path. It skips demosaic and camera
+  white balance, then removes the scanner FFF 1.8 transfer curve to recover
+  linear transmission before film-density processing. FlexColor edit recipes
+  stored in the file do not override this input contract. Other RAW-style FFF
+  files continue through the bundled LibRaw decoder.
 - Roll identity is `roll_id + file_path` in both frontend collection logic and backend deletion/preview lookup.
 - Relocating a missing source file migrates the SQLite primary-key path and only updates the owning roll.
 - History keeps showing persisted previews when source files are missing and marks them as missing.
@@ -22,9 +36,8 @@ Last updated: 2026-07-22
 - The previous external DCP control was removed after source-level verification
   showed this vendored LibRaw build defines `NO_LCMS`; its `camera_profile`
   field was therefore ignored, and Adobe DCP files were never applied.
-- Unsupported legacy working spaces are normalized to `linear-srgb`. The only
-  exposed RAW decode choices are now LibRaw linear sRGB and LibRaw linear ACES;
-  the previous fake Rec.2020-to-sRGB mapping and ACES-AP1 label are gone.
+- Legacy working-space values migrate to the fixed linear-sRGB density-capture
+  domain. Gamut selection happens only after inversion when an export is encoded.
 - Roll metadata now has a SQLite `rolls` table. Legacy `rolls.json` is migrated once,
   and roll deletion/append/relocation update roll metadata and image states in one
   transaction before changing the in-memory model. `rolls.json` remains only as a
@@ -58,15 +71,21 @@ Last updated: 2026-07-22
 - Drag-and-drop import now rejects unsupported paths, deduplicates loose images,
   and rolls back transient placeholders when IPC startup fails.
 - Proxy reload and Auto Color are separate operations. Crop, rotation, flip,
-  undo, and working-space refresh no longer overwrite an image's existing
+  undo, and output-space changes no longer overwrite an image's existing
   DMin/DMax or channel-exposure edits; Auto Color runs only from Auto Invert.
 - WebGL preview transforms are relative to the geometry already baked into the
   loaded proxy, preventing fine-angle rotation from being applied twice.
 - Quarter-turn and flip operations keep crop bounds, calibration points, and
   sprocket samples in the same coordinate system. The pure geometry contract is
   shared by preview rendering, Auto Color sampling, and picker hit testing.
-- RAW working-space changes invalidate the old proxy, base-color estimate, and
-  rendered thumbnail before rebuilding them in the selected linear space.
+- Proxy responses carry an explicit base-analysis flag. Proxy pixels, base-color
+  estimates, and Auto Color limits all share the fixed 16-bit capture domain.
+- Auto Color uses a 65,536-bin backend density histogram instead of an 8-bit
+  display framebuffer. Black-and-white density and limits use fixed Rec.709
+  luminance weights with the highest contribution from green.
+- Math version 3 treats the normalized positive as display-referred sRGB instead
+  of applying a second sRGB OETF. Migration clears incompatible rendered
+  thumbnails and base estimates while retaining tuning and geometry edits.
 - The tracked 19 MB scanner TIFF fixture now produces a real 1024px import
   preview even though it has no thumbnail IFD. The fallback runs only in the
   background import producer; its current timing has not been re-benchmarked.

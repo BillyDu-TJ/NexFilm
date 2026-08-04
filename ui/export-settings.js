@@ -71,6 +71,7 @@
             namingTemplate: settings.namingTemplate,
             conflictPolicy: settings.conflictPolicy,
             quality: Number(settings.quality),
+            writeExif: Boolean(settings.writeExif),
         };
     }
 

@@ -2633,6 +2633,7 @@ dependencies = [
  "base64 0.22.1",
  "clap",
  "dashmap",
+ "flate2",
  "image",
  "imageproc",
  "nalgebra 0.32.6",
@@ -2645,6 +2646,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
+ "tiff",
  "tokio",
 ]
 

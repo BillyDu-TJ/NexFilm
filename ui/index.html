@@ -162,6 +162,18 @@
                         <div class="font-medium tracking-widest text-sm uppercase">No archived rolls</div>
                         <button data-i18n="actions.importRoll" class="btn-import-trigger px-6 py-2 mt-4 text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50">Import Roll</button>
                     </div>
+                    <section id="history-roll-overview" class="history-roll-overview hidden" aria-labelledby="history-roll-name">
+                        <div class="history-roll-identity">
+                            <span data-i18n="history.archiveRoll">Archive Roll</span>
+                            <h2 id="history-roll-name"></h2>
+                        </div>
+                        <dl class="history-roll-facts">
+                            <div><dt data-i18n="fields.format">Format</dt><dd id="history-roll-format"></dd></div>
+                            <div><dt data-i18n="fields.camera">Camera</dt><dd id="history-roll-camera"></dd></div>
+                            <div><dt data-i18n="history.captured">Captured</dt><dd id="history-roll-date"></dd></div>
+                            <div><dt data-i18n="history.frames">Frames</dt><dd id="history-roll-frames"></dd></div>
+                        </dl>
+                    </section>
                     <!-- Roll Cards (1 per row) -->
                     <div id="library-rolls-grid" class="flex flex-col gap-6 hidden">
                     </div>
@@ -628,10 +640,9 @@
                         </h3>
                         <div class="flex flex-col gap-5">
                             <div class="flex items-center justify-between">
-                                <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Working Space</label>
-                                <select id="select-colorspace" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
-                                    <option value="linear-srgb">Linear sRGB</option>
-                                    <option value="aces">Linear ACES (LibRaw)</option>
+                                <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Density Capture</label>
+                                <select id="select-colorspace" disabled class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
+                                    <option value="linear-srgb">Linear sRGB (D65)</option>
                                 </select>
                             </div>
                         </div>
@@ -683,7 +694,7 @@
                     <section lang="zh-CN">
                         <p>如果 NexFilm 对你的胶片工作流有所帮助，欢迎分别支持软件作者与 UI 设计师。赞赏完全自愿，不影响软件功能、开源许可或问题处理优先级。</p>
                         <p><br></p>
-                        软件作者和UI设计师均为在校大学生，我们的开发纯属热爱。您也可以在 Github 上为本项目点上 Star。</p>
+                        <p>软件作者和UI设计师均为在校大学生，我们的开发纯属热爱。您也可以在 Github 上为本项目点上 Star。</p>
                         <p><br></p>
                         <p>Github 地址：https://github.com/BillyDu-TJ/NexFilm</p>
                     </section>
@@ -734,38 +745,89 @@
     </div>
 
     <!-- Copy Settings Modal -->
-    <div id="copy-settings-modal" class="fixed inset-0 bg-black/90 backdrop-blur-md z-[60] flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="copy-settings-title">
-        <div id="copy-settings-content" class="bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[360px] flex flex-col transform scale-95 transition-transform duration-200">
-            <div class="px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
-                <h2 id="copy-settings-title" class="text-[13px] font-bold tracking-widest uppercase text-zinc-100">Copy Settings</h2>
-                <button id="btn-close-copy-settings" type="button" class="text-zinc-500 hover:text-zinc-200 transition-colors" title="Close" aria-label="Close copy settings">
-                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+    <div id="copy-settings-modal" class="copy-settings-modal fixed inset-0 z-[60] flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="copy-settings-title">
+        <div id="copy-settings-content" class="copy-settings-dialog transform scale-95 transition-transform duration-200" tabindex="-1">
+            <header class="copy-settings-header">
+                <div>
+                    <h2 id="copy-settings-title" data-i18n="develop.copySettings">Copy Settings</h2>
+                    <p data-i18n="copy.subtitle">Choose the adjustments to copy from the active frame.</p>
+                </div>
+                <button id="btn-close-copy-settings" type="button" class="copy-settings-close" title="Close" aria-label="Close copy settings">
+                    <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
-            </div>
-            <div class="p-6 flex flex-col gap-3">
-                <label class="flex items-center gap-3 px-3 py-2.5 bg-[#121214] border border-[#28282c] rounded cursor-pointer text-[12px] text-zinc-300">
-                    <input type="checkbox" value="crop" class="copy-settings-module rounded bg-zinc-800 border-zinc-700 text-zinc-200 focus:ring-0" checked>
-                    <span>Crop &amp; Film Area</span>
-                </label>
-                <label class="flex items-center gap-3 px-3 py-2.5 bg-[#121214] border border-[#28282c] rounded cursor-pointer text-[12px] text-zinc-300">
-                    <input type="checkbox" value="edit" class="copy-settings-module rounded bg-zinc-800 border-zinc-700 text-zinc-200 focus:ring-0" checked>
-                    <span>Develop Parameters</span>
-                </label>
-                <label class="flex items-center gap-3 px-3 py-2.5 bg-[#121214] border border-[#28282c] rounded cursor-pointer text-[12px] text-zinc-300">
-                    <input type="checkbox" value="transform" class="copy-settings-module rounded bg-zinc-800 border-zinc-700 text-zinc-200 focus:ring-0" checked>
-                    <span>Rotate &amp; Flip</span>
-                </label>
-                <label class="flex items-center gap-3 px-3 py-2.5 bg-[#121214] border border-[#28282c] rounded cursor-pointer text-[12px] text-zinc-300">
-                    <input type="checkbox" value="sprocket" class="copy-settings-module rounded bg-zinc-800 border-zinc-700 text-zinc-200 focus:ring-0" checked>
-                    <span>Sprocket Sample</span>
-                </label>
-                <div class="flex justify-end gap-3 mt-3">
-                    <button id="btn-cancel-copy-settings" type="button" class="px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-300 rounded transition-colors">Cancel</button>
-                    <button id="btn-confirm-copy-settings" type="button" class="px-4 py-2 text-[11px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors">Copy</button>
+            </header>
+            <section class="copy-settings-source" aria-label="Copy source">
+                <div>
+                    <span data-i18n="copy.copyingFrom">Copying from</span>
+                    <strong id="copy-settings-source-label">Active frame</strong>
                 </div>
+                <span id="copy-settings-count" aria-live="polite">0 settings selected</span>
+            </section>
+            <div class="copy-settings-grid">
+                <div class="copy-settings-column">
+                    <fieldset class="copy-settings-group">
+                        <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="copy.scanDensity">Scan &amp; Density</span></label></legend>
+                        <label><input type="checkbox" value="filmMode" class="copy-setting-option"><span data-i18n="copy.filmMode">Film Mode (Color / B&amp;W)</span></label>
+                        <label><input type="checkbox" value="densityLimits" class="copy-setting-option"><span data-i18n="copy.densityLimits">Density Limits (D-Min / D-Max)</span></label>
+                    </fieldset>
+                    <fieldset class="copy-settings-group">
+                        <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="develop.printerLights">Printer Lights</span></label></legend>
+                        <label><input type="checkbox" value="printerRed" class="copy-setting-option"><span data-i18n="fields.redCyan">Red / Cyan</span></label>
+                        <label><input type="checkbox" value="printerGreen" class="copy-setting-option"><span data-i18n="fields.greenMagenta">Green / Magenta</span></label>
+                        <label><input type="checkbox" value="printerBlue" class="copy-setting-option"><span data-i18n="fields.blueYellow">Blue / Yellow</span></label>
+                    </fieldset>
+                    <fieldset class="copy-settings-group">
+                        <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="develop.aesthetics">Aesthetics</span></label></legend>
+                        <label><input type="checkbox" value="exposure" class="copy-setting-option"><span data-i18n="fields.exposure">Exposure</span></label>
+                        <label><input type="checkbox" value="gamma" class="copy-setting-option"><span data-i18n="fields.gamma">Gamma</span></label>
+                        <label><input type="checkbox" value="highlights" class="copy-setting-option"><span data-i18n="fields.highlights">Highlights</span></label>
+                        <label><input type="checkbox" value="shadows" class="copy-setting-option"><span data-i18n="fields.shadows">Shadows</span></label>
+                        <label><input type="checkbox" value="saturation" class="copy-setting-option"><span data-i18n="fields.saturation">Saturation</span></label>
+                    </fieldset>
+                    <fieldset class="copy-settings-group">
+                        <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="copy.transform">Transform</span></label></legend>
+                        <label><input type="checkbox" value="crop" class="copy-setting-option"><span data-i18n="develop.crop">Crop</span></label>
+                        <label><input type="checkbox" value="rotateFlip" class="copy-setting-option"><span data-i18n="develop.rotateFlip">Rotate &amp; Flip</span></label>
+                        <label><input type="checkbox" value="perspective" class="copy-setting-option"><span data-i18n="copy.perspectiveAdjustment">Perspective Adjustment</span></label>
+                    </fieldset>
+                </div>
+                <div class="copy-settings-column">
+                    <fieldset class="copy-settings-group">
+                        <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="fields.colorBalance">Color Balance</span></label></legend>
+                        <label><input type="checkbox" value="temperature" class="copy-setting-option"><span data-i18n="fields.temperature">Temperature</span></label>
+                        <label><input type="checkbox" value="tint" class="copy-setting-option"><span data-i18n="fields.tint">Tint</span></label>
+                    </fieldset>
+                    <fieldset class="copy-settings-group">
+                        <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="copy.filmEmulation">Print Film Emulation</span></label></legend>
+                        <label><input type="checkbox" value="lut" class="copy-setting-option"><span data-i18n="copy.lut">Built-in or Custom LUT</span></label>
+                        <label><input type="checkbox" value="lutOpacity" class="copy-setting-option"><span data-i18n="fields.lutOpacity">LUT Opacity</span></label>
+                    </fieldset>
+                    <fieldset class="copy-settings-group">
+                        <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="develop.sprocketSettings">Sprocket Settings</span></label></legend>
+                        <label><input type="checkbox" value="sprocketPoint" class="copy-setting-option"><span data-i18n="copy.sprocketPoint">Sampled Sprocket Point</span></label>
+                        <label><input type="checkbox" value="sprocketTolerance" class="copy-setting-option"><span data-i18n="fields.sprocketTolerance">Sprocket Tolerance</span></label>
+                        <label><input type="checkbox" value="sprocketFeather" class="copy-setting-option"><span data-i18n="fields.sprocketFeather">Sprocket Feather</span></label>
+                    </fieldset>
+                    <fieldset class="copy-settings-group">
+                        <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="develop.inputColorScience">Input Color Science</span></label></legend>
+                        <label><input type="checkbox" value="workingSpace" class="copy-setting-option"><span data-i18n="fields.workingSpace">Working Space</span></label>
+                    </fieldset>
                 </div>
             </div>
+            <footer class="copy-settings-footer">
+                <button id="btn-copy-select-all" type="button" class="copy-settings-secondary" data-i18n="actions.selectAll">Select All</button>
+                <button id="btn-copy-select-none" type="button" class="copy-settings-secondary" data-i18n="copy.selectNone">Select None</button>
+                <select id="copy-settings-preset" aria-label="Settings preset">
+                    <option value="all" data-i18n="copy.presetAll" selected>All available settings</option>
+                    <option value="tone" data-i18n="copy.presetTone">Tone and color</option>
+                    <option value="geometry" data-i18n="copy.presetGeometry">Geometry only</option>
+                </select>
+                <span class="copy-settings-footer-spacer"></span>
+                <button id="btn-cancel-copy-settings" type="button" class="copy-settings-secondary" data-i18n="actions.cancel">Cancel</button>
+                <button id="btn-confirm-copy-settings" type="button" class="copy-settings-primary" data-i18n="develop.copySettings">Copy Settings</button>
+            </footer>
         </div>
+    </div>
 
     <!-- Import Choice Modal -->
     <div id="import-choice-modal" class="import-modal fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
@@ -792,7 +854,7 @@
                 </button>
                 <button id="btn-continue-roll" class="w-full px-4 py-4 text-left text-[12px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 flex flex-col gap-1">
                     <span class="text-zinc-100">Continue Editing Roll</span>
-                    <span class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Select an existing roll from the archive to continue editing its photos.</span>
+                    <span data-i18n="import.continueHint" class="text-[10px] text-zinc-400 font-normal normal-case tracking-normal">Select an existing roll from the archive to continue editing its photos.</span>
                     <img class="import-choice-art" src="assets/design-reference/import-continue.png" alt="">
                 </button>
             </div>
@@ -803,7 +865,10 @@
     <div id="continue-roll-modal" class="import-modal fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
         <div class="import-dialog bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[450px] flex flex-col transform scale-95 transition-transform duration-200" id="continue-roll-content" role="dialog" aria-modal="true" aria-labelledby="continue-roll-title">
             <div class="import-dialog-header px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
-                <h2 id="continue-roll-title" class="import-dialog-back-title text-[13px] font-bold tracking-widest uppercase text-zinc-100">Select Roll</h2>
+                <button id="btn-back-continue-roll" class="import-dialog-back-title text-[13px] font-bold tracking-widest uppercase text-zinc-100" type="button" aria-label="Back">
+                    <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"></path></svg>
+                    <span id="continue-roll-title">Select Roll</span>
+                </button>
                 <button id="btn-close-continue-roll" class="import-close-btn text-zinc-500 hover:text-zinc-200 transition-colors" type="button" aria-label="Close">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
@@ -828,7 +893,10 @@
     <div id="roll-metadata-modal" class="import-modal fixed inset-0 bg-black/90 backdrop-blur-md z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200">
         <div class="import-dialog bg-[#1C1C1E] border border-[#28282c] rounded-lg shadow-2xl w-[450px] flex flex-col transform scale-95 transition-transform duration-200" id="roll-metadata-content" role="dialog" aria-modal="true" aria-labelledby="roll-metadata-title">
             <div class="import-dialog-header px-6 py-5 border-b border-[#28282c] flex justify-between items-center">
-                <h2 id="roll-metadata-title" class="import-dialog-back-title text-[13px] font-bold tracking-widest uppercase text-zinc-100">Roll Metadata</h2>
+                <button id="btn-back-roll-meta" class="import-dialog-back-title text-[13px] font-bold tracking-widest uppercase text-zinc-100" type="button" aria-label="Back">
+                    <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"></path></svg>
+                    <span id="roll-metadata-title">Roll Metadata</span>
+                </button>
                 <button id="btn-close-roll-meta" class="import-close-btn text-zinc-500 hover:text-zinc-200 transition-colors" type="button" aria-label="Close">
                     <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
@@ -984,7 +1052,7 @@
             <div class="export-dialog-header">
                 <div>
                     <h2 id="export-modal-title">Batch export</h2>
-                    <p id="export-modal-subtitle">Prepare a consistent set of finished frames.</p>
+                    <p id="export-modal-subtitle">Review output settings before writing the finished frames.</p>
                 </div>
                 <button id="btn-close-export" class="export-icon-button" type="button" aria-label="Close export dialog" title="Close export dialog">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke-width="1.7" stroke-linecap="round"></path></svg>
@@ -1011,13 +1079,19 @@
                                 <option value="tiff16">TIFF · 16-bit</option>
                                 <option value="tiff8">TIFF · 8-bit</option>
                                 <option value="png">PNG · 16-bit</option>
-                                <option value="jpeg">JPEG · 8-bit</option>
+                                <option value="jpeg" selected>JPEG · 8-bit</option>
                             </select>
                         </label>
                         <label class="export-field">
                             <span>Output color</span>
                             <select id="export-colorspace">
                                 <option value="srgb">sRGB IEC 61966-2.1</option>
+                                <option value="display-p3">Display P3</option>
+                                <option value="adobe-rgb">Adobe RGB (1998)</option>
+                                <option value="rec2020">ITU-R BT.2020</option>
+                                <option value="prophoto-rgb">ProPhoto RGB (ROMM RGB)</option>
+                                <option value="acescg">ACEScg (AP1)</option>
+                                <option value="aces">ACES2065-1 (AP0)</option>
                             </select>
                         </label>
                         <div class="export-field" id="export-quality-group">
@@ -1081,10 +1155,6 @@
                             <input id="export-naming" type="text" value="{Roll}_{Seq}" maxlength="160" spellcheck="false" autocomplete="off">
                         </label>
                         <div class="export-token-hint">Tokens: <code>{Roll}</code> <code>{Camera}</code> <code>{Film}</code> <code>{Date}</code> <code>{Original}</code> <code>{Seq}</code></div>
-                        <div class="export-preview-row">
-                            <span>Preview</span>
-                            <code id="export-name-preview">Roll_001.tiff</code>
-                        </div>
                         <label class="export-field">
                             <span>When a file exists</span>
                             <select id="export-conflict-policy">
@@ -1093,19 +1163,24 @@
                                 <option value="skip">Skip existing file</option>
                             </select>
                         </label>
-                        <div class="export-info-note">Invalid filename characters are replaced automatically. Batch names remain unique even when a template is reused.</div>
-                    </section>
-
-                    <section class="export-settings-section export-destination-section" aria-labelledby="export-destination-heading">
-                        <div class="export-section-heading">
-                            <h3 id="export-destination-heading">Destination</h3>
-                            <span>Local folder</span>
+                        <div class="export-preview-row">
+                            <span>Preview</span>
+                            <code id="export-name-preview">Roll_001.tiff</code>
                         </div>
-                        <div class="export-destination-row">
-                            <input id="export-output-dir" type="text" readonly placeholder="No folder selected" data-i18n-placeholder="export.noFolder">
-                            <button id="btn-choose-export-dir" type="button">Choose folder</button>
+                        <label class="export-field export-metadata-field">
+                            <span>Photo metadata</span>
+                            <span class="export-inline-check">
+                                <input id="export-write-exif" type="checkbox">
+                                <span>Write Roll, film, camera and date to EXIF</span>
+                            </span>
+                        </label>
+                        <div class="export-field export-destination-field">
+                            <span>Destination</span>
+                            <div class="export-destination-row">
+                                <input id="export-output-dir" type="text" readonly placeholder="No folder selected" data-i18n-placeholder="export.noFolder">
+                                <button id="btn-choose-export-dir" type="button">Choose folder</button>
+                            </div>
                         </div>
-                        <div class="export-info-note">The export runs in the background, so you can continue grading while the files are written.</div>
                     </section>
                 </div>
             </div>
@@ -1120,6 +1195,7 @@
     <script src="contact-sheet.js"></script>
     <script src="density-math.js"></script>
     <script src="histogram-math.js"></script>
+    <script src="color-science.js"></script>
     <script src="settings-copy.js"></script>
     <script src="export-settings.js"></script>
     <script src="i18n.js"></script>

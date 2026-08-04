@@ -1,4 +1,4 @@
-use crate::core_math::status_m_crosstalk_matrix;
+use crate::core_math::{density_luma, status_m_crosstalk_matrix};
 use nalgebra::{Matrix3, Vector3};
 
 use crate::app_state::FilmMode;
@@ -70,8 +70,9 @@ impl FilmPipeline {
                 [true_density_vec.x, true_density_vec.y, true_density_vec.z]
             }
             FilmMode::BW => {
-                // 黑白管线：不应用串扰矩阵，输出灰度密度
-                let gray_density = (delta_d.x + delta_d.y + delta_d.z) / 3.0;
+                // Monochrome density is measured in the fixed linear-sRGB
+                // capture domain with green-heavy luminance weighting.
+                let gray_density = density_luma([delta_d.x, delta_d.y, delta_d.z]);
                 [gray_density, gray_density, gray_density]
             }
         }
@@ -100,5 +101,20 @@ impl FilmPipeline {
     pub fn process_pixel(&self, linear_rgb: &[f32; 3]) -> [f32; 3] {
         let true_density = self.compute_true_density(linear_rgb);
         self.apply_exposure(&true_density)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FilmPipeline;
+    use crate::app_state::FilmMode;
+
+    #[test]
+    fn monochrome_density_uses_green_heavy_capture_luminance() {
+        let pipeline = FilmPipeline::new([u16::MAX; 3], [0.0; 3], FilmMode::BW);
+        let density = pipeline.compute_true_density(&[1.0, 0.1, 1.0]);
+        assert!((density[0] - 0.7152).abs() < 1e-4);
+        assert_eq!(density[0], density[1]);
+        assert_eq!(density[1], density[2]);
     }
 }

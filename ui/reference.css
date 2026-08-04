@@ -590,8 +590,23 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
  * raised card, while the photo grid is inset from its left and right edges. */
 body[data-theme] #view-history.history-detail > div:last-child > .history-content {
     padding: 22px 28px !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+    overscroll-behavior: contain;
     border: 0 !important;
-    border-radius: 0 !important;
+    border-radius: 10px 10px 0 0 !important;
+    background: var(--ui-surface) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+body[data-theme] #view-history.history-detail,
+body[data-theme] #view-history.history-detail > div:last-child {
+    min-height: 0 !important;
+    overflow: hidden !important;
+}
+
+body[data-theme] #view-history.history-detail > div:last-child {
+    gap: 8px !important;
     background: transparent !important;
     box-shadow: none !important;
 }
@@ -599,6 +614,51 @@ body[data-theme] #view-history.history-detail > div:last-child > .history-conten
 #view-history.history-detail #history-internal-grid {
     width: 100%;
     margin: 0 auto;
+}
+
+.history-roll-overview:not(.hidden) {
+    display: grid;
+    grid-template-columns: minmax(280px, 1fr) minmax(520px, 1.35fr);
+    align-items: center;
+    gap: clamp(28px, 5vw, 84px);
+    margin: -6px 0 28px;
+    padding: 12px 14px;
+}
+
+.history-roll-identity { min-width: 0; }
+.history-roll-identity > span,
+.history-roll-facts dt {
+    display: block;
+    margin-bottom: 7px;
+    color: var(--ui-muted);
+    font-size: 10px;
+    font-weight: 500;
+}
+.history-roll-identity h2 {
+    overflow: hidden;
+    margin: 0;
+    color: var(--ui-text);
+    font-size: clamp(22px, 2.1vw, 30px);
+    font-weight: 700;
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.history-roll-facts {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(90px, 1fr));
+    gap: clamp(18px, 3vw, 48px);
+    margin: 0;
+}
+.history-roll-facts div { min-width: 0; }
+.history-roll-facts dd {
+    overflow: hidden;
+    margin: 0;
+    color: var(--ui-text);
+    font-size: 15px;
+    font-weight: 500;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 #view-history.history-detail #btn-edit-roll,
@@ -719,6 +779,10 @@ body[data-theme] #view-history.history-detail > div:last-child > .history-conten
     font-size: 14px !important;
 }
 
+#filter-date-list {
+    gap: 4px !important;
+}
+
 .roll-date-year {
     border-radius: 6px;
 }
@@ -726,31 +790,60 @@ body[data-theme] #view-history.history-detail > div:last-child > .history-conten
 .roll-date-year summary {
     display: flex;
     align-items: center;
-    gap: 9px;
-    min-height: 28px;
+    gap: 8px;
+    min-height: 25px;
     cursor: pointer;
     list-style: none;
     color: var(--ui-text);
-    font-size: 13px;
+    font-size: 12px;
 }
 
 .roll-date-year summary::-webkit-details-marker { display: none; }
 .roll-date-year summary::after {
     content: "›";
-    margin-left: auto;
+    margin-left: 2px;
     color: var(--ui-brand);
-    font-size: 20px;
-    transform: rotate(90deg);
+    font-size: 18px;
+    line-height: 1;
+    transform: rotate(0deg);
 }
-.roll-date-year[open] summary::after { transform: rotate(-90deg); }
-.filter-year-checkbox { accent-color: var(--ui-brand); }
+.roll-date-year[open] summary::after { transform: rotate(90deg); }
+#view-history .filter-year-checkbox {
+    width: 13px;
+    height: 13px;
+    margin: 0;
+    accent-color: var(--ui-brand);
+}
 .roll-date-children {
     display: grid;
-    gap: 2px;
-    margin-top: 2px;
+    gap: 3px;
+    margin-top: 4px;
     padding: 4px 8px;
     border-radius: 6px;
     background: var(--ui-surface);
+}
+
+#view-history .roll-date-children label {
+    display: grid;
+    grid-template-columns: 13px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    min-height: 25px;
+    color: var(--ui-muted) !important;
+    font-size: 12px !important;
+}
+
+#view-history .roll-date-children .filter-date {
+    width: 13px;
+    height: 13px;
+    margin: 0;
+}
+
+.roll-date-children label span {
+    overflow: hidden;
+    text-align: right;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 #library-rolls-grid:not(.hidden) {
@@ -939,8 +1032,10 @@ body[data-theme="dark"] .crop-tools > #btn-reset-crop {
 }
 
 #canvas-wrapper {
-    max-width: 100%;
-    max-height: 100%;
+    /* The viewport clips zoomed content; constraining each axis here would
+     * distort the canvas as soon as only one side reaches the viewport. */
+    max-width: none;
+    max-height: none;
     box-shadow: none !important;
 }
 
@@ -1286,10 +1381,11 @@ body[data-theme="dark"] {
 }
 
 #inspector-input {
-    padding: 10px !important;
+    padding: 18px 0 24px !important;
     border: 0 !important;
-    border-radius: 10px !important;
-    background: var(--inspector-panel) !important;
+    border-top: 3px solid var(--ui-control) !important;
+    border-radius: 0 !important;
+    background: transparent !important;
 }
 
 #inspector-input > h3,
@@ -1302,15 +1398,22 @@ body[data-theme="dark"] {
 }
 
 #inspector-input > h3 {
-    margin-bottom: 12px !important;
+    margin-bottom: 16px !important;
 }
 
-#inspector-input > div,
-#inspector-input > div > div {
+#inspector-input > div {
     gap: 10px !important;
     padding: 0 !important;
     border: 0 !important;
     background: transparent !important;
+}
+
+#inspector-input > div > div {
+    gap: 10px !important;
+    padding: 10px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: var(--inspector-panel) !important;
 }
 
 #inspector-input #select-colorspace {
@@ -1418,14 +1521,19 @@ body[data-theme] #develop-inspector input.slider:disabled::-webkit-slider-runnab
 #develop-module-nav .module-nav-steps {
     display: flex;
     flex-direction: column;
-    justify-content: space-around;
+    justify-content: stretch;
     width: 100%;
     height: 100%;
-    gap: 8px;
+    gap: 4px;
 }
 
 #develop-module-nav .module-nav-btn {
     flex: 1 1 0;
+    min-height: 14px;
+}
+
+#develop-module-nav .module-nav-btn[data-target="inspector-input"] {
+    margin-top: 6px;
 }
 
 .module-nav-slider {
@@ -1434,13 +1542,13 @@ body[data-theme] #develop-inspector input.slider:disabled::-webkit-slider-runnab
     z-index: 3;
     top: 6px;
     left: 50%;
-    width: 38px;
-    height: 25px;
+    width: min(18px, calc(100% - 4px));
+    height: 20px;
     padding: 0;
     border: 0;
-    border-radius: 4px;
-    background: color-mix(in srgb, var(--ui-brand) 72%, white);
-    box-shadow: 0 2px 5px rgba(0, 0, 0, .22);
+    border-radius: 5px;
+    background: color-mix(in srgb, var(--ui-brand) 82%, white);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, .22);
     cursor: grab;
     touch-action: none;
     transform: translate(-50%, var(--module-slider-y));
@@ -1585,17 +1693,17 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 /* Import dialogs mirror the exported Figma card system. */
 .import-modal {
     padding: 10px !important;
-    background: rgba(30, 30, 28, .24) !important;
+    background: color-mix(in srgb, var(--ui-workspace) 58%, transparent) !important;
 }
 
 .import-dialog {
     width: min(460px, calc(100vw - 20px)) !important;
     max-height: calc(100vh - 20px);
-    overflow: hidden;
+    overflow: hidden !important;
     border: 0 !important;
     border-radius: 20px !important;
-    background: #fff !important;
-    color: #1c1c1c !important;
+    background: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
     box-shadow: 0 8px 24px rgba(0, 0, 0, .22) !important;
     transform: scale(1) !important;
 }
@@ -1604,11 +1712,11 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     min-height: 48px;
     padding: 10px 10px 10px 20px !important;
     border: 0 !important;
-    background: #fff !important;
+    background: var(--ui-surface) !important;
 }
 
 .import-dialog-header h2 {
-    color: #0a5aa8 !important;
+    color: var(--ui-brand) !important;
     font-size: 16px !important;
     font-weight: 800 !important;
     letter-spacing: 0 !important;
@@ -1617,7 +1725,7 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 
 .import-dialog-header p {
     margin-top: 5px !important;
-    color: #3b3b3b !important;
+    color: var(--ui-text) !important;
     font-size: 12px !important;
 }
 
@@ -1631,7 +1739,7 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     border: 0 !important;
     border-radius: 0 !important;
     background: transparent !important;
-    color: #99999f !important;
+    color: var(--ui-muted) !important;
 }
 
 .import-close-btn svg {
@@ -1644,7 +1752,7 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     padding: 10px !important;
     gap: 10px !important;
     border-radius: 10px;
-    background: #dadada !important;
+    background: var(--ui-workspace) !important;
 }
 
 /* Override the legacy generic modal spacing with the exact Figma geometry. */
@@ -1670,15 +1778,15 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     overflow: hidden;
     border: 0 !important;
     border-radius: 5px !important;
-    background: #fff !important;
-    color: #1c1c1c !important;
+    background: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
     box-shadow: 0 0 10px rgba(0, 0, 0, .25) !important;
     text-transform: none !important;
     letter-spacing: 0 !important;
 }
 
 #import-choice-content button:not(.import-close-btn) span:first-child {
-    color: #1c1c1c !important;
+    color: var(--ui-text) !important;
     font-size: 12px !important;
     font-weight: 700 !important;
 }
@@ -1689,7 +1797,7 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 
 #import-choice-content button:not(.import-close-btn) span:nth-child(2) {
     max-width: calc(100% - 90px);
-    color: #1c1c1c !important;
+    color: var(--ui-text) !important;
     font-size: 10px !important;
     font-weight: 500 !important;
 }
@@ -1709,15 +1817,419 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 .import-dialog-back-title {
     display: inline-flex !important;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    color: var(--ui-brand) !important;
+    cursor: pointer;
+    font: inherit;
 }
 
-.import-dialog-back-title::before {
-    content: "‹";
-    color: #0a5aa8;
-    font-size: 32px;
-    font-weight: 400;
-    line-height: 18px;
+.import-dialog-back-title svg {
+    width: 20px;
+    height: 20px;
+    flex: 0 0 auto;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2.5;
+}
+
+.import-dialog-back-title:focus-visible {
+    outline: 2px solid var(--ui-brand);
+    outline-offset: 4px;
+}
+
+/* Copy Settings mirrors the two-column Figma dialog in both themes. */
+.copy-settings-modal {
+    padding: 10px !important;
+    background: color-mix(in srgb, var(--ui-workspace) 58%, transparent) !important;
+    backdrop-filter: blur(6px);
+}
+
+.copy-settings-dialog {
+    display: grid;
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    width: min(754px, calc(100vw - 20px));
+    max-height: calc(100vh - 20px);
+    overflow: hidden;
+    border: 0;
+    border-radius: 20px;
+    outline: none;
+    background: var(--ui-surface);
+    color: var(--ui-text);
+    box-shadow: 0 18px 54px rgba(0, 0, 0, .24);
+}
+
+.copy-settings-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 20px;
+    min-height: 58px;
+    padding: 14px 20px 10px;
+}
+
+.copy-settings-header h2 {
+    margin: 0;
+    color: var(--ui-brand);
+    font-size: 17px;
+    font-weight: 700;
+    line-height: 1.25;
+}
+
+.copy-settings-header p {
+    margin: 3px 0 0;
+    color: var(--ui-text);
+    font-size: 11px;
+    line-height: 1.35;
+}
+
+.copy-settings-close {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    flex: 0 0 auto;
+    padding: 0;
+    place-items: center;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--ui-muted);
+}
+
+.copy-settings-close:hover {
+    background: var(--ui-control);
+    color: var(--ui-text);
+}
+
+.copy-settings-close svg {
+    width: 26px;
+    height: 26px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 2;
+}
+
+.copy-settings-source {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    min-height: 58px;
+    margin: 0 10px 10px;
+    padding: 10px 32px;
+    border-radius: 10px;
+    background: var(--ui-surface);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .15);
+}
+
+.copy-settings-source > div {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.copy-settings-source span {
+    color: var(--ui-muted);
+    font-size: 10px;
+}
+
+.copy-settings-source strong {
+    overflow: hidden;
+    color: var(--ui-text);
+    font-size: 13px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.copy-settings-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 30px;
+    min-height: 0;
+    margin: 0 10px 10px;
+    padding: 16px 20px;
+    overflow-y: auto;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--ui-workspace) 64%, var(--ui-surface));
+}
+
+.copy-settings-column {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.copy-settings-group {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+}
+
+.copy-settings-group legend {
+    width: 100%;
+    margin: 0 0 2px;
+    padding: 0;
+}
+
+.copy-settings-group label {
+    display: flex;
+    min-width: 0;
+    min-height: 25px;
+    align-items: center;
+    gap: 10px;
+    color: var(--ui-text);
+    font-size: 13px;
+    line-height: 1.25;
+    cursor: pointer;
+}
+
+.copy-settings-group > label {
+    margin-left: 24px;
+}
+
+.copy-settings-group legend label {
+    color: var(--ui-brand);
+    font-size: 16px;
+}
+
+.copy-settings-group input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    flex: 0 0 auto;
+    margin: 0;
+    accent-color: var(--ui-brand);
+}
+
+.copy-settings-footer {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-height: 45px;
+    padding: 0 10px 10px;
+}
+
+.copy-settings-footer-spacer {
+    flex: 1 1 auto;
+}
+
+.copy-settings-footer button,
+.copy-settings-footer select {
+    min-height: 35px;
+    border: 0;
+    border-radius: 10px;
+    font-size: 12px;
+}
+
+.copy-settings-secondary {
+    padding: 0 12px;
+    background: var(--ui-control);
+    color: var(--ui-text);
+    font-weight: 700;
+}
+
+.copy-settings-footer select {
+    min-width: 210px;
+    padding: 0 34px 0 10px;
+    border: 1px solid var(--ui-line);
+    background-color: var(--ui-surface);
+    color: var(--ui-text);
+}
+
+.copy-settings-primary {
+    padding: 0 18px;
+    background: var(--ui-brand);
+    color: #fff;
+    font-weight: 700;
+}
+
+.copy-settings-primary:hover {
+    background: var(--ui-brand-hover);
+}
+
+@media (max-width: 680px) {
+    .copy-settings-grid {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 14px;
+    }
+
+    .copy-settings-footer {
+        flex-wrap: wrap;
+    }
+
+    .copy-settings-footer select {
+        min-width: min(210px, 100%);
+        flex: 1 1 180px;
+    }
+
+    .copy-settings-footer-spacer {
+        display: none;
+    }
+}
+
+/* Copy Settings must override the legacy [id$="-content"] modal rules. */
+#copy-settings-content.copy-settings-dialog {
+    display: grid !important;
+    grid-template-rows: auto auto minmax(0, 1fr) auto !important;
+    width: min(754px, calc(100vw - 20px)) !important;
+    max-height: calc(100vh - 20px) !important;
+    padding: 0 !important;
+    overflow: hidden !important;
+    border: 0 !important;
+    border-radius: 20px !important;
+    background: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
+}
+
+#copy-settings-content > .copy-settings-header {
+    min-height: 58px !important;
+    padding: 14px 20px 10px !important;
+    border: 0 !important;
+}
+
+#copy-settings-content .copy-settings-header h2 {
+    margin: 0 !important;
+    color: var(--ui-brand) !important;
+    font-size: 17px !important;
+    font-weight: 700 !important;
+    letter-spacing: 0 !important;
+}
+
+#copy-settings-content .copy-settings-header p {
+    margin: 3px 0 0 !important;
+    color: var(--ui-text) !important;
+    font-size: 11px !important;
+}
+
+#copy-settings-content .copy-settings-close {
+    display: grid !important;
+    width: 32px !important;
+    height: 32px !important;
+    min-height: 32px !important;
+    padding: 0 !important;
+    place-items: center !important;
+    border: 0 !important;
+    border-radius: 4px !important;
+    background: transparent !important;
+    color: var(--ui-muted) !important;
+}
+
+#copy-settings-content > .copy-settings-source {
+    min-height: 58px !important;
+    margin: 0 10px 10px !important;
+    padding: 10px 32px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: var(--ui-surface) !important;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, .15) !important;
+}
+
+#copy-settings-content > .copy-settings-grid {
+    display: grid !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 30px !important;
+    min-height: 0 !important;
+    margin: 0 10px 10px !important;
+    padding: 16px 20px !important;
+    overflow-y: auto !important;
+    border-radius: 10px !important;
+    background: color-mix(in srgb, var(--ui-workspace) 64%, var(--ui-surface)) !important;
+}
+
+#copy-settings-content .copy-settings-column {
+    gap: 14px !important;
+}
+
+#copy-settings-content .copy-settings-group,
+#copy-settings-content .copy-settings-group legend {
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+}
+
+#copy-settings-content .copy-settings-group legend {
+    margin-bottom: 2px !important;
+}
+
+#copy-settings-content .copy-settings-group label {
+    min-height: 25px !important;
+    gap: 10px !important;
+    color: var(--ui-text) !important;
+    font-size: 13px !important;
+    line-height: 1.25 !important;
+}
+
+#copy-settings-content .copy-settings-group > label {
+    margin-left: 24px !important;
+}
+
+#copy-settings-content .copy-settings-group legend label {
+    margin-left: 0 !important;
+    color: var(--ui-brand) !important;
+    font-size: 16px !important;
+}
+
+#copy-settings-content .copy-settings-group input[type="checkbox"] {
+    width: 14px !important;
+    height: 14px !important;
+    min-height: 14px !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border-radius: 3px !important;
+    background: var(--ui-control) !important;
+}
+
+#copy-settings-content > .copy-settings-footer {
+    min-height: 45px !important;
+    padding: 0 10px 10px !important;
+    border: 0 !important;
+}
+
+#copy-settings-content .copy-settings-footer button,
+#copy-settings-content .copy-settings-footer select {
+    min-height: 35px !important;
+    border-radius: 10px !important;
+    font-size: 12px !important;
+}
+
+#copy-settings-content .copy-settings-secondary {
+    padding: 0 12px !important;
+    background: var(--ui-control) !important;
+    color: var(--ui-text) !important;
+    font-weight: 700 !important;
+}
+
+#copy-settings-content .copy-settings-footer select {
+    min-width: 280px !important;
+    padding: 0 34px 0 10px !important;
+    background-color: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
+}
+
+#copy-settings-content #btn-confirm-copy-settings.copy-settings-primary {
+    padding: 0 18px !important;
+    background: var(--ui-brand) !important;
+    color: #fff !important;
+    font-weight: 700 !important;
+}
+
+@media (max-width: 680px) {
+    #copy-settings-content > .copy-settings-grid {
+        grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    #copy-settings-content .copy-settings-footer select {
+        min-width: min(210px, 100%) !important;
+    }
 }
 
 .import-dialog-body {
@@ -1731,7 +2243,7 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     gap: 15px !important;
     border: 0 !important;
     border-radius: 10px !important;
-    background: #dadada !important;
+    background: var(--ui-workspace) !important;
 }
 
 .import-form-row {
@@ -1741,7 +2253,7 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 
 .import-form-row > label {
     flex: 1 1 0;
-    color: #1c1c1c !important;
+    color: var(--ui-text) !important;
     font-size: 12px !important;
     font-weight: 500 !important;
     text-transform: none !important;
@@ -1760,8 +2272,8 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     min-height: 30px !important;
     border: 0 !important;
     border-radius: 10px !important;
-    background-color: #fff !important;
-    color: #99999f !important;
+    background-color: var(--ui-surface) !important;
+    color: var(--ui-muted) !important;
     font-size: 12px !important;
     font-weight: 500 !important;
 }
@@ -1770,8 +2282,8 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     appearance: none;
     padding: 0 30px 0 10px !important;
     background-image:
-        linear-gradient(45deg, transparent 50%, #99999f 50%),
-        linear-gradient(135deg, #99999f 50%, transparent 50%) !important;
+        linear-gradient(45deg, transparent 50%, var(--ui-muted) 50%),
+        linear-gradient(135deg, var(--ui-muted) 50%, transparent 50%) !important;
     background-position: calc(100% - 16px) 13px, calc(100% - 11px) 13px !important;
     background-size: 5px 5px, 5px 5px !important;
     background-repeat: no-repeat !important;
@@ -1779,7 +2291,7 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 
 .import-dialog input[type="date"] {
     padding: 0 10px !important;
-    color-scheme: light;
+    color-scheme: light dark;
     text-align: center;
 }
 
@@ -1800,13 +2312,13 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 
 .import-secondary-btn {
     padding-inline: 20px !important;
-    background: #e4e4e4 !important;
-    color: #3b3b3b !important;
+    background: var(--ui-control) !important;
+    color: var(--ui-text) !important;
 }
 
 .import-primary-btn {
     padding-inline: 20px !important;
-    background: #0a5aa8 !important;
+    background: var(--ui-brand) !important;
     color: #fff !important;
 }
 
@@ -1857,8 +2369,8 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     overflow: hidden;
     border: 0 !important;
     border-radius: 10px !important;
-    background: #fff !important;
-    color: #99999f !important;
+    background: var(--ui-surface) !important;
+    color: var(--ui-muted) !important;
     font-size: 12px !important;
     font-weight: 500 !important;
     line-height: 30px;
@@ -1879,8 +2391,8 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     right: 12px;
     width: 8px;
     height: 8px;
-    border-right: 2px solid #99999f;
-    border-bottom: 2px solid #99999f;
+    border-right: 2px solid var(--ui-muted);
+    border-bottom: 2px solid var(--ui-muted);
     transform: rotate(45deg);
 }
 
@@ -1897,9 +2409,9 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     right: 0;
     width: max(100%, 220px);
     padding: 6px;
-    border: 1px solid #dedede;
+    border: 1px solid var(--ui-line);
     border-radius: 10px;
-    background: #fff;
+    background: var(--ui-surface);
     box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
 }
 
@@ -1910,7 +2422,7 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 
 .custom-select-group {
     padding: 7px 9px 4px;
-    color: #99999f;
+    color: var(--ui-muted);
     font-size: 9px;
     font-weight: 700;
     text-transform: uppercase;
@@ -1924,7 +2436,7 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     border: 0 !important;
     border-radius: 6px !important;
     background: transparent !important;
-    color: #3b3b3b !important;
+    color: var(--ui-text) !important;
     font-size: 11px !important;
     font-weight: 500 !important;
     text-align: left;
@@ -1933,8 +2445,8 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 .custom-select-option:hover,
 .custom-select-option:focus-visible,
 .custom-select-option[aria-selected="true"] {
-    background: #ececeb !important;
-    color: #0a5aa8 !important;
+    background: var(--ui-control) !important;
+    color: var(--ui-brand) !important;
 }
 
 .custom-date-panel {
@@ -1952,7 +2464,7 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 }
 
 .custom-date-header strong {
-    color: #1c1c1c;
+    color: var(--ui-text);
     font-size: 12px;
     text-align: center;
 }
@@ -1963,12 +2475,12 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     border: 0 !important;
     border-radius: 6px !important;
     background: transparent !important;
-    color: #0a5aa8 !important;
+    color: var(--ui-brand) !important;
     font-size: 22px !important;
 }
 
 .custom-date-nav:hover {
-    background: #ececeb !important;
+    background: var(--ui-control) !important;
 }
 
 .custom-date-weekdays,
@@ -1980,7 +2492,7 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 
 .custom-date-weekdays {
     margin-bottom: 4px;
-    color: #99999f;
+    color: var(--ui-muted);
     font-size: 9px;
     font-weight: 700;
     text-align: center;
@@ -1997,19 +2509,56 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     border: 0 !important;
     border-radius: 6px !important;
     background: transparent !important;
-    color: #3b3b3b !important;
+    color: var(--ui-text) !important;
     font-size: 10px !important;
 }
 
 .custom-date-day:hover,
 .custom-date-day:focus-visible {
-    background: #ececeb !important;
+    background: var(--ui-control) !important;
 }
 
 .custom-date-day.is-selected {
-    background: #0a5aa8 !important;
+    background: var(--ui-brand) !important;
     color: #fff !important;
     font-weight: 700 !important;
+}
+
+/* Keep the dialog silhouette intact and make every surface theme-aware. */
+.import-dialog {
+    overflow: hidden !important;
+    border-radius: 20px !important;
+    background: var(--ui-surface) !important;
+    clip-path: inset(0 round 20px);
+}
+.import-dialog-header { background: var(--ui-surface) !important; }
+.import-choice-list,
+.import-form-card,
+#roll-metadata-content .import-form-card,
+#continue-roll-content .import-form-card { background: var(--ui-workspace) !important; }
+#import-choice-content button:not(.import-close-btn),
+.custom-select-trigger,
+.custom-date-trigger,
+.custom-select-menu,
+.custom-date-panel {
+    background-color: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
+}
+body[data-theme="dark"] .import-choice-art {
+    filter: invert(1);
+    opacity: .16;
+}
+
+@media (max-width: 900px) {
+    .history-roll-overview:not(.hidden) {
+        grid-template-columns: minmax(0, 1fr);
+        gap: 18px;
+    }
+    .history-roll-facts { gap: 16px; }
+}
+
+@media (max-width: 620px) {
+    .history-roll-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* Final responsive geometry and import-popover containment. */
@@ -2026,25 +2575,23 @@ body[data-theme] #view-develop > #develop-inspector {
     max-width: none !important;
     height: 100% !important;
     margin: 0 !important;
-    padding: 0 !important;
+    padding: 8px !important;
+    box-sizing: border-box !important;
 }
 
-.import-dialog,
-.import-dialog-body {
-    overflow: visible !important;
-}
+.import-dialog-body { overflow: auto !important; }
 
 #roll-metadata-content .import-form-card,
 #continue-roll-content .import-form-card {
     padding: 20px !important;
     border-radius: 10px !important;
-    background: #dadada !important;
+    background: var(--ui-workspace) !important;
 }
 
 #roll-metadata-content :is(.custom-select-trigger, .custom-date-trigger),
 #continue-roll-content .custom-select-trigger {
-    background: #fff !important;
-    color: #99999f !important;
+    background: var(--ui-surface) !important;
+    color: var(--ui-muted) !important;
 }
 
 .custom-select-menu {
@@ -2058,27 +2605,27 @@ body[data-theme] #view-develop > #develop-inspector {
     width: 252px;
     max-height: 250px;
     overflow: hidden;
-    border-color: #4a4a4a;
-    background: #383838 !important;
+    border-color: var(--ui-line);
+    background: var(--ui-surface) !important;
 }
 
 .custom-date-header strong,
 .custom-date-day {
-    color: #fff !important;
+    color: var(--ui-text) !important;
 }
 
 .custom-date-weekdays {
-    color: #c8c8c8 !important;
+    color: var(--ui-muted) !important;
 }
 
 .custom-date-nav {
-    color: #fff !important;
+    color: var(--ui-text) !important;
 }
 
 .custom-date-nav:hover,
 .custom-date-day:hover,
 .custom-date-day:focus-visible {
-    background: #555 !important;
+    background: var(--ui-control) !important;
 }
 
 .custom-date-day.is-selected {

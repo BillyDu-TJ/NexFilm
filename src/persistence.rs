@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DATABASE_PATH: &str = "nexfilm_user.db";
-pub const MATH_VERSION: i64 = 2;
-pub const RAW_DECODE_VERSION: i64 = 4;
+pub const MATH_VERSION: i64 = 3;
+pub const RAW_DECODE_VERSION: i64 = 5;
 
 /// Development builds intentionally keep the database beside the repository so
 /// existing projects continue to open as before. Release builds use the normal
@@ -103,8 +103,8 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
             params TEXT,
             geom TEXT,
             base_color TEXT,
-            math_version INTEGER NOT NULL DEFAULT 2,
-            raw_decode_version INTEGER NOT NULL DEFAULT 2,
+            math_version INTEGER NOT NULL DEFAULT 3,
+            raw_decode_version INTEGER NOT NULL DEFAULT 5,
             updated_at INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (roll_id, file_path)
         )",
@@ -142,6 +142,7 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
     add_column_if_missing(connection, "updated_at", "INTEGER NOT NULL DEFAULT 0")?;
     migrate_legacy_thumbnails(connection)?;
     migrate_raw_decode_settings(connection)?;
+    migrate_density_contract(connection)?;
     Ok(())
 }
 
@@ -244,12 +245,8 @@ fn migrate_raw_decode_settings(connection: &Connection) -> rusqlite::Result<()> 
         let Ok(mut params) = serde_json::from_str::<TuningParams>(&original) else {
             continue;
         };
-        if !matches!(
-            params.raw_decode.working_colorspace.as_str(),
-            "linear-srgb" | "aces"
-        ) {
-            params.raw_decode.working_colorspace = "linear-srgb".to_string();
-        }
+        params.raw_decode.working_colorspace =
+            crate::color_science::DENSITY_CAPTURE_WORKING_SPACE.to_string();
         let normalized = serde_json::to_string(&params)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
         if normalized != original {
@@ -261,9 +258,52 @@ fn migrate_raw_decode_settings(connection: &Connection) -> rusqlite::Result<()> 
     for (row_id, params) in migrations {
         connection.execute(
             "UPDATE image_states
-             SET params = ?1, raw_decode_version = ?2, updated_at = ?3
-             WHERE rowid = ?4",
-            rusqlite::params![params, RAW_DECODE_VERSION, now_timestamp(), row_id],
+             SET params = ?1, updated_at = ?2
+             WHERE rowid = ?3",
+            rusqlite::params![params, now_timestamp(), row_id],
+        )?;
+    }
+    Ok(())
+}
+
+/// Version 3 measures density in a fixed linear-sRGB capture domain and keeps
+/// the final positive as a display-referred sRGB signal. Base estimates and
+/// rendered thumbnails generated under the previous contract cannot be reused
+/// safely, so force an explicit Auto Invert while preserving user tuning and
+/// geometry edits.
+fn migrate_density_contract(connection: &Connection) -> rusqlite::Result<()> {
+    let mut statement = connection.prepare(
+        "SELECT rowid, math_version, raw_decode_version FROM image_states
+         WHERE math_version < ?1 OR raw_decode_version < ?2",
+    )?;
+    let rows = statement.query_map(rusqlite::params![MATH_VERSION, RAW_DECODE_VERSION], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+    let row_ids = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+
+    let default_base = serde_json::to_string(&BaseColor::default())
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    for (row_id, _, _) in row_ids {
+        connection.execute(
+            "UPDATE image_states
+             SET base_color = ?1,
+                 rendered_thumb_base64 = NULL,
+                 math_version = ?2,
+                 raw_decode_version = ?3,
+                 updated_at = ?4
+             WHERE rowid = ?5",
+            rusqlite::params![
+                default_base,
+                MATH_VERSION,
+                RAW_DECODE_VERSION,
+                now_timestamp(),
+                row_id
+            ],
         )?;
     }
     Ok(())
@@ -531,12 +571,13 @@ mod tests {
     }
 
     #[test]
-    fn removes_unsupported_camera_profiles_and_fake_working_spaces() {
+    fn removes_unsupported_camera_profiles_and_normalizes_working_spaces() {
         let connection = Connection::open_in_memory().unwrap();
         init_schema(&connection).unwrap();
         let mut legacy_params = serde_json::to_value(TuningParams::default()).unwrap();
         legacy_params["dcp_profile"] = serde_json::Value::String("camera.dcp".to_string());
-        legacy_params["working_colorspace"] = serde_json::Value::String("rec2020".to_string());
+        legacy_params["working_colorspace"] =
+            serde_json::Value::String("not-a-colour-space".to_string());
         connection
             .execute(
                 "INSERT INTO image_states (roll_id, file_path, params)
@@ -559,6 +600,68 @@ mod tests {
         assert_eq!(params["working_colorspace"], "linear-srgb");
         assert!(params.get("dcp_profile").is_none());
         assert_eq!(decode_version, RAW_DECODE_VERSION);
+    }
+
+    #[test]
+    fn density_contract_migration_preserves_edits_but_requires_new_auto_invert() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let mut params = TuningParams::default();
+        params.exposure.exposure = 0.375;
+        let analyzed_base = BaseColor {
+            base_r: 60_000,
+            base_g: 50_000,
+            base_b: 40_000,
+        };
+        connection
+            .execute(
+                "INSERT INTO image_states (
+                    roll_id, file_path, rendered_thumb_base64, params, geom,
+                    base_color, math_version, raw_decode_version
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 2, 4)",
+                rusqlite::params![
+                    "roll-a",
+                    "old-contract.dng",
+                    "stale-positive",
+                    serde_json::to_string(&params).unwrap(),
+                    serde_json::to_string(&GeometryState::default()).unwrap(),
+                    serde_json::to_string(&analyzed_base).unwrap(),
+                ],
+            )
+            .unwrap();
+
+        init_schema(&connection).unwrap();
+
+        let (stored_params, stored_base, rendered, math_version, raw_version): (
+            String,
+            String,
+            Option<String>,
+            i64,
+            i64,
+        ) = connection
+            .query_row(
+                "SELECT params, base_color, rendered_thumb_base64,
+                        math_version, raw_decode_version
+                 FROM image_states WHERE file_path = 'old-contract.dng'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let stored_params: TuningParams = serde_json::from_str(&stored_params).unwrap();
+        let stored_base: BaseColor = serde_json::from_str(&stored_base).unwrap();
+        assert_eq!(stored_params.exposure.exposure, 0.375);
+        assert_eq!(stored_base, BaseColor::default());
+        assert_eq!(rendered, None);
+        assert_eq!(math_version, MATH_VERSION);
+        assert_eq!(raw_version, RAW_DECODE_VERSION);
     }
 
     #[test]

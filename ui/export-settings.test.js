@@ -30,7 +30,7 @@ assert.equal(describeResize({ resizeMode: 'long_edge', longEdge: 2048, allowUpsc
 const invokeArgs = createExportInvokeArgs(['image-1'], 'C:\\Exports', {
     format: 'jpeg', colorSpace: 'srgb', resizeMode: 'long_edge', longEdge: '2048',
     allowUpscale: false, sharpening: 'standard', namingTemplate: '{Roll}_{Seq}',
-    conflictPolicy: 'unique', quality: '92',
+    conflictPolicy: 'unique', quality: '92', writeExif: true,
 });
 assert.deepEqual(invokeArgs, {
     exportIds: ['image-1'],
@@ -44,6 +44,7 @@ assert.deepEqual(invokeArgs, {
     namingTemplate: '{Roll}_{Seq}',
     conflictPolicy: 'unique',
     quality: 92,
+    writeExif: true,
 });
 assert.ok(!Object.hasOwn(invokeArgs, 'export_ids'), 'Tauri arguments must use camelCase');
 

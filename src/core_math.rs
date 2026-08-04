@@ -2,6 +2,18 @@ use nalgebra::Matrix3;
 
 pub type Homography3 = [[f32; 3]; 3];
 
+/// Rec. 709 / linear-sRGB luminance weights used by the fixed density-capture
+/// domain. The green-heavy weighting is also the monochrome analysis contract.
+pub const DENSITY_LUMA_COEFFICIENTS: [f32; 3] = [0.2126, 0.7152, 0.0722];
+
+#[inline]
+pub fn density_luma(rgb: [f32; 3]) -> f32 {
+    rgb.iter()
+        .zip(DENSITY_LUMA_COEFFICIENTS)
+        .map(|(value, coefficient)| value * coefficient)
+        .sum()
+}
+
 /// 返回预定义的核心去串扰矩阵 (Status M to Print Density)。
 /// 这个 3x3 矩阵用于消除胶片各染料层之间的光谱串扰。
 ///
@@ -40,15 +52,12 @@ pub fn normalize_density_channel(
 
 #[inline]
 pub fn neutral_density_bounds(d_min: [f32; 3], d_max: [f32; 3]) -> (f32, f32) {
-    (
-        (d_min[0] + d_min[1] + d_min[2]) / 3.0,
-        (d_max[0] + d_max[1] + d_max[2]) / 3.0,
-    )
+    (density_luma(d_min), density_luma(d_max))
 }
 
 #[inline]
 pub fn neutralize_rgb(rgb: [f32; 3]) -> [f32; 3] {
-    let luma = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+    let luma = density_luma(rgb);
     [luma; 3]
 }
 
@@ -93,6 +102,27 @@ pub fn apply_post_gamma_adjustments(
     temperature: f32,
     tint: f32,
 ) -> [f32; 3] {
+    apply_post_gamma_adjustments_with_luma(
+        rgb,
+        highlights,
+        shadows,
+        saturation,
+        temperature,
+        tint,
+        DENSITY_LUMA_COEFFICIENTS,
+    )
+}
+
+#[inline]
+pub fn apply_post_gamma_adjustments_with_luma(
+    rgb: [f32; 3],
+    highlights: f32,
+    shadows: f32,
+    saturation: f32,
+    temperature: f32,
+    tint: f32,
+    luma_coefficients: [f32; 3],
+) -> [f32; 3] {
     let mut adjusted = rgb.map(|value| tone_normalized_channel(value, highlights, shadows));
 
     let temperature = temperature.clamp(-1.0, 1.0);
@@ -104,7 +134,11 @@ pub fn apply_post_gamma_adjustments(
     adjusted[1] *= 1.0 - tint * 0.20;
     adjusted[2] *= 1.0 + tint * 0.10;
 
-    let luma = 0.299 * adjusted[0] + 0.587 * adjusted[1] + 0.114 * adjusted[2];
+    let luma = adjusted
+        .iter()
+        .zip(luma_coefficients)
+        .map(|(value, coefficient)| value * coefficient)
+        .sum::<f32>();
     let saturation_factor = 1.0 + saturation.clamp(-1.0, 1.0);
     adjusted.map(|value| (luma + (value - luma) * saturation_factor).clamp(0.0, 1.0))
 }
@@ -230,7 +264,7 @@ pub fn sprocket_white_mask(luma_difference: f32, tolerance: f32, feather: f32) -
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_homography, apply_perspective_uv, apply_post_gamma_adjustments,
+        apply_homography, apply_perspective_uv, apply_post_gamma_adjustments, density_luma,
         neutral_density_bounds, neutralize_rgb, normalize_density_channel, shader_homography,
         sprocket_white_mask,
     };
@@ -283,8 +317,10 @@ mod tests {
     #[test]
     fn black_and_white_density_bounds_are_channel_neutral() {
         let (d_min, d_max) = neutral_density_bounds([0.2, 0.4, 0.6], [1.8, 2.1, 2.4]);
-        assert!((d_min - 0.4).abs() < 1e-6);
-        assert!((d_max - 2.1).abs() < 1e-6);
+        assert!((d_min - density_luma([0.2, 0.4, 0.6])).abs() < 1e-6);
+        assert!((d_max - density_luma([1.8, 2.1, 2.4])).abs() < 1e-6);
+        assert!(density_luma([0.0, 1.0, 0.0]) > density_luma([1.0, 0.0, 0.0]));
+        assert!(density_luma([0.0, 1.0, 0.0]) > density_luma([0.0, 0.0, 1.0]));
     }
 
     #[test]

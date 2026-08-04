@@ -925,21 +925,32 @@ body > header > div:last-child button:hover { background: var(--control) !import
 
 /* Export workflow */
 #export-modal {
-    padding: 24px;
-    background: rgba(0, 0, 0, .62) !important;
-    -webkit-backdrop-filter: blur(10px) !important;
-    backdrop-filter: blur(10px) !important;
+    padding: 16px;
+    background: rgba(0, 0, 0, .46) !important;
 }
 #export-modal-content.export-dialog {
+    --panel: #fff;
+    --panel-raised: #fff;
+    --workspace: #dadada;
+    --control: #e3e3e3;
+    --control-hover: #d2d2d2;
+    --text: #3b3b3b;
+    --muted: #8f8f94;
+    --subtle: #8f8f94;
+    --line: rgba(20, 20, 22, .10);
+    --line-strong: rgba(20, 20, 22, .18);
+    --accent: #0a5aa8;
+    --accent-hover: #074e91;
     display: flex;
     flex-direction: column;
-    width: min(780px, calc(100vw - 32px)) !important;
-    max-height: min(780px, calc(100vh - 32px));
+    width: min(754px, calc(100vw - 32px)) !important;
+    max-height: calc(100vh - 32px);
     overflow: hidden;
     padding: 0 !important;
-    border: 1px solid var(--line-strong) !important;
-    border-radius: 7px !important;
+    border: 0 !important;
+    border-radius: 18px !important;
     background: var(--panel) !important;
+    box-shadow: 0 18px 54px rgba(0, 0, 0, .24);
 }
 .export-dialog-header,
 .export-dialog-footer {
@@ -947,12 +958,10 @@ body > header > div:last-child button:hover { background: var(--control) !import
     align-items: center;
     justify-content: space-between;
     flex: 0 0 auto;
-    padding: 18px 22px;
-    border-color: var(--line) !important;
+    padding: 14px 20px 10px;
 }
-.export-dialog-header { border-bottom: 1px solid var(--line); }
-.export-dialog-header h2 { margin: 0; color: var(--text); font-size: 18px !important; font-weight: 640 !important; letter-spacing: -.01em; }
-.export-dialog-header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.export-dialog-header h2 { margin: 0; color: var(--accent) !important; font-size: 17px !important; font-weight: 700 !important; letter-spacing: 0; }
+.export-dialog-header p { margin: 3px 0 0; color: var(--text); font-size: 12px; }
 .export-icon-button {
     display: grid;
     width: 32px;
@@ -964,78 +973,85 @@ body > header > div:last-child button:hover { background: var(--control) !import
     color: var(--muted);
 }
 .export-icon-button:hover { border-color: var(--line) !important; background: var(--control) !important; color: var(--text); }
-.export-icon-button svg { width: 18px; height: 18px; }
-.export-dialog-body { min-height: 0; overflow: auto; padding: 16px 22px 22px; }
+.export-icon-button svg { width: 26px; height: 26px; }
+.export-dialog-body { min-height: 0; overflow: auto; padding: 0 10px 10px; }
 .export-summary-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    min-height: 52px;
-    padding: 11px 14px;
-    border: 1px solid var(--line);
-    border-radius: 5px;
+    min-height: 58px;
+    padding: 10px 32px;
+    border: 0;
+    border-radius: 10px;
     background: var(--panel-raised);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, .18) !important;
 }
 .export-summary-bar > div:first-child { display: flex; flex-direction: column; gap: 2px; }
 .export-summary-label { color: var(--subtle); font-size: 10px; font-weight: 600; }
-.export-summary-bar strong { color: var(--text); font-size: 14px; font-weight: 620; }
-.export-summary-detail { max-width: 52%; color: var(--muted); font-size: 11px; line-height: 1.4; text-align: right; }
-.export-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; margin-top: 14px; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: var(--line); }
-.export-settings-section { min-width: 0; padding: 18px; background: var(--panel); }
-.export-file-section, .export-destination-section { grid-column: 1 / -1; }
-.export-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
-.export-section-heading h3 { margin: 0; color: var(--text); font-size: 13px; font-weight: 620; }
+.export-summary-bar strong { color: var(--text); font-size: 13px; font-weight: 700; }
+.export-summary-detail { max-width: 56%; color: var(--muted); font-size: 12px; line-height: 1.4; text-align: right; }
+.export-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 10px; }
+.export-settings-section { min-width: 0; padding: 16px 20px; border-radius: 10px; background: var(--workspace); }
+.export-file-section { grid-column: 1 / -1; }
+.export-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.export-section-heading h3 { margin: 0; color: var(--accent); font-size: 17px; font-weight: 700; }
 .export-section-heading span { color: var(--subtle); font-size: 10px; }
-.export-field { display: grid; grid-template-columns: minmax(112px, .78fr) minmax(0, 1.22fr); align-items: center; gap: 12px; min-height: 34px; margin-bottom: 10px; }
-.export-field > span, .export-field-row > span, .export-preview-row > span { color: var(--muted); font-size: 12px; }
+.export-field { display: grid; grid-template-columns: minmax(112px, 1fr) minmax(0, 1.08fr); align-items: center; gap: 12px; min-height: 34px; margin-bottom: 8px; }
+.export-file-section > .export-field { grid-template-columns: minmax(180px, 1fr) minmax(0, 1fr); }
+.export-field > span:first-child, .export-field-row > span, .export-preview-row > span { color: var(--text); font-size: 12px; font-weight: 600; }
 .export-field select, .export-field input, .export-destination-row input {
     width: 100%;
     min-width: 0;
-    min-height: 34px;
-    padding: 0 9px;
-    border: 1px solid var(--line-strong) !important;
-    border-radius: 4px !important;
+    min-height: 30px;
+    padding: 0 7px;
+    border: 0 !important;
+    border-radius: 11px !important;
     outline: 0;
-    background: var(--control) !important;
+    background: var(--panel-raised) !important;
     color: var(--text) !important;
     font-size: 12px;
 }
 .export-field select:focus, .export-field input:focus, .export-destination-row input:focus { border-color: var(--accent) !important; }
 .export-field-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .export-field output { color: var(--text); font-family: var(--font-mono); font-size: 11px; }
-#export-quality-group { display: block; }
+#export-quality-group { display: block; padding: 8px 10px; border-radius: 10px; background: color-mix(in srgb, var(--panel-raised) 76%, transparent); }
 #export-quality { width: 100%; min-height: 20px; accent-color: var(--accent); }
 .export-range-labels { display: flex; justify-content: space-between; color: var(--subtle); font-size: 10px; }
 .export-field.is-disabled { opacity: .45; }
-.export-check-row { display: flex; align-items: flex-start; gap: 9px; margin: 14px 0 10px 124px; cursor: pointer; }
+.export-check-row { display: flex; align-items: flex-start; gap: 9px; margin: 14px 0 10px calc(50% + 6px); cursor: pointer; }
 .export-check-row input { flex: 0 0 auto; width: 15px; height: 15px; margin-top: 1px; accent-color: var(--accent); }
 .export-check-row span { display: flex; flex-direction: column; gap: 3px; }
 .export-check-row strong { color: var(--text); font-size: 12px; font-weight: 560; }
 .export-check-row small { color: var(--subtle); font-size: 10px; line-height: 1.4; }
 .export-info-note { color: var(--subtle); font-size: 10px; line-height: 1.45; }
-.export-token-hint { margin: -2px 0 12px 124px; color: var(--subtle); font-size: 10px; line-height: 1.6; }
+.export-token-hint { margin: -2px 0 10px 50%; padding-left: 6px; color: var(--subtle); font-size: 10px; line-height: 1.6; }
 .export-token-hint code { color: var(--accent); font-family: var(--font-mono); }
-.export-preview-row { display: grid; grid-template-columns: minmax(112px, .78fr) minmax(0, 1.22fr); align-items: center; gap: 12px; min-height: 32px; margin: -2px 0 12px; }
-.export-preview-row code { overflow: hidden; padding: 7px 9px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-raised); color: var(--text); font-family: var(--font-mono); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.export-preview-row { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 1fr); align-items: center; gap: 12px; min-height: 30px; margin: 0 0 8px; padding: 0 10px; border-radius: 10px; background: var(--panel-raised); }
+.export-preview-row code { overflow: hidden; color: var(--text); font-family: var(--font-mono); font-size: 11px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.export-inline-check { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 6px 10px; border-radius: 10px; background: var(--panel-raised); color: var(--text) !important; cursor: pointer; }
+.export-inline-check input { width: 14px; min-height: 14px; padding: 0; accent-color: var(--accent); }
+.export-inline-check span { min-width: 0; font-size: 11px; font-weight: 500; }
+.export-destination-field { margin-bottom: 0; }
 .export-destination-row { display: flex; align-items: center; gap: 10px; }
 .export-destination-row input { flex: 1 1 auto; color: var(--muted) !important; }
 .export-destination-row button {
     flex: 0 0 auto;
-    min-height: 34px;
-    padding: 0 13px;
-    border: 1px solid var(--line-strong) !important;
-    border-radius: 4px !important;
-    background: transparent;
-    color: var(--text);
+    min-height: 30px;
+    padding: 0 11px;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background: var(--panel-raised);
+    color: var(--accent);
     font-size: 12px;
+    font-weight: 600;
 }
 .export-destination-row button:hover { background: var(--control-hover); }
-.export-dialog-footer { justify-content: flex-end; gap: 10px; border-top: 1px solid var(--line); }
-.export-dialog-footer button { min-height: 34px; padding: 0 14px; border: 1px solid var(--line-strong) !important; border-radius: 4px !important; background: transparent; color: var(--muted); font-size: 12px; }
+.export-dialog-footer { justify-content: flex-end; gap: 10px; padding: 0 10px 10px; }
+.export-dialog-footer button { min-height: 35px; padding: 0 20px; border: 0 !important; border-radius: 10px !important; background: var(--control); color: var(--text); font-size: 12px; font-weight: 700; }
 .export-dialog-footer button:hover { background: var(--control); color: var(--text); }
-.export-dialog-footer #btn-confirm-export { border-color: var(--text) !important; background: var(--text); color: var(--panel); font-weight: 620; }
-.export-dialog-footer #btn-confirm-export:hover { border-color: var(--accent) !important; background: var(--accent); color: #17110d; }
+.export-dialog-footer #btn-confirm-export { min-width: 133px; background: var(--accent); color: #fff; }
+.export-dialog-footer #btn-confirm-export:hover { background: var(--accent-hover); color: #fff; }
 .export-dialog-footer #btn-confirm-export:disabled { cursor: not-allowed; opacity: .42; }
 
 /* Neutralize legacy Tailwind colors in light mode. */
@@ -1294,11 +1310,12 @@ body[data-theme="dark"] #develop-inspector input.slider::-webkit-slider-runnable
     .export-dialog-header, .export-dialog-footer { padding-left: 16px; padding-right: 16px; }
     .export-dialog-body { padding: 12px 16px 16px; }
     .export-settings-grid { grid-template-columns: 1fr; }
-    .export-file-section, .export-destination-section { grid-column: auto; }
+    .export-file-section { grid-column: auto; }
     .export-summary-bar { align-items: flex-start; flex-direction: column; gap: 4px; }
     .export-summary-detail { max-width: none; text-align: left; }
     .export-check-row, .export-token-hint { margin-left: 0; }
     .export-field { grid-template-columns: 1fr; gap: 5px; align-items: start; }
+    .export-file-section > .export-field { grid-template-columns: 1fr; }
     .export-preview-row { grid-template-columns: 1fr; gap: 5px; }
     .export-destination-row { align-items: stretch; flex-direction: column; }
     .export-destination-row button { width: 100%; }
@@ -2193,7 +2210,7 @@ body[data-locale="zh-CN"] button,
 body[data-locale="zh-CN"] input,
 body[data-locale="zh-CN"] select,
 body[data-locale="zh-CN"] textarea {
-    font-family: "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif !important;
+    font-family: "Montserrat", "Source Han Sans SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif !important;
 }
 
 #develop-module-nav {

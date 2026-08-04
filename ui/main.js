@@ -92,6 +92,7 @@ const exportSharpening = document.getElementById('export-sharpening');
 const exportNaming = document.getElementById('export-naming');
 const exportNamePreview = document.getElementById('export-name-preview');
 const exportConflictPolicy = document.getElementById('export-conflict-policy');
+const exportWriteExif = document.getElementById('export-write-exif');
 
 const btnModeColor = document.getElementById('btn-mode-color');
 const btnModeBw = document.getElementById('btn-mode-bw');
@@ -142,6 +143,13 @@ const copySettingsContent = document.getElementById('copy-settings-content');
 const btnCloseCopySettings = document.getElementById('btn-close-copy-settings');
 const btnCancelCopySettings = document.getElementById('btn-cancel-copy-settings');
 const btnConfirmCopySettings = document.getElementById('btn-confirm-copy-settings');
+const btnCopySelectAll = document.getElementById('btn-copy-select-all');
+const btnCopySelectNone = document.getElementById('btn-copy-select-none');
+const copySettingsPreset = document.getElementById('copy-settings-preset');
+const copySettingsCount = document.getElementById('copy-settings-count');
+const copySettingsSourceLabel = document.getElementById('copy-settings-source-label');
+const copySettingOptions = Array.from(document.querySelectorAll('.copy-setting-option'));
+const copySettingsGroups = Array.from(document.querySelectorAll('.copy-settings-group'));
 
 let currentDMin = [0.1, 0.1, 0.1];
 let currentDMax = [2.0, 2.0, 2.0];
@@ -397,7 +405,7 @@ function uniqueImportPaths(paths) {
 const supportedImportExtensions = new Set([
     'dng', 'nef', 'nrw', 'cr2', 'cr3', 'arw', 'srf', 'sr2', 'raf', 'rw2',
     'orf', 'ori', 'srw', 'pef', '3fr', 'erf', 'kdc', 'dcr', 'iiq', 'mos',
-    'mrw', 'x3f', 'rwl', 'raw', 'tif', 'tiff', 'jpg', 'jpeg', 'png'
+    'mrw', 'x3f', 'rwl', 'fff', 'raw', 'tif', 'tiff', 'jpg', 'jpeg', 'png'
 ]);
 
 function isSupportedImportPath(path) {
@@ -1288,7 +1296,23 @@ function initWebGL() {
     );
 
     float getLuma(vec3 c) {
-        return dot(c, vec3(0.299, 0.587, 0.114));
+        return dot(c, vec3(0.2126, 0.7152, 0.0722));
+    }
+
+    float encodeSrgb(float value) {
+        float linear = max(value, 0.0);
+        return linear <= 0.0031308
+            ? linear * 12.92
+            : 1.055 * pow(linear, 1.0 / 2.4) - 0.055;
+    }
+
+    vec3 linearSrgbToDisplay(vec3 linearSrgb) {
+        linearSrgb = max(linearSrgb, vec3(0.0));
+        return clamp(vec3(
+            encodeSrgb(linearSrgb.r),
+            encodeSrgb(linearSrgb.g),
+            encodeSrgb(linearSrgb.b)
+        ), 0.0, 1.0);
     }
 
     float tonePostGamma(float value) {
@@ -1381,7 +1405,7 @@ function initWebGL() {
                 staged = vec3(getLuma(staged));
             }
             float safe_gamma = max(u_gamma, 1e-6);
-            outColor = vec4(pow(staged, vec3(1.0 / safe_gamma)), 1.0);
+            outColor = vec4(linearSrgbToDisplay(pow(staged, vec3(1.0 / safe_gamma))), 1.0);
             return;
         }
         
@@ -1396,7 +1420,7 @@ function initWebGL() {
             density = STATUS_M * (density - u_base_density);
         } else {
             density = density - u_base_density;
-            float gray = (density.r + density.g + density.b) / 3.0;
+            float gray = getLuma(density);
             density = vec3(gray);
         }
         
@@ -1409,8 +1433,8 @@ function initWebGL() {
         vec3 effective_dmin = u_dmin;
         vec3 effective_dmax = u_dmax;
         if (u_mode != 0) {
-            float bw_dmin = (u_dmin.r + u_dmin.g + u_dmin.b) / 3.0;
-            float bw_dmax = (u_dmax.r + u_dmax.g + u_dmax.b) / 3.0;
+            float bw_dmin = getLuma(u_dmin);
+            float bw_dmax = getLuma(u_dmax);
             effective_dmin = vec3(bw_dmin);
             effective_dmax = vec3(bw_dmax);
         }
@@ -1452,7 +1476,10 @@ function initWebGL() {
             }
         }
         
-        outColor = vec4(final_rgb, 1.0);
+        // Density normalization, user gamma, post-gamma controls, and LUTs
+        // already form a display-referred sRGB signal. Do not apply an OETF a
+        // second time here.
+        outColor = vec4(clamp(final_rgb, 0.0, 1.0), 1.0);
     }`;
 
     function createShader(gl, type, source) {
@@ -1460,9 +1487,10 @@ function initWebGL() {
         gl.shaderSource(shader, source);
         gl.compileShader(shader);
         if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-            const info = gl.getShaderInfoLog(shader);
+            const info = gl.getShaderInfoLog(shader) || "Unknown GLSL compilation error";
             console.error("Shader compilation error:", info);
-            showToast("Shader error: " + info.substring(0, 50), "error");
+            showToast("Shader error: " + info.substring(0, 160), "error");
+            gl.deleteShader(shader);
             return null;
         }
         return shader;
@@ -1470,11 +1498,24 @@ function initWebGL() {
 
     const vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
     const fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+    if (!vs || !fs) return;
 
     shaderProgram = gl.createProgram();
+    if (!shaderProgram) {
+        showToast("WebGL shader program could not be created.", "error");
+        return;
+    }
     gl.attachShader(shaderProgram, vs);
     gl.attachShader(shaderProgram, fs);
     gl.linkProgram(shaderProgram);
+    if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+        const info = gl.getProgramInfoLog(shaderProgram) || "Unknown WebGL link error";
+        console.error("Shader link error:", info);
+        showToast("Shader link error: " + info.substring(0, 160), "error");
+        gl.deleteProgram(shaderProgram);
+        shaderProgram = null;
+        return;
+    }
 
     const posLoc = gl.getAttribLocation(shaderProgram, "a_position");
     const texLoc = gl.getAttribLocation(shaderProgram, "a_texcoord");
@@ -1553,6 +1594,21 @@ let lutTex = null;
 let currentLutPath = null;
 let currentWorkingColorspace = 'linear-srgb';
 
+const WORKING_COLORSPACE_ALIASES = {
+    srgb: 'linear-srgb',
+    aces: 'linear-aces',
+    acescg: 'linear-acescg',
+    'linear-prophoto': 'linear-prophoto-rgb',
+    prophoto: 'linear-prophoto-rgb',
+    'adobe-rgb': 'linear-adobe-rgb',
+    rec2020: 'linear-rec2020',
+};
+
+function normalizeWorkingColorspace(value) {
+    const normalized = WORKING_COLORSPACE_ALIASES[String(value || '').toLowerCase()] || value;
+    return selectColorspace?.querySelector(`option[value="${normalized}"]`) ? normalized : 'linear-srgb';
+}
+
 const selectColorspace = document.getElementById('select-colorspace');
 const btnLoadLUT = document.getElementById('btn-load-lut');
 
@@ -1560,28 +1616,20 @@ selectColorspace.addEventListener('change', async (e) => {
     const previousColorspace = currentWorkingColorspace;
     try {
         currentWorkingColorspace = e.target.value;
+        // Density is always measured in the fixed linear-sRGB capture domain.
+        // Working-space changes do not invalidate the proxy or base estimate.
         await updateBackendParams();
-        if (activeId) {
-            proxyCache.delete(activeId);
-            readyProxyIds.delete(activeId);
-            activeProxyIsFull = false;
-            if (hasProcessedActiveImage) {
-                const reloaded = await reloadDevelopProxy(current_geom, { prepare: true });
-                if (!reloaded) throw new Error("Could not rebuild the proxy in the selected working space.");
-            }
-        }
+        renderWebGL();
     } catch(e) {
         currentWorkingColorspace = previousColorspace;
         e.target.value = previousColorspace;
         try {
             await updateBackendParams();
-            if (hasProcessedActiveImage) {
-                await reloadDevelopProxy(current_geom, { prepare: true });
-            }
+            renderWebGL();
         } catch (rollbackError) {
-            console.error("Failed to restore RAW working space", rollbackError);
+            console.error("Failed to restore working-space preference", rollbackError);
         }
-        showToast("Failed to update RAW working space: " + e, "error");
+        showToast("Failed to update working-space preference: " + e, "error");
         console.error(e);
     }
 });
@@ -2162,7 +2210,10 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         currentBaseDensity[1] = dataView.getFloat32(12, true);
         currentBaseDensity[2] = dataView.getFloat32(16, true);
         
-        const pixels = new Uint16Array(arrayBuffer, byteOffset + 24, width * height * 4);
+        const baseAnalyzed = dataView.byteLength >= 28
+            ? dataView.getUint32(24, true) === 1
+            : proxyAnalyzedBaseIds.has(requestedId);
+        const pixels = new Uint16Array(arrayBuffer, byteOffset + (dataView.byteLength >= 28 ? 28 : 24), width * height * 4);
         proxyPixels = pixels;
         proxyWidth = width;
         proxyHeight = height;
@@ -2170,7 +2221,7 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         // A proxy is a clear, linear negative until Auto Invert explicitly
         // computes and persists the film-base estimate. Do not clear the
         // per-image state when the same proxy is reloaded after analysis.
-        proxyHasAnalyzedBase = proxyAnalyzedBaseIds.has(requestedId);
+        proxyHasAnalyzedBase = baseAnalyzed;
         readyProxyIds.add(requestedId);
         addToCache(requestedId, arrayBuffer, requestedGeom);
         
@@ -2242,7 +2293,7 @@ function updateUIFromParams(params, geom) {
     if (params.highlights !== undefined) sliders.highlights.el.value = params.highlights;
     if (params.shadows !== undefined) sliders.shadows.el.value = params.shadows;
     sliders.lutOpacity.el.value = params.lut_opacity ?? 1.0;
-    currentWorkingColorspace = params.working_colorspace || 'linear-srgb';
+    currentWorkingColorspace = normalizeWorkingColorspace(params.working_colorspace || 'linear-srgb');
     selectColorspace.value = currentWorkingColorspace;
     
     currentSprocketUV = params.sprocket_uv ? new Float32Array(params.sprocket_uv) : new Float32Array([-1.0, -1.0]);
@@ -2823,8 +2874,10 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
         const historyTitle = document.getElementById('history-view-title');
         const btnExportContactSheet = document.getElementById('btn-export-contact-sheet');
         const historyEmpty = document.getElementById('history-empty');
+        const historyRollOverview = document.getElementById('history-roll-overview');
         const historyView = document.getElementById('view-history');
         historyView.classList.toggle('history-detail', Boolean(historyRollViewId));
+        historyRollOverview.classList.toggle('hidden', !historyRollViewId);
         const archiveRolls = getVisibleArchiveRolls();
         
         if (cleanupLibraryVirtualizer) cleanupLibraryVirtualizer();
@@ -2879,6 +2932,11 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 
                 const currentRoll = allRolls.find(r => r.roll_id === historyRollViewId);
                 if (currentRoll) {
+                    document.getElementById('history-roll-name').textContent = currentRoll.film_stock || i18nText('status.unknownFilm');
+                    document.getElementById('history-roll-format').textContent = currentRoll.format || i18nText('common.unknown');
+                    document.getElementById('history-roll-camera').textContent = currentRoll.camera || i18nText('common.unknown');
+                    document.getElementById('history-roll-date').textContent = currentRoll.date || i18nText('common.unknown');
+                    document.getElementById('history-roll-frames').textContent = i18nText('history.frameCount', { count: currentRoll.image_paths?.length || 0 });
                     try {
                         let rollStrip = await invoke('get_roll_filmstrip', { rollId: historyRollViewId });
 
@@ -3581,8 +3639,6 @@ const doImportRoll = async () => {
 };
 
 document.getElementById('btn-continue-roll').addEventListener('click', async () => {
-    document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
-    
     const select = document.getElementById('continue-roll-select');
     select.innerHTML = '';
     
@@ -3591,6 +3647,8 @@ document.getElementById('btn-continue-roll').addEventListener('click', async () 
         showToast("No rolls in archive to continue.", "error");
         return;
     }
+
+    document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
     
     editableRolls.forEach(r => {
         const opt = document.createElement('option');
@@ -3605,6 +3663,11 @@ document.getElementById('btn-continue-roll').addEventListener('click', async () 
 
 document.getElementById('btn-close-continue-roll').addEventListener('click', () => {
     document.getElementById('continue-roll-modal').classList.add('opacity-0', 'pointer-events-none');
+});
+
+document.getElementById('btn-back-continue-roll').addEventListener('click', () => {
+    document.getElementById('continue-roll-modal').classList.add('opacity-0', 'pointer-events-none');
+    showImportChoice();
 });
 
 document.getElementById('btn-confirm-continue').addEventListener('click', async () => {
@@ -3748,6 +3811,10 @@ document.getElementById('btn-import-by-roll').addEventListener('click', () => {
 document.getElementById('btn-close-roll-meta').addEventListener('click', () => {
     document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
 });
+document.getElementById('btn-back-roll-meta').addEventListener('click', () => {
+    document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
+    if (!editingRollId) showImportChoice();
+});
 document.getElementById('btn-cancel-roll-meta').addEventListener('click', () => {
     document.getElementById('roll-metadata-modal').classList.add('opacity-0', 'pointer-events-none');
 });
@@ -3844,7 +3911,7 @@ const EXPORT_FORMAT_LABELS = {
 
 function readExportPreferences() {
     const defaults = {
-        format: 'tiff16',
+        format: 'jpeg',
         colorSpace: 'srgb',
         quality: 92,
         resizeMode: 'original',
@@ -3853,6 +3920,7 @@ function readExportPreferences() {
         sharpening: 'standard',
         namingTemplate: '{Roll}_{Seq}',
         conflictPolicy: 'unique',
+        writeExif: false,
     };
     try {
         const saved = JSON.parse(localStorage.getItem(EXPORT_SETTINGS_KEY) || '{}');
@@ -3883,6 +3951,7 @@ function applyExportPreferences() {
     exportUpscale.checked = Boolean(saved.allowUpscale);
     exportNaming.value = typeof saved.namingTemplate === 'string' ? saved.namingTemplate : '{Roll}_{Seq}';
     if (['unique', 'overwrite', 'skip'].includes(saved.conflictPolicy)) exportConflictPolicy.value = saved.conflictPolicy;
+    exportWriteExif.checked = Boolean(saved.writeExif);
 }
 
 function currentExportIds() {
@@ -3929,6 +3998,7 @@ function collectExportSettings() {
         sharpening: exportSharpening.value,
         namingTemplate: exportNaming.value,
         conflictPolicy: exportConflictPolicy.value,
+        writeExif: exportWriteExif.checked,
     };
 }
 
@@ -3970,6 +4040,7 @@ applyExportPreferences();
 [
     exportFormat, exportColorSpace, exportResizeMode, exportLongEdge,
     exportUpscale, exportSharpening, exportNaming, exportConflictPolicy,
+    exportWriteExif,
 ].forEach(element => element.addEventListener('change', saveCurrentExportPreferences));
 exportNaming.addEventListener('input', saveCurrentExportPreferences);
 exportQuality.addEventListener('input', () => {
@@ -4362,145 +4433,13 @@ btnFlipV.addEventListener('click', () => {
 
 async function doAutoColor() {
     if (!activeId || !gl) return;
-
-    // --- PHASE 1: Baseline Isolation ---
-    // Force WebGL to a neutral state to prevent color feedback loops.
-    // D-min=0, D-max=3, Exposure=0, Gamma=1, no LUT/Shadows/Highlights.
-    const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 0 : 1;
-    gl.useProgram(shaderProgram);
-    gl.bindVertexArray(vao);
-    
-    gl.uniform3f(u_base_density_loc, currentBaseDensity[0], currentBaseDensity[1], currentBaseDensity[2]);
-    gl.uniform3f(u_dmin_loc, -1.0, -1.0, -1.0);
-    gl.uniform3f(u_dmax_loc, 3.0, 3.0, 3.0);
-    gl.uniform3f(u_exposure_loc, 0.0, 0.0, 0.0);
-    gl.uniform1f(u_gamma_loc, 1.0);
-    gl.uniform1i(u_mode_loc, mode);
-    gl.uniform1i(u_invert_enabled_loc, 1);
-    gl.uniform1f(u_highlights_loc, 0.0);
-    gl.uniform1f(u_shadows_loc, 0.0);
-    gl.uniform1i(u_has_lut_loc, 0);
-    let pts = current_geom.calibration_points || [[0, 0], [1, 0], [1, 1], [0, 1]];
-    let homographyMat = getHomography(pts);
-    gl.uniformMatrix3fv(u_homography_loc, false, homographyMat);
-    gl.uniform4f(
-        u_perspective_loc,
-        current_geom.perspective_vertical,
-        current_geom.perspective_horizontal,
-        current_geom.perspective_aspect,
-        current_geom.perspective_scale
-    );
-    gl.uniform2fv(u_sprocket_uv_loc, new Float32Array([-1.0, -1.0])); // Disable target during calibration
-    gl.uniform1f(u_sprocket_tolerance_loc, 0.0);
-    
-    const geometryUv = NexFilmGeometry.createInverseGeometryMatrix(
-        proxyWidth,
-        proxyHeight,
-        current_geom
-    );
-    gl.uniformMatrix3fv(u_geometry_uv_loc, false, geometryUv);
-    gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
-
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-
-    // Render pure image to FBO
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.viewport(0, 0, HIST_W, HIST_H);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
-    
-    const purePixels = new Uint8Array(HIST_W * HIST_H * 4);
-    gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, purePixels);
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-
-    const minX = Math.min(...pts.map(point => point[0]));
-    const maxX = Math.max(...pts.map(point => point[0]));
-    const minY = Math.min(...pts.map(point => point[1]));
-    const maxY = Math.max(...pts.map(point => point[1]));
-
-    // --- PHASE 2: Calculation ---
-    let r_arr = []; let g_arr = []; let b_arr = [];
-    const appendSample = (i) => {
-        r_arr.push(purePixels[i]);
-        g_arr.push(purePixels[i + 1]);
-        b_arr.push(purePixels[i + 2]);
-    };
-    for (let i = 0; i < purePixels.length; i += 4) {
-        const pixelIndex = i / 4;
-        const baseUvX = (pixelIndex % HIST_W) / (HIST_W - 1);
-        const baseUvY = 1.0 - Math.floor(pixelIndex / HIST_W) / (HIST_H - 1);
-        const sourceX = current_geom.crop_rect.x + baseUvX * current_geom.crop_rect.width;
-        const sourceY = current_geom.crop_rect.y + baseUvY * current_geom.crop_rect.height;
-
-        if (sourceX >= minX && sourceX <= maxX && sourceY >= minY && sourceY <= maxY) {
-            appendSample(i);
-        }
-    }
-
-    // Invalid or stale geometry must not produce an empty histogram. Fall back
-    // to pixels that the homography actually rendered, excluding its black border.
-    const minimumSamples = Math.max(64, Math.floor(HIST_W * HIST_H * 0.005));
-    if (r_arr.length < minimumSamples) {
-        r_arr = []; g_arr = []; b_arr = [];
-        for (let i = 0; i < purePixels.length; i += 4) {
-            if (purePixels[i] !== 0 || purePixels[i + 1] !== 0 || purePixels[i + 2] !== 0) {
-                appendSample(i);
-            }
-        }
-    }
-
-    if (r_arr.length < minimumSamples) {
-        throw new Error('The selected film area contains too little image data.');
-    }
-
-    r_arr.sort((a,b)=>a-b);
-    g_arr.sort((a,b)=>a-b);
-    b_arr.sort((a,b)=>a-b);
-    if (r_arr[r_arr.length - 1] === 0 && g_arr[g_arr.length - 1] === 0 && b_arr[b_arr.length - 1] === 0) {
-        throw new Error('Calibration preview is not ready.');
-    }
-
-    function computeExtremes(arr) {
-        let hist = new Array(256).fill(0);
-        for(let i=0; i<arr.length; i++) hist[arr[i]]++;
-        let total = arr.length; let threshold = total * 0.10;
-        let min_val = 0; let acc_low = 0;
-        for(let i=0; i<256; i++) {
-            if(hist[i] > threshold && acc_low < total * 0.2) continue;
-            acc_low += hist[i];
-            if(acc_low >= total * 0.01) { min_val = i; break; }
-        }
-        let max_val = 255; let acc_high = 0;
-        for(let i=255; i>=0; i--) {
-            if(hist[i] > threshold && acc_high < total * 0.2) continue;
-            acc_high += hist[i];
-            if(acc_high >= total * 0.01) { max_val = i; break; }
-        }
-        return [min_val, max_val];
-    }
-    let [rStart, rEnd] = computeExtremes(r_arr);
-    let [gStart, gEnd] = computeExtremes(g_arr);
-    let [bStart, bEnd] = computeExtremes(b_arr);
-
-    // In Baseline Isolation (Dmin=-1.0, Dmax=3.0, Gamma=1.0),
-    // norm = (density - (-1.0)) / (3.0 - (-1.0)) = (density + 1.0) / 4.0
-    // screen_val = norm * 255.
-    // So to retrieve true density from screen_val: density = (val / 255.0) * 4.0 - 1.0
-    function toDensity(val) {
-        return (val / 255.0) * 4.0 - 1.0;
-    }
-
+    // Auto Color reads canonical 16-bit capture data on the Rust side. This
+    // keeps the histogram independent of the current display controls and
+    // avoids quantizing density through an 8-bit sRGB framebuffer.
+    const limits = await invoke('analyze_proxy_density_limits', { id: activeId });
     const batchState = {
-        dmin: [
-            toDensity(rStart),
-            toDensity(gStart),
-            toDensity(bStart)
-        ],
-        dmax: [
-            toDensity(rEnd),
-            toDensity(gEnd),
-            toDensity(bEnd)
-        ]
+        dmin: limits.d_min,
+        dmax: limits.d_max,
     };
 
     currentDMin = batchState.dmin;
@@ -5275,12 +5214,47 @@ function closeCopySettingsModal() {
     btnCopySettings.focus();
 }
 
+function selectedCopySettings() {
+    return copySettingOptions.filter(input => input.checked).map(input => input.value);
+}
+
+function updateCopySettingsSelectionState() {
+    const selectedCount = selectedCopySettings().length;
+    copySettingsCount.textContent = i18nText('copy.selectionCount', { count: selectedCount });
+
+    copySettingsGroups.forEach(group => {
+        const toggle = group.querySelector('.copy-settings-group-toggle');
+        const options = Array.from(group.querySelectorAll('.copy-setting-option'));
+        const checkedCount = options.filter(input => input.checked).length;
+        toggle.checked = checkedCount === options.length;
+        toggle.indeterminate = checkedCount > 0 && checkedCount < options.length;
+    });
+}
+
+function setCopySettingsSelection(values) {
+    const selected = new Set(values);
+    copySettingOptions.forEach(input => { input.checked = selected.has(input.value); });
+    updateCopySettingsSelectionState();
+}
+
+function getCopySettingsSourceLabel() {
+    const item = findKnownItem(activeId);
+    const frameElements = Array.from(document.querySelectorAll('#filmstrip-container .film-item'));
+    const index = frameElements.findIndex(element => element.dataset.id === activeId);
+    const frame = index >= 0 ? index + 1 : 1;
+    const roll = allRolls.find(candidate => candidate.roll_id === item?.roll_id);
+    const film = roll?.film_stock || item?.film_stock || i18nText('status.unknownFilm');
+    return i18nText('copy.sourceLabel', { frame, film });
+}
+
 function openCopySettingsModal() {
+    copySettingsSourceLabel.textContent = getCopySettingsSourceLabel();
+    updateCopySettingsSelectionState();
     copySettingsModal.classList.remove('opacity-0', 'pointer-events-none');
     copySettingsModal.setAttribute('aria-hidden', 'false');
     setTimeout(() => {
         copySettingsContent.classList.remove('scale-95');
-        btnConfirmCopySettings.focus();
+        copySettingsContent.focus();
     }, 10);
 }
 
@@ -5298,20 +5272,52 @@ copySettingsModal.addEventListener('keydown', event => {
     if (event.key === 'Escape') closeCopySettingsModal();
 });
 
+copySettingsGroups.forEach(group => {
+    const toggle = group.querySelector('.copy-settings-group-toggle');
+    toggle.addEventListener('change', () => {
+        group.querySelectorAll('.copy-setting-option').forEach(input => {
+            input.checked = toggle.checked;
+        });
+        updateCopySettingsSelectionState();
+    });
+});
+
+copySettingOptions.forEach(input => input.addEventListener('change', updateCopySettingsSelectionState));
+
+btnCopySelectAll.addEventListener('click', () => {
+    setCopySettingsSelection(copySettingOptions.map(input => input.value));
+});
+
+btnCopySelectNone.addEventListener('click', () => {
+    setCopySettingsSelection([]);
+});
+
+copySettingsPreset.addEventListener('change', () => {
+    const presets = {
+        all: copySettingOptions.map(input => input.value),
+        tone: [
+            'filmMode', 'densityLimits', 'printerRed', 'printerGreen', 'printerBlue',
+            'temperature', 'tint', 'exposure', 'gamma', 'highlights', 'shadows',
+            'saturation', 'lut', 'lutOpacity', 'workingSpace'
+        ],
+        geometry: ['crop', 'rotateFlip', 'perspective']
+    };
+    setCopySettingsSelection(presets[copySettingsPreset.value] || []);
+});
+
 btnConfirmCopySettings.addEventListener('click', () => {
     if (!activeId) return;
-    const modules = Array.from(document.querySelectorAll('.copy-settings-module:checked'))
-        .map(input => input.value);
-    if (modules.length === 0) {
-        showToast("Select at least one settings group.", "error");
+    const settings = selectedCopySettings();
+    if (settings.length === 0) {
+        showToast("Select at least one setting.", "error");
         return;
     }
     const params = saveCurrentState();
     if (!params) return;
-    copiedSettings = createCopyPayload(params, current_geom, modules);
+    copiedSettings = createCopyPayload(params, current_geom, settings);
     btnPasteSettings.disabled = false;
     closeCopySettingsModal();
-    showToast(`${modules.length} settings group(s) copied.`, "success");
+    showToast(settings.length + " setting(s) copied.", "success");
 });
 
 btnPasteSettings.addEventListener('click', async () => {
@@ -5324,27 +5330,19 @@ btnPasteSettings.addEventListener('click', async () => {
         previousGeom,
         copiedSettings
     );
-    const modules = new Set(copiedSettings.modules);
+    const settings = new Set(copiedSettings.settings || copiedSettings.modules);
 
-    const geometryChanged = modules.has('crop') || modules.has('transform');
-    const workingColorspaceChanged = previousParams.working_colorspace !== nextParams.working_colorspace;
+    const geometryChanged = ['crop', 'rotateFlip', 'perspective'].some(setting => settings.has(setting));
     pushUndoState();
     try {
         current_geom = nextGeom;
         updateUIFromParams(nextParams, nextGeom);
-        if (modules.has('edit')) await restoreLutForImage(nextParams);
+        if (settings.has('lut')) await restoreLutForImage(nextParams);
         await updateBackendParams(targetId, nextParams);
         if (geometryChanged) await persistGeometryQueued(targetId, nextGeom);
 
-        if (workingColorspaceChanged && hasProcessedActiveImage) {
-            proxyCache.delete(targetId);
-            readyProxyIds.delete(targetId);
-            activeProxyIsFull = false;
-            await reloadDevelopProxy(nextGeom, { showLoading: true });
-        } else {
-            updateCanvasTransform();
-            requestRender();
-        }
+        updateCanvasTransform();
+        requestRender();
         btnBatchApply.disabled = !current_geom?.calibration_points;
         if (isCropMode) updateCropOverlay();
         requestThumbnailSync();

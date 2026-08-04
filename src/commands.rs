@@ -2,15 +2,22 @@ use crate::app_state::{
     BaseColor, EngineState, FilmItem, FilmMode, FilmstripItem, GeometryState, Roll, TuningParams,
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
+use crate::color_science::{
+    apply_linear_matrix, canonical_output_space, convert_encoded_to_linear_rgb_with_matrix,
+    identify_icc_profile, libraw_native_profile, linear_conversion_matrix, parse_output_space,
+    ColorSpaceId, DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
+};
 use crate::core_math::{
-    apply_homography, apply_perspective_uv, apply_post_gamma_adjustments, neutral_density_bounds,
-    neutralize_rgb, normalize_density_channel, shader_homography, sprocket_white_mask,
+    apply_homography, apply_perspective_uv, apply_post_gamma_adjustments_with_luma,
+    neutral_density_bounds, normalize_density_channel, shader_homography, sprocket_white_mask,
+    DENSITY_LUMA_COEFFICIENTS,
 };
 use crate::persistence::{self, MATH_VERSION, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
 use serde::Serialize;
 
 use base64::{engine::general_purpose, Engine as _};
+use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
 use image::{
     imageops::FilterType, GenericImageView, ImageBuffer, ImageOutputFormat, Rgb, RgbImage,
 };
@@ -19,7 +26,7 @@ use rfd::FileDialog;
 use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::io::{Cursor, Read, Seek, SeekFrom};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::sync::{MutexGuard, RwLockReadGuard, RwLockWriteGuard};
@@ -380,8 +387,134 @@ fn is_raw_extension(path: &str) -> bool {
                 | "pef"
                 | "x3f"
                 | "rwl"
+                | "fff"
         )
     )
+}
+
+fn is_fff_extension(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("fff"))
+}
+
+fn is_scanner_fff_tiff(path: &str) -> bool {
+    if !is_fff_extension(path) {
+        return false;
+    }
+    let mut header = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_ok()
+        && matches!(header, [b'I', b'I', 42, 0] | [b'M', b'M', 0, 42])
+}
+
+fn decode_scanner_fff_tiff_page(
+    path: &str,
+    page: usize,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    use tiff::decoder::{Decoder, DecodingResult, Limits};
+    use tiff::ColorType;
+
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("Cannot open scanner FFF {path}: {error}"))?;
+    let mut limits = Limits::default();
+    limits.decoding_buffer_size = 512 * 1024 * 1024;
+    limits.intermediate_buffer_size = 512 * 1024 * 1024;
+    let mut decoder = Decoder::new(BufReader::new(file))
+        .map_err(|error| format!("Invalid scanner FFF/TIFF {path}: {error}"))?
+        .with_limits(limits);
+    decoder
+        .seek_to_image(page)
+        .map_err(|error| format!("Cannot read scanner FFF page {page}: {error}"))?;
+    let (width, height) = decoder
+        .dimensions()
+        .map_err(|error| format!("Cannot read scanner FFF dimensions: {error}"))?;
+    let color_type = decoder
+        .colortype()
+        .map_err(|error| format!("Cannot read scanner FFF color type: {error}"))?;
+    let pixels = decoder
+        .read_image()
+        .map_err(|error| format!("Cannot decode scanner FFF pixels: {error}"))?;
+
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| "Scanner FFF dimensions overflowed".to_string())?;
+    match (color_type, pixels) {
+        (ColorType::RGB(16), DecodingResult::U16(samples)) => {
+            if samples.len() != pixel_count * 3 {
+                return Err("Scanner FFF returned an invalid RGB16 buffer".into());
+            }
+            ImageBuffer::from_raw(width, height, samples)
+                .ok_or_else(|| "Cannot construct scanner FFF RGB16 image".to_string())
+        }
+        (ColorType::RGBA(16), DecodingResult::U16(samples)) => {
+            if samples.len() != pixel_count * 4 {
+                return Err("Scanner FFF returned an invalid RGBA16 buffer".into());
+            }
+            let rgb = samples
+                .par_chunks_exact(4)
+                .flat_map_iter(|pixel| [pixel[0], pixel[1], pixel[2]])
+                .collect();
+            ImageBuffer::from_raw(width, height, rgb)
+                .ok_or_else(|| "Cannot construct scanner FFF RGB16 image".to_string())
+        }
+        (ColorType::RGB(8), DecodingResult::U8(samples)) => {
+            if samples.len() != pixel_count * 3 {
+                return Err("Scanner FFF returned an invalid RGB8 buffer".into());
+            }
+            let rgb = samples
+                .par_iter()
+                .map(|sample| u16::from(*sample) * 257)
+                .collect();
+            ImageBuffer::from_raw(width, height, rgb)
+                .ok_or_else(|| "Cannot construct scanner FFF RGB16 image".to_string())
+        }
+        (ColorType::RGBA(8), DecodingResult::U8(samples)) => {
+            if samples.len() != pixel_count * 4 {
+                return Err("Scanner FFF returned an invalid RGBA8 buffer".into());
+            }
+            let rgb = samples
+                .par_chunks_exact(4)
+                .flat_map_iter(|pixel| {
+                    [
+                        u16::from(pixel[0]) * 257,
+                        u16::from(pixel[1]) * 257,
+                        u16::from(pixel[2]) * 257,
+                    ]
+                })
+                .collect();
+            ImageBuffer::from_raw(width, height, rgb)
+                .ok_or_else(|| "Cannot construct scanner FFF RGB16 image".to_string())
+        }
+        (unsupported, _) => Err(format!(
+            "Unsupported scanner FFF page format: {unsupported:?}"
+        )),
+    }
+}
+
+fn linearize_scanner_fff(
+    mut image: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    target: ColorSpaceId,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    const FFF_INPUT_GAMMA: f32 = 1.8;
+    // Scanner 3F/FFF stores three already-sampled RGB channels with a 1.8
+    // transfer curve. It does not carry a standard ICC tag for its device RGB,
+    // so use the same fallback primary basis as an unprofiled scanner TIFF.
+    let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, target);
+    image.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+        let encoded = [
+            pixel[0] as f32 / 65535.0,
+            pixel[1] as f32 / 65535.0,
+            pixel[2] as f32 / 65535.0,
+        ];
+        let linear = apply_linear_matrix(encoded.map(|value| value.powf(FFF_INPUT_GAMMA)), matrix);
+        for channel in 0..3 {
+            pixel[channel] = (linear[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+        }
+    });
+    image
 }
 
 fn normalize_path(path: &str) -> String {
@@ -397,6 +530,158 @@ fn is_direct_image_extension(path: &str) -> bool {
             .as_deref(),
         Some("tif" | "tiff" | "jpg" | "jpeg" | "png")
     )
+}
+
+fn extract_jpeg_icc_profile(bytes: &[u8]) -> Option<Vec<u8>> {
+    if bytes.len() < 2 || bytes[0..2] != [0xff, 0xd8] {
+        return None;
+    }
+    let mut position = 2usize;
+    let mut chunks = Vec::<(u8, u8, Vec<u8>)>::new();
+    while position + 4 <= bytes.len() {
+        if bytes[position] != 0xff {
+            position += 1;
+            continue;
+        }
+        while position < bytes.len() && bytes[position] == 0xff {
+            position += 1;
+        }
+        if position >= bytes.len() {
+            break;
+        }
+        let marker = bytes[position];
+        position += 1;
+        if marker == 0xda || marker == 0xd9 {
+            break;
+        }
+        if marker == 0xd8 || marker == 0x01 {
+            continue;
+        }
+        let segment_length =
+            u16::from_be_bytes([*bytes.get(position)?, *bytes.get(position + 1)?]) as usize;
+        if segment_length < 2 {
+            break;
+        }
+        let segment_end = position.checked_add(segment_length)?;
+        if segment_end > bytes.len() {
+            break;
+        }
+        let payload = &bytes[position + 2..segment_end];
+        if marker == 0xe2 && payload.len() >= 14 && &payload[..12] == b"ICC_PROFILE\0" {
+            chunks.push((payload[12], payload[13], payload[14..].to_vec()));
+        }
+        position = segment_end;
+    }
+    let total = chunks.first()?.1;
+    if total == 0 || chunks.len() != usize::from(total) {
+        return None;
+    }
+    chunks.sort_by_key(|chunk| chunk.0);
+    if chunks
+        .iter()
+        .enumerate()
+        .any(|(index, chunk)| chunk.1 != total || usize::from(chunk.0) != index + 1)
+    {
+        return None;
+    }
+    Some(chunks.into_iter().flat_map(|(_, _, chunk)| chunk).collect())
+}
+
+fn extract_png_icc_profile(bytes: &[u8]) -> Option<Vec<u8>> {
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return None;
+    }
+    let mut position = 8usize;
+    while position.checked_add(12)? <= bytes.len() {
+        let length = u32::from_be_bytes(bytes[position..position + 4].try_into().ok()?) as usize;
+        let chunk_end = position.checked_add(12)?.checked_add(length)?;
+        if chunk_end > bytes.len() {
+            return None;
+        }
+        let chunk_type = &bytes[position + 4..position + 8];
+        if chunk_type == b"iCCP" {
+            let payload = &bytes[position + 8..position + 8 + length];
+            let name_end = payload.iter().position(|byte| *byte == 0)?;
+            if payload.get(name_end + 1) != Some(&0) {
+                return None;
+            }
+            let mut decoder = ZlibDecoder::new(&payload[name_end + 2..]);
+            let mut profile = Vec::new();
+            decoder.read_to_end(&mut profile).ok()?;
+            return Some(profile);
+        }
+        if chunk_type == b"IEND" {
+            break;
+        }
+        position = chunk_end;
+    }
+    None
+}
+
+fn read_endian_u16(bytes: &[u8], offset: usize, little: bool) -> Option<u16> {
+    let value = bytes.get(offset..offset + 2)?;
+    Some(if little {
+        u16::from_le_bytes(value.try_into().ok()?)
+    } else {
+        u16::from_be_bytes(value.try_into().ok()?)
+    })
+}
+
+fn read_endian_u32(bytes: &[u8], offset: usize, little: bool) -> Option<u32> {
+    let value = bytes.get(offset..offset + 4)?;
+    Some(if little {
+        u32::from_le_bytes(value.try_into().ok()?)
+    } else {
+        u32::from_be_bytes(value.try_into().ok()?)
+    })
+}
+
+fn extract_tiff_icc_profile(bytes: &[u8]) -> Option<Vec<u8>> {
+    let little = match bytes.get(0..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
+    if read_endian_u16(bytes, 2, little)? != 42 {
+        return None;
+    }
+    let ifd_offset = usize::try_from(read_endian_u32(bytes, 4, little)?).ok()?;
+    let entry_count = usize::from(read_endian_u16(bytes, ifd_offset, little)?);
+    let entries_start = ifd_offset.checked_add(2)?;
+    for index in 0..entry_count {
+        let offset = entries_start.checked_add(index.checked_mul(12)?)?;
+        let tag = read_endian_u16(bytes, offset, little)?;
+        let type_code = read_endian_u16(bytes, offset + 2, little)?;
+        let count = usize::try_from(read_endian_u32(bytes, offset + 4, little)?).ok()?;
+        if tag != 34675 || type_code != 7 {
+            continue;
+        }
+        if count <= 4 {
+            return Some(bytes.get(offset + 8..offset + 8 + count)?.to_vec());
+        }
+        let value_offset = usize::try_from(read_endian_u32(bytes, offset + 8, little)?).ok()?;
+        return Some(
+            bytes
+                .get(value_offset..value_offset.checked_add(count)?)?
+                .to_vec(),
+        );
+    }
+    None
+}
+
+fn embedded_input_profile(path: &str) -> Option<ColorSpaceId> {
+    let bytes = std::fs::read(path).ok()?;
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase();
+    let profile = match extension.as_str() {
+        "jpg" | "jpeg" => extract_jpeg_icc_profile(&bytes),
+        "png" => extract_png_icc_profile(&bytes),
+        "tif" | "tiff" => extract_tiff_icc_profile(&bytes),
+        _ => None,
+    }?;
+    identify_icc_profile(&profile)
 }
 
 fn is_lightweight_direct_preview(path: &str) -> bool {
@@ -495,16 +780,37 @@ fn extract_embedded_preview_base64(path: &str, max_edge: u32) -> Option<String> 
     Some(encode_preview_bytes_base64(&thumb.data, max_edge, 86))
 }
 
-/// Import-stage decoder. Camera RAW is always embedded-preview-only. TIFF first
-/// uses an embedded preview, then falls back to a background downscaled decode
-/// because many scanner TIFFs contain no thumbnail IFD.
+fn decode_fff_fallback_preview_base64(path: &str, max_edge: u32) -> Option<String> {
+    let image = decode_image_buffer(path, DecodeMode::DevelopProxy).ok()?;
+    encode_stretched_preview_jpeg_base64(image::DynamicImage::ImageRgb16(image), max_edge, 86)
+}
+
+fn decode_scanner_fff_preview_base64(path: &str, max_edge: u32) -> Option<String> {
+    let preview = decode_scanner_fff_tiff_page(path, 1).ok()?;
+    let preview_edge = preview.width().max(preview.height()).min(max_edge);
+    let preview = image::DynamicImage::ImageRgb16(preview).to_rgb8();
+    encode_preview_jpeg_base64(image::DynamicImage::ImageRgb8(preview), preview_edge, 86)
+}
+
+/// Import-stage decoder. Camera RAW is embedded-preview-only. Scanner FFF uses
+/// its reduced TIFF page, with a full-page fallback only when that page is
+/// absent. TIFF first uses an embedded preview, then falls back to a downscaled
+/// decode because many scanner TIFFs contain no thumbnail IFD.
 fn decode_import_preview_base64(path: &str, max_edge: u32) -> Option<String> {
     if is_lightweight_direct_preview(path) {
         return decode_direct_image_preview_base64(path, max_edge);
     }
 
     if is_raw_extension(path) {
-        return extract_embedded_preview_base64(path, max_edge);
+        if is_scanner_fff_tiff(path) {
+            return decode_scanner_fff_preview_base64(path, max_edge)
+                .or_else(|| decode_fff_fallback_preview_base64(path, max_edge));
+        }
+        return extract_embedded_preview_base64(path, max_edge).or_else(|| {
+            is_fff_extension(path)
+                .then(|| decode_fff_fallback_preview_base64(path, max_edge))
+                .flatten()
+        });
     }
     if is_tiff_extension(path) {
         return extract_embedded_preview_base64(path, max_edge)
@@ -517,7 +823,15 @@ fn decode_develop_preview_base64(path: &str, max_edge: u32) -> Option<String> {
     if is_direct_image_extension(path) {
         return decode_direct_image_preview_base64(path, max_edge);
     }
-    extract_embedded_preview_base64(path, max_edge)
+    if is_scanner_fff_tiff(path) {
+        return decode_scanner_fff_preview_base64(path, max_edge)
+            .or_else(|| decode_fff_fallback_preview_base64(path, max_edge));
+    }
+    extract_embedded_preview_base64(path, max_edge).or_else(|| {
+        is_fff_extension(path)
+            .then(|| decode_fff_fallback_preview_base64(path, max_edge))
+            .flatten()
+    })
 }
 
 fn build_response_buffer(
@@ -526,6 +840,7 @@ fn build_response_buffer(
     base_color: &BaseColor,
     pixels: &[u16],
     is_full_proxy: bool,
+    base_analyzed: bool,
 ) -> Vec<u8> {
     let epsilon = 1e-6_f32;
     let t_r = (base_color.base_r as f32 / 65535.0).max(epsilon);
@@ -535,15 +850,16 @@ fn build_response_buffer(
     let bd_g: f32 = -t_g.log10();
     let bd_b: f32 = -t_b.log10();
 
-    let mut out_buffer = vec![0u8; (width * height * 8) as usize + 24];
+    let mut out_buffer = vec![0u8; (width * height * 8) as usize + 28];
     out_buffer[0..4].copy_from_slice(&width.to_le_bytes());
     out_buffer[4..8].copy_from_slice(&height.to_le_bytes());
     out_buffer[8..12].copy_from_slice(&bd_r.to_le_bytes());
     out_buffer[12..16].copy_from_slice(&bd_g.to_le_bytes());
     out_buffer[16..20].copy_from_slice(&bd_b.to_le_bytes());
     out_buffer[20..24].copy_from_slice(&(if is_full_proxy { 1u32 } else { 0u32 }).to_le_bytes());
+    out_buffer[24..28].copy_from_slice(&(if base_analyzed { 1u32 } else { 0u32 }).to_le_bytes());
 
-    let out_slice = &mut out_buffer[24..];
+    let out_slice = &mut out_buffer[28..];
     pixels
         .par_chunks(3)
         .zip(out_slice.par_chunks_mut(8))
@@ -560,6 +876,7 @@ fn build_response_buffer_from_proxy(
     proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>,
     base_color: &BaseColor,
     is_full_proxy: bool,
+    base_analyzed: bool,
 ) -> Vec<u8> {
     let (width, height) = proxy.dimensions();
     build_response_buffer(
@@ -568,6 +885,7 @@ fn build_response_buffer_from_proxy(
         base_color,
         proxy.as_raw().as_slice(),
         is_full_proxy,
+        base_analyzed,
     )
 }
 
@@ -675,6 +993,232 @@ fn compute_pristine_proxy(
     pristine
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct AutoColorLimits {
+    pub d_min: [f32; 3],
+    pub d_max: [f32; 3],
+}
+
+#[inline]
+fn map_oriented_uv_to_source(
+    uv: [f32; 2],
+    source_width: u32,
+    source_height: u32,
+    geom: &GeometryState,
+) -> [f32; 2] {
+    let source_width = source_width.max(1) as f32;
+    let source_height = source_height.max(1) as f32;
+    let angle = if geom.angle.abs() > 0.01 {
+        geom.angle.to_radians()
+    } else {
+        0.0
+    };
+    let (
+        layout_width,
+        layout_height,
+        diagonal,
+        source_offset_x,
+        source_offset_y,
+        crop_offset_x,
+        crop_offset_y,
+    ) = if angle == 0.0 {
+        (source_width, source_height, 0.0, 0.0, 0.0, 0.0, 0.0)
+    } else {
+        let sine = angle.sin();
+        let cosine = angle.cos();
+        let width = (source_width * cosine.abs() + source_height * sine.abs()).ceil();
+        let height = (source_width * sine.abs() + source_height * cosine.abs()).ceil();
+        let diagonal = source_width.hypot(source_height).ceil();
+        (
+            width,
+            height,
+            diagonal,
+            ((diagonal - source_width) / 2.0).trunc(),
+            ((diagonal - source_height) / 2.0).trunc(),
+            ((diagonal - width) / 2.0).trunc(),
+            ((diagonal - height) / 2.0).trunc(),
+        )
+    };
+    let turns = geom.rotate_90_count.rem_euclid(4);
+    let (oriented_width, oriented_height) = if turns % 2 == 0 {
+        (layout_width, layout_height)
+    } else {
+        (layout_height, layout_width)
+    };
+    let mut x = uv[0] * oriented_width;
+    let mut y = uv[1] * oriented_height;
+    if geom.flip_h {
+        x = oriented_width - x;
+    }
+    if geom.flip_v {
+        y = oriented_height - y;
+    }
+    let (rotated_x, rotated_y) = match turns {
+        1 => (y, layout_height - x),
+        2 => (layout_width - x, layout_height - y),
+        3 => (layout_width - y, x),
+        _ => (x, y),
+    };
+    if angle == 0.0 {
+        return [rotated_x / source_width, rotated_y / source_height];
+    }
+
+    let dx = rotated_x + crop_offset_x - diagonal / 2.0;
+    let dy = rotated_y + crop_offset_y - diagonal / 2.0;
+    let sine = angle.sin();
+    let cosine = angle.cos();
+    [
+        (cosine * dx + sine * dy + diagonal / 2.0 - source_offset_x) / source_width,
+        (-sine * dx + cosine * dy + diagonal / 2.0 - source_offset_y) / source_height,
+    ]
+}
+
+fn density_histogram_extremes(histogram: &[u32], total: usize) -> (u16, u16) {
+    let spike_threshold = total as f64 * 0.10;
+    let tail_threshold = total as f64 * 0.01;
+    let spike_guard = total as f64 * 0.20;
+
+    let mut low = 0u16;
+    let mut accumulated = 0usize;
+    for (value, count) in histogram.iter().copied().enumerate() {
+        if count as f64 > spike_threshold && (accumulated as f64) < spike_guard {
+            continue;
+        }
+        accumulated += count as usize;
+        if accumulated as f64 >= tail_threshold {
+            low = value as u16;
+            break;
+        }
+    }
+
+    let mut high = u16::MAX;
+    accumulated = 0;
+    for (value, count) in histogram.iter().copied().enumerate().rev() {
+        if count as f64 > spike_threshold && (accumulated as f64) < spike_guard {
+            continue;
+        }
+        accumulated += count as usize;
+        if accumulated as f64 >= tail_threshold {
+            high = value as u16;
+            break;
+        }
+    }
+    (low, high)
+}
+
+fn compute_auto_color_limits(
+    proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+    geom: &GeometryState,
+    base_color: &BaseColor,
+    mode: FilmMode,
+) -> Result<AutoColorLimits, String> {
+    const SAMPLE_EDGE: u32 = 512;
+    let (source_width, source_height) = proxy.dimensions();
+    let longest = source_width.max(source_height).max(1);
+    let sample_width = ((source_width as f64 / longest as f64) * SAMPLE_EDGE as f64)
+        .round()
+        .max(2.0) as u32;
+    let sample_height = ((source_height as f64 / longest as f64) * SAMPLE_EDGE as f64)
+        .round()
+        .max(2.0) as u32;
+    let points =
+        geom.calibration_points
+            .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+    let min_x = points
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::INFINITY, f32::min);
+    let max_x = points
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::INFINITY, f32::min);
+    let max_y = points
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let homography = shader_homography(points);
+    let pipeline = FilmPipeline::new(
+        [base_color.base_r, base_color.base_g, base_color.base_b],
+        [0.0; 3],
+        mode,
+    );
+
+    let collect = |inside_calibration_only: bool| {
+        let mut histograms = [vec![0u32; 65536], vec![0u32; 65536], vec![0u32; 65536]];
+        let mut total = 0usize;
+        for y in 0..sample_height {
+            for x in 0..sample_width {
+                let base_uv = [
+                    x as f32 / (sample_width - 1) as f32,
+                    y as f32 / (sample_height - 1) as f32,
+                ];
+                let crop_uv = [
+                    geom.crop_rect.x + base_uv[0] * geom.crop_rect.width,
+                    geom.crop_rect.y + base_uv[1] * geom.crop_rect.height,
+                ];
+                if inside_calibration_only
+                    && (crop_uv[0] < min_x
+                        || crop_uv[0] > max_x
+                        || crop_uv[1] < min_y
+                        || crop_uv[1] > max_y)
+                {
+                    continue;
+                }
+                let Some(perspective_uv) = apply_perspective_uv(
+                    crop_uv,
+                    geom.perspective_vertical,
+                    geom.perspective_horizontal,
+                    geom.perspective_aspect,
+                    geom.perspective_scale,
+                ) else {
+                    continue;
+                };
+                let Some(oriented_uv) = apply_homography(&homography, perspective_uv) else {
+                    continue;
+                };
+                let source_uv =
+                    map_oriented_uv_to_source(oriented_uv, source_width, source_height, geom);
+                let Some(raw) = sample_rgb16_nearest(proxy, source_uv) else {
+                    continue;
+                };
+                let density = pipeline.compute_true_density(&[
+                    raw[0] as f32 / 65535.0,
+                    raw[1] as f32 / 65535.0,
+                    raw[2] as f32 / 65535.0,
+                ]);
+                for channel in 0..3 {
+                    let bin = (((density[channel] + 1.0) / 4.0).clamp(0.0, 1.0) * 65535.0).round()
+                        as usize;
+                    histograms[channel][bin] += 1;
+                }
+                total += 1;
+            }
+        }
+        (histograms, total)
+    };
+
+    let (mut histograms, mut total) = collect(true);
+    if total < 64 {
+        (histograms, total) = collect(false);
+    }
+    if total < 64 {
+        return Err("The selected film area contains too little image data.".to_string());
+    }
+
+    let mut d_min = [0.0; 3];
+    let mut d_max = [0.0; 3];
+    for channel in 0..3 {
+        let (low, high) = density_histogram_extremes(&histograms[channel], total);
+        d_min[channel] = low as f32 / 65535.0 * 4.0 - 1.0;
+        d_max[channel] = high as f32 / 65535.0 * 4.0 - 1.0;
+    }
+    Ok(AutoColorLimits { d_min, d_max })
+}
+
 #[tauri::command]
 pub async fn open_file_dialog() -> Result<Vec<String>, String> {
     let file_paths = tauri::async_runtime::spawn_blocking(|| {
@@ -684,7 +1228,7 @@ pub async fn open_file_dialog() -> Result<Vec<String>, String> {
                 &[
                     "dng", "nef", "nrw", "cr2", "cr3", "arw", "srf", "sr2", "raf", "rw2", "orf",
                     "ori", "srw", "pef", "3fr", "erf", "kdc", "dcr", "iiq", "mos", "mrw", "x3f",
-                    "rwl", "raw", "tiff", "tif", "jpg", "jpeg", "png",
+                    "rwl", "fff", "raw", "tiff", "tif", "jpg", "jpeg", "png",
                 ],
             )
             .pick_files()
@@ -752,11 +1296,36 @@ enum DecodeMode {
 }
 
 fn libraw_output_color(colorspace: &str) -> Result<i32, String> {
-    match colorspace {
-        "linear-srgb" => Ok(1),
-        "aces" => Ok(6),
-        other => Err(format!("Unsupported RAW working color space: {other}")),
+    crate::color_science::libraw_output_color(colorspace)
+}
+
+fn convert_linear_image(
+    image: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    source: ColorSpaceId,
+    target: ColorSpaceId,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    if source == target {
+        return image;
     }
+    let matrix = linear_conversion_matrix(source, target);
+    let mut converted = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(image.width(), image.height());
+    converted
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(image.as_raw().par_chunks_exact(3))
+        .for_each(|(target_pixel, source_pixel)| {
+            let rgb = [
+                source_pixel[0] as f32 / 65535.0,
+                source_pixel[1] as f32 / 65535.0,
+                source_pixel[2] as f32 / 65535.0,
+            ];
+            let converted = apply_linear_matrix(rgb, matrix);
+            for channel in 0..3 {
+                target_pixel[channel] =
+                    (converted[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+            }
+        });
+    converted
 }
 
 fn rgb16_image_from_bytes(
@@ -801,23 +1370,72 @@ fn rgb16_image_from_bytes(
 fn decode_image_buffer(
     path: &str,
     mode: DecodeMode,
-    colorspace: &str,
 ) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    let requested_profile = DENSITY_CAPTURE_PROFILE;
+    if is_scanner_fff_tiff(path) {
+        let image = decode_scanner_fff_tiff_page(path, 0)?;
+        // Scanner FFF contains already-interpolated, gamma-encoded RGB. It is
+        // deliberately kept out of LibRaw: no demosaic and no camera WB.
+        return Ok(linearize_scanner_fff(image, requested_profile));
+    }
     if is_direct_image_extension(path) {
-        return image::open(path)
+        let image = image::open(path)
             .map(|image| image.into_rgb16())
-            .map_err(|error| format!("Image decode failed for {path}: {error:?}"));
+            .map_err(|error| format!("Image decode failed for {path}: {error:?}"))?;
+        let extension = std::path::Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        // JPEG/PNG samples are encoded sRGB by default. A recognized embedded
+        // ICC profile takes precedence, including for TIFFs exported by this
+        // application; unprofiled scanner TIFFs retain their linear contract.
+        let embedded_profile = embedded_input_profile(path);
+        let encoded_source = if extension == "jpg" || extension == "jpeg" || extension == "png" {
+            Some(embedded_profile.unwrap_or(ColorSpaceId::SRgb))
+        } else {
+            embedded_profile
+        };
+        if let Some(source_profile) = encoded_source {
+            let matrix = linear_conversion_matrix(source_profile, requested_profile);
+            let mut converted =
+                ImageBuffer::<Rgb<u16>, Vec<u16>>::new(image.width(), image.height());
+            converted
+                .as_mut()
+                .par_chunks_exact_mut(3)
+                .zip(image.as_raw().par_chunks_exact(3))
+                .for_each(|(target, source)| {
+                    let rgb = [
+                        source[0] as f32 / 65535.0,
+                        source[1] as f32 / 65535.0,
+                        source[2] as f32 / 65535.0,
+                    ];
+                    let linear =
+                        convert_encoded_to_linear_rgb_with_matrix(rgb, source_profile, matrix);
+                    for channel in 0..3 {
+                        target[channel] =
+                            (linear[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+                    }
+                });
+            return Ok(converted);
+        }
+        return Ok(convert_linear_image(
+            image,
+            ColorSpaceId::SRgb,
+            requested_profile,
+        ));
     }
 
-    // RAW_DECODE_VERSION 4 contract: LibRaw 0.22.2 camera/RAF tables, unsigned
-    // 16-bit output, camera white balance and matrix, linear gamma, and fixed
-    // brightness. Black/white levels are applied by LibRaw before this buffer.
+    // RAW_DECODE_VERSION 5 contract: LibRaw 0.22.2 camera/RAF tables, unsigned
+    // 16-bit output, camera white balance and matrix, linear gamma, fixed
+    // brightness, and fixed linear-sRGB density-capture coordinates. Black and
+    // white levels are applied by LibRaw before this buffer.
     let options = rawlib::DecodeOptions {
         half_size: mode == DecodeMode::DevelopProxy,
         demosaic_quality: 3,
         output_bps: 16,
         no_auto_bright: true,
-        output_color: libraw_output_color(colorspace)?,
+        output_color: libraw_output_color(DENSITY_CAPTURE_WORKING_SPACE)?,
         linear_gamma: true,
         use_camera_wb: true,
     };
@@ -829,13 +1447,19 @@ fn decode_image_buffer(
             )
         })?;
 
-    rgb16_image_from_bytes(
+    let decoded = rgb16_image_from_bytes(
         decoded.width as u32,
         decoded.height as u32,
         decoded.colors as usize,
         decoded.bits,
         &decoded.data,
-    )
+    )?;
+    let native_profile = libraw_native_profile(libraw_output_color(DENSITY_CAPTURE_WORKING_SPACE)?);
+    Ok(convert_linear_image(
+        decoded,
+        native_profile,
+        requested_profile,
+    ))
 }
 
 fn persist_import_batch(
@@ -1784,13 +2408,44 @@ fn parse_lut(path: &str) -> Result<ParsedLut, String> {
     })
 }
 
-fn validate_export_color_space(color_space: &str) -> Result<&str, String> {
-    match color_space.to_ascii_lowercase().as_str() {
-        "srgb" => Ok("srgb"),
-        other => Err(format!(
-            "Export color space '{other}' is not available yet because NexFilm cannot embed the required ICC profile. Use sRGB."
-        )),
-    }
+fn validate_export_color_space(color_space: &str) -> Result<&'static str, String> {
+    canonical_output_space(color_space).ok_or_else(|| {
+        format!(
+            "Unsupported export color space '{color_space}'. Choose sRGB, Display P3, Adobe RGB (1998), Rec.2020, ProPhoto RGB, ACEScg, or ACES2065-1."
+        )
+    })
+}
+
+fn encode_export_buffer(
+    image: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    output_space: ColorSpaceId,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    // The inversion/tone/LUT pipeline produces the legacy display-referred
+    // sRGB signal used by the preview. Decode that transfer curve before the
+    // final matrix conversion; applying an OETF directly to these values is
+    // the washed-out regression fixed by MATH_VERSION 3.
+    let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, output_space);
+    let mut encoded = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(image.width(), image.height());
+    encoded
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(image.as_raw().par_chunks_exact(3))
+        .for_each(|(target, source_pixel)| {
+            let linear = convert_encoded_to_linear_rgb_with_matrix(
+                [
+                    source_pixel[0] as f32 / 65535.0,
+                    source_pixel[1] as f32 / 65535.0,
+                    source_pixel[2] as f32 / 65535.0,
+                ],
+                ColorSpaceId::SRgb,
+                matrix,
+            );
+            let encoded_rgb = crate::color_science::encode_linear_rgb(linear, output_space);
+            for channel in 0..3 {
+                target[channel] = (encoded_rgb[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+            }
+        });
+    Ok(encoded)
 }
 
 #[cfg(test)]
@@ -2145,17 +2800,12 @@ pub async fn switch_active_image(
 #[tauri::command]
 pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<(), String> {
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
-
-    let (file_path, has_proxy, colorspace) = {
+    let (file_path, has_proxy) = {
         let item = read_lock(&item_arc);
         if std::fs::File::open(&item.file_path).is_err() {
             return Err("FILE_MISSING".into());
         }
-        (
-            item.file_path.clone(),
-            item.proxy_image.is_some(),
-            item.params.raw_decode.working_colorspace.clone(),
-        )
+        (item.file_path.clone(), item.proxy_image.is_some())
     };
 
     if has_proxy {
@@ -2164,33 +2814,30 @@ pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<
     }
 
     let loaded = tokio::task::spawn_blocking(move || -> Result<_, String> {
-        let img_buffer = decode_image_buffer(&file_path, DecodeMode::DevelopProxy, &colorspace)?;
+        let img_buffer = decode_image_buffer(&file_path, DecodeMode::DevelopProxy)?;
         let (width, height) = img_buffer.dimensions();
         let ratio_proxy = (PROXY_LONG_EDGE / (width.max(height) as f32)).min(1.0);
         let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
         let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
-        let proxy = if ratio_proxy < 0.999 {
+        Ok(if ratio_proxy < 0.999 {
             image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle)
         } else {
             img_buffer
-        };
-        Ok(proxy)
+        })
     })
     .await
     .map_err(|e| e.to_string())??;
 
     {
         let mut item = write_lock(&item_arc);
-        // The Develop proxy is always the unmodified LibRaw output. Geometry,
-        // inversion, and tone operations belong to WebGL and must not delay
-        // the first clear frame or duplicate the pixel buffer in memory.
+        // The Develop proxy is always unmodified linear-sRGB capture data.
+        // Geometry, inversion, and tone operations belong to the renderer.
         if item.proxy_image.is_none() {
             item.original_proxy = None;
             item.proxy_image = Some(loaded);
             item.pristine_proxy = None;
         }
     }
-
     track_proxy_loaded(&state, &id);
     Ok(())
 }
@@ -2228,6 +2875,31 @@ pub async fn analyze_proxy_base_color(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn analyze_proxy_density_limits(
+    id: String,
+    state: State<'_, EngineState>,
+) -> Result<AutoColorLimits, String> {
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+    let (proxy, geom, base_color, mode) = {
+        let item = read_lock(&item_arc);
+        if item.base_color == BaseColor::default() {
+            return Err("BASE_COLOR_NOT_ANALYZED".to_string());
+        }
+        (
+            item.proxy_image
+                .clone()
+                .ok_or_else(|| "PROXY_NOT_READY".to_string())?,
+            item.geom.clone(),
+            item.base_color.clone(),
+            item.params.film_mode.clone(),
+        )
+    };
+    tokio::task::spawn_blocking(move || compute_auto_color_limits(&proxy, &geom, &base_color, mode))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2615,6 +3287,7 @@ pub async fn get_proxy_image_data(
                 proxy,
                 &item.base_color,
                 true,
+                item.base_color != BaseColor::default(),
             ))
         } else {
             None
@@ -2634,11 +3307,11 @@ pub async fn get_proxy_image_data(
 #[tauri::command]
 pub async fn update_tuning_parameters(
     id: String,
-    params: TuningParams,
+    mut params: TuningParams,
     roll_id: String,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
-    libraw_output_color(&params.raw_decode.working_colorspace)?;
+    params.raw_decode.working_colorspace = DENSITY_CAPTURE_WORKING_SPACE.to_string();
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
     let mut item = item_arc.write().map_err(|e| e.to_string())?;
     if item.roll_id != roll_id {
@@ -2646,40 +3319,21 @@ pub async fn update_tuning_parameters(
     }
 
     let previous_params = item.params.clone();
-    let raw_decode_changed = previous_params.raw_decode != params.raw_decode;
     let film_mode_changed = previous_params.film_mode != params.film_mode;
-    let previous_base_color = item.base_color.clone();
-    let previous_rendered_thumbnail = item.rendered_thumbnail_base64.clone();
-    let previous_original = raw_decode_changed
-        .then(|| item.original_proxy.take())
-        .flatten();
-    let previous_proxy = raw_decode_changed
-        .then(|| item.proxy_image.take())
-        .flatten();
-    let previous_pristine = (raw_decode_changed || film_mode_changed)
+    let previous_pristine = film_mode_changed
         .then(|| item.pristine_proxy.take())
         .flatten();
 
     item.params = params;
-    if raw_decode_changed {
-        item.base_color = BaseColor::default();
-        item.rendered_thumbnail_base64 = None;
-    }
     // Film mode is a shader parameter. Never rebuild a CPU density buffer on a
     // slider/button update; the WebGL frame is the interactive source of truth.
-    if film_mode_changed && !raw_decode_changed {
+    if film_mode_changed {
         item.pristine_proxy = None;
     }
 
     if let Err(error) = save_image_state_to_db(&item) {
         item.params = previous_params;
-        if raw_decode_changed {
-            item.original_proxy = previous_original;
-            item.proxy_image = previous_proxy;
-            item.base_color = previous_base_color;
-            item.rendered_thumbnail_base64 = previous_rendered_thumbnail;
-        }
-        if raw_decode_changed || film_mode_changed {
+        if film_mode_changed {
             item.pristine_proxy = previous_pristine;
         }
         return Err(error);
@@ -2847,6 +3501,7 @@ fn render_shader_equivalent(
     let tolerance = params.sprocket.sprocket_tolerance.unwrap_or(0.10);
     let feather = params.sprocket.sprocket_feather.unwrap_or(0.05);
     let lut_opacity = params.lut.lut_opacity.clamp(0.0, 1.0) * LUT_CONTROL_SCALE;
+    let luma_coefficients = DENSITY_LUMA_COEFFICIENTS;
     let exposure_offsets = if params.film_mode == FilmMode::BW {
         [params.exposure.exposure; 3]
     } else {
@@ -2936,13 +3591,14 @@ fn render_shader_equivalent(
             } else {
                 (0.0, 0.0, 0.0)
             };
-            let baseline = apply_post_gamma_adjustments(
+            let baseline = apply_post_gamma_adjustments_with_luma(
                 normalized,
                 params.tone.highlights,
                 params.tone.shadows,
                 saturation,
                 temperature,
                 tint,
+                luma_coefficients,
             );
             let mut rendered = if let Some(lut) = lut {
                 let mapped = lut.sample(baseline);
@@ -2955,16 +3611,29 @@ fn render_shader_equivalent(
                 baseline
             };
             if params.film_mode == FilmMode::BW {
-                rendered = neutralize_rgb(rendered);
+                let luma = rendered
+                    .iter()
+                    .zip(luma_coefficients)
+                    .map(|(value, coefficient)| value * coefficient)
+                    .sum();
+                rendered = [luma; 3];
             }
 
             if let Some(target) = sprocket_target {
-                let raw_luma =
-                    0.299 * linear_rgb[0] + 0.587 * linear_rgb[1] + 0.114 * linear_rgb[2];
-                let target_luma = (0.299 * target[0] as f32
-                    + 0.587 * target[1] as f32
-                    + 0.114 * target[2] as f32)
-                    / 65535.0;
+                let raw_luma = linear_rgb
+                    .iter()
+                    .zip(luma_coefficients)
+                    .map(|(value, coefficient)| value * coefficient)
+                    .sum::<f32>();
+                let target_luma = ([
+                    target[0] as f32 / 65535.0,
+                    target[1] as f32 / 65535.0,
+                    target[2] as f32 / 65535.0,
+                ])
+                .iter()
+                .zip(luma_coefficients)
+                .map(|(value, coefficient)| value * coefficient)
+                .sum::<f32>();
                 let outside_calibration = crop_uv[0] < min_x
                     || crop_uv[0] > max_x
                     || crop_uv[1] < min_y
@@ -2993,6 +3662,26 @@ struct ExportItemSnapshot {
     geom: GeometryState,
     base_color: BaseColor,
     output_path: std::path::PathBuf,
+    export_metadata: Option<ExportMetadata>,
+}
+
+#[derive(Clone, Debug)]
+struct ExportMetadata {
+    roll_id: String,
+    film_stock: String,
+    camera: String,
+    date: String,
+}
+
+impl From<&Roll> for ExportMetadata {
+    fn from(roll: &Roll) -> Self {
+        Self {
+            roll_id: roll.roll_id.clone(),
+            film_stock: roll.film_stock.clone(),
+            camera: roll.camera.clone(),
+            date: roll.date.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -3212,35 +3901,567 @@ fn reserve_export_path(
     None
 }
 
+#[derive(Clone, Copy)]
+enum TiffByteOrder {
+    Little,
+    Big,
+}
+
+impl TiffByteOrder {
+    fn read_u16(self, bytes: &[u8]) -> u16 {
+        match self {
+            Self::Little => u16::from_le_bytes([bytes[0], bytes[1]]),
+            Self::Big => u16::from_be_bytes([bytes[0], bytes[1]]),
+        }
+    }
+
+    fn read_u32(self, bytes: &[u8]) -> u32 {
+        match self {
+            Self::Little => u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            Self::Big => u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+        }
+    }
+
+    fn push_u16(self, output: &mut Vec<u8>, value: u16) {
+        output.extend_from_slice(&match self {
+            Self::Little => value.to_le_bytes(),
+            Self::Big => value.to_be_bytes(),
+        });
+    }
+
+    fn push_u32(self, output: &mut Vec<u8>, value: u32) {
+        output.extend_from_slice(&match self {
+            Self::Little => value.to_le_bytes(),
+            Self::Big => value.to_be_bytes(),
+        });
+    }
+
+    fn write_u32(self, output: &mut [u8], value: u32) {
+        output.copy_from_slice(&match self {
+            Self::Little => value.to_le_bytes(),
+            Self::Big => value.to_be_bytes(),
+        });
+    }
+}
+
+enum ExportTiffEntry {
+    Raw {
+        tag: u16,
+        bytes: [u8; 12],
+    },
+    Ascii {
+        tag: u16,
+        bytes: Vec<u8>,
+    },
+    Long {
+        tag: u16,
+        value: u32,
+    },
+    Binary {
+        tag: u16,
+        type_code: u16,
+        bytes: Vec<u8>,
+    },
+}
+
+impl ExportTiffEntry {
+    fn tag(&self) -> u16 {
+        match self {
+            Self::Raw { tag, .. }
+            | Self::Ascii { tag, .. }
+            | Self::Long { tag, .. }
+            | Self::Binary { tag, .. } => *tag,
+        }
+    }
+}
+
+fn exif_ascii(value: &str) -> Vec<u8> {
+    let mut bytes = value.replace('\0', " ").into_bytes();
+    bytes.push(0);
+    bytes
+}
+
+fn exif_datetime(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed.replace('-', ":");
+    Some(if normalized.len() == 10 {
+        format!("{normalized} 00:00:00")
+    } else {
+        normalized.chars().take(19).collect()
+    })
+}
+
+fn build_metadata_ifd(
+    order: TiffByteOrder,
+    ifd_offset: u32,
+    original_entries: Vec<[u8; 12]>,
+    next_ifd: u32,
+    metadata: &ExportMetadata,
+    icc_profile: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    let mut entries = original_entries
+        .into_iter()
+        .map(|bytes| ExportTiffEntry::Raw {
+            tag: order.read_u16(&bytes[0..2]),
+            bytes,
+        })
+        .collect::<Vec<_>>();
+    let description = [
+        (!metadata.roll_id.trim().is_empty()).then(|| format!("Roll: {}", metadata.roll_id.trim())),
+        (!metadata.film_stock.trim().is_empty())
+            .then(|| format!("Film: {}", metadata.film_stock.trim())),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("; ");
+    if !description.is_empty() {
+        entries.push(ExportTiffEntry::Ascii {
+            tag: 0x010e,
+            bytes: exif_ascii(&description),
+        });
+    }
+    if !metadata.camera.trim().is_empty() {
+        entries.push(ExportTiffEntry::Ascii {
+            tag: 0x0110,
+            bytes: exif_ascii(metadata.camera.trim()),
+        });
+    }
+    entries.push(ExportTiffEntry::Ascii {
+        tag: 0x0131,
+        bytes: exif_ascii("NexFilm"),
+    });
+    let date_time = exif_datetime(&metadata.date);
+    if let Some(value) = date_time.as_deref() {
+        entries.push(ExportTiffEntry::Ascii {
+            tag: 0x0132,
+            bytes: exif_ascii(value),
+        });
+    }
+    if let Some(profile) = icc_profile {
+        entries.push(ExportTiffEntry::Binary {
+            tag: 34675,
+            type_code: 7,
+            bytes: profile.to_vec(),
+        });
+    }
+
+    let ifd_size = 2usize
+        .checked_add(
+            entries
+                .len()
+                .saturating_add(usize::from(date_time.is_some()))
+                * 12,
+        )
+        .and_then(|size| size.checked_add(4))
+        .ok_or_else(|| "EXIF metadata is too large".to_string())?;
+    let exif_ifd_offset = ifd_offset
+        .checked_add(u32::try_from(ifd_size).map_err(|_| "EXIF metadata is too large")?)
+        .ok_or_else(|| "EXIF metadata offset overflow".to_string())?;
+    if date_time.is_some() {
+        entries.push(ExportTiffEntry::Long {
+            tag: 0x8769,
+            value: exif_ifd_offset,
+        });
+    }
+    entries.sort_by_key(ExportTiffEntry::tag);
+
+    let exif_ifd_size = if date_time.is_some() { 18u32 } else { 0 };
+    let mut external_offset = exif_ifd_offset
+        .checked_add(exif_ifd_size)
+        .ok_or_else(|| "EXIF metadata offset overflow".to_string())?;
+    let mut external_data = Vec::new();
+    let mut output = Vec::new();
+    order.push_u16(
+        &mut output,
+        u16::try_from(entries.len()).map_err(|_| "Too many TIFF entries")?,
+    );
+    for entry in entries {
+        match entry {
+            ExportTiffEntry::Raw { bytes, .. } => output.extend_from_slice(&bytes),
+            ExportTiffEntry::Long { tag, value } => {
+                order.push_u16(&mut output, tag);
+                order.push_u16(&mut output, 4);
+                order.push_u32(&mut output, 1);
+                order.push_u32(&mut output, value);
+            }
+            ExportTiffEntry::Ascii { tag, bytes } => {
+                order.push_u16(&mut output, tag);
+                order.push_u16(&mut output, 2);
+                order.push_u32(
+                    &mut output,
+                    u32::try_from(bytes.len()).map_err(|_| "EXIF text is too large")?,
+                );
+                if bytes.len() <= 4 {
+                    output.extend_from_slice(&bytes);
+                    output.resize(output.len() + 4 - bytes.len(), 0);
+                } else {
+                    order.push_u32(&mut output, external_offset);
+                    external_data.extend_from_slice(&bytes);
+                    if external_data.len() % 2 != 0 {
+                        external_data.push(0);
+                    }
+                    external_offset = exif_ifd_offset
+                        .checked_add(exif_ifd_size)
+                        .and_then(|offset| {
+                            offset.checked_add(u32::try_from(external_data.len()).ok()?)
+                        })
+                        .ok_or_else(|| "EXIF metadata offset overflow".to_string())?;
+                }
+            }
+            ExportTiffEntry::Binary {
+                tag,
+                type_code,
+                bytes,
+            } => {
+                order.push_u16(&mut output, tag);
+                order.push_u16(&mut output, type_code);
+                order.push_u32(
+                    &mut output,
+                    u32::try_from(bytes.len()).map_err(|_| "ICC profile is too large")?,
+                );
+                order.push_u32(&mut output, external_offset);
+                external_data.extend_from_slice(&bytes);
+                if external_data.len() % 2 != 0 {
+                    external_data.push(0);
+                }
+                external_offset = exif_ifd_offset
+                    .checked_add(exif_ifd_size)
+                    .and_then(|offset| offset.checked_add(u32::try_from(external_data.len()).ok()?))
+                    .ok_or_else(|| "ICC profile offset overflow".to_string())?;
+            }
+        }
+    }
+    order.push_u32(&mut output, next_ifd);
+
+    if let Some(value) = date_time.as_deref() {
+        let date_bytes = exif_ascii(value);
+        order.push_u16(&mut output, 1);
+        order.push_u16(&mut output, 0x9003);
+        order.push_u16(&mut output, 2);
+        order.push_u32(
+            &mut output,
+            u32::try_from(date_bytes.len()).map_err(|_| "EXIF date is too large")?,
+        );
+        order.push_u32(&mut output, external_offset);
+        order.push_u32(&mut output, 0);
+        output.extend_from_slice(&external_data);
+        output.extend_from_slice(&date_bytes);
+    } else {
+        output.extend_from_slice(&external_data);
+    }
+    Ok(output)
+}
+
+fn build_exif_tiff(metadata: &ExportMetadata) -> Result<Vec<u8>, String> {
+    let order = TiffByteOrder::Little;
+    let mut output = b"II".to_vec();
+    order.push_u16(&mut output, 42);
+    order.push_u32(&mut output, 8);
+    output.extend_from_slice(&build_metadata_ifd(
+        order,
+        8,
+        Vec::new(),
+        0,
+        metadata,
+        None,
+    )?);
+    Ok(output)
+}
+
+fn insert_jpeg_exif(encoded: &mut Vec<u8>, metadata: &ExportMetadata) -> Result<(), String> {
+    if !encoded.starts_with(&[0xff, 0xd8]) {
+        return Err("JPEG encoder returned invalid data".to_string());
+    }
+    let mut payload = b"Exif\0\0".to_vec();
+    payload.extend_from_slice(&build_exif_tiff(metadata)?);
+    let segment_length = payload
+        .len()
+        .checked_add(2)
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| "EXIF metadata exceeds the JPEG segment limit".to_string())?;
+    let mut segment = vec![0xff, 0xe1];
+    segment.extend_from_slice(&segment_length.to_be_bytes());
+    segment.extend_from_slice(&payload);
+    encoded.splice(2..2, segment);
+    Ok(())
+}
+
+fn insert_jpeg_icc(encoded: &mut Vec<u8>, profile: &[u8]) -> Result<(), String> {
+    if !encoded.starts_with(&[0xff, 0xd8]) {
+        return Err("JPEG encoder returned invalid data".to_string());
+    }
+    let mut payload = b"ICC_PROFILE\0".to_vec();
+    payload.extend_from_slice(&[1, 1]);
+    payload.extend_from_slice(profile);
+    let segment_length = payload
+        .len()
+        .checked_add(2)
+        .and_then(|length| u16::try_from(length).ok())
+        .ok_or_else(|| "ICC profile exceeds the JPEG segment limit".to_string())?;
+    let mut segment = vec![0xff, 0xe2];
+    segment.extend_from_slice(&segment_length.to_be_bytes());
+    segment.extend_from_slice(&payload);
+    encoded.splice(2..2, segment);
+    Ok(())
+}
+
+fn png_crc32(bytes: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320u32 & (0u32.wrapping_sub(crc & 1)));
+        }
+    }
+    !crc
+}
+
+fn insert_png_exif(encoded: &mut Vec<u8>, metadata: &ExportMetadata) -> Result<(), String> {
+    if !encoded.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("PNG encoder returned invalid data".to_string());
+    }
+    let mut offset = 8usize;
+    while offset
+        .checked_add(12)
+        .is_some_and(|end| end <= encoded.len())
+    {
+        let length = u32::from_be_bytes(
+            encoded[offset..offset + 4]
+                .try_into()
+                .map_err(|_| "Invalid PNG chunk")?,
+        ) as usize;
+        let chunk_end = offset
+            .checked_add(12)
+            .and_then(|value| value.checked_add(length))
+            .ok_or_else(|| "Invalid PNG chunk length".to_string())?;
+        if chunk_end > encoded.len() {
+            break;
+        }
+        if &encoded[offset + 4..offset + 8] == b"IEND" {
+            let payload = build_exif_tiff(metadata)?;
+            let mut chunk = Vec::with_capacity(payload.len() + 12);
+            chunk.extend_from_slice(
+                &u32::try_from(payload.len())
+                    .map_err(|_| "EXIF metadata is too large")?
+                    .to_be_bytes(),
+            );
+            chunk.extend_from_slice(b"eXIf");
+            chunk.extend_from_slice(&payload);
+            let mut crc_input = b"eXIf".to_vec();
+            crc_input.extend_from_slice(&payload);
+            chunk.extend_from_slice(&png_crc32(&crc_input).to_be_bytes());
+            encoded.splice(offset..offset, chunk);
+            return Ok(());
+        }
+        offset = chunk_end;
+    }
+    Err("PNG output does not contain an IEND chunk".to_string())
+}
+
+fn insert_png_icc(encoded: &mut Vec<u8>, profile: &[u8]) -> Result<(), String> {
+    if !encoded.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("PNG encoder returned invalid data".to_string());
+    }
+    let mut compressed = ZlibEncoder::new(Vec::new(), Compression::default());
+    compressed
+        .write_all(profile)
+        .map_err(|error| format!("ICC profile compression failed: {error}"))?;
+    let compressed = compressed
+        .finish()
+        .map_err(|error| format!("ICC profile compression failed: {error}"))?;
+    let mut payload = b"NexFilm\0".to_vec();
+    payload.push(0);
+    payload.extend_from_slice(&compressed);
+    let mut offset = 8usize;
+    while offset
+        .checked_add(12)
+        .is_some_and(|end| end <= encoded.len())
+    {
+        let length = u32::from_be_bytes(
+            encoded[offset..offset + 4]
+                .try_into()
+                .map_err(|_| "Invalid PNG chunk")?,
+        ) as usize;
+        let chunk_end = offset
+            .checked_add(12)
+            .and_then(|value| value.checked_add(length))
+            .ok_or_else(|| "Invalid PNG chunk length".to_string())?;
+        if chunk_end > encoded.len() {
+            break;
+        }
+        if &encoded[offset + 4..offset + 8] == b"IEND" {
+            let mut chunk = Vec::with_capacity(payload.len() + 12);
+            chunk.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            chunk.extend_from_slice(b"iCCP");
+            chunk.extend_from_slice(&payload);
+            let mut crc_input = b"iCCP".to_vec();
+            crc_input.extend_from_slice(&payload);
+            chunk.extend_from_slice(&png_crc32(&crc_input).to_be_bytes());
+            encoded.splice(offset..offset, chunk);
+            return Ok(());
+        }
+        offset = chunk_end;
+    }
+    Err("PNG output does not contain an IEND chunk".to_string())
+}
+
+fn insert_tiff_exif(encoded: &mut Vec<u8>, metadata: &ExportMetadata) -> Result<(), String> {
+    if encoded.len() < 8 {
+        return Err("TIFF encoder returned invalid data".to_string());
+    }
+    let order = match &encoded[0..2] {
+        b"II" => TiffByteOrder::Little,
+        b"MM" => TiffByteOrder::Big,
+        _ => return Err("TIFF encoder returned invalid byte order".to_string()),
+    };
+    if order.read_u16(&encoded[2..4]) != 42 {
+        return Err("TIFF encoder returned an unsupported header".to_string());
+    }
+    let original_ifd = order.read_u32(&encoded[4..8]) as usize;
+    if original_ifd
+        .checked_add(2)
+        .is_none_or(|end| end > encoded.len())
+    {
+        return Err("TIFF output has an invalid image directory".to_string());
+    }
+    let entry_count = order.read_u16(&encoded[original_ifd..original_ifd + 2]) as usize;
+    let entries_start = original_ifd + 2;
+    let entries_end = entries_start
+        .checked_add(entry_count.saturating_mul(12))
+        .ok_or_else(|| "TIFF directory is too large".to_string())?;
+    if entries_end
+        .checked_add(4)
+        .is_none_or(|end| end > encoded.len())
+    {
+        return Err("TIFF output has a truncated image directory".to_string());
+    }
+    let replaced_tags = [0x010e, 0x0110, 0x0131, 0x0132, 0x8769];
+    let mut original_entries = Vec::new();
+    for entry in encoded[entries_start..entries_end].chunks_exact(12) {
+        if !replaced_tags.contains(&order.read_u16(&entry[0..2])) {
+            original_entries.push(entry.try_into().map_err(|_| "Invalid TIFF entry")?);
+        }
+    }
+    let next_ifd = order.read_u32(&encoded[entries_end..entries_end + 4]);
+    if encoded.len() % 2 != 0 {
+        encoded.push(0);
+    }
+    let new_ifd = u32::try_from(encoded.len()).map_err(|_| "TIFF output is too large")?;
+    let directory = build_metadata_ifd(order, new_ifd, original_entries, next_ifd, metadata, None)?;
+    encoded.extend_from_slice(&directory);
+    order.write_u32(&mut encoded[4..8], new_ifd);
+    Ok(())
+}
+
+fn insert_tiff_icc(encoded: &mut Vec<u8>, profile: &[u8]) -> Result<(), String> {
+    if encoded.len() < 8 {
+        return Err("TIFF encoder returned invalid data".to_string());
+    }
+    let order = match &encoded[0..2] {
+        b"II" => TiffByteOrder::Little,
+        b"MM" => TiffByteOrder::Big,
+        _ => return Err("TIFF encoder returned invalid byte order".to_string()),
+    };
+    if order.read_u16(&encoded[2..4]) != 42 {
+        return Err("TIFF encoder returned an unsupported header".to_string());
+    }
+    let original_ifd = order.read_u32(&encoded[4..8]) as usize;
+    if original_ifd
+        .checked_add(2)
+        .is_none_or(|end| end > encoded.len())
+    {
+        return Err("TIFF output has an invalid image directory".to_string());
+    }
+    let entry_count = order.read_u16(&encoded[original_ifd..original_ifd + 2]) as usize;
+    let entries_start = original_ifd + 2;
+    let entries_end = entries_start
+        .checked_add(entry_count.saturating_mul(12))
+        .ok_or_else(|| "TIFF directory is too large".to_string())?;
+    if entries_end
+        .checked_add(4)
+        .is_none_or(|end| end > encoded.len())
+    {
+        return Err("TIFF output has a truncated image directory".to_string());
+    }
+    let mut original_entries = Vec::new();
+    for entry in encoded[entries_start..entries_end].chunks_exact(12) {
+        if order.read_u16(&entry[0..2]) != 34675 {
+            original_entries.push(entry.try_into().map_err(|_| "Invalid TIFF entry")?);
+        }
+    }
+    let next_ifd = order.read_u32(&encoded[entries_end..entries_end + 4]);
+    if encoded.len() % 2 != 0 {
+        encoded.push(0);
+    }
+    let new_ifd = u32::try_from(encoded.len()).map_err(|_| "TIFF output is too large")?;
+    let empty_metadata = ExportMetadata {
+        roll_id: String::new(),
+        film_stock: String::new(),
+        camera: String::new(),
+        date: String::new(),
+    };
+    let directory = build_metadata_ifd(
+        order,
+        new_ifd,
+        original_entries,
+        next_ifd,
+        &empty_metadata,
+        Some(profile),
+    )?;
+    encoded.extend_from_slice(&directory);
+    order.write_u32(&mut encoded[4..8], new_ifd);
+    Ok(())
+}
+
+fn attach_export_profile(
+    encoded: &mut Vec<u8>,
+    format: ExportFormat,
+    profile: &[u8],
+) -> Result<(), String> {
+    match format {
+        ExportFormat::Jpeg => insert_jpeg_icc(encoded, profile),
+        ExportFormat::Png => insert_png_icc(encoded, profile),
+        ExportFormat::Tiff8 | ExportFormat::Tiff16 => insert_tiff_icc(encoded, profile),
+    }
+}
+
+fn attach_export_metadata(
+    encoded: &mut Vec<u8>,
+    format: ExportFormat,
+    metadata: &ExportMetadata,
+) -> Result<(), String> {
+    match format {
+        ExportFormat::Jpeg => insert_jpeg_exif(encoded, metadata),
+        ExportFormat::Png => insert_png_exif(encoded, metadata),
+        ExportFormat::Tiff8 | ExportFormat::Tiff16 => insert_tiff_exif(encoded, metadata),
+    }
+}
+
+#[allow(dead_code)]
 fn write_export_image(
     buffer: ImageBuffer<Rgb<u16>, Vec<u16>>,
     path: &std::path::Path,
     format: ExportFormat,
     quality: u32,
+    metadata: Option<&ExportMetadata>,
 ) -> Result<(), String> {
-    match format {
-        ExportFormat::Jpeg => {
-            let (width, height) = buffer.dimensions();
-            let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
-            out8.as_mut()
-                .par_chunks_exact_mut(3)
-                .zip(buffer.as_raw().par_chunks_exact(3))
-                .for_each(|(target, source)| {
-                    target[0] = (source[0] >> 8) as u8;
-                    target[1] = (source[1] >> 8) as u8;
-                    target[2] = (source[2] >> 8) as u8;
-                });
-            let mut cursor = Cursor::new(Vec::new());
-            image::DynamicImage::ImageRgb8(out8)
-                .write_to(&mut cursor, ImageOutputFormat::Jpeg(quality as u8))
-                .map_err(|error| format!("JPEG encoding failed: {error}"))?;
-            std::fs::write(path, cursor.into_inner())
-                .map_err(|error| format!("Could not write {}: {error}", path.display()))
-        }
-        ExportFormat::Png => image::DynamicImage::ImageRgb16(buffer)
-            .save_with_format(path, image::ImageFormat::Png)
-            .map_err(|error| format!("Could not write {}: {error}", path.display())),
-        ExportFormat::Tiff8 => {
+    write_export_image_with_profile(buffer, path, format, quality, metadata, None)
+}
+
+fn write_export_image_with_profile(
+    buffer: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    path: &std::path::Path,
+    format: ExportFormat,
+    quality: u32,
+    metadata: Option<&ExportMetadata>,
+    profile: Option<&[u8]>,
+) -> Result<(), String> {
+    let dynamic = match format {
+        ExportFormat::Jpeg | ExportFormat::Tiff8 => {
             let (width, height) = buffer.dimensions();
             let mut out8 = ImageBuffer::<Rgb<u8>, Vec<u8>>::new(width, height);
             out8.as_mut()
@@ -3252,13 +4473,27 @@ fn write_export_image(
                     target[2] = (source[2] >> 8) as u8;
                 });
             image::DynamicImage::ImageRgb8(out8)
-                .save_with_format(path, image::ImageFormat::Tiff)
-                .map_err(|error| format!("Could not write {}: {error}", path.display()))
         }
-        ExportFormat::Tiff16 => image::DynamicImage::ImageRgb16(buffer)
-            .save_with_format(path, image::ImageFormat::Tiff)
-            .map_err(|error| format!("Could not write {}: {error}", path.display())),
+        ExportFormat::Png | ExportFormat::Tiff16 => image::DynamicImage::ImageRgb16(buffer),
+    };
+    let output_format = match format {
+        ExportFormat::Jpeg => ImageOutputFormat::Jpeg(quality as u8),
+        ExportFormat::Png => ImageOutputFormat::Png,
+        ExportFormat::Tiff8 | ExportFormat::Tiff16 => ImageOutputFormat::Tiff,
+    };
+    let mut cursor = Cursor::new(Vec::new());
+    dynamic
+        .write_to(&mut cursor, output_format)
+        .map_err(|error| format!("Image encoding failed: {error}"))?;
+    let mut encoded = cursor.into_inner();
+    if let Some(profile) = profile {
+        attach_export_profile(&mut encoded, format, profile)?;
     }
+    if let Some(metadata) = metadata {
+        attach_export_metadata(&mut encoded, format, metadata)?;
+    }
+    std::fs::write(path, encoded)
+        .map_err(|error| format!("Could not write {}: {error}", path.display()))
 }
 
 #[tauri::command]
@@ -3274,10 +4509,13 @@ pub async fn batch_export_images(
     naming_template: String,
     conflict_policy: String,
     quality: u32,
+    write_exif: bool,
     state: State<'_, EngineState>,
     app_handle: tauri::AppHandle,
 ) -> Result<BatchExportResult, String> {
-    validate_export_color_space(&color_space)?;
+    let color_space = validate_export_color_space(&color_space)?.to_string();
+    let output_space = parse_output_space(&color_space)
+        .ok_or_else(|| format!("Unsupported export color space: {color_space}"))?;
     let output_path = std::path::Path::new(&output_dir);
     if !output_path.is_dir() {
         return Err(format!("Export directory does not exist: {output_dir}"));
@@ -3345,6 +4583,7 @@ pub async fn batch_export_images(
                 geom,
                 base_color,
                 output_path: std::path::PathBuf::new(),
+                export_metadata: None,
             });
         }
 
@@ -3361,6 +4600,9 @@ pub async fn batch_export_images(
     let mut skipped_count = 0;
     for (index, snapshot) in export_snapshots.iter_mut().enumerate() {
         let roll = rolls.iter().find(|roll| roll.roll_id == snapshot.roll_id);
+        if write_exif {
+            snapshot.export_metadata = roll.map(ExportMetadata::from);
+        }
         let stem = render_export_name(&naming_template, snapshot, roll, index + 1)?;
         if let Some(path) = reserve_export_path(
             output_path,
@@ -3404,11 +4646,7 @@ pub async fn batch_export_images(
             let params_owned = snapshot.params.clone();
             let geom_owned = snapshot.geom.clone();
             let base_color_owned = snapshot.base_color.clone();
-            match decode_image_buffer(
-                &file_path,
-                DecodeMode::ExportFull,
-                &params_owned.raw_decode.working_colorspace,
-            ) {
+            match decode_image_buffer(&file_path, DecodeMode::ExportFull) {
                 Ok(original) => {
                     let params = &params_owned;
                     let base_color = &base_color_owned;
@@ -3465,13 +4703,16 @@ pub async fn batch_export_images(
                         .lut_path
                         .as_deref()
                         .and_then(|path| parsed_luts.get(path));
-                    let mut out_buffer = render_shader_equivalent(
+                    let rendered_display = render_shader_equivalent(
                         &transformed,
                         params,
                         &geom_owned,
                         base_color,
                         export_lut,
                     );
+                    // Resize and output sharpening intentionally preserve the
+                    // legacy display-referred grading contract.
+                    let mut out_buffer = rendered_display;
 
                     let (width, height) = out_buffer.dimensions();
                     let (target_width, target_height) =
@@ -3490,11 +4731,30 @@ pub async fn batch_export_images(
                         apply_usm(&mut out_buffer, sigma, amount);
                     }
 
-                    match write_export_image(
+                    out_buffer = match encode_export_buffer(out_buffer, output_space) {
+                        Ok(buffer) => buffer,
+                        Err(error) => {
+                            lock_mutex(&failures).push(format!(
+                                "Failed to convert {} to {}: {error}",
+                                file_path, color_space
+                            ));
+                            let processed = processed_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                            let _ = progress_app.emit(
+                                "export_progress",
+                                serde_json::json!({ "processed": processed, "total": count, "id": snapshot.id }),
+                            );
+                            return;
+                        }
+                    };
+
+                    let profile = crate::color_science::build_icc_profile(output_space);
+                    match write_export_image_with_profile(
                         out_buffer,
                         &snapshot.output_path,
                         export_format,
                         quality,
+                        snapshot.export_metadata.as_ref(),
+                        Some(&profile),
                     ) {
                         Ok(()) => {
                             success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -4405,6 +5665,7 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     } else {
         (0.0, 0.0, 0.0)
     };
+    let luma_coefficients = DENSITY_LUMA_COEFFICIENTS;
 
     pristine_pixels
         .par_chunks(3)
@@ -4444,21 +5705,29 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
                     gamma,
                 ),
             ];
-            let mut final_rgb = apply_post_gamma_adjustments(
+            let mut final_rgb = apply_post_gamma_adjustments_with_luma(
                 gamma_corrected,
                 0.0,
                 0.0,
                 saturation,
                 temperature,
                 tint,
+                luma_coefficients,
             );
             if params.film_mode == FilmMode::BW {
-                final_rgb = neutralize_rgb(final_rgb);
+                let luma = final_rgb
+                    .iter()
+                    .zip(luma_coefficients)
+                    .map(|(value, coefficient)| value * coefficient)
+                    .sum();
+                final_rgb = [luma; 3];
             }
 
-            out_px[0] = (final_rgb[0] * 255.0).clamp(0.0, 255.0) as u8;
-            out_px[1] = (final_rgb[1] * 255.0).clamp(0.0, 255.0) as u8;
-            out_px[2] = (final_rgb[2] * 255.0).clamp(0.0, 255.0) as u8;
+            // `final_rgb` is already the display-referred sRGB grading signal.
+            // Encoding it again would lift midtones and wash out the image.
+            out_px[0] = (final_rgb[0].clamp(0.0, 1.0) * 255.0).round() as u8;
+            out_px[1] = (final_rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8;
+            out_px[2] = (final_rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8;
         });
 
     let (orig_width, orig_height) = (width, height);
@@ -4501,11 +5770,13 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 #[cfg(test)]
 mod import_contract_tests {
     use super::{
-        decode_image_buffer, decode_import_preview_base64, is_better_preview_edge,
-        is_lightweight_direct_preview, is_raw_extension, is_tiff_extension, persist_import_batch,
+        decode_image_buffer, decode_import_preview_base64, decode_scanner_fff_tiff_page,
+        is_better_preview_edge, is_lightweight_direct_preview, is_raw_extension, is_tiff_extension,
+        linearize_scanner_fff, persist_import_batch, render_shader_equivalent,
         rgb16_image_from_bytes, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
     };
     use crate::app_state::{BaseColor, FilmItem, GeometryState, TuningParams};
+    use crate::color_science::ColorSpaceId;
     use base64::Engine as _;
 
     #[test]
@@ -4517,14 +5788,71 @@ mod import_contract_tests {
     }
 
     #[test]
-    fn camera_raw_and_tiff_formats_use_deferred_import_preview_paths() {
+    fn jpeg_and_png_inputs_decode_to_linear_pixels_and_use_geometry_transforms() {
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-direct-input-test-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let source = image::ImageBuffer::from_pixel(4, 2, image::Rgb([128, 64, 192]));
+        for (extension, format) in [
+            ("png", image::ImageOutputFormat::Png),
+            ("jpg", image::ImageOutputFormat::Jpeg(100)),
+        ] {
+            let path = root.join(format!("source.{extension}"));
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgb8(source.clone())
+                .write_to(&mut bytes, format)
+                .unwrap();
+            std::fs::write(&path, bytes.into_inner()).unwrap();
+
+            let decoded =
+                decode_image_buffer(path.to_string_lossy().as_ref(), DecodeMode::DevelopProxy)
+                    .unwrap();
+            // 128/255 sRGB decodes to approximately 0.216 linear. JPEG's
+            // quantization gets a wider tolerance than the lossless PNG.
+            let red = decoded.get_pixel(0, 0)[0];
+            assert!((11_000..=18_000).contains(&red), "{extension}: {red}");
+
+            let mut geom = GeometryState::default();
+            geom.crop_rect.x = 0.0;
+            geom.crop_rect.y = 0.0;
+            geom.crop_rect.width = 0.5;
+            geom.crop_rect.height = 1.0;
+            let transformed = render_shader_equivalent(
+                &decoded,
+                &TuningParams::default(),
+                &geom,
+                &BaseColor::default(),
+                None,
+            );
+            assert_eq!(transformed.dimensions(), (2, 2), "{extension}");
+            let mut tuned = TuningParams::default();
+            tuned.exposure.exposure = 1.0;
+            let tuned_output =
+                render_shader_equivalent(&decoded, &tuned, &geom, &BaseColor::default(), None);
+            assert_ne!(transformed.as_raw(), tuned_output.as_raw(), "{extension}");
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scanner_fff_linearization_removes_the_standard_1_8_transfer_curve() {
+        let encoded = image::ImageBuffer::from_pixel(1, 1, image::Rgb([32768u16; 3]));
+        let linear = linearize_scanner_fff(encoded, ColorSpaceId::SRgb);
+        assert!((18_000..=20_000).contains(&linear.get_pixel(0, 0)[0]));
+    }
+
+    #[test]
+    fn supported_large_formats_use_deferred_import_preview_paths() {
         for path in [
             "a.dng", "a.nef", "a.nrw", "a.cr3", "a.arw", "a.raf", "a.rw2", "a.orf", "a.srw",
-            "a.pef", "a.3fr", "a.iiq", "a.x3f",
+            "a.pef", "a.3fr", "a.fff", "a.iiq", "a.x3f",
         ] {
             assert!(
                 is_raw_extension(path),
-                "{path} must be recognized as camera RAW"
+                "{path} must be recognized as a deferred import format"
             );
         }
         assert!(is_tiff_extension("scan.tif"));
@@ -4568,6 +5896,99 @@ mod import_contract_tests {
     }
 
     #[test]
+    #[ignore = "large user-supplied FFF fixture; run explicitly when validating scanner FFF"]
+    fn hasselblad_fff_fixture_decodes_preview_and_linear_proxy() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        let Some(path) = std::fs::read_dir(&root)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("fff"))
+            })
+        else {
+            return;
+        };
+
+        let decode_started = std::time::Instant::now();
+        let decoded =
+            decode_image_buffer(path.to_string_lossy().as_ref(), DecodeMode::DevelopProxy)
+                .expect("scanner FFF main image should decode as 16-bit TIFF");
+        assert!(decoded.width() > 256 && decoded.height() > 256);
+        assert!(decoded.as_raw().iter().any(|value| *value > 0));
+        let reduced =
+            image::imageops::resize(&decoded, 160, 512, image::imageops::FilterType::Triangle);
+        let mut geom = GeometryState::default();
+        geom.crop_rect.width = 0.5;
+        let transformed = render_shader_equivalent(
+            &reduced,
+            &TuningParams::default(),
+            &geom,
+            &BaseColor::default(),
+            None,
+        );
+        assert_eq!(transformed.dimensions(), (80, 512));
+
+        let reduced_page = decode_scanner_fff_tiff_page(path.to_string_lossy().as_ref(), 1)
+            .expect("scanner FFF should contain a reduced TIFF page");
+        assert!(reduced_page.width().max(reduced_page.height()) < IMPORT_PREVIEW_LONG_EDGE);
+
+        let preview_started = std::time::Instant::now();
+        let preview =
+            decode_import_preview_base64(path.to_string_lossy().as_ref(), IMPORT_PREVIEW_LONG_EDGE)
+                .expect("FFF should expose a TIFF-compatible preview");
+        let preview_bytes = base64::engine::general_purpose::STANDARD
+            .decode(preview)
+            .expect("FFF preview must be base64");
+        let preview_image = image::load_from_memory(&preview_bytes)
+            .expect("FFF preview must contain a displayable image");
+        assert!(preview_image.width() > 1 && preview_image.height() > 1);
+        assert_eq!(
+            (preview_image.width(), preview_image.height()),
+            reduced_page.dimensions()
+        );
+
+        println!(
+            "FFF preview {:?} ({}x{}), proxy {:?} ({:?})",
+            preview_started.elapsed(),
+            preview_image.width(),
+            preview_image.height(),
+            decode_started.elapsed(),
+            decoded.dimensions()
+        );
+    }
+
+    #[test]
+    fn supplied_jpeg_fixture_decodes_and_accepts_geometry_edits() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("000021940005.jpg");
+        if !path.exists() {
+            return;
+        }
+        let decoded =
+            decode_image_buffer(path.to_string_lossy().as_ref(), DecodeMode::DevelopProxy)
+                .expect("JPEG fixture should decode to a linear proxy");
+        let mut geom = GeometryState::default();
+        geom.crop_rect.x = 0.0;
+        geom.crop_rect.y = 0.0;
+        geom.crop_rect.width = 0.5;
+        geom.crop_rect.height = 1.0;
+        let transformed = render_shader_equivalent(
+            &decoded,
+            &TuningParams::default(),
+            &geom,
+            &BaseColor::default(),
+            None,
+        );
+        assert_eq!(transformed.width(), decoded.width() / 2);
+        assert_eq!(transformed.height(), decoded.height());
+    }
+
+    #[test]
     fn nikon_nef_uses_the_embedded_jpeg_without_libraw_thumbnail_unpack() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("test_picture")
@@ -4606,12 +6027,9 @@ mod import_contract_tests {
             return;
         }
         let started = std::time::Instant::now();
-        let decoded = decode_image_buffer(
-            path.to_string_lossy().as_ref(),
-            DecodeMode::DevelopProxy,
-            "linear-srgb",
-        )
-        .expect("NEF develop proxy should decode");
+        let decoded =
+            decode_image_buffer(path.to_string_lossy().as_ref(), DecodeMode::DevelopProxy)
+                .expect("NEF develop proxy should decode");
         println!(
             "NEF develop proxy {:?}, {:?}",
             started.elapsed(),
@@ -4871,11 +6289,14 @@ mod library_management_contract_tests {
 #[cfg(test)]
 mod export_contract_tests {
     use super::{
-        export_dimensions, gaussian_blur_rgb16_parallel, render_shader_equivalent,
-        reserve_export_path, sanitize_export_file_stem, validate_export_color_space,
-        write_export_image, ExportConflictPolicy, ExportFormat,
+        build_response_buffer_from_proxy, compute_auto_color_limits, density_histogram_extremes,
+        embedded_input_profile, encode_export_buffer, export_dimensions,
+        gaussian_blur_rgb16_parallel, render_shader_equivalent, reserve_export_path,
+        sanitize_export_file_stem, validate_export_color_space, write_export_image,
+        write_export_image_with_profile, ExportConflictPolicy, ExportFormat,
     };
     use crate::app_state::{BaseColor, FilmMode, GeometryState, TuningParams};
+    use crate::color_science::ColorSpaceId;
     use image::{ColorType, GenericImageView, ImageBuffer, Rgb};
     use std::collections::HashSet;
 
@@ -4961,10 +6382,120 @@ mod export_contract_tests {
     }
 
     #[test]
-    fn export_rejects_unprofiled_wide_gamut_choices() {
+    fn auto_color_histogram_retains_true_sixteen_bit_limits() {
+        let mut histogram = vec![0u32; 65536];
+        for count in histogram.iter_mut().take(20_001).skip(10_000) {
+            *count = 1;
+        }
+        let (low, high) = density_histogram_extremes(&histogram, 10_001);
+        assert_eq!(low, 10_100);
+        assert_eq!(high, 19_900);
+        assert_ne!(low % 257, 0, "limits must not be quantized to 8-bit steps");
+    }
+
+    #[test]
+    fn monochrome_auto_color_returns_one_weighted_density_range() {
+        let mut proxy = ImageBuffer::new(64, 64);
+        for (index, pixel) in proxy.pixels_mut().enumerate() {
+            let green = 2_000 + ((index % 64) as u16) * 900;
+            *pixel = Rgb([40_000, green, 55_000]);
+        }
+        let limits = compute_auto_color_limits(
+            &proxy,
+            &GeometryState::default(),
+            &white_base(),
+            FilmMode::BW,
+        )
+        .unwrap();
+        assert_eq!(limits.d_min[0], limits.d_min[1]);
+        assert_eq!(limits.d_min[1], limits.d_min[2]);
+        assert_eq!(limits.d_max[0], limits.d_max[1]);
+        assert_eq!(limits.d_max[1], limits.d_max[2]);
+        assert!(limits.d_min[0] < limits.d_max[0]);
+    }
+
+    #[test]
+    fn export_accepts_profiled_professional_gamuts() {
         assert_eq!(validate_export_color_space("srgb").unwrap(), "srgb");
-        assert!(validate_export_color_space("rec2020").is_err());
-        assert!(validate_export_color_space("prophoto").is_err());
+        assert_eq!(validate_export_color_space("rec2020").unwrap(), "rec2020");
+        assert_eq!(
+            validate_export_color_space("prophoto").unwrap(),
+            "prophoto-rgb"
+        );
+        assert_eq!(
+            validate_export_color_space("display-p3").unwrap(),
+            "display-p3"
+        );
+        assert_eq!(validate_export_color_space("aces").unwrap(), "aces");
+        assert!(validate_export_color_space("not-a-colour-space").is_err());
+    }
+
+    #[test]
+    fn professional_export_profiles_are_embedded_in_every_format() {
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-export-profile-test-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let source = ImageBuffer::from_pixel(2, 2, Rgb([32768, 16384, 49152]));
+        let profile =
+            crate::color_science::build_icc_profile(crate::color_science::ColorSpaceId::DisplayP3);
+        for (format, name, marker) in [
+            (ExportFormat::Jpeg, "frame.jpg", b"ICC_PROFILE\0".as_slice()),
+            (ExportFormat::Png, "frame.png", b"iCCP".as_slice()),
+            (ExportFormat::Tiff16, "frame.tiff", &[0x73, 0x87]),
+        ] {
+            let path = root.join(name);
+            write_export_image_with_profile(
+                source.clone(),
+                &path,
+                format,
+                92,
+                None,
+                Some(&profile),
+            )
+            .unwrap();
+            let encoded = std::fs::read(&path).unwrap();
+            assert!(
+                encoded.windows(marker.len()).any(|bytes| bytes == marker),
+                "ICC marker missing from {name}"
+            );
+            assert_eq!(
+                embedded_input_profile(path.to_string_lossy().as_ref()),
+                Some(ColorSpaceId::DisplayP3),
+                "embedded profile is not recognized for {name}"
+            );
+            assert_eq!(image::open(&path).unwrap().dimensions(), (2, 2));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn srgb_export_preserves_the_display_referred_positive_signal() {
+        let source = ImageBuffer::from_pixel(1, 1, Rgb([11_796, 32_768, 48_168]));
+        let encoded =
+            encode_export_buffer(source.clone(), crate::color_science::ColorSpaceId::SRgb).unwrap();
+        for channel in 0..3 {
+            assert!(
+                (encoded.get_pixel(0, 0)[channel] as i32 - source.get_pixel(0, 0)[channel] as i32)
+                    .abs()
+                    <= 1
+            );
+        }
+    }
+
+    #[test]
+    fn proxy_response_keeps_analysis_state_separate_from_density_values() {
+        let proxy = ImageBuffer::from_pixel(1, 1, Rgb([1234, 2345, 3456]));
+        let analyzed = build_response_buffer_from_proxy(&proxy, &white_base(), true, true);
+        let staged = build_response_buffer_from_proxy(&proxy, &BaseColor::default(), true, false);
+        assert_eq!(u32::from_le_bytes(analyzed[24..28].try_into().unwrap()), 1);
+        assert_eq!(u32::from_le_bytes(staged[24..28].try_into().unwrap()), 0);
+        assert_eq!(
+            u16::from_le_bytes(analyzed[28..30].try_into().unwrap()),
+            1234
+        );
     }
 
     #[test]
@@ -5051,10 +6582,44 @@ mod export_contract_tests {
         ];
         for (format, name, color) in cases {
             let path = root.join(name);
-            write_export_image(source.clone(), &path, format, 92).unwrap();
+            write_export_image(source.clone(), &path, format, 92, None).unwrap();
             let decoded = image::open(&path).unwrap();
             assert_eq!(decoded.dimensions(), (3, 2));
             assert_eq!(decoded.color(), color);
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn export_writes_roll_metadata_to_supported_formats() {
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-export-exif-test-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let source = ImageBuffer::from_pixel(3, 2, Rgb([12000, 30000, 50000]));
+        let metadata = super::ExportMetadata {
+            roll_id: "ROLL-07".to_string(),
+            film_stock: "Kodak Portra 400".to_string(),
+            camera: "Nikon F3".to_string(),
+            date: "2026-08-03".to_string(),
+        };
+        for (format, name) in [
+            (ExportFormat::Jpeg, "frame.jpg"),
+            (ExportFormat::Png, "frame.png"),
+            (ExportFormat::Tiff8, "frame-8.tiff"),
+            (ExportFormat::Tiff16, "frame-16.tiff"),
+        ] {
+            let path = root.join(name);
+            write_export_image(source.clone(), &path, format, 92, Some(&metadata)).unwrap();
+            assert_eq!(image::open(&path).unwrap().dimensions(), (3, 2));
+            let encoded = std::fs::read(path).unwrap();
+            assert!(encoded.windows(7).any(|bytes| bytes == b"ROLL-07"));
+            assert!(encoded.windows(8).any(|bytes| bytes == b"Nikon F3"));
+            assert!(encoded
+                .windows(19)
+                .any(|bytes| bytes == b"2026:08:03 00:00:00"));
         }
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -5070,9 +6635,8 @@ mod export_contract_tests {
         }
         let path = path.to_string_lossy().to_string();
         let decode_started = std::time::Instant::now();
-        let decoded =
-            super::decode_image_buffer(&path, super::DecodeMode::ExportFull, "linear-srgb")
-                .expect("NEF full decode should succeed");
+        let decoded = super::decode_image_buffer(&path, super::DecodeMode::ExportFull)
+            .expect("NEF full decode should succeed");
         let decode_elapsed = decode_started.elapsed();
 
         let render_started = std::time::Instant::now();
@@ -5100,6 +6664,7 @@ mod export_contract_tests {
             &root.join("benchmark.jpg"),
             super::ExportFormat::Jpeg,
             100,
+            None,
         )
         .unwrap();
         let encode_elapsed = encode_started.elapsed();
