@@ -19,6 +19,7 @@ test_picture/
 *.tif
 *.tiff
 *.png
+!docs/assets/nexfilm-v1.0-develop.png
 !ui/assets/author-sponsor-qr.jpg
 !ui/assets/uidesigner-sponsor-qr.jpg
 !ui/assets/design-reference/import-roll.png

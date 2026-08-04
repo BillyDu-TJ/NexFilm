@@ -322,6 +322,10 @@ body[data-theme="dark"] > header .export-actions > #btn-import {
     display: none !important;
 }
 
+#native-menu-bar .menu-group.is-open > .menu-popover {
+    display: block !important;
+}
+
 #views {
     display: grid !important;
     grid-template: minmax(0, 1fr) / minmax(0, 1fr);
@@ -1066,6 +1070,12 @@ body[data-theme="dark"] .crop-tools > #btn-reset-crop {
 .film-item.active {
     outline: 3px solid var(--ui-brand) !important;
     outline-offset: -3px !important;
+}
+
+.film-item.selected:not(.active) {
+    outline: 2px solid color-mix(in srgb, var(--ui-brand) 72%, transparent) !important;
+    outline-offset: -2px !important;
+    opacity: 1 !important;
 }
 
 #develop-module-nav {

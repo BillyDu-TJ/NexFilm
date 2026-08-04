@@ -16,11 +16,16 @@ pub fn data_root() -> PathBuf {
         return PathBuf::from(".");
     }
 
-    #[cfg(windows)]
+    #[cfg(target_os = "windows")]
     let root = std::env::var_os("APPDATA")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let root = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Library").join("Application Support"))
+        .unwrap_or_else(|| PathBuf::from("."));
+    #[cfg(all(unix, not(target_os = "macos")))]
     let root = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
@@ -73,7 +78,16 @@ pub fn open_connection() -> rusqlite::Result<Connection> {
 }
 
 pub fn configure_connection(connection: &Connection) -> rusqlite::Result<()> {
-    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;")?;
+    // Set the busy handler before asking SQLite to switch/confirm journal mode.
+    // Concurrent startup, imports, and thumbnail saves can otherwise fail while
+    // another connection briefly holds the schema or WAL lock.
+    connection.busy_timeout(std::time::Duration::from_secs(5))?;
+    connection.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         PRAGMA synchronous=NORMAL;
+         PRAGMA foreign_keys=ON;
+         PRAGMA wal_autocheckpoint=1000;",
+    )?;
     Ok(())
 }
 

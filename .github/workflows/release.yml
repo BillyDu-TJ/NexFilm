@@ -1,0 +1,110 @@
+name: Build and Release NexFilm 1.0
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v1.0"
+        required: true
+        default: "v1.0"
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  # 第一步：统一验证代码（在 Linux 上跑最快，验证成功才打包）
+  verify:
+    name: Verify source code
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run checks and verifications
+        run: |
+          cargo fmt --check
+          cargo test --locked --lib
+          node --check ui/main.js
+          node --check ui/geometry.js
+          node --check ui/contact-sheet.js
+          node --check ui/density-math.js
+          node scripts/verify-contact-sheet.cjs
+          node scripts/verify-density-contract.cjs
+          node scripts/verify-histogram-contract.cjs
+          node scripts/verify-geometry-contract.cjs
+          node scripts/verify-ui-startup-order.cjs
+          node scripts/verify-webgl-shaders.cjs
+
+  # 第二步：矩阵并发编译三大平台
+  build-and-release:
+    name: Build ${{ matrix.name }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (x64)
+            os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            args: --bundles nsis
+          
+          - name: macOS Apple Silicon (M-Series)
+            os: macos-14 # GitHub 的 macos-14 是原生的 ARM64 机器，编译极快
+            rust_target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg
+            
+          - name: macOS Intel (x86)
+            os: macos-13 # GitHub 的 macos-13 是原生的 Intel 机器
+            rust_target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles dmg
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Node.js LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install Rust stable and target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      # 如果你在 Tauri 前端用了 NPM/Yarn 依赖，请取消下面两行的注释
+      # - name: Install Frontend Dependencies
+      #   run: npm install
+
+      - name: Build Installer and Publish Release
+        uses: tauri-apps/tauri-action@v0 # 注意这里改回 v0，完美支持 Tauri v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ inputs.tag }}
+          releaseName: "NexFilm Engine ${{ inputs.tag }}"
+          releaseBody: |
+            NexFilm Engine ${{ inputs.tag }} 正式版。
+            
+            ### 📥 下载指南 (Download)
+            - **Windows 用户**：请下载包含 `nsis` 和 `x86_64` 的 `.exe` 安装程序。
+            - **Mac (M1/M2/M3)**：请下载包含 `aarch64` 的 `.dmg`。
+            - **Mac (Intel)**：请下载包含 `x86_64` 的 `.dmg`。
+            
+            ⚠️ *Note: Mac 安装包暂未签名，如提示“文件损坏”，请在终端运行 `xattr -cr /Applications/NexFilm.app`。*
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}

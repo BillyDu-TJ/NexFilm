@@ -4,12 +4,15 @@ const invoke = tauriCore?.invoke ?? (async () => {
     throw new Error('Tauri runtime unavailable in browser preview');
 });
 const listen = tauriEvents?.listen ?? (async () => () => {});
+const convertFileSrc = tauriCore?.convertFileSrc ?? ((path, protocol) =>
+    protocol + '://localhost/' + encodeURIComponent(path));
 const i18n = window.NexFilmI18n;
 const i18nText = (key, vars = {}) => i18n?.t(key, vars) ?? key;
 const { getContactSheetLayout, createContactSheetFilename } = window.NexFilmContactSheet;
 const { getNeutralExposureOffsets } = window.NexFilmDensity;
 const { getHistogramScale, getHistogramY } = window.NexFilmHistogram;
 const { cloneSettingsValue, createCopyPayload, mergeCopyPayload } = window.NexFilmSettingsCopy;
+const { updateRangeSelection } = window.NexFilmSelection;
 const {
     createExportInvokeArgs,
     describeResize,
@@ -255,6 +258,31 @@ let allLibraryItems = [];
 const itemIndex = new Map();
 let selectedLibraryIds = new Set();
 let lastSelectedLibraryId = null;
+let lastSelectionScope = null;
+
+function updateImageSelection(targetId, event, orderedIds, scope) {
+    const sameScope = lastSelectionScope === scope;
+    const result = updateRangeSelection({
+        orderedIds,
+        selectedIds: selectedLibraryIds,
+        anchorId: sameScope ? lastSelectedLibraryId : null,
+        targetId,
+        shiftKey: Boolean(event?.shiftKey),
+        additive: Boolean(event?.ctrlKey || event?.metaKey)
+    });
+    selectedLibraryIds = new Set(result.selectedIds);
+    lastSelectedLibraryId = result.anchorId;
+    lastSelectionScope = scope;
+    updateLibrarySelectionUI();
+}
+
+function setSingleImageSelection(id, scope) {
+    selectedLibraryIds.clear();
+    if (id) selectedLibraryIds.add(id);
+    lastSelectedLibraryId = id || null;
+    lastSelectionScope = scope || null;
+    updateLibrarySelectionUI();
+}
 
 function normalizePath(path) {
     return (path || '').replace(/\\/g, '/').toLowerCase();
@@ -334,6 +362,7 @@ function forgetImageItems(targets) {
         proxyPreparePromises.delete(id);
         proxyDisplayPromises.delete(id);
         delete undoStacks[id];
+        delete redoStacks[id];
     }
     selectedLibraryIds = new Set([...selectedLibraryIds].filter(id => !removedIds.has(id)));
 
@@ -466,11 +495,18 @@ function updateLibrarySelectionUI() {
             child.classList.remove('selected');
         }
     });
+    document.querySelectorAll('#filmstrip-container .film-item[data-id]').forEach(child => {
+        const selected = selectedLibraryIds.has(child.dataset.id);
+        child.classList.toggle('selected', selected);
+        child.setAttribute('aria-selected', String(selected));
+    });
     if (typeof updateExportDialogState === 'function') updateExportDialogState();
 }
 
 btnSelectAll.addEventListener('click', () => {
     allLibraryItems.forEach(item => selectedLibraryIds.add(item.id));
+    lastSelectedLibraryId = null;
+    lastSelectionScope = 'library';
     updateLibrarySelectionUI();
 });
 
@@ -546,6 +582,8 @@ function resetWorkingLibrary() {
     currentImportSessionPaths = null;
     activeImportViewPaths = null;
     selectedLibraryIds.clear();
+    lastSelectedLibraryId = null;
+    lastSelectionScope = null;
     allLibraryItems = [];
     imageStates.clear();
     filmstripContainer.innerHTML = '';
@@ -761,44 +799,94 @@ sponsorModalContent.addEventListener('keydown', (event) => {
 
 // History Stack for Undo/Redo
 const undoStacks = {};
+const redoStacks = {};
+let historyRestoreInProgress = false;
+
+function captureEditState() {
+    if (!activeId) return null;
+    const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 'Color' : 'BW';
+    return {
+        params: {
+            film_mode: mode,
+            d_min: currentDMin.slice(),
+            d_max: currentDMax.slice(),
+            exposure: parseFloat(sliders.exposure.el.value),
+            gamma: parseFloat(sliders.gamma.el.value),
+            saturation: parseFloat(sliders.saturation.el.value),
+            temperature: parseFloat(sliders.temperature.el.value),
+            tint: parseFloat(sliders.tint.el.value),
+            exp_r: parseFloat(sliders.expr.el.value),
+            exp_g: parseFloat(sliders.expg.el.value),
+            exp_b: parseFloat(sliders.expb.el.value),
+            highlights: parseFloat(sliders.highlights.el.value),
+            shadows: parseFloat(sliders.shadows.el.value),
+            lut_path: currentLutPath,
+            lut_opacity: parseFloat(sliders.lutOpacity.el.value),
+            working_colorspace: currentWorkingColorspace,
+            sprocket_uv: Array.from(currentSprocketUV),
+            sprocket_tolerance: currentSprocketTolerance,
+            sprocket_feather: currentSprocketFeather
+        },
+        geom: JSON.parse(JSON.stringify(current_geom))
+    };
+}
+
+function historyStatesEqual(a, b) {
+    return Boolean(a && b)
+        && JSON.stringify(a.params) === JSON.stringify(b.params)
+        && JSON.stringify(a.geom) === JSON.stringify(b.geom);
+}
+
+function pushHistoryState(stack, state) {
+    if (!state || historyStatesEqual(stack[stack.length - 1], state)) return;
+    stack.push(state);
+    if (stack.length > 50) stack.shift();
+}
 
 function pushUndoState() {
     if (!activeId) return;
     if (!undoStacks[activeId]) undoStacks[activeId] = [];
-    
-    const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 'Color' : 'BW';
-    const params = {
-        film_mode: mode,
-        d_min: currentDMin.slice(),
-        d_max: currentDMax.slice(),
-        exposure: parseFloat(sliders.exposure.el.value),
-        gamma: parseFloat(sliders.gamma.el.value),
-        saturation: parseFloat(sliders.saturation.el.value),
-        temperature: parseFloat(sliders.temperature.el.value),
-        tint: parseFloat(sliders.tint.el.value),
-        exp_r: parseFloat(sliders.expr.el.value),
-        exp_g: parseFloat(sliders.expg.el.value),
-        exp_b: parseFloat(sliders.expb.el.value),
-        highlights: parseFloat(sliders.highlights.el.value),
-        shadows: parseFloat(sliders.shadows.el.value),
-        lut_path: currentLutPath,
-        lut_opacity: parseFloat(sliders.lutOpacity.el.value),
-        working_colorspace: currentWorkingColorspace,
-        sprocket_uv: Array.from(currentSprocketUV),
-        sprocket_tolerance: currentSprocketTolerance,
-        sprocket_feather: currentSprocketFeather
-    };
-    
-    const geom = JSON.parse(JSON.stringify(current_geom));
-    
-    const stack = undoStacks[activeId];
-    if (stack.length > 0) {
-        const last = stack[stack.length - 1];
-        if (JSON.stringify(last.params) === JSON.stringify(params) && JSON.stringify(last.geom) === JSON.stringify(geom)) return;
+    pushHistoryState(undoStacks[activeId], captureEditState());
+    if (!historyRestoreInProgress) redoStacks[activeId] = [];
+}
+
+async function restoreEditHistory(direction) {
+    if (!activeId || historyRestoreInProgress) return;
+    const imageId = activeId;
+    const sourceStacks = direction === 'redo' ? redoStacks : undoStacks;
+    const targetStacks = direction === 'redo' ? undoStacks : redoStacks;
+    const source = sourceStacks[imageId];
+    if (!source?.length) return;
+
+    historyRestoreInProgress = true;
+    try {
+        await flushPendingBackendSync();
+        if (activeId !== imageId) return;
+        const currentState = captureEditState();
+        const nextState = source.pop();
+        if (!targetStacks[imageId]) targetStacks[imageId] = [];
+        pushHistoryState(targetStacks[imageId], currentState);
+
+        updateUIFromParams(nextState.params, nextState.geom);
+        current_geom = NexFilmGeometry.normalizeGeometryState(nextState.geom);
+        imageStates.set(imageId, {
+            params: JSON.parse(JSON.stringify(nextState.params)),
+            geom: JSON.parse(JSON.stringify(current_geom))
+        });
+        updateCanvasTransform();
+        requestRender();
+        if (isCropMode) updateCropOverlay();
+        await restoreLutForImage(nextState.params);
+        await persistGeometryQueued(imageId, current_geom);
+        await updateBackendParams(imageId, nextState.params);
+        requestRender();
+        requestThumbnailSync();
+    } catch (error) {
+        console.error(`Failed to persist ${direction} state`, error);
+        showToast(`Could not save the ${direction} state: ${error}`, 'error');
+    } finally {
+        historyRestoreInProgress = false;
     }
-    
-    stack.push({ params, geom });
-    if (stack.length > 50) stack.shift();
 }
 
 window.addEventListener('keydown', async (e) => {
@@ -807,33 +895,15 @@ window.addEventListener('keydown', async (e) => {
             e.preventDefault();
             btnCropMode.click();
         }
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+    } else if ((e.ctrlKey || e.metaKey) && !e.altKey && ['z', 'y'].includes(e.key.toLowerCase())) {
+        const target = e.target;
+        const isTextEditing = target?.isContentEditable
+            || target?.tagName === 'TEXTAREA'
+            || (target?.tagName === 'INPUT' && !['range', 'checkbox', 'radio'].includes(target.type));
+        if (isTextEditing) return;
         e.preventDefault();
-        if (!activeId || !undoStacks[activeId] || undoStacks[activeId].length === 0) return;
-        
-        const prevState = undoStacks[activeId].pop();
-        updateUIFromParams(prevState.params, prevState.geom);
-        current_geom = NexFilmGeometry.normalizeGeometryState(prevState.geom);
-        updateCanvasTransform();
-        requestRender();
-        if (isCropMode) updateCropOverlay();
-
-        const undoId = activeId;
-        const undoGeom = JSON.parse(JSON.stringify(current_geom));
-        try {
-            await restoreLutForImage(prevState.params);
-            await persistGeometryQueued(undoId, undoGeom);
-            await updateBackendParams(undoId, prevState.params);
-
-            // Undoing crop/rotate/flip only changes WebGL geometry; the RAW
-            // proxy remains canonical and does not need another decode.
-            requestRender();
-
-            requestThumbnailSync();
-        } catch (error) {
-            console.error('Failed to persist undo state', error);
-            showToast('Could not save the undo state: ' + error, 'error');
-        }
+        const isRedo = e.key.toLowerCase() === 'y' || e.shiftKey;
+        await restoreEditHistory(isRedo ? 'redo' : 'undo');
     } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
         
@@ -1054,15 +1124,42 @@ let thumbnailPersistTimeout = null;
 let pendingThumbnailPersist = null;
 
 function captureActiveCanvasThumbnail() {
-    if (!activeId || !previewCanvas || !activeProxyIsFull) return;
+    if (!activeId || !previewCanvas || !activeProxyIsFull || !gl) return;
     try {
         const maxEdge = 640;
         const scale = Math.min(1, maxEdge / Math.max(previewCanvas.width || 1, previewCanvas.height || 1));
+        const width = Math.max(1, Math.round((previewCanvas.width || 1) * scale));
+        const height = Math.max(1, Math.round((previewCanvas.height || 1) * scale));
+        if (!ensureThumbnailCaptureTarget(width, height)) return;
+
+        const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+        const previousViewport = gl.getParameter(gl.VIEWPORT);
+        gl.useProgram(shaderProgram);
+        gl.bindVertexArray(vao);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, thumbnailFbo);
+        gl.viewport(0, 0, width, height);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, thumbnailReadback);
+        gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
+        gl.viewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
+
+        const rowBytes = width * 4;
+        for (let y = 0; y < height; y++) {
+            const sourceStart = y * rowBytes;
+            const targetStart = (height - 1 - y) * rowBytes;
+            thumbnailDisplayPixels.set(
+                thumbnailReadback.subarray(sourceStart, sourceStart + rowBytes),
+                targetStart
+            );
+        }
+
         const thumbCanvas = document.createElement('canvas');
-        thumbCanvas.width = Math.max(1, Math.round((previewCanvas.width || 1) * scale));
-        thumbCanvas.height = Math.max(1, Math.round((previewCanvas.height || 1) * scale));
+        thumbCanvas.width = width;
+        thumbCanvas.height = height;
         const ctx = thumbCanvas.getContext('2d', { alpha: false });
-        ctx.drawImage(previewCanvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+        ctx.putImageData(new ImageData(thumbnailDisplayPixels, width, height), 0, 0);
         const dataUrl = thumbCanvas.toDataURL('image/jpeg', 0.72);
         const persistId = activeId;
         const item = findKnownItem(activeId);
@@ -1109,11 +1206,15 @@ async function flushPendingThumbnail() {
     }
 }
 
-function scheduleInstantThumbnailUpdate() {
+function scheduleInstantThumbnailUpdate({ immediate = false } = {}) {
     if (!activeId || !activeProxyIsFull || thumbnailCaptureRAF) return;
     const now = performance.now();
     if (now - lastThumbnailCaptureAt < 250) return;
     lastThumbnailCaptureAt = now;
+    if (immediate) {
+        captureActiveCanvasThumbnail();
+        return;
+    }
     thumbnailCaptureRAF = requestAnimationFrame(() => {
         thumbnailCaptureRAF = null;
         captureActiveCanvasThumbnail();
@@ -1194,8 +1295,16 @@ let gl;
 let shaderProgram;
 let tex;
 let vao;
+let posBuffer;
+let texBuffer;
 let fbo;
 let fboTex;
+let thumbnailFbo;
+let thumbnailFboTex;
+let thumbnailFboWidth = 0;
+let thumbnailFboHeight = 0;
+let thumbnailReadback = null;
+let thumbnailDisplayPixels = null;
 
 let u_base_density_loc;
 let u_dmin_loc;
@@ -1235,7 +1344,10 @@ let webGLInitialized = false;
 let renderRequested = false;
 
 function initWebGL() {
-    gl = previewCanvas.getContext('webgl2', { preserveDrawingBuffer: true });
+    gl = previewCanvas.getContext('webgl2', {
+        preserveDrawingBuffer: false,
+        powerPreference: 'high-performance'
+    });
     if (!gl) {
         showToast("WebGL2 is not supported by your browser.", "error");
         return;
@@ -1552,13 +1664,13 @@ function initWebGL() {
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
 
-    const posBuffer = gl.createBuffer();
+    posBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(posLoc);
     gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
 
-    const texBuffer = gl.createBuffer();
+    texBuffer = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 1, 0, 0, 1, 0, 1, 1, 0, 1, 1]), gl.STATIC_DRAW);
     gl.enableVertexAttribArray(texLoc);
@@ -1594,6 +1706,13 @@ let lutTex = null;
 let currentLutPath = null;
 let currentWorkingColorspace = 'linear-srgb';
 
+function releaseLutTexture() {
+    if (gl && lutTex) gl.deleteTexture(lutTex);
+    lutTex = null;
+    hasLUT = false;
+    is1DLUT = false;
+}
+
 const WORKING_COLORSPACE_ALIASES = {
     srgb: 'linear-srgb',
     aces: 'linear-aces',
@@ -1615,6 +1734,7 @@ const btnLoadLUT = document.getElementById('btn-load-lut');
 selectColorspace.addEventListener('change', async (e) => {
     const previousColorspace = currentWorkingColorspace;
     try {
+        pushUndoState();
         currentWorkingColorspace = e.target.value;
         // Density is always measured in the fixed linear-sRGB capture domain.
         // Working-space changes do not invalidate the proxy or base estimate.
@@ -1657,8 +1777,13 @@ async function applyLUT(lutData, sourcePath = null, quiet = false) {
     const size = lutData.size;
     is1DLUT = lutData.is_1d;
     const data = new Float32Array(new Uint8Array(lutData.data).buffer);
-    
-    if (!lutTex) lutTex = gl.createTexture();
+
+    // A WebGL texture object cannot change its binding target after first use.
+    // Recreate it so switching between 1D (2D texture) and 3D LUTs is valid,
+    // and so replaced LUT allocations are returned to the driver immediately.
+    if (lutTex) gl.deleteTexture(lutTex);
+    lutTex = gl.createTexture();
+    if (!lutTex) throw new Error('WebGL could not allocate the LUT texture.');
     
     if (is1DLUT) {
         gl.bindTexture(gl.TEXTURE_2D, lutTex);
@@ -1692,7 +1817,7 @@ async function restoreLutForImage(params) {
     sliders.lutOpacity.val.textContent = parseFloat(sliders.lutOpacity.el.value).toFixed(3);
     updateSliderTrack(sliders.lutOpacity.el);
     if (!path) {
-        hasLUT = false;
+        releaseLutTexture();
         currentLutPath = null;
         selectBuiltinLut.value = "";
         sliders.lutOpacity.el.disabled = true;
@@ -1711,15 +1836,16 @@ async function restoreLutForImage(params) {
         const lutData = await invoke('load_3d_lut', { path });
         await applyLUT(lutData, path, true);
     } catch (error) {
-        hasLUT = false;
+        releaseLutTexture();
         sliders.lutOpacity.el.disabled = true;
         showToast(`Failed to restore LUT: ${error}`, "error");
     }
 }
 
 selectBuiltinLut.addEventListener('change', async (e) => {
+    if (activeId) pushUndoState();
     if (!e.target.value) {
-        hasLUT = false;
+        releaseLutTexture();
         currentLutPath = null;
         sliders.lutOpacity.el.disabled = true;
         updateBackendParams();
@@ -1739,6 +1865,7 @@ btnLoadLUT.addEventListener('click', async () => {
     try {
         const path = await invoke('open_lut_dialog');
         if (path) {
+            if (activeId) pushUndoState();
             selectBuiltinLut.value = "";
             const lutData = await invoke('load_3d_lut', { path });
             await applyLUT(lutData, path);
@@ -2096,10 +2223,14 @@ function renderWebGL() {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-    if (!sliderDragActive) scheduleInstantThumbnailUpdate();
+    // With preserveDrawingBuffer disabled, capture in the same task as the
+    // draw call, before the compositor is allowed to discard the back buffer.
+    if (!sliderDragActive) scheduleInstantThumbnailUpdate({ immediate: true });
 }
 
-const PROXY_CACHE_LIMIT = 8; // Matches backend MAX_PROXY_CACHE
+// WebGL already owns the active texture and Rust owns the decoded proxy cache.
+// Keep only a small JS-side navigation cache to avoid a third large copy.
+const PROXY_CACHE_LIMIT = 3;
 const proxyCache = new Map(); // key: id, value: { arrayBuffer, geomKey, lastUsed: Date.now() }
 const readyProxyIds = new Set();
 
@@ -2159,7 +2290,14 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
     
     if (!arrayBuffer) {
         try {
-            const result = await invoke('get_proxy_image_data', { id: activeId });
+            const response = await fetch(convertFileSrc(activeId, 'nexfilm-proxy'), {
+                cache: 'no-store'
+            });
+            if (!response.ok) {
+                const message = await response.text();
+                throw new Error(message || 'Proxy request failed (' + response.status + ')');
+            }
+            const result = await response.arrayBuffer();
             if (token !== null && token !== currentImageRequestToken) {
                 if (loadingMask) loadingMask.classList.add('hidden');
                 return;
@@ -2699,6 +2837,46 @@ async function updateFilterSidebar() {
     }
 }
 
+function ensureThumbnailCaptureTarget(width, height) {
+    const previousActiveTexture = gl.getParameter(gl.ACTIVE_TEXTURE);
+    if (!thumbnailFbo) thumbnailFbo = gl.createFramebuffer();
+    if (!thumbnailFboTex) {
+        thumbnailFboTex = gl.createTexture();
+        gl.activeTexture(gl.TEXTURE3);
+        gl.bindTexture(gl.TEXTURE_2D, thumbnailFboTex);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    }
+    if (!thumbnailFbo || !thumbnailFboTex) return false;
+    if (thumbnailFboWidth === width && thumbnailFboHeight === height) return true;
+
+    const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, thumbnailFboTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, thumbnailFbo);
+    gl.framebufferTexture2D(
+        gl.FRAMEBUFFER,
+        gl.COLOR_ATTACHMENT0,
+        gl.TEXTURE_2D,
+        thumbnailFboTex,
+        0
+    );
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+    const complete = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
+    gl.activeTexture(previousActiveTexture);
+    if (!complete) return false;
+
+    thumbnailFboWidth = width;
+    thumbnailFboHeight = height;
+    thumbnailReadback = new Uint8Array(width * height * 4);
+    thumbnailDisplayPixels = new Uint8ClampedArray(width * height * 4);
+    return true;
+}
+
 function getActiveFilters() {
     const formats = Array.from(document.querySelectorAll('#filter-format-list input:checked')).map(i => i.value);
     const cameras = Array.from(document.querySelectorAll('.filter-camera:checked')).map(i => i.value);
@@ -2708,7 +2886,7 @@ function getActiveFilters() {
 
 let cleanupLibraryVirtualizer = null;
 
-function createLibraryItemElement(item) {
+function createLibraryItemElement(item, orderedIds) {
     const libDiv = document.createElement('div');
     libDiv.className = `library-item overflow-hidden relative ${selectedLibraryIds.has(item.id) ? 'selected' : ''}`;
     libDiv.dataset.id = item.id;
@@ -2717,8 +2895,7 @@ function createLibraryItemElement(item) {
     };
     libDiv.ondblclick = event => {
         clearNativeSelection(event);
-        selectedLibraryIds.clear();
-        selectedLibraryIds.add(item.id);
+        setSingleImageSelection(item.id, 'library');
         currentImportSessionPaths = null;
         if (item.roll_id) {
             currentRollViewId = item.roll_id;
@@ -2727,19 +2904,11 @@ function createLibraryItemElement(item) {
             currentRollViewId = null;
             isRollEditing = false;
         }
-        updateLibrarySelectionUI();
         selectImage(item.id);
         switchView('develop');
     };
     libDiv.onclick = (event) => {
-        if (event.ctrlKey || event.metaKey) {
-            if (selectedLibraryIds.has(item.id)) selectedLibraryIds.delete(item.id);
-            else selectedLibraryIds.add(item.id);
-        } else {
-            selectedLibraryIds.clear();
-            selectedLibraryIds.add(item.id);
-        }
-        updateLibrarySelectionUI();
+        updateImageSelection(item.id, event, orderedIds, 'library');
     };
 
     if (item.status === 'importing') {
@@ -2774,6 +2943,7 @@ function mountVirtualLibraryGrid(items) {
 
     const scrollRoot = libraryGrid.parentElement;
     const rendered = new Map();
+    const orderedIds = items.map(item => item.id);
     const gap = 12;
     const minItemWidth = 190;
     const overscanRows = 2;
@@ -2817,7 +2987,7 @@ function mountVirtualLibraryGrid(items) {
             const column = index % columns;
             let element = rendered.get(index);
             if (!element) {
-                element = createLibraryItemElement(items[index]);
+                element = createLibraryItemElement(items[index], orderedIds);
                 rendered.set(index, element);
                 libraryGrid.appendChild(element);
             }
@@ -2959,12 +3129,14 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                     
                     document.getElementById('history-view-title').textContent = i18nText('history.rollContents');
 
-                    currentRoll.image_paths.forEach(path => {
-                        const existingItem = items.find(i =>
+                    const historyItems = currentRoll.image_paths.map(path =>
+                        items.find(i =>
                             i.roll_id === historyRollViewId &&
                             normalizePath(i.file_path) === normalizePath(path)
-                        );
-                        if (!existingItem) return;
+                        )
+                    ).filter(Boolean);
+                    const historyItemIds = historyItems.map(item => item.id);
+                    historyItems.forEach(existingItem => {
 
                         const libDiv = document.createElement('div');
                         libDiv.className = `library-item rounded overflow-hidden relative`;
@@ -2976,9 +3148,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                         };
                         libDiv.ondblclick = event => {
                             clearNativeSelection(event);
-                            selectedLibraryIds.clear();
-                            selectedLibraryIds.add(existingItem.id);
-                            updateLibrarySelectionUI();
+                            setSingleImageSelection(existingItem.id, `history:${historyRollViewId}`);
                             // State 3 (Continue Editing / Import by Roll): allow switching to develop
                             // State 4 (History preview): selection only, no develop switching
                             if (isRollEditing && historyRollViewId === currentRollViewId && existingItem.state_available !== false) {
@@ -2989,17 +3159,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                             }
                         };
                         libDiv.onclick = (e) => {
-                            if (e.shiftKey && lastSelectedLibraryId) {
-                                selectedLibraryIds.add(existingItem.id);
-                            } else if (e.ctrlKey || e.metaKey) {
-                                if (selectedLibraryIds.has(existingItem.id)) selectedLibraryIds.delete(existingItem.id);
-                                else selectedLibraryIds.add(existingItem.id);
-                            } else {
-                                selectedLibraryIds.clear();
-                                selectedLibraryIds.add(existingItem.id);
-                                lastSelectedLibraryId = existingItem.id;
-                            }
-                            updateLibrarySelectionUI();
+                            updateImageSelection(existingItem.id, e, historyItemIds, `history:${historyRollViewId}`);
                         };
                         if (existingItem.status === 'importing') {
                             const skeleton = document.createElement('div');
@@ -3148,20 +3308,18 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
         } else {
             filmstripItems = uniqueItemsByPath(items.filter(item => item.roll_id === null || item.roll_id === 'LOOSE_DEFAULT'));
         }
+        const filmstripItemIds = filmstripItems.map(item => item.id);
+        const filmstripSelectionScope = `filmstrip:${currentRollViewId || 'loose'}`;
         filmstripItems.forEach(item => {
             const stripDiv = document.createElement('div');
             stripDiv.className = `film-item shrink-0 ${item.id === activeId ? 'active' : ''}`;
-            stripDiv.onclick = () => {
+            stripDiv.onclick = event => {
                 selectImage(item.id);
-                selectedLibraryIds.clear();
-                selectedLibraryIds.add(item.id);
-                updateLibrarySelectionUI();
+                updateImageSelection(item.id, event, filmstripItemIds, filmstripSelectionScope);
             };
             stripDiv.oncontextmenu = event => {
                 event.preventDefault();
-                selectedLibraryIds.clear();
-                selectedLibraryIds.add(item.id);
-                updateLibrarySelectionUI();
+                setSingleImageSelection(item.id, filmstripSelectionScope);
                 void requestImageDeletion([item.id]);
             };
             stripDiv.dataset.id = item.id;
@@ -3185,6 +3343,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                     stripImg.className = 'w-full h-full object-cover rounded-[2px] pointer-events-none';
                 }
                 stripDiv.appendChild(stripImg);
+                guardBlackFilmstripThumbnail(stripImg, item);
                 appendMissingSourceBadge(stripDiv, item);
             }
             filmstripContainer.appendChild(stripDiv);
@@ -3302,6 +3461,35 @@ function getThumbnailSrc(id) {
     return null;
 }
 
+function guardBlackFilmstripThumbnail(img, item) {
+    if (!img || !item?.rendered_thumbnail_base64 || !item?.embedded_thumbnail_base64) return;
+    const inspect = () => {
+        if (img.dataset.blackChecked === 'true') return;
+        img.dataset.blackChecked = 'true';
+        try {
+            const sample = document.createElement('canvas');
+            sample.width = 8;
+            sample.height = 8;
+            const ctx = sample.getContext('2d', { willReadFrequently: true });
+            ctx.drawImage(img, 0, 0, sample.width, sample.height);
+            const pixels = ctx.getImageData(0, 0, sample.width, sample.height).data;
+            let maxChannel = 0;
+            for (let index = 0; index < pixels.length; index += 4) {
+                maxChannel = Math.max(maxChannel, pixels[index], pixels[index + 1], pixels[index + 2]);
+            }
+            if (maxChannel > 4) return;
+            img.src = item.embedded_thumbnail_base64.startsWith('data:')
+                ? item.embedded_thumbnail_base64
+                : 'data:image/jpeg;base64,' + item.embedded_thumbnail_base64;
+            img.dataset.blackFallback = 'true';
+        } catch (error) {
+            console.debug('thumbnail black-pixel guard skipped', error);
+        }
+    };
+    img.addEventListener('load', inspect, { once: true });
+    if (img.complete && img.naturalWidth > 0) queueMicrotask(inspect);
+}
+
 async function showEmbeddedDevelopPreview(id, token) {
     const fallback = getThumbnailSrc(id);
     showThumbnailPlaceholder(fallback);
@@ -3326,7 +3514,11 @@ function setImageElementThumbnail(img, thumbnail) {
 }
 
 async function selectImage(id) {
-    if (activeId === id && hasProcessedActiveImage && !isCalibrationMode) return;
+    if (activeId === id && hasProcessedActiveImage && !isCalibrationMode) {
+        enterCalibrationMode();
+        btnAutoColor.disabled = true;
+        return;
+    }
     if (activeId) {
         try {
             await flushPendingBackendSync();
@@ -3420,7 +3612,10 @@ async function selectImage(id) {
         readyProxyIds.delete(id);
         enableUI();
         current_geom = NexFilmGeometry.normalizeGeometryState(state.geom);
-        const selectionCalibrationRevision = ++calibrationRevision;
+        if (current_geom.calibration_confirmed !== true) {
+            current_geom.calibration_points = null;
+        }
+        calibrationRevision++;
         btnBatchApply.disabled = !current_geom.calibration_points;
         updateUIFromParams(state.params, current_geom);
         updateThumbnailPlaceholderLayout(document.getElementById('thumbnail-placeholder'));
@@ -3473,26 +3668,11 @@ async function selectImage(id) {
 
         canvasWrapper.style.display = 'block';
         updateCanvasTransform();
-        if (current_geom.calibration_points) {
-            calibrationPoints = JSON.parse(JSON.stringify(current_geom.calibration_points));
-        } else {
-            calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-        }
-        const hasFilmArea = !!current_geom.calibration_points;
-        const hasConfirmedFilmArea = hasFilmArea && current_geom.calibration_confirmed === true;
-        isCalibrationMode = !hasConfirmedFilmArea;
-        btnBatchApply.disabled = !hasConfirmedFilmArea;
-        document.getElementById('calibration-overlay').classList.toggle('hidden', hasConfirmedFilmArea);
-        // A batch-applied area is persisted edit state even if the target has
-        // never rendered. It must reach Auto Invert without another save.
-        setDevelopInspectorCalibrationLocked(isCalibrationMode);
-        btnAutoColor.disabled = !hasConfirmedFilmArea;
-        if (isCalibrationMode) {
-            requestAnimationFrame(updateCalibrationPolygon);
-            if (!hasFilmArea) {
-                void initializeDefaultFilmArea(id, myToken, selectionCalibrationRevision);
-            }
-        }
+        // Every Develop entry opens the film-area review UI. New or legacy
+        // unconfirmed images start with a full-frame draft; detection remains
+        // opt-in through Auto Area.
+        enterCalibrationMode();
+        btnAutoColor.disabled = true;
 
 
     } catch(e) {
@@ -4605,7 +4785,7 @@ async function reloadDevelopProxy(geomSnapshot = current_geom, options = {}) {
 
 async function runAutoInvert() {
     if (!activeId) return;
-    if (isCalibrationMode || !current_geom.calibration_points) {
+    if (isCalibrationMode) {
         showToast("Confirm the film area before Auto Invert.", "info");
         return;
     }
@@ -4731,45 +4911,6 @@ function applyFilmAreaDetection(result) {
     calibrationPoints = validateFilmAreaDetection(result);
     btnBatchApply.disabled = true;
     updateCalibrationPolygon();
-}
-
-function isSafeDefaultFilmAreaDetection(result) {
-    return result?.confidence === 'high' && result?.status === 'detected_gradient';
-}
-
-async function initializeDefaultFilmArea(id, requestToken, revision) {
-    setAutoAreaBusy(id, true);
-    try {
-        const result = await requestFilmAreaDetection(id);
-        if (id !== activeId || requestToken !== currentImageRequestToken || revision !== calibrationRevision) {
-            return;
-        }
-        applyFilmAreaDetection(result);
-        if (!isSafeDefaultFilmAreaDetection(result)) {
-            showToast(i18nText('errors.autoAreaLowConfidence'), "info");
-            return;
-        }
-
-        const detectedGeom = {
-            ...JSON.parse(JSON.stringify(current_geom)),
-            calibration_points: cloneCalibrationPoints(calibrationPoints),
-            calibration_confirmed: false
-        };
-        await persistGeometryQueued(id, detectedGeom);
-        if (id !== activeId || requestToken !== currentImageRequestToken || revision !== calibrationRevision) {
-            return;
-        }
-        current_geom = detectedGeom;
-        saveCurrentState();
-        showToast("Film area detected. Review the frame and save it.", "success");
-    } catch (error) {
-        console.error('Automatic film-area initialization failed', error);
-        if (id === activeId && requestToken === currentImageRequestToken) {
-            showToast("Automatic film-area detection failed. Set the area manually.", "error");
-        }
-    } finally {
-        setAutoAreaBusy(id, false);
-    }
 }
 
 btnAutoArea.addEventListener('click', async () => {
@@ -5956,11 +6097,11 @@ listen('import_progress', (event) => {
         
         // Ensure onclick uses the real ID now
         if (el.classList.contains('film-item')) {
-            el.onclick = () => {
+            el.onclick = event => {
                 selectImage(payload.id);
-                selectedLibraryIds.clear();
-                selectedLibraryIds.add(payload.id);
-                updateLibrarySelectionUI();
+                const orderedIds = Array.from(filmstripContainer.querySelectorAll('.film-item[data-id]'))
+                    .map(element => element.dataset.id);
+                updateImageSelection(payload.id, event, orderedIds, `filmstrip:${currentRollViewId || 'loose'}`);
             };
         }
     });
@@ -6249,3 +6390,93 @@ applyTheme(isDarkTheme ? 'dark' : 'light');
 document.getElementById('menu-theme-toggle').addEventListener('click', () => {
     applyTheme(isDarkTheme ? 'light' : 'dark');
 });
+
+const menuGroups = Array.from(document.querySelectorAll('#native-menu-bar .menu-group'));
+
+function closeApplicationMenus({ restoreFocus = false } = {}) {
+    menuGroups.forEach(group => {
+        const wasOpen = group.classList.contains('is-open');
+        group.classList.remove('is-open');
+        const trigger = group.querySelector('.menu-trigger');
+        trigger?.setAttribute('aria-expanded', 'false');
+        if (restoreFocus && wasOpen) trigger?.focus();
+    });
+}
+
+menuGroups.forEach(group => {
+    const trigger = group.querySelector('.menu-trigger');
+    const items = Array.from(group.querySelectorAll('.menu-item'));
+    trigger?.addEventListener('click', event => {
+        event.stopPropagation();
+        const shouldOpen = !group.classList.contains('is-open');
+        closeApplicationMenus();
+        group.classList.toggle('is-open', shouldOpen);
+        trigger.setAttribute('aria-expanded', String(shouldOpen));
+    });
+    trigger?.addEventListener('keydown', event => {
+        if (event.key !== 'ArrowDown') return;
+        event.preventDefault();
+        closeApplicationMenus();
+        group.classList.add('is-open');
+        trigger.setAttribute('aria-expanded', 'true');
+        items[0]?.focus();
+    });
+    items.forEach(item => item.addEventListener('click', () => closeApplicationMenus()));
+});
+
+document.addEventListener('click', event => {
+    if (!event.target.closest('#native-menu-bar .menu-group')) closeApplicationMenus();
+});
+document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeApplicationMenus({ restoreFocus: true });
+});
+
+document.getElementById('menu-view-library')?.addEventListener('click', () => {
+    activeImportViewPaths = null;
+    switchView('library');
+    renderLibraryAndFilmstrip();
+});
+document.getElementById('menu-view-develop')?.addEventListener('click', () => switchView('develop'));
+document.getElementById('menu-view-rolls')?.addEventListener('click', () => switchView('history'));
+document.getElementById('menu-view-reset')?.addEventListener('click', () => {
+    zoomLevel = 1.0;
+    panX = 0;
+    panY = 0;
+    if (currentView === 'develop') updateCanvasTransform();
+});
+document.getElementById('menu-about')?.addEventListener('click', () => {
+    showToast('NexFilm Engine v1.0', 'info');
+});
+
+function cleanupWebGLResources() {
+    if (!gl) return;
+    releaseLutTexture();
+    if (tex) gl.deleteTexture(tex);
+    if (fboTex) gl.deleteTexture(fboTex);
+    if (thumbnailFboTex) gl.deleteTexture(thumbnailFboTex);
+    if (fbo) gl.deleteFramebuffer(fbo);
+    if (thumbnailFbo) gl.deleteFramebuffer(thumbnailFbo);
+    if (posBuffer) gl.deleteBuffer(posBuffer);
+    if (texBuffer) gl.deleteBuffer(texBuffer);
+    if (vao) gl.deleteVertexArray(vao);
+    if (shaderProgram) gl.deleteProgram(shaderProgram);
+    tex = null;
+    fboTex = null;
+    thumbnailFboTex = null;
+    fbo = null;
+    thumbnailFbo = null;
+    thumbnailFboWidth = 0;
+    thumbnailFboHeight = 0;
+    thumbnailReadback = null;
+    thumbnailDisplayPixels = null;
+    posBuffer = null;
+    texBuffer = null;
+    vao = null;
+    shaderProgram = null;
+    proxyPixels = null;
+    proxyCache.clear();
+    readyProxyIds.clear();
+    webGLInitialized = false;
+}
+
+window.addEventListener('pagehide', cleanupWebGLResources, { once: true });

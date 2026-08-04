@@ -8,7 +8,7 @@ use crate::color_science::{
     ColorSpaceId, DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
 };
 use crate::core_math::{
-    apply_homography, apply_perspective_uv, apply_post_gamma_adjustments_with_luma,
+    apply_homography, apply_perspective_uv, apply_post_gamma_adjustments_with_luma, density_luma,
     neutral_density_bounds, normalize_density_channel, shader_homography, sprocket_white_mask,
     DENSITY_LUMA_COEFFICIENTS,
 };
@@ -34,8 +34,10 @@ use tauri::State;
 use tauri::{Emitter, Manager};
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
+static EXPORT_TEMP_ID: AtomicUsize = AtomicUsize::new(1);
 static RAYON_INIT: OnceLock<()> = OnceLock::new();
 static EXPORT_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const EXPORT_TEMP_PREFIX: &str = ".nexfilm-part-";
 const CHANNEL_CONTROL_SCALE: f32 = 0.5;
 const LUT_CONTROL_SCALE: f32 = 0.5;
 
@@ -532,6 +534,130 @@ fn is_direct_image_extension(path: &str) -> bool {
     )
 }
 
+fn contains_noritsu_identifier(bytes: &[u8]) -> bool {
+    bytes
+        .windows(b"NORITSU".len())
+        .any(|window| window.eq_ignore_ascii_case(b"NORITSU"))
+        || bytes
+            .windows(b"EZ Controller".len())
+            .any(|window| window.eq_ignore_ascii_case(b"EZ Controller"))
+}
+
+fn tiff_ifd0_contains_noritsu_identifier(path: &str) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(file_len) = file.metadata().map(|metadata| metadata.len()) else {
+        return false;
+    };
+    let mut header = [0u8; 8];
+    if file.read_exact(&mut header).is_err() {
+        return false;
+    }
+    let little = match &header[0..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return false,
+    };
+    if read_endian_u16(&header, 2, little) != Some(42) {
+        return false;
+    }
+    let Some(ifd_offset) = read_endian_u32(&header, 4, little).map(u64::from) else {
+        return false;
+    };
+    if ifd_offset.checked_add(2).is_none_or(|end| end > file_len)
+        || file.seek(SeekFrom::Start(ifd_offset)).is_err()
+    {
+        return false;
+    }
+    let mut count_bytes = [0u8; 2];
+    if file.read_exact(&mut count_bytes).is_err() {
+        return false;
+    }
+    let Some(entry_count) = read_endian_u16(&count_bytes, 0, little).map(usize::from) else {
+        return false;
+    };
+    let Some(entries_len) = entry_count.checked_mul(12) else {
+        return false;
+    };
+    let Some(entries_end) = ifd_offset
+        .checked_add(2)
+        .and_then(|start| start.checked_add(entries_len as u64))
+    else {
+        return false;
+    };
+    if entries_end > file_len {
+        return false;
+    }
+    let mut entries = vec![0u8; entries_len];
+    if file.read_exact(&mut entries).is_err() {
+        return false;
+    }
+
+    for entry in entries.chunks_exact(12) {
+        let Some(tag) = read_endian_u16(entry, 0, little) else {
+            continue;
+        };
+        if !matches!(tag, 271 | 272 | 305) || read_endian_u16(entry, 2, little) != Some(2) {
+            continue;
+        }
+        let Some(count) = read_endian_u32(entry, 4, little).map(u64::from) else {
+            continue;
+        };
+        // Device identity strings are tiny; reject unreasonable counts instead
+        // of allocating from malformed metadata.
+        if count == 0 || count > 4096 {
+            continue;
+        }
+        let value = if count <= 4 {
+            entry.get(8..8 + count as usize).map(<[u8]>::to_vec)
+        } else {
+            let Some(value_offset) = read_endian_u32(entry, 8, little).map(u64::from) else {
+                continue;
+            };
+            let Some(value_end) = value_offset.checked_add(count) else {
+                continue;
+            };
+            if value_end > file_len || file.seek(SeekFrom::Start(value_offset)).is_err() {
+                continue;
+            }
+            let mut value = vec![0u8; count as usize];
+            file.read_exact(&mut value).ok().map(|_| value)
+        };
+        if value.is_some_and(|value| contains_noritsu_identifier(&value)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_noritsu_rendered_image(path: &str) -> bool {
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    if matches!(extension.as_str(), "tif" | "tiff") {
+        return tiff_ifd0_contains_noritsu_identifier(path);
+    }
+    if !matches!(extension.as_str(), "jpg" | "jpeg") {
+        return false;
+    }
+
+    // Noritsu writes the make/model in the JPEG APP1 block near the start of
+    // the file. Limit the read so Auto Invert does not scan a full-size image
+    // a second time merely to select its histogram policy.
+    let Ok(file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = Vec::with_capacity(256 * 1024);
+    if file.take(256 * 1024).read_to_end(&mut header).is_err() {
+        return false;
+    }
+    contains_noritsu_identifier(&header)
+}
+
 fn extract_jpeg_icc_profile(bytes: &[u8]) -> Option<Vec<u8>> {
     if bytes.len() < 2 || bytes[0..2] != [0xff, 0xd8] {
         return None;
@@ -817,6 +943,20 @@ fn decode_import_preview_base64(path: &str, max_edge: u32) -> Option<String> {
             .or_else(|| decode_direct_image_preview_base64(path, max_edge));
     }
     None
+}
+
+fn decode_import_preview_result(path: &str, max_edge: u32) -> Result<String, String> {
+    std::fs::File::open(path).map_err(|error| format!("Cannot read {path}: {error}"))?;
+    if let Some(preview) = decode_import_preview_base64(path, max_edge) {
+        return Ok(preview);
+    }
+
+    // Some valid RAW files contain no embedded preview. Decode a reduced
+    // proxy only for that uncommon fallback; a corrupt or unsupported file
+    // now produces a real import error instead of a persisted 1x1 placeholder.
+    let image = decode_image_buffer(path, DecodeMode::DevelopProxy)?;
+    encode_stretched_preview_jpeg_base64(image::DynamicImage::ImageRgb16(image), max_edge, 86)
+        .ok_or_else(|| format!("Could not encode an import preview for {path}"))
 }
 
 fn decode_develop_preview_base64(path: &str, max_edge: u32) -> Option<String> {
@@ -1106,11 +1246,40 @@ fn density_histogram_extremes(histogram: &[u32], total: usize) -> (u16, u16) {
     (low, high)
 }
 
+fn co_sited_density_extremes(mut samples: Vec<[f32; 3]>) -> Option<([f32; 3], [f32; 3])> {
+    if samples.len() < 2 {
+        return None;
+    }
+    samples.sort_unstable_by(|left, right| density_luma(*left).total_cmp(&density_luma(*right)));
+
+    // Averaging the lowest/highest 2% centers each estimate near the existing
+    // 1st/99th percentile while ensuring all three channel values come from
+    // the same pixels. This preserves per-channel correction without allowing
+    // unrelated colored objects to define separate channel endpoints.
+    let tail_count =
+        ((samples.len() as f64 * 0.02).ceil() as usize).clamp(1, (samples.len() / 2).max(1));
+    let average = |tail: &[[f32; 3]]| {
+        let mut sum = [0.0f64; 3];
+        for sample in tail {
+            for channel in 0..3 {
+                sum[channel] += sample[channel] as f64;
+            }
+        }
+        sum.map(|value| (value / tail.len() as f64) as f32)
+    };
+    let low = average(&samples[..tail_count]);
+    let high = average(&samples[samples.len() - tail_count..]);
+    (0..3)
+        .all(|channel| high[channel] - low[channel] > 1e-6)
+        .then_some((low, high))
+}
+
 fn compute_auto_color_limits(
     proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>,
     geom: &GeometryState,
     base_color: &BaseColor,
     mode: FilmMode,
+    linked_color_limits: bool,
 ) -> Result<AutoColorLimits, String> {
     const SAMPLE_EDGE: u32 = 512;
     let (source_width, source_height) = proxy.dimensions();
@@ -1141,6 +1310,7 @@ fn compute_auto_color_limits(
         .map(|point| point[1])
         .fold(f32::NEG_INFINITY, f32::max);
     let homography = shader_homography(points);
+    let use_linked_color_limits = linked_color_limits && mode == FilmMode::Color;
     let pipeline = FilmPipeline::new(
         [base_color.base_r, base_color.base_g, base_color.base_b],
         [0.0; 3],
@@ -1149,6 +1319,7 @@ fn compute_auto_color_limits(
 
     let collect = |inside_calibration_only: bool| {
         let mut histograms = [vec![0u32; 65536], vec![0u32; 65536], vec![0u32; 65536]];
+        let mut linked_samples = Vec::new();
         let mut total = 0usize;
         for y in 0..sample_height {
             for x in 0..sample_width {
@@ -1195,15 +1366,18 @@ fn compute_auto_color_limits(
                         as usize;
                     histograms[channel][bin] += 1;
                 }
+                if use_linked_color_limits {
+                    linked_samples.push(density);
+                }
                 total += 1;
             }
         }
-        (histograms, total)
+        (histograms, linked_samples, total)
     };
 
-    let (mut histograms, mut total) = collect(true);
+    let (mut histograms, mut linked_samples, mut total) = collect(true);
     if total < 64 {
-        (histograms, total) = collect(false);
+        (histograms, linked_samples, total) = collect(false);
     }
     if total < 64 {
         return Err("The selected film area contains too little image data.".to_string());
@@ -1211,10 +1385,18 @@ fn compute_auto_color_limits(
 
     let mut d_min = [0.0; 3];
     let mut d_max = [0.0; 3];
+    let linked_bounds = use_linked_color_limits
+        .then(|| co_sited_density_extremes(linked_samples))
+        .flatten();
     for channel in 0..3 {
-        let (low, high) = density_histogram_extremes(&histograms[channel], total);
-        d_min[channel] = low as f32 / 65535.0 * 4.0 - 1.0;
-        d_max[channel] = high as f32 / 65535.0 * 4.0 - 1.0;
+        if let Some((low, high)) = linked_bounds {
+            d_min[channel] = low[channel];
+            d_max[channel] = high[channel];
+        } else {
+            let (low, high) = density_histogram_extremes(&histograms[channel], total);
+            d_min[channel] = low as f32 / 65535.0 * 4.0 - 1.0;
+            d_max[channel] = high as f32 / 65535.0 * 4.0 - 1.0;
+        }
     }
     Ok(AutoColorLimits { d_min, d_max })
 }
@@ -1551,7 +1733,11 @@ pub async fn import_images(
     // ═══════════════════════════════════════════════════════════════════
     //  STEP 1: Create the MPSC channel — the SINGLE data pipe.
     // ═══════════════════════════════════════════════════════════════════
-    let (tx, rx) = std::sync::mpsc::channel::<FilmItem>();
+    enum ImportWork {
+        Item(FilmItem),
+        Failed { file_path: String, message: String },
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<ImportWork>();
 
     // ═══════════════════════════════════════════════════════════════════
     //  STEP 2: Spawn the consumer thread — ABSOLUTE single-writer to SQLite.
@@ -1662,20 +1848,39 @@ pub async fn import_images(
         // ── Micro-batch recv loop: flush every 3 items for smooth UI ──
         // A roll of film typically has 3-6 frames per strip; flushing every 3
         // ensures the frontend grid updates like water flowing, eliminating 0% deadlock.
-        while let Ok(item) = rx.recv() {
-            buffer.push(item);
-            // Each embedded preview is tiny. Commit and emit it immediately so
-            // completed frames never wait behind a slower earlier decode.
-            flush_batch(
-                &mut buffer,
-                &mut conn,
-                &state,
-                &app_handle_consumer,
-                &mut total_processed,
-                &mut total_failed,
-                &mut failed_roll_paths,
-                &total_for_progress,
-            );
+        while let Ok(work) = rx.recv() {
+            match work {
+                ImportWork::Item(item) => {
+                    buffer.push(item);
+                    // Commit each completed preview immediately so a slow file
+                    // never delays successful neighbors.
+                    flush_batch(
+                        &mut buffer,
+                        &mut conn,
+                        &state,
+                        &app_handle_consumer,
+                        &mut total_processed,
+                        &mut total_failed,
+                        &mut failed_roll_paths,
+                        &total_for_progress,
+                    );
+                }
+                ImportWork::Failed { file_path, message } => {
+                    failed_roll_paths.insert(normalize_path(&file_path));
+                    total_processed += 1;
+                    total_failed += 1;
+                    let _ = app_handle_consumer.emit(
+                        "import_error",
+                        serde_json::json!({
+                            "message": message,
+                            "file_paths": [file_path],
+                            "roll_id": roll_id_consumer,
+                            "processed": total_processed,
+                            "total": total_for_progress.load(Ordering::SeqCst),
+                        }),
+                    );
+                }
+            }
         }
 
         // ── Flush remaining items after channel closes ──
@@ -1693,13 +1898,13 @@ pub async fn import_images(
         if let Some(roll_id) = roll_id_consumer.as_deref() {
             if !failed_roll_paths.is_empty() {
                 let cleanup = (|| -> Result<Option<Vec<Roll>>, String> {
-                    let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
-                    let mut updated = rolls.clone();
+                    let _mutation = state.roll_mutation.blocking_lock();
+                    let mut updated = read_lock(&state.rolls).clone();
                     if !remove_failed_roll_paths(&mut updated, roll_id, &failed_roll_paths) {
                         return Ok(None);
                     }
                     persist_roll_snapshot(&updated)?;
-                    *rolls = updated.clone();
+                    *write_lock(&state.rolls) = updated.clone();
                     Ok(Some(updated))
                 })();
                 match cleanup {
@@ -1733,7 +1938,7 @@ pub async fn import_images(
                             .clone()
                             .unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
                         for kv in guard.iter() {
-                            let item = kv.value().read().unwrap();
+                            let item = read_lock(kv.value());
                             let db_path = item.file_path.clone();
                             if item.roll_id == target
                                 && (db_path == path
@@ -1778,7 +1983,7 @@ pub async fn import_images(
             guard
                 .iter()
                 .filter_map(|kv| {
-                    let item = kv.value().read().unwrap();
+                    let item = read_lock(kv.value());
                     if item.roll_id == target_roll_producer {
                         Some((
                             item.file_path.replace("\\", "/").to_lowercase(),
@@ -1871,16 +2076,16 @@ pub async fn import_images(
         // ── Helper: process a single path into a FilmItem ──
         // ONLY uses libraw_unpack_thumb (lazy demosaicing) — never full unpack.
         // All captures are immutable references → safe for parallel invocation.
-        let process_path: Arc<dyn Fn(&String) -> FilmItem + Send + Sync> =
-            Arc::new(move |path: &String| -> FilmItem {
+        let process_path: Arc<dyn Fn(&String) -> Result<FilmItem, String> + Send + Sync> =
+            Arc::new(move |path: &String| -> Result<FilmItem, String> {
                 // ── Fast path: hit the DB cache (no libraw decoding needed) ──
                 if let Some((embedded_thumb, rendered_thumb, params, geom, base_color)) =
                     db_cache.get(&path.replace("\\", "/").to_lowercase())
                 {
                     let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
-                    let mut geom = geom.clone();
-                    apply_default_film_border(&mut geom, embedded_thumb);
-                    return FilmItem {
+                    std::fs::File::open(path)
+                        .map_err(|error| format!("Cannot read {path}: {error}"))?;
+                    return Ok(FilmItem {
                         id,
                         roll_id: target_roll_producer.clone(),
                         file_path: path.clone(),
@@ -1891,21 +2096,19 @@ pub async fn import_images(
                         pristine_proxy: None,
                         base_color: base_color.clone(),
                         params: params.clone(),
-                        geom,
+                        geom: normalize_persisted_geometry(geom.clone()),
                         is_loose: loose,
                         in_library: in_lib,
-                    };
+                    });
                 }
 
                 let embedded_thumbnail_base64 =
-                    decode_import_preview_base64(path, IMPORT_PREVIEW_LONG_EDGE)
-                        .unwrap_or_else(|| FALLBACK_THUMB.to_string());
+                    decode_import_preview_result(path, IMPORT_PREVIEW_LONG_EDGE)?;
                 let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
                 let params = TuningParams::default();
-                let mut geom = crate::app_state::GeometryState::default();
-                apply_default_film_border(&mut geom, &embedded_thumbnail_base64);
+                let geom = crate::app_state::GeometryState::default();
 
-                FilmItem {
+                Ok(FilmItem {
                     id,
                     roll_id: target_roll_producer.clone(),
                     file_path: path.clone(),
@@ -1919,8 +2122,16 @@ pub async fn import_images(
                     geom,
                     is_loose: loose,
                     in_library: in_lib,
-                }
+                })
             });
+
+        let to_work = |path: &String| match process_path(path) {
+            Ok(item) => ImportWork::Item(item),
+            Err(message) => ImportWork::Failed {
+                file_path: path.clone(),
+                message,
+            },
+        };
 
         // Give the first selected frame exclusive I/O priority. Continue in
         // selection order so the filmstrip never appears as a staircase when
@@ -1928,10 +2139,10 @@ pub async fn import_images(
         let Some((first_path, remaining_paths)) = paths_to_process.split_first() else {
             return;
         };
-        if tx.send(process_path(first_path)).is_err() {
+        if tx.send(to_work(first_path)).is_err() {
             return;
         }
-        let (result_tx, result_rx) = std::sync::mpsc::channel::<FilmItem>();
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<ImportWork>();
         let preview_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(
                 std::thread::available_parallelism()
@@ -1948,7 +2159,14 @@ pub async fn import_images(
             queued_paths
                 .par_iter()
                 .for_each_with(result_tx_for_workers, |sender, path| {
-                    let _ = sender.send(process_path_for_workers(path));
+                    let work = match process_path_for_workers(path) {
+                        Ok(item) => ImportWork::Item(item),
+                        Err(message) => ImportWork::Failed {
+                            file_path: path.clone(),
+                            message,
+                        },
+                    };
+                    let _ = sender.send(work);
                 });
         };
         // Keep the pool alive until the result channel closes. Dropping a
@@ -2060,7 +2278,7 @@ pub async fn get_roll_filmstrip(
     for path in &roll.image_paths {
         let mut found = false;
         for kv in guard.iter() {
-            let item = kv.value().read().unwrap();
+            let item = read_lock(kv.value());
             let db_path = item.file_path.clone();
             if item.roll_id == roll_id
                 && (db_path == *path
@@ -2287,9 +2505,9 @@ fn parse_lut(path: &str) -> Result<ParsedLut, String> {
             return Err("No valid curve points found in JSON".to_string());
         }
 
-        r_points.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
-        g_points.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
-        b_points.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
+        r_points.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        g_points.sort_by(|a, b| a[0].total_cmp(&b[0]));
+        b_points.sort_by(|a, b| a[0].total_cmp(&b[0]));
 
         let size = 1024;
         let mut data_floats: Vec<f32> = Vec::with_capacity(size * 4);
@@ -2508,7 +2726,9 @@ mod lut_tests {
 
 #[tauri::command]
 pub async fn load_3d_lut(path: String) -> Result<LutData, String> {
-    parse_lut(&path).map(ParsedLut::into_ipc)
+    tokio::task::spawn_blocking(move || parse_lut(&path).map(ParsedLut::into_ipc))
+        .await
+        .map_err(|error| format!("LUT worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2516,7 +2736,7 @@ pub async fn get_roll_previews(
     roll_id: String,
     state: State<'_, EngineState>,
 ) -> Result<Vec<String>, String> {
-    let rolls = state.rolls.read().unwrap();
+    let rolls = read_lock(&state.rolls);
     if let Some(roll) = rolls.iter().find(|r| r.roll_id == roll_id) {
         return Ok(collect_roll_previews(roll, &state, 8));
     }
@@ -2658,14 +2878,14 @@ mod history_contract_tests {
 
 #[tauri::command]
 pub async fn get_raw_thumbnails(paths: Vec<String>) -> Result<Vec<String>, String> {
-    let mut thumbs = Vec::with_capacity(paths.len());
-    for path in paths {
-        thumbs.push(
-            decode_import_preview_base64(&path, IMPORT_PREVIEW_LONG_EDGE)
-                .unwrap_or_else(|| FALLBACK_THUMB.to_string()),
-        );
-    }
-    Ok(thumbs)
+    tokio::task::spawn_blocking(move || {
+        paths
+            .into_iter()
+            .map(|path| decode_import_preview_result(&path, IMPORT_PREVIEW_LONG_EDGE))
+            .collect::<Result<Vec<_>, _>>()
+    })
+    .await
+    .map_err(|error| format!("Thumbnail worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2705,24 +2925,13 @@ pub struct ActiveImageState {
 /// Physically drops the ImageBuffer allocations (~72MB per evicted image).
 fn evict_proxy_if_needed(state: &EngineState) {
     let active_id = read_lock(&state.active_id).clone();
-    let protected_ids: HashSet<String> = {
-        let mut ids = HashSet::new();
-        if let Some(active) = active_id.as_ref() {
-            ids.insert(active.clone());
-            let order = read_lock(&state.item_order);
-            if let Some(pos) = order.iter().position(|id| id == active) {
-                let start = pos.saturating_sub(2);
-                let end = (pos + 3).min(order.len());
-                for id in order[start..end].iter() {
-                    ids.insert(id.clone());
-                }
-            }
-        }
-        ids
-    };
     let mut order = write_lock(&state.proxy_loaded_order);
     while order.len() > crate::app_state::MAX_PROXY_CACHE {
-        let victim_pos = order.iter().position(|id| !protected_ids.contains(id));
+        // Only the active image is protected. Protecting a navigation window
+        // can make every entry non-evictable and violate the hard limit.
+        let victim_pos = order
+            .iter()
+            .position(|id| active_id.as_deref() != Some(id.as_str()));
         let Some(victim_pos) = victim_pos else {
             break;
         };
@@ -2862,13 +3071,19 @@ pub async fn analyze_proxy_base_color(
             compute_auto_base(proxy)
         };
 
-        let mut item = write_lock(&item_arc);
-        if item.base_color != BaseColor::default() {
-            return Ok(());
-        }
-        let previous_base_color = std::mem::replace(&mut item.base_color, base_color);
-        if let Err(error) = save_image_state_to_db(&item) {
-            item.base_color = previous_base_color;
+        let (roll_id, file_path, previous_base_color) = {
+            let mut item = write_lock(&item_arc);
+            if item.base_color != BaseColor::default() {
+                return Ok(());
+            }
+            let previous = std::mem::replace(&mut item.base_color, base_color.clone());
+            (item.roll_id.clone(), item.file_path.clone(), previous)
+        };
+        if let Err(error) = persist_base_color(&roll_id, &file_path, &base_color) {
+            let mut item = write_lock(&item_arc);
+            if item.base_color == base_color {
+                item.base_color = previous_base_color;
+            }
             return Err(error);
         }
         Ok(())
@@ -2883,23 +3098,26 @@ pub async fn analyze_proxy_density_limits(
     state: State<'_, EngineState>,
 ) -> Result<AutoColorLimits, String> {
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
-    let (proxy, geom, base_color, mode) = {
-        let item = read_lock(&item_arc);
-        if item.base_color == BaseColor::default() {
-            return Err("BASE_COLOR_NOT_ANALYZED".to_string());
-        }
-        (
-            item.proxy_image
-                .clone()
-                .ok_or_else(|| "PROXY_NOT_READY".to_string())?,
-            item.geom.clone(),
-            item.base_color.clone(),
-            item.params.film_mode.clone(),
-        )
-    };
-    tokio::task::spawn_blocking(move || compute_auto_color_limits(&proxy, &geom, &base_color, mode))
-        .await
-        .map_err(|error| error.to_string())?
+    tokio::task::spawn_blocking(move || {
+        let (proxy, geom, base_color, mode, linked_color_limits) = {
+            let item = read_lock(&item_arc);
+            if item.base_color == BaseColor::default() {
+                return Err("BASE_COLOR_NOT_ANALYZED".to_string());
+            }
+            (
+                item.proxy_image
+                    .clone()
+                    .ok_or_else(|| "PROXY_NOT_READY".to_string())?,
+                item.geom.clone(),
+                item.base_color.clone(),
+                item.params.film_mode.clone(),
+                is_noritsu_rendered_image(&item.file_path),
+            )
+        };
+        compute_auto_color_limits(&proxy, &geom, &base_color, mode, linked_color_limits)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -2908,32 +3126,45 @@ pub async fn sync_thumbnail_buffer(
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
-    {
-        let mut item = item_arc.write().map_err(|e| e.to_string())?;
-        if item.pristine_proxy.is_none() {
-            if let Some(proxy) = item.proxy_image.as_ref() {
-                item.pristine_proxy = Some(compute_pristine_proxy(
-                    proxy,
-                    &item.base_color,
-                    item.params.film_mode.clone(),
-                ));
+    tokio::task::spawn_blocking(move || {
+        {
+            let mut item = write_lock(&item_arc);
+            if item.pristine_proxy.is_none() {
+                if let Some(proxy) = item.proxy_image.as_ref() {
+                    item.pristine_proxy = Some(compute_pristine_proxy(
+                        proxy,
+                        &item.base_color,
+                        item.params.film_mode.clone(),
+                    ));
+                }
             }
         }
-    }
-    let new_thumbnail = {
-        let item = item_arc.read().map_err(|e| e.to_string())?;
-        generate_processed_thumbnail(&item).unwrap_or_default()
-    };
-
-    if !new_thumbnail.is_empty() {
-        let mut item = item_arc.write().map_err(|e| e.to_string())?;
-        let previous_thumbnail = item.rendered_thumbnail_base64.replace(new_thumbnail);
-        if let Err(error) = save_image_state_to_db(&item) {
-            item.rendered_thumbnail_base64 = previous_thumbnail;
+        let new_thumbnail = {
+            let item = read_lock(&item_arc);
+            generate_processed_thumbnail(&item)
+                .ok_or_else(|| "Thumbnail source is not ready".to_string())?
+        };
+        if new_thumbnail.is_empty() {
+            return Ok(());
+        }
+        let (roll_id, file_path, previous_thumbnail) = {
+            let mut item = write_lock(&item_arc);
+            let previous = item
+                .rendered_thumbnail_base64
+                .replace(new_thumbnail.clone());
+            (item.roll_id.clone(), item.file_path.clone(), previous)
+        };
+        if let Err(error) = persist_rendered_thumbnail(&roll_id, &file_path, &new_thumbnail) {
+            let mut item = write_lock(&item_arc);
+            if item.rendered_thumbnail_base64.as_deref() == Some(new_thumbnail.as_str()) {
+                item.rendered_thumbnail_base64 = previous_thumbnail;
+            }
             return Err(error);
         }
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Thumbnail worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2942,14 +3173,24 @@ pub async fn set_thumbnail_data(
     thumbnail: String,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
-    let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
-    let mut item = write_lock(&item_arc);
-    let previous_thumbnail = item.rendered_thumbnail_base64.replace(thumbnail);
-    if let Err(error) = save_image_state_to_db(&item) {
-        item.rendered_thumbnail_base64 = previous_thumbnail;
-        return Err(error);
-    }
-    Ok(())
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+    tokio::task::spawn_blocking(move || {
+        let (roll_id, file_path, previous_thumbnail) = {
+            let mut item = write_lock(&item_arc);
+            let previous = item.rendered_thumbnail_base64.replace(thumbnail.clone());
+            (item.roll_id.clone(), item.file_path.clone(), previous)
+        };
+        if let Err(error) = persist_rendered_thumbnail(&roll_id, &file_path, &thumbnail) {
+            let mut item = write_lock(&item_arc);
+            if item.rendered_thumbnail_base64.as_deref() == Some(thumbnail.as_str()) {
+                item.rendered_thumbnail_base64 = previous_thumbnail;
+            }
+            return Err(error);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Thumbnail persistence worker failed: {error}"))?
 }
 
 #[tauri::command]
@@ -2958,14 +3199,24 @@ pub async fn update_geometry(
     geom: crate::app_state::GeometryState,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
-    let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
-    let mut item = write_lock(&item_arc);
-    let previous_geom = std::mem::replace(&mut item.geom, geom);
-    if let Err(error) = save_image_state_to_db(&item) {
-        item.geom = previous_geom;
-        return Err(error);
-    }
-    Ok(())
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+    tokio::task::spawn_blocking(move || {
+        let (roll_id, file_path, previous_geom) = {
+            let mut item = write_lock(&item_arc);
+            let previous = std::mem::replace(&mut item.geom, geom.clone());
+            (item.roll_id.clone(), item.file_path.clone(), previous)
+        };
+        if let Err(error) = persist_geometry(&roll_id, &file_path, &geom) {
+            let mut item = write_lock(&item_arc);
+            if item.geom == geom {
+                item.geom = previous_geom;
+            }
+            return Err(error);
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Geometry persistence worker failed: {error}"))?
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -3033,86 +3284,11 @@ fn detect_film_border_from_encoded(
     Ok(crate::film_border::detect_film_border(&thumbnail))
 }
 
-fn apply_default_film_border(geom: &mut GeometryState, encoded: &str) {
-    if geom.calibration_points.is_some() {
-        return;
+fn normalize_persisted_geometry(mut geom: GeometryState) -> GeometryState {
+    if !geom.calibration_confirmed {
+        geom.calibration_points = None;
     }
-    let Ok(result) = detect_film_border_from_encoded(encoded) else {
-        return;
-    };
-    if result.confidence == crate::film_border::DetectionConfidence::High
-        && result.status == "detected_gradient"
-    {
-        geom.calibration_points = Some(result.points);
-        geom.calibration_confirmed = false;
-    }
-}
-
-#[cfg(test)]
-mod film_area_default_tests {
-    use super::apply_default_film_border;
-    use crate::app_state::GeometryState;
-    use base64::{engine::general_purpose, Engine as _};
-    use image::{DynamicImage, GrayImage, ImageOutputFormat, Luma};
-    use imageproc::drawing::draw_filled_rect_mut;
-    use imageproc::rect::Rect;
-    use std::io::Cursor;
-
-    fn encode_png(image: GrayImage) -> String {
-        let mut cursor = Cursor::new(Vec::new());
-        DynamicImage::ImageLuma8(image)
-            .write_to(&mut cursor, ImageOutputFormat::Png)
-            .unwrap();
-        general_purpose::STANDARD.encode(cursor.into_inner())
-    }
-
-    fn textured_film_strip() -> GrayImage {
-        let mut image = GrayImage::from_pixel(320, 210, Luma([178]));
-        draw_filled_rect_mut(&mut image, Rect::at(48, 38).of_size(226, 136), Luma([62]));
-        for x in (22..300).step_by(30) {
-            draw_filled_rect_mut(&mut image, Rect::at(x, 9).of_size(14, 19), Luma([235]));
-            draw_filled_rect_mut(&mut image, Rect::at(x, 182).of_size(14, 19), Luma([235]));
-        }
-        for y in (52..168).step_by(16) {
-            draw_filled_rect_mut(&mut image, Rect::at(70, y).of_size(175, 4), Luma([90]));
-        }
-        image
-    }
-
-    #[test]
-    fn high_confidence_detection_becomes_the_default_geometry() {
-        let mut geom = GeometryState::default();
-        apply_default_film_border(&mut geom, &encode_png(textured_film_strip()));
-
-        assert!(geom.calibration_points.is_some());
-        assert!(!geom.calibration_confirmed);
-    }
-
-    #[test]
-    fn low_confidence_fallback_is_not_saved_as_default_geometry() {
-        let mut geom = GeometryState::default();
-        let blank = GrayImage::from_pixel(320, 210, Luma([16]));
-        apply_default_film_border(&mut geom, &encode_png(blank));
-
-        assert!(geom.calibration_points.is_none());
-        assert!(!geom.calibration_confirmed);
-    }
-
-    #[test]
-    fn geometry_without_confirmation_metadata_remains_readable() {
-        let geom: GeometryState = serde_json::from_value(serde_json::json!({
-            "crop_rect": { "x": 0.0, "y": 0.0, "width": 1.0, "height": 1.0 },
-            "angle": 0.0,
-            "flip_h": false,
-            "flip_v": false,
-            "rotate_90_count": 0,
-            "calibration_points": [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]
-        }))
-        .unwrap();
-
-        assert!(geom.calibration_points.is_some());
-        assert!(!geom.calibration_confirmed);
-    }
+    geom
 }
 
 #[tauri::command]
@@ -3273,35 +3449,23 @@ pub async fn geometry_auto_align(
     Ok(crate::app_state::AutoAlignResult { crop_rect, angle })
 }
 
-#[tauri::command]
-pub async fn get_proxy_image_data(
-    id: String,
-    state: State<'_, EngineState>,
-    _app_handle: tauri::AppHandle,
-) -> Result<tauri::ipc::Response, String> {
-    let out_buffer: Option<Vec<u8>> = {
-        let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
+pub fn get_proxy_response_buffer(state: &EngineState, id: &str) -> Result<Vec<u8>, String> {
+    let out_buffer = {
+        let item_arc = state.items.get(id).ok_or("Image ID not found")?;
         let item = read_lock(&item_arc);
         if let Some(proxy) = item.proxy_image.as_ref() {
-            Some(build_response_buffer_from_proxy(
+            build_response_buffer_from_proxy(
                 proxy,
                 &item.base_color,
                 true,
                 item.base_color != BaseColor::default(),
-            ))
+            )
         } else {
-            None
+            return Err("PROXY_NOT_READY".into());
         }
-    }; // read lock released immediately
-
-    let result = if let Some(out_buffer) = out_buffer {
-        track_proxy_loaded(&state, &id);
-        Ok(tauri::ipc::Response::new(out_buffer))
-    } else {
-        Err("PROXY_NOT_READY".into())
     };
-
-    result
+    track_proxy_loaded(state, id);
+    Ok(out_buffer)
 }
 
 #[tauri::command]
@@ -3312,40 +3476,51 @@ pub async fn update_tuning_parameters(
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
     params.raw_decode.working_colorspace = DENSITY_CAPTURE_WORKING_SPACE.to_string();
-    let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
-    let mut item = item_arc.write().map_err(|e| e.to_string())?;
-    if item.roll_id != roll_id {
-        return Err("Image does not belong to the requested roll".into());
-    }
-
-    let previous_params = item.params.clone();
-    let film_mode_changed = previous_params.film_mode != params.film_mode;
-    let previous_pristine = film_mode_changed
-        .then(|| item.pristine_proxy.take())
-        .flatten();
-
-    item.params = params;
-    // Film mode is a shader parameter. Never rebuild a CPU density buffer on a
-    // slider/button update; the WebGL frame is the interactive source of truth.
-    if film_mode_changed {
-        item.pristine_proxy = None;
-    }
-
-    if let Err(error) = save_image_state_to_db(&item) {
-        item.params = previous_params;
-        if film_mode_changed {
-            item.pristine_proxy = previous_pristine;
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+    tokio::task::spawn_blocking(move || {
+        let (file_path, previous_params, previous_pristine, film_mode_changed) = {
+            let mut item = write_lock(&item_arc);
+            if item.roll_id != roll_id {
+                return Err("Image does not belong to the requested roll".into());
+            }
+            let previous_params = item.params.clone();
+            let film_mode_changed = previous_params.film_mode != params.film_mode;
+            let previous_pristine = if film_mode_changed {
+                item.pristine_proxy.take()
+            } else {
+                None
+            };
+            item.params = params.clone();
+            (
+                item.file_path.clone(),
+                previous_params,
+                previous_pristine,
+                film_mode_changed,
+            )
+        };
+        if let Err(error) = persist_tuning_parameters(&roll_id, &file_path, &params) {
+            let mut item = write_lock(&item_arc);
+            if item.params == params {
+                item.params = previous_params;
+                if film_mode_changed {
+                    item.pristine_proxy = previous_pristine;
+                }
+            }
+            return Err(error);
         }
-        return Err(error);
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Tuning persistence worker failed: {error}"))?
 }
 
 fn gaussian_blur_rgb16_parallel(
     source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
     sigma: f32,
 ) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
-    assert!(sigma > 0.0, "sigma must be > 0.0");
+    if !sigma.is_finite() || sigma <= 0.0 {
+        return source.clone();
+    }
     let (width, height) = source.dimensions();
     if width == 0 || height == 0 {
         return ImageBuffer::new(width, height);
@@ -3420,7 +3595,7 @@ fn gaussian_blur_rgb16_parallel(
         });
 
     ImageBuffer::from_raw(width as u32, height as u32, vertical)
-        .expect("parallel Gaussian blur output dimensions should match source")
+        .unwrap_or_else(|| ImageBuffer::new(width as u32, height as u32))
 }
 
 fn apply_usm(buffer: &mut ImageBuffer<Rgb<u16>, Vec<u16>>, sigma: f32, amount: f32) {
@@ -4492,8 +4667,136 @@ fn write_export_image_with_profile(
     if let Some(metadata) = metadata {
         attach_export_metadata(&mut encoded, format, metadata)?;
     }
-    std::fs::write(path, encoded)
-        .map_err(|error| format!("Could not write {}: {error}", path.display()))
+    write_bytes_atomically(path, &encoded)
+}
+
+fn write_bytes_atomically(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Output path has no parent: {}", path.display()))?;
+    let file_name = path
+        .file_name()
+        .ok_or_else(|| format!("Output path has no file name: {}", path.display()))?
+        .to_string_lossy();
+
+    for _ in 0..128 {
+        let sequence = EXPORT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+        let temp_path = parent.join(format!(
+            "{EXPORT_TEMP_PREFIX}{}-{sequence}-{file_name}",
+            std::process::id()
+        ));
+        let mut file = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "Could not create temporary export in {}: {error}",
+                    parent.display()
+                ))
+            }
+        };
+
+        let staged = file.write_all(bytes).and_then(|_| file.sync_all());
+        drop(file);
+        if let Err(error) = staged {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(format!("Could not stage {}: {error}", path.display()));
+        }
+
+        if let Err(error) = replace_file_atomically(&temp_path, path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(format!("Could not finalize {}: {error}", path.display()));
+        }
+        return Ok(());
+    }
+
+    Err(format!(
+        "Could not allocate a unique temporary export name in {}",
+        parent.display()
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn replace_file_atomically(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MoveFileExW(
+            existing_file_name: *const u16,
+            new_file_name: *const u16,
+            flags: u32,
+        ) -> i32;
+    }
+
+    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
+    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let target = target
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn replace_file_atomically(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> std::io::Result<()> {
+    std::fs::rename(source, target)
+}
+
+fn cleanup_stale_export_files(directory: &std::path::Path) -> Result<usize, String> {
+    let entries = std::fs::read_dir(directory).map_err(|error| {
+        format!(
+            "Could not inspect export directory {}: {error}",
+            directory.display()
+        )
+    })?;
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry
+            .map_err(|error| format!("Could not inspect an export directory entry: {error}"))?;
+        let name = entry.file_name();
+        if !name.to_string_lossy().starts_with(EXPORT_TEMP_PREFIX) {
+            continue;
+        }
+        match std::fs::remove_file(entry.path()) {
+            Ok(()) => removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "Could not clean stale export {}: {error}",
+                    entry.path().display()
+                ))
+            }
+        }
+    }
+    Ok(removed)
 }
 
 #[tauri::command]
@@ -4516,7 +4819,7 @@ pub async fn batch_export_images(
     let color_space = validate_export_color_space(&color_space)?.to_string();
     let output_space = parse_output_space(&color_space)
         .ok_or_else(|| format!("Unsupported export color space: {color_space}"))?;
-    let output_path = std::path::Path::new(&output_dir);
+    let output_path = std::path::PathBuf::from(&output_dir);
     if !output_path.is_dir() {
         return Err(format!("Export directory does not exist: {output_dir}"));
     }
@@ -4541,13 +4844,28 @@ pub async fn batch_export_images(
         return Err("Another export is already running".to_string());
     }
     let _active_guard = ExportActiveGuard;
+    let cleanup_directory = output_path.clone();
+    tokio::task::spawn_blocking(move || cleanup_stale_export_files(&cleanup_directory))
+        .await
+        .map_err(|error| format!("Export cleanup worker failed: {error}"))??;
 
-    let rolls = state.rolls.read().unwrap().clone();
+    let rolls = read_lock(&state.rolls).clone();
     let progress_app = app_handle.clone();
+    let identities = export_ids
+        .iter()
+        .map(|id| {
+            let item_arc = state
+                .items
+                .get(id)
+                .ok_or_else(|| format!("Image is no longer available for export: {id}"))?;
+            let item = read_lock(&item_arc);
+            Ok((id.clone(), item.file_path.clone(), item.roll_id.clone()))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
 
     // Freeze every roll-backed edit in one SQLite read transaction. The user can
     // continue editing after this point without changing the running export.
-    let mut export_snapshots = {
+    let mut export_snapshots = tokio::task::spawn_blocking(move || {
         let mut connection = persistence::open_connection()
             .map_err(|error| format!("Failed to open export database: {error}"))?;
         connection
@@ -4556,16 +4874,9 @@ pub async fn batch_export_images(
         let transaction = connection
             .transaction()
             .map_err(|error| format!("Failed to start export snapshot: {error}"))?;
-        let mut snapshots = Vec::with_capacity(export_ids.len());
+        let mut snapshots = Vec::with_capacity(identities.len());
 
-        for id in &export_ids {
-            let item_arc = state
-                .items
-                .get(id)
-                .ok_or_else(|| format!("Image is no longer available for export: {id}"))?;
-            let item = item_arc.read().map_err(|error| error.to_string())?;
-            let file_path = item.file_path.clone();
-            let roll_id = item.roll_id.clone();
+        for (id, file_path, roll_id) in identities {
             let (params, geom, base_color) =
                 load_image_state_from_connection(&transaction, &roll_id, &file_path)?
                     .map(|(_, params, geom, base_color)| (params, geom, base_color))
@@ -4576,7 +4887,7 @@ pub async fn batch_export_images(
                         )
                     })?;
             snapshots.push(ExportItemSnapshot {
-                id: id.clone(),
+                id,
                 file_path,
                 roll_id,
                 params,
@@ -4590,8 +4901,10 @@ pub async fn batch_export_images(
         transaction
             .commit()
             .map_err(|error| format!("Failed to finalize export snapshot: {error}"))?;
-        snapshots
-    };
+        Ok::<_, String>(snapshots)
+    })
+    .await
+    .map_err(|error| format!("Export snapshot worker failed: {error}"))??;
 
     // Resolve every output path before starting parallel work. This keeps
     // duplicate templates deterministic and prevents workers racing to write
@@ -4605,7 +4918,7 @@ pub async fn batch_export_images(
         }
         let stem = render_export_name(&naming_template, snapshot, roll, index + 1)?;
         if let Some(path) = reserve_export_path(
-            output_path,
+            &output_path,
             &stem,
             export_format.extension(),
             conflict_policy,
@@ -4620,17 +4933,31 @@ pub async fn batch_export_images(
 
     // Parse every referenced LUT before starting any writes. A bad or missing
     // LUT must fail the export rather than silently changing the appearance.
-    let mut parsed_luts = HashMap::new();
-    for snapshot in &export_snapshots {
-        if let Some(path) = snapshot.params.lut.lut_path.as_deref() {
-            if !parsed_luts.contains_key(path) {
-                let lut = parse_lut(path).map_err(|error| {
-                    format!("Cannot load LUT for {}: {error}", snapshot.file_path)
-                })?;
-                parsed_luts.insert(path.to_string(), lut);
+    let lut_sources = export_snapshots
+        .iter()
+        .filter_map(|snapshot| {
+            snapshot
+                .params
+                .lut
+                .lut_path
+                .as_ref()
+                .map(|path| (path.clone(), snapshot.file_path.clone()))
+        })
+        .collect::<Vec<_>>();
+    let parsed_luts = tokio::task::spawn_blocking(move || {
+        let mut parsed = HashMap::new();
+        for (path, file_path) in lut_sources {
+            if parsed.contains_key(&path) {
+                continue;
             }
+            let lut = parse_lut(&path)
+                .map_err(|error| format!("Cannot load LUT for {file_path}: {error}"))?;
+            parsed.insert(path, lut);
         }
-    }
+        Ok::<_, String>(parsed)
+    })
+    .await
+    .map_err(|error| format!("Export LUT worker failed: {error}"))??;
 
     let result = tokio::task::spawn_blocking(move || {
         let success_count = std::sync::atomic::AtomicUsize::new(0);
@@ -4641,7 +4968,10 @@ pub async fn batch_export_images(
         );
         let processed_count = std::sync::atomic::AtomicUsize::new(skipped_count);
 
-        export_snapshots.par_iter().for_each(|snapshot| {
+        // Process one full-resolution image at a time. Each image still uses
+        // Rayon internally, but the outer loop is deliberately sequential so
+        // several decoded/rotated/graded 16-bit buffers cannot coexist.
+        export_snapshots.iter().for_each(|snapshot| {
             let file_path = snapshot.file_path.clone();
             let params_owned = snapshot.params.clone();
             let geom_owned = snapshot.geom.clone();
@@ -4715,9 +5045,34 @@ pub async fn batch_export_images(
                     let mut out_buffer = rendered_display;
 
                     let (width, height) = out_buffer.dimensions();
-                    let (target_width, target_height) =
-                        export_dimensions(width, height, &resize_mode, long_edge, allow_upscale)
-                            .expect("export settings were validated before spawning workers");
+                    let (target_width, target_height) = match export_dimensions(
+                        width,
+                        height,
+                        &resize_mode,
+                        long_edge,
+                        allow_upscale,
+                    ) {
+                        Ok(dimensions) => dimensions,
+                        Err(error) => {
+                            lock_mutex(&failures).push(format!(
+                                "Invalid export dimensions for {}: {error}",
+                                file_path
+                            ));
+                            let processed = processed_count.fetch_add(
+                                1,
+                                std::sync::atomic::Ordering::SeqCst,
+                            ) + 1;
+                            let _ = progress_app.emit(
+                                "export_progress",
+                                serde_json::json!({
+                                    "processed": processed,
+                                    "total": count,
+                                    "id": snapshot.id
+                                }),
+                            );
+                            return;
+                        }
+                    };
                     if (target_width, target_height) != (width, height) {
                         out_buffer = image::imageops::resize(
                             &out_buffer,
@@ -4792,7 +5147,7 @@ pub async fn batch_export_images(
 
 #[tauri::command]
 pub async fn get_rolls(state: State<'_, EngineState>) -> Result<Vec<Roll>, String> {
-    let rolls = state.rolls.read().unwrap();
+    let rolls = read_lock(&state.rolls);
     Ok(rolls.clone())
 }
 
@@ -4807,6 +5162,16 @@ fn update_rolls_compatibility_mirror(rolls: &[Roll]) {
     if let Err(error) = persistence::write_rolls_compatibility_mirror(rolls) {
         eprintln!("[Roll Persistence] {error}");
     }
+}
+
+async fn persist_roll_snapshot_async(rolls: Vec<Roll>) -> Result<Vec<Roll>, String> {
+    tokio::task::spawn_blocking(move || {
+        persist_roll_snapshot(&rolls)?;
+        update_rolls_compatibility_mirror(&rolls);
+        Ok(rolls)
+    })
+    .await
+    .map_err(|error| format!("Roll persistence worker failed: {error}"))?
 }
 
 fn remove_failed_roll_paths(
@@ -4839,9 +5204,9 @@ pub async fn import_roll(
 ) -> Result<(), String> {
     let roll_id_clone = roll.roll_id.clone();
     let is_loose_roll = roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT";
-    let updated_rolls = {
-        let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
-        let mut updated = rolls.clone();
+    {
+        let _mutation = state.roll_mutation.lock().await;
+        let mut updated = read_lock(&state.rolls).clone();
         if let Some(existing) = updated
             .iter_mut()
             .find(|existing| existing.roll_id == roll.roll_id)
@@ -4850,11 +5215,9 @@ pub async fn import_roll(
         } else {
             updated.push(roll);
         }
-        persist_roll_snapshot(&updated)?;
-        *rolls = updated.clone();
-        updated
-    };
-    update_rolls_compatibility_mirror(&updated_rolls);
+        let updated = persist_roll_snapshot_async(updated).await?;
+        *write_lock(&state.rolls) = updated;
+    }
 
     crate::commands::import_images(
         paths,
@@ -4882,11 +5245,8 @@ pub async fn save_contact_sheet(
         }
     } else {
         &data_url
-    };
-
-    let image_data = general_purpose::STANDARD
-        .decode(b64_data)
-        .map_err(|e| format!("Base64 decode failed: {:?}", e))?;
+    }
+    .to_string();
     let default_name = filename.unwrap_or_else(|| "contact_sheet.jpg".to_string());
 
     let file_path = tauri::async_runtime::spawn_blocking(move || {
@@ -4899,8 +5259,15 @@ pub async fn save_contact_sheet(
     .map_err(|e| format!("Dialog error: {:?}", e))?;
 
     if let Some(path) = file_path {
-        std::fs::write(&path, image_data).map_err(|e| format!("Save error: {:?}", e))?;
-        Ok(path.to_string_lossy().to_string())
+        tauri::async_runtime::spawn_blocking(move || {
+            let image_data = general_purpose::STANDARD
+                .decode(b64_data)
+                .map_err(|error| format!("Base64 decode failed: {error}"))?;
+            write_bytes_atomically(&path, &image_data)?;
+            Ok(path.to_string_lossy().to_string())
+        })
+        .await
+        .map_err(|error| format!("Contact sheet worker failed: {error}"))?
     } else {
         Err("Cancelled".into())
     }
@@ -4949,7 +5316,8 @@ pub async fn delete_rolls(
 
     let deleted_roll_ids: HashSet<&str> = roll_ids.iter().map(String::as_str).collect();
     let (remaining_rolls, source_paths, removed_roll_count) = {
-        let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
+        let _mutation = state.roll_mutation.lock().await;
+        let rolls = read_lock(&state.rolls).clone();
         let mut paths = HashMap::new();
         for roll in rolls
             .iter()
@@ -4967,14 +5335,21 @@ pub async fn delete_rolls(
             .cloned()
             .collect();
         let removed_roll_count = rolls.len().saturating_sub(remaining.len());
-        let mut connection = persistence::open_connection()
-            .map_err(|error| format!("Failed to open roll database: {error}"))?;
-        persistence::delete_rolls_and_states(&mut connection, &roll_ids, &remaining)
-            .map_err(|error| format!("Failed to delete rolls: {error}"))?;
-        *rolls = remaining.clone();
+        let persisted_rolls = remaining.clone();
+        let persisted_ids = roll_ids.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut connection = persistence::open_connection()
+                .map_err(|error| format!("Failed to open roll database: {error}"))?;
+            persistence::delete_rolls_and_states(&mut connection, &persisted_ids, &persisted_rolls)
+                .map_err(|error| format!("Failed to delete rolls: {error}"))?;
+            update_rolls_compatibility_mirror(&persisted_rolls);
+            Ok::<_, String>(())
+        })
+        .await
+        .map_err(|error| format!("Roll deletion worker failed: {error}"))??;
+        *write_lock(&state.rolls) = remaining.clone();
         (remaining, paths, removed_roll_count)
     };
-    update_rolls_compatibility_mirror(&remaining_rolls);
 
     let mut source_paths = source_paths;
     let ids_to_remove: Vec<String> = state
@@ -5007,12 +5382,14 @@ pub async fn delete_rolls(
         .write()
         .map_err(|error| error.to_string())?
         .retain(|id| !removed_ids.contains(id));
-    let mut active_id = state.active_id.write().map_err(|error| error.to_string())?;
-    if active_id
-        .as_ref()
-        .is_some_and(|id| removed_ids.contains(id))
     {
-        *active_id = None;
+        let mut active_id = state.active_id.write().map_err(|error| error.to_string())?;
+        if active_id
+            .as_ref()
+            .is_some_and(|id| removed_ids.contains(id))
+        {
+            *active_id = None;
+        }
     }
 
     let mut result = DeleteRollsResult {
@@ -5034,7 +5411,12 @@ pub async fn delete_rolls(
                 Some(normalize_path(&item.file_path))
             }))
             .collect();
-        delete_source_paths(source_paths, &protected_paths, &mut result);
+        result = tokio::task::spawn_blocking(move || {
+            delete_source_paths(source_paths, &protected_paths, &mut result);
+            result
+        })
+        .await
+        .map_err(|error| format!("Source deletion worker failed: {error}"))?;
     }
     Ok(result)
 }
@@ -5063,8 +5445,8 @@ pub async fn delete_images(
     let mut source_paths = HashMap::new();
 
     let (updated_rolls, removed_from_rolls, removed_state_count) = {
-        let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
-        let mut updated = rolls.clone();
+        let _mutation = state.roll_mutation.lock().await;
+        let mut updated = read_lock(&state.rolls).clone();
         let mut removed_from_rolls = 0;
         for roll in &mut updated {
             let roll_id = roll.roll_id.clone();
@@ -5084,15 +5466,24 @@ pub async fn delete_images(
             .iter()
             .map(|image| (image.roll_id.clone(), image.file_path.clone()))
             .collect::<Vec<_>>();
-        let mut connection = persistence::open_connection()
-            .map_err(|error| format!("Failed to open image database: {error}"))?;
-        let removed_state_count =
-            persistence::delete_images_and_update_rolls(&mut connection, &image_keys, &updated)
-                .map_err(|error| format!("Failed to delete images: {error}"))?;
-        *rolls = updated.clone();
+        let persisted_rolls = updated.clone();
+        let removed_state_count = tokio::task::spawn_blocking(move || {
+            let mut connection = persistence::open_connection()
+                .map_err(|error| format!("Failed to open image database: {error}"))?;
+            let removed = persistence::delete_images_and_update_rolls(
+                &mut connection,
+                &image_keys,
+                &persisted_rolls,
+            )
+            .map_err(|error| format!("Failed to delete images: {error}"))?;
+            update_rolls_compatibility_mirror(&persisted_rolls);
+            Ok::<_, String>(removed)
+        })
+        .await
+        .map_err(|error| format!("Image deletion worker failed: {error}"))??;
+        *write_lock(&state.rolls) = updated.clone();
         (updated, removed_from_rolls, removed_state_count)
     };
-    update_rolls_compatibility_mirror(&updated_rolls);
 
     let ids_to_remove = state
         .items
@@ -5123,14 +5514,15 @@ pub async fn delete_images(
         .write()
         .map_err(|error| error.to_string())?
         .retain(|id| !removed_ids.contains(id));
-    let mut active_id = state.active_id.write().map_err(|error| error.to_string())?;
-    if active_id
-        .as_ref()
-        .is_some_and(|id| removed_ids.contains(id))
     {
-        *active_id = None;
+        let mut active_id = state.active_id.write().map_err(|error| error.to_string())?;
+        if active_id
+            .as_ref()
+            .is_some_and(|id| removed_ids.contains(id))
+        {
+            *active_id = None;
+        }
     }
-    drop(active_id);
 
     let mut result = DeleteRollsResult {
         removed_rolls: 0,
@@ -5153,7 +5545,12 @@ pub async fn delete_images(
                 Some(normalize_path(&item.file_path))
             }))
             .collect::<HashSet<_>>();
-        delete_source_paths(source_paths, &protected_paths, &mut result);
+        result = tokio::task::spawn_blocking(move || {
+            delete_source_paths(source_paths, &protected_paths, &mut result);
+            result
+        })
+        .await
+        .map_err(|error| format!("Source deletion worker failed: {error}"))?;
     }
     Ok(result)
 }
@@ -5171,8 +5568,8 @@ pub async fn update_roll_metadata(
         return Err("Film stock is required".to_string());
     }
     let (updated_roll, updated_rolls) = {
-        let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
-        let mut updated = rolls.clone();
+        let _mutation = state.roll_mutation.lock().await;
+        let mut updated = read_lock(&state.rolls).clone();
         let roll = updated
             .iter_mut()
             .find(|roll| roll.roll_id == roll_id)
@@ -5182,11 +5579,11 @@ pub async fn update_roll_metadata(
         roll.film_stock = film_stock;
         roll.camera = camera;
         let updated_roll = roll.clone();
-        persist_roll_snapshot(&updated)?;
-        *rolls = updated.clone();
+        let updated = persist_roll_snapshot_async(updated).await?;
+        *write_lock(&state.rolls) = updated.clone();
         (updated_roll, updated)
     };
-    update_rolls_compatibility_mirror(&updated_rolls);
+    let _ = updated_rolls;
     Ok(updated_roll)
 }
 
@@ -5220,9 +5617,9 @@ pub async fn append_to_roll(
     state: State<'_, EngineState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let updated_rolls = {
-        let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
-        let mut updated = rolls.clone();
+    {
+        let _mutation = state.roll_mutation.lock().await;
+        let mut updated = read_lock(&state.rolls).clone();
         let roll = updated
             .iter_mut()
             .find(|roll| roll.roll_id == roll_id)
@@ -5236,11 +5633,9 @@ pub async fn append_to_roll(
                 roll.image_paths.push(path.clone());
             }
         }
-        persist_roll_snapshot(&updated)?;
-        *rolls = updated.clone();
-        updated
-    };
-    update_rolls_compatibility_mirror(&updated_rolls);
+        let updated = persist_roll_snapshot_async(updated).await?;
+        *write_lock(&state.rolls) = updated;
+    }
     crate::commands::import_images(
         paths,
         Some(false),
@@ -5278,27 +5673,41 @@ pub async fn locate_missing_file(
             let item = item_arc.read().map_err(|error| error.to_string())?;
             (item.file_path.clone(), item.roll_id.clone(), item.is_loose)
         };
-
-        if is_loose {
-            let mut item = item_arc.write().map_err(|error| error.to_string())?;
+        let _mutation = state.roll_mutation.lock().await;
+        {
+            let item = read_lock(&item_arc);
             if item.file_path != old_path || item.roll_id != roll_id {
                 return Err("Image changed while it was being relocated".to_string());
             }
-            let connection = persistence::open_connection()
-                .map_err(|error| format!("Failed to open state database: {error}"))?;
-            let updated =
-                persistence::relocate_image_state(&connection, &roll_id, &old_path, &new_path)
-                    .map_err(|error| format!("Failed to relocate image state: {error}"))?;
-            if updated != 1 {
-                return Err("Persisted loose image state was not found".to_string());
-            }
-            item.file_path = new_path.clone();
+        }
+
+        if is_loose {
+            let db_roll_id = roll_id.clone();
+            let db_old_path = old_path.clone();
+            let db_new_path = new_path.clone();
+            tokio::task::spawn_blocking(move || {
+                let connection = persistence::open_connection()
+                    .map_err(|error| format!("Failed to open state database: {error}"))?;
+                let updated = persistence::relocate_image_state(
+                    &connection,
+                    &db_roll_id,
+                    &db_old_path,
+                    &db_new_path,
+                )
+                .map_err(|error| format!("Failed to relocate image state: {error}"))?;
+                if updated != 1 {
+                    return Err("Persisted loose image state was not found".to_string());
+                }
+                Ok::<_, String>(())
+            })
+            .await
+            .map_err(|error| format!("File relocation worker failed: {error}"))??;
+            write_lock(&item_arc).file_path = new_path.clone();
             return Ok(new_path);
         }
 
         let updated_rolls = {
-            let mut rolls = state.rolls.write().map_err(|error| error.to_string())?;
-            let mut updated = rolls.clone();
+            let mut updated = read_lock(&state.rolls).clone();
             let roll = updated
                 .iter_mut()
                 .find(|roll| roll.roll_id == roll_id)
@@ -5310,25 +5719,31 @@ pub async fn locate_missing_file(
                 .ok_or_else(|| format!("Image is not registered in roll {roll_id}"))?;
             roll.image_paths[position] = new_path.clone();
 
-            let mut item = item_arc.write().map_err(|error| error.to_string())?;
-            if item.file_path != old_path || item.roll_id != roll_id {
-                return Err("Image changed while it was being relocated".to_string());
-            }
-            let mut connection = persistence::open_connection()
-                .map_err(|error| format!("Failed to open state database: {error}"))?;
-            persistence::relocate_roll_image(
-                &mut connection,
-                &roll_id,
-                &old_path,
-                &new_path,
-                &updated,
-            )
-            .map_err(|error| format!("Failed to relocate image state: {error}"))?;
-            item.file_path = new_path.clone();
-            *rolls = updated.clone();
+            let db_roll_id = roll_id.clone();
+            let db_old_path = old_path.clone();
+            let db_new_path = new_path.clone();
+            let db_rolls = updated.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut connection = persistence::open_connection()
+                    .map_err(|error| format!("Failed to open state database: {error}"))?;
+                persistence::relocate_roll_image(
+                    &mut connection,
+                    &db_roll_id,
+                    &db_old_path,
+                    &db_new_path,
+                    &db_rolls,
+                )
+                .map_err(|error| format!("Failed to relocate image state: {error}"))?;
+                update_rolls_compatibility_mirror(&db_rolls);
+                Ok::<_, String>(())
+            })
+            .await
+            .map_err(|error| format!("File relocation worker failed: {error}"))??;
+            write_lock(&item_arc).file_path = new_path.clone();
+            *write_lock(&state.rolls) = updated.clone();
             updated
         };
-        update_rolls_compatibility_mirror(&updated_rolls);
+        let _ = updated_rolls;
         Ok(new_path)
     } else {
         Err("Cancelled".into())
@@ -5382,6 +5797,81 @@ pub fn save_image_state_to_db(item: &crate::app_state::FilmItem) -> Result<(), S
     Ok(())
 }
 
+fn persist_single_image_update(
+    roll_id: &str,
+    file_path: &str,
+    sql: &str,
+    value: impl rusqlite::ToSql,
+) -> Result<(), String> {
+    let connection = persistence::open_connection()
+        .map_err(|error| format!("Failed to open image database: {error}"))?;
+    let changed = connection
+        .execute(
+            sql,
+            rusqlite::params![value, persistence::now_timestamp(), roll_id, file_path],
+        )
+        .map_err(|error| format!("Failed to update image state: {error}"))?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(format!("Persisted image state was not found: {file_path}"))
+    }
+}
+
+fn persist_tuning_parameters(
+    roll_id: &str,
+    file_path: &str,
+    params: &TuningParams,
+) -> Result<(), String> {
+    let serialized = serde_json::to_string(params)
+        .map_err(|error| format!("Failed to serialize tuning parameters: {error}"))?;
+    persist_single_image_update(
+        roll_id,
+        file_path,
+        "UPDATE image_states SET params = ?1, updated_at = ?2 WHERE roll_id = ?3 AND file_path = ?4",
+        serialized,
+    )
+}
+
+fn persist_geometry(roll_id: &str, file_path: &str, geom: &GeometryState) -> Result<(), String> {
+    let serialized = serde_json::to_string(geom)
+        .map_err(|error| format!("Failed to serialize geometry: {error}"))?;
+    persist_single_image_update(
+        roll_id,
+        file_path,
+        "UPDATE image_states SET geom = ?1, updated_at = ?2 WHERE roll_id = ?3 AND file_path = ?4",
+        serialized,
+    )
+}
+
+fn persist_base_color(
+    roll_id: &str,
+    file_path: &str,
+    base_color: &BaseColor,
+) -> Result<(), String> {
+    let serialized = serde_json::to_string(base_color)
+        .map_err(|error| format!("Failed to serialize base color: {error}"))?;
+    persist_single_image_update(
+        roll_id,
+        file_path,
+        "UPDATE image_states SET base_color = ?1, updated_at = ?2 WHERE roll_id = ?3 AND file_path = ?4",
+        serialized,
+    )
+}
+
+fn persist_rendered_thumbnail(
+    roll_id: &str,
+    file_path: &str,
+    thumbnail: &str,
+) -> Result<(), String> {
+    persist_single_image_update(
+        roll_id,
+        file_path,
+        "UPDATE image_states SET rendered_thumb_base64 = ?1, thumbnail_base64 = ?1, updated_at = ?2 WHERE roll_id = ?3 AND file_path = ?4",
+        thumbnail,
+    )
+}
+
 type PersistedImageState = (
     String,
     crate::app_state::TuningParams,
@@ -5421,7 +5911,12 @@ fn load_image_state_from_connection(
         let base_color = serde_json::from_str(&base_color_str)
             .map_err(|error| format!("Invalid persisted base color: {error}"))?;
 
-        return Ok(Some((thumb, params, geom, base_color)));
+        return Ok(Some((
+            thumb,
+            params,
+            normalize_persisted_geometry(geom),
+            base_color,
+        )));
     }
     Ok(None)
 }
@@ -5462,13 +5957,18 @@ fn load_all_image_states_from_connection(
             ))
         })
         .map_err(|error| format!("Failed to query image-state restore: {error}"))?;
-    let mut order = state
-        .item_order
-        .write()
-        .map_err(|error| error.to_string())?;
-    for row in rows.flatten() {
+    let mut restored = Vec::new();
+    for row in rows {
+        let row = row.map_err(|error| format!("Failed to read image-state row: {error}"))?;
         let (roll_id, file_path, embedded_thumb, rendered_thumb, params, geom, base_color) = row;
         let img_id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
+        let params = serde_json::from_str(&params)
+            .map_err(|error| format!("Invalid tuning parameters for {file_path}: {error}"))?;
+        let geom = serde_json::from_str(&geom)
+            .map(normalize_persisted_geometry)
+            .map_err(|error| format!("Invalid geometry for {file_path}: {error}"))?;
+        let base_color = serde_json::from_str(&base_color)
+            .map_err(|error| format!("Invalid base color for {file_path}: {error}"))?;
         let item = FilmItem {
             id: img_id.clone(),
             is_loose: roll_id == "LOOSE_DEFAULT",
@@ -5479,13 +5979,20 @@ fn load_all_image_states_from_connection(
             original_proxy: None,
             proxy_image: None,
             pristine_proxy: None,
-            base_color: serde_json::from_str(&base_color).unwrap_or_default(),
-            params: serde_json::from_str(&params).unwrap_or_default(),
-            geom: serde_json::from_str(&geom).unwrap_or_default(),
+            base_color,
+            params,
+            geom,
             // Restored records belong to Rolls. A working Library is created
             // only by a new import, Promote, or Continue Editing.
             in_library: false,
         };
+        restored.push((img_id, item));
+    }
+    let mut order = state
+        .item_order
+        .write()
+        .map_err(|error| error.to_string())?;
+    for (img_id, item) in restored {
         state
             .items
             .insert(img_id.clone(), Arc::new(RwLock::new(item)));
@@ -5494,15 +6001,10 @@ fn load_all_image_states_from_connection(
     Ok(())
 }
 
-pub fn load_all_image_states(state: &crate::app_state::EngineState) {
-    match persistence::open_connection() {
-        Ok(connection) => {
-            if let Err(error) = load_all_image_states_from_connection(state, &connection) {
-                eprintln!("[Image State Restore] {error}");
-            }
-        }
-        Err(error) => eprintln!("[Image State Restore] Failed to open database: {error}"),
-    }
+pub fn load_all_image_states(state: &crate::app_state::EngineState) -> Result<(), String> {
+    let connection = persistence::open_connection()
+        .map_err(|error| format!("Failed to open image-state database: {error}"))?;
+    load_all_image_states_from_connection(state, &connection)
 }
 
 fn migrate_legacy_loose_roll(
@@ -5569,57 +6071,73 @@ pub fn load_all_rolls(state: &crate::app_state::EngineState) -> Result<(), Strin
 }
 
 #[tauri::command]
-pub fn get_user_cameras() -> Result<Vec<String>, String> {
-    let conn = persistence::open_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare("SELECT name FROM user_cameras ORDER BY name")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
-    let mut cameras = Vec::new();
-    for name_result in rows {
-        cameras.push(name_result.map_err(|e| e.to_string())?);
-    }
-    Ok(cameras)
+pub async fn get_user_cameras() -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(|| {
+        let conn = persistence::open_connection().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT name FROM user_cameras ORDER BY name")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        let mut cameras = Vec::new();
+        for name_result in rows {
+            cameras.push(name_result.map_err(|e| e.to_string())?);
+        }
+        Ok(cameras)
+    })
+    .await
+    .map_err(|error| format!("Camera database worker failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn get_user_films() -> Result<Vec<String>, String> {
-    let conn = persistence::open_connection().map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare("SELECT name FROM user_films ORDER BY name")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
-    let mut films = Vec::new();
-    for name_result in rows {
-        films.push(name_result.map_err(|e| e.to_string())?);
-    }
-    Ok(films)
+pub async fn get_user_films() -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(|| {
+        let conn = persistence::open_connection().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT name FROM user_films ORDER BY name")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| row.get(0))
+            .map_err(|e| e.to_string())?;
+        let mut films = Vec::new();
+        for name_result in rows {
+            films.push(name_result.map_err(|e| e.to_string())?);
+        }
+        Ok(films)
+    })
+    .await
+    .map_err(|error| format!("Film database worker failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn add_user_camera(camera: String) -> Result<(), String> {
-    let conn = persistence::open_connection().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT OR IGNORE INTO user_cameras (name) VALUES (?1)",
-        rusqlite::params![camera],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+pub async fn add_user_camera(camera: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let conn = persistence::open_connection().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR IGNORE INTO user_cameras (name) VALUES (?1)",
+            rusqlite::params![camera],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Camera database worker failed: {error}"))?
 }
 
 #[tauri::command]
-pub fn add_user_film(film: String) -> Result<(), String> {
-    let conn = persistence::open_connection().map_err(|e| e.to_string())?;
-    conn.execute(
-        "INSERT OR IGNORE INTO user_films (name) VALUES (?1)",
-        rusqlite::params![film],
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(())
+pub async fn add_user_film(film: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || {
+        let conn = persistence::open_connection().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT OR IGNORE INTO user_films (name) VALUES (?1)",
+            rusqlite::params![film],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Film database worker failed: {error}"))?
 }
 
 pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
@@ -5643,7 +6161,7 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
         params.film_mode.clone(),
     );
 
-    let pristine = item.pristine_proxy.as_ref().unwrap();
+    let pristine = item.pristine_proxy.as_ref()?;
     let (width, height) = pristine.dimensions();
     let mut thumb_8bit = RgbImage::new(width, height);
 
@@ -5770,9 +6288,10 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 #[cfg(test)]
 mod import_contract_tests {
     use super::{
-        decode_image_buffer, decode_import_preview_base64, decode_scanner_fff_tiff_page,
-        is_better_preview_edge, is_lightweight_direct_preview, is_raw_extension, is_tiff_extension,
-        linearize_scanner_fff, persist_import_batch, render_shader_equivalent,
+        compute_auto_base, compute_auto_color_limits, decode_image_buffer,
+        decode_import_preview_base64, decode_scanner_fff_tiff_page, is_better_preview_edge,
+        is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
+        is_tiff_extension, linearize_scanner_fff, persist_import_batch, render_shader_equivalent,
         rgb16_image_from_bytes, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
     };
     use crate::app_state::{BaseColor, FilmItem, GeometryState, TuningParams};
@@ -5857,6 +6376,53 @@ mod import_contract_tests {
         }
         assert!(is_tiff_extension("scan.tif"));
         assert!(is_tiff_extension("scan.TIFF"));
+    }
+
+    #[test]
+    fn noritsu_tiff_metadata_enables_linked_auto_limits() {
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-noritsu-tiff-test-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+
+        let make = b"NORITSU KOKI\0";
+        let value_offset = 8 + 2 + 12 + 4;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"II");
+        bytes.extend_from_slice(&42u16.to_le_bytes());
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&271u16.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&(make.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&(value_offset as u32).to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(make);
+
+        let noritsu_path = root.join("noritsu.tiff");
+        std::fs::write(&noritsu_path, &bytes).unwrap();
+        assert!(is_noritsu_rendered_image(
+            noritsu_path.to_string_lossy().as_ref()
+        ));
+
+        let generic_path = root.join("generic.tiff");
+        let generic = bytes
+            .windows(make.len())
+            .position(|window| window == make)
+            .map(|offset| {
+                let mut generic = bytes.clone();
+                generic[offset..offset + make.len()].copy_from_slice(b"GENERIC TIFF\0");
+                generic
+            })
+            .unwrap();
+        std::fs::write(&generic_path, generic).unwrap();
+        assert!(!is_noritsu_rendered_image(
+            generic_path.to_string_lossy().as_ref()
+        ));
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -5969,9 +6535,46 @@ mod import_contract_tests {
         if !path.exists() {
             return;
         }
+        assert!(is_noritsu_rendered_image(path.to_string_lossy().as_ref()));
         let decoded =
             decode_image_buffer(path.to_string_lossy().as_ref(), DecodeMode::DevelopProxy)
                 .expect("JPEG fixture should decode to a linear proxy");
+        let base = compute_auto_base(&decoded);
+        let limits = compute_auto_color_limits(
+            &decoded,
+            &GeometryState::default(),
+            &base,
+            crate::app_state::FilmMode::Color,
+            true,
+        )
+        .expect("Noritsu fixture should produce density limits");
+        assert_ne!(limits.d_min[0], limits.d_min[2]);
+        assert_ne!(limits.d_max[0], limits.d_max[2]);
+        println!(
+            "Noritsu base {:?}, D-Min {:?}, D-Max {:?}",
+            [base.base_r, base.base_g, base.base_b],
+            limits.d_min,
+            limits.d_max
+        );
+        if std::env::var_os("NEXFILM_WRITE_NORITSU_DEBUG").is_some() {
+            let mut params = TuningParams::default();
+            params.density.d_min = limits.d_min;
+            params.density.d_max = limits.d_max;
+            let preview = image::imageops::resize(
+                &decoded,
+                800,
+                (800.0 * decoded.height() as f32 / decoded.width() as f32) as u32,
+                image::imageops::FilterType::Triangle,
+            );
+            let rendered =
+                render_shader_equivalent(&preview, &params, &GeometryState::default(), &base, None);
+            rendered
+                .save(
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("target/noritsu-auto-invert-debug.png"),
+                )
+                .unwrap();
+        }
         let mut geom = GeometryState::default();
         geom.crop_rect.x = 0.0;
         geom.crop_rect.y = 0.0;
@@ -6289,11 +6892,11 @@ mod library_management_contract_tests {
 #[cfg(test)]
 mod export_contract_tests {
     use super::{
-        build_response_buffer_from_proxy, compute_auto_color_limits, density_histogram_extremes,
-        embedded_input_profile, encode_export_buffer, export_dimensions,
-        gaussian_blur_rgb16_parallel, render_shader_equivalent, reserve_export_path,
-        sanitize_export_file_stem, validate_export_color_space, write_export_image,
-        write_export_image_with_profile, ExportConflictPolicy, ExportFormat,
+        build_response_buffer_from_proxy, co_sited_density_extremes, compute_auto_color_limits,
+        density_histogram_extremes, embedded_input_profile, encode_export_buffer,
+        export_dimensions, gaussian_blur_rgb16_parallel, render_shader_equivalent,
+        reserve_export_path, sanitize_export_file_stem, validate_export_color_space,
+        write_export_image, write_export_image_with_profile, ExportConflictPolicy, ExportFormat,
     };
     use crate::app_state::{BaseColor, FilmMode, GeometryState, TuningParams};
     use crate::color_science::ColorSpaceId;
@@ -6405,6 +7008,7 @@ mod export_contract_tests {
             &GeometryState::default(),
             &white_base(),
             FilmMode::BW,
+            false,
         )
         .unwrap();
         assert_eq!(limits.d_min[0], limits.d_min[1]);
@@ -6412,6 +7016,42 @@ mod export_contract_tests {
         assert_eq!(limits.d_max[0], limits.d_max[1]);
         assert_eq!(limits.d_max[1], limits.d_max[2]);
         assert!(limits.d_min[0] < limits.d_max[0]);
+    }
+
+    #[test]
+    fn linked_scanner_limits_preserve_co_sited_channel_bounds() {
+        let mut proxy = ImageBuffer::new(64, 64);
+        for (index, pixel) in proxy.pixels_mut().enumerate() {
+            let x = (index % 64) as u16;
+            *pixel = Rgb([5_000 + x * 500, 12_000 + x * 650, 25_000 + x * 400]);
+        }
+        let limits = compute_auto_color_limits(
+            &proxy,
+            &GeometryState::default(),
+            &white_base(),
+            FilmMode::Color,
+            true,
+        )
+        .unwrap();
+        assert_ne!(limits.d_min[0], limits.d_min[1]);
+        assert_ne!(limits.d_max[1], limits.d_max[2]);
+        for channel in 0..3 {
+            assert!(limits.d_min[channel] < limits.d_max[channel]);
+        }
+    }
+
+    #[test]
+    fn co_sited_limits_keep_scanner_channel_slopes() {
+        let samples = (0..100)
+            .map(|index| {
+                let value = index as f32 / 100.0;
+                [0.1 + value, 0.2 + value * 2.0, 0.3 + value * 3.0]
+            })
+            .collect();
+        let (low, high) = co_sited_density_extremes(samples).unwrap();
+        let ranges = [high[0] - low[0], high[1] - low[1], high[2] - low[2]];
+        assert!((ranges[1] / ranges[0] - 2.0).abs() < 1e-5);
+        assert!((ranges[2] / ranges[0] - 3.0).abs() < 1e-5);
     }
 
     #[test]

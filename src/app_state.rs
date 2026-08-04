@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::RwLock;
 
-/// Hard limit: at most 8 high-res proxy images kept in memory.
+/// Hard limit: at most 4 high-res proxy images kept in memory.
 /// Exceeding this triggers physical drop of the oldest proxy data.
-pub const MAX_PROXY_CACHE: usize = 8;
+pub const MAX_PROXY_CACHE: usize = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FilmMode {
@@ -356,6 +356,9 @@ pub struct EngineState {
     pub item_order: RwLock<Vec<String>>,
     pub active_id: RwLock<Option<String>>,
     pub rolls: RwLock<Vec<Roll>>,
+    /// Serializes roll snapshot mutations across async commands and the import
+    /// reconciliation worker without holding the synchronous roll RwLock over I/O.
+    pub roll_mutation: tokio::sync::Mutex<()>,
     /// LRU order of images whose high-res proxy data is loaded in memory.
     /// Front = oldest, back = newest. Capacity enforced at MAX_PROXY_CACHE.
     pub proxy_loaded_order: RwLock<VecDeque<String>>,
@@ -369,6 +372,7 @@ impl EngineState {
             item_order: RwLock::new(Vec::new()),
             active_id: RwLock::new(None),
             rolls: RwLock::new(Vec::new()),
+            roll_mutation: tokio::sync::Mutex::new(()),
             proxy_loaded_order: RwLock::new(VecDeque::new()),
         }
     }

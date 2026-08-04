@@ -46,7 +46,6 @@ enum Transfer {
 
 #[derive(Clone, Copy, Debug)]
 struct Profile {
-    id: ColorSpaceId,
     name: &'static str,
     primaries: [[f64; 2]; 3],
     white: [f64; 2],
@@ -59,56 +58,48 @@ const D65: [f64; 2] = [0.3127, 0.3290];
 
 const PROFILES: [Profile; 8] = [
     Profile {
-        id: ColorSpaceId::SRgb,
         name: "sRGB IEC 61966-2.1",
         primaries: [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06]],
         white: D65,
         transfer: Transfer::SRgb,
     },
     Profile {
-        id: ColorSpaceId::DisplayP3,
         name: "Display P3",
         primaries: [[0.68, 0.32], [0.265, 0.69], [0.15, 0.06]],
         white: D65,
         transfer: Transfer::SRgb,
     },
     Profile {
-        id: ColorSpaceId::AdobeRgb,
         name: "Adobe RGB (1998)",
         primaries: [[0.64, 0.33], [0.21, 0.71], [0.15, 0.06]],
         white: D65,
         transfer: Transfer::AdobeRgb,
     },
     Profile {
-        id: ColorSpaceId::Rec2020,
         name: "ITU-R BT.2020",
         primaries: [[0.708, 0.292], [0.170, 0.797], [0.131, 0.046]],
         white: D65,
         transfer: Transfer::Rec2020,
     },
     Profile {
-        id: ColorSpaceId::ProPhotoRgb,
         name: "ProPhoto RGB (ROMM RGB)",
         primaries: [[0.7347, 0.2653], [0.1596, 0.8404], [0.0366, 0.0001]],
         white: D50,
         transfer: Transfer::ProPhoto,
     },
     Profile {
-        id: ColorSpaceId::ProPhotoRgbD65,
         name: "LibRaw ProPhoto RGB D65",
         primaries: [[0.7347, 0.2653], [0.1596, 0.8404], [0.0366, 0.0001]],
         white: D65,
         transfer: Transfer::Linear,
     },
     Profile {
-        id: ColorSpaceId::Aces2065,
         name: "ACES2065-1 (AP0)",
         primaries: [[0.7347, 0.2653], [0.0, 1.0], [0.0001, -0.0770]],
         white: D60,
         transfer: Transfer::Linear,
     },
     Profile {
-        id: ColorSpaceId::AcesCg,
         name: "ACEScg (AP1)",
         primaries: [[0.713, 0.293], [0.165, 0.830], [0.128, 0.044]],
         white: D60,
@@ -117,11 +108,16 @@ const PROFILES: [Profile; 8] = [
 ];
 
 fn profile(id: ColorSpaceId) -> Profile {
-    PROFILES
-        .iter()
-        .copied()
-        .find(|profile| profile.id == id)
-        .expect("all ColorSpaceId variants have a profile")
+    PROFILES[match id {
+        ColorSpaceId::SRgb => 0,
+        ColorSpaceId::DisplayP3 => 1,
+        ColorSpaceId::AdobeRgb => 2,
+        ColorSpaceId::Rec2020 => 3,
+        ColorSpaceId::ProPhotoRgb => 4,
+        ColorSpaceId::ProPhotoRgbD65 => 5,
+        ColorSpaceId::Aces2065 => 6,
+        ColorSpaceId::AcesCg => 7,
+    }]
 }
 
 pub fn parse_working_space(value: &str) -> Option<WorkingSpaceId> {

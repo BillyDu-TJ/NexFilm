@@ -5,10 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="app.title">NexFilm - Film Workspace</title>
     <meta name="theme-color" content="#ffffff">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;600;700&display=swap">
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="tailwind.css">
+    <link rel="stylesheet" href="runtime-utilities.css">
     <link rel="stylesheet" href="style.css">
     <link rel="stylesheet" href="reference.css">
     <script>
@@ -43,8 +41,8 @@
     <nav id="native-menu-bar" aria-label="Application menu" class="shrink-0 bg-[#121214] border-b border-[#28282c] flex items-center px-4 text-[12px] text-zinc-400 gap-4 z-50 relative select-none">
         <span class="menu-brand font-bold text-zinc-200">NexFilm</span>
         <div class="menu-group hover:text-zinc-100 px-2 py-1 relative group">
-            <button type="button" class="menu-trigger" data-i18n="menu.settingsShort">setting</button>
-            <div class="absolute left-0 top-full mt-0 hidden group-hover:block bg-[#1C1C1E] border border-[#28282c] shadow-lg rounded w-48 py-1 z-50">
+            <button type="button" class="menu-trigger" data-i18n="menu.settingsShort" aria-haspopup="menu" aria-expanded="false" aria-controls="menu-settings-popover">setting</button>
+            <div id="menu-settings-popover" role="menu" class="menu-popover absolute left-0 top-full mt-0 hidden group-hover:block bg-[#1C1C1E] border border-[#28282c] shadow-lg rounded w-48 py-1 z-50">
                 <button type="button" class="menu-item px-4 py-1.5 hover:bg-zinc-800 flex justify-between items-center" id="menu-lang-toggle">
                     <span data-i18n="menu.language">Language: EN</span>
                 </button>
@@ -54,8 +52,21 @@
                 </button>
             </div>
         </div>
-        <button type="button" class="menu-trigger px-2 py-1" data-i18n="menu.view">View</button>
-        <button type="button" class="menu-trigger px-2 py-1" data-i18n="menu.help">Help</button>
+        <div class="menu-group hover:text-zinc-100 px-2 py-1 relative group">
+            <button type="button" class="menu-trigger" data-i18n="menu.view" aria-haspopup="menu" aria-expanded="false" aria-controls="menu-view-popover">View</button>
+            <div id="menu-view-popover" role="menu" class="menu-popover absolute left-0 top-full mt-0 hidden group-hover:block bg-[#1C1C1E] border border-[#28282c] shadow-lg rounded w-40 py-1 z-50">
+                <button type="button" class="menu-item" id="menu-view-library" data-i18n="nav.library">Library</button>
+                <button type="button" class="menu-item" id="menu-view-develop" data-i18n="nav.develop">Develop</button>
+                <button type="button" class="menu-item" id="menu-view-rolls" data-i18n="nav.rolls">Rolls</button>
+                <button type="button" class="menu-item" id="menu-view-reset" data-i18n="menu.resetView">Reset View</button>
+            </div>
+        </div>
+        <div class="menu-group hover:text-zinc-100 px-2 py-1 relative group">
+            <button type="button" class="menu-trigger" data-i18n="menu.help" aria-haspopup="menu" aria-expanded="false" aria-controls="menu-help-popover">Help</button>
+            <div id="menu-help-popover" role="menu" class="menu-popover absolute left-0 top-full mt-0 hidden group-hover:block bg-[#1C1C1E] border border-[#28282c] shadow-lg rounded w-40 py-1 z-50">
+                <button type="button" class="menu-item" id="menu-about" data-i18n="menu.about">About NexFilm</button>
+            </div>
+        </div>
     </nav>
 
     <!-- Global Header -->
@@ -64,7 +75,7 @@
             <div class="text-[14px] font-black tracking-[0.25em] text-zinc-200">
                 <img class="brand-mark" src="assets/design-reference/nexfilm-logo.svg" alt="" aria-hidden="true">
                 <span class="brand-name">NEXFILM</span>
-                <span class="text-zinc-500 font-normal">v2.0</span>
+                <span class="text-zinc-500 font-normal">v1.0</span>
             </div>
             <div class="h-6 w-px bg-zinc-700"></div>
             <nav class="flex h-full gap-2">
@@ -1196,6 +1207,7 @@
     <script src="density-math.js"></script>
     <script src="histogram-math.js"></script>
     <script src="color-science.js"></script>
+    <script src="selection.js"></script>
     <script src="settings-copy.js"></script>
     <script src="export-settings.js"></script>
     <script src="i18n.js"></script>
