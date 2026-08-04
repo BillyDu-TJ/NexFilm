@@ -19,9 +19,12 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 15
     env:
+      CC: clang
       CXX: clang++
+      CFLAGS: -stdlib=libc++
       CXXFLAGS: -stdlib=libc++
-      RUSTFLAGS: -C link-arg=-lc++
+      LDFLAGS: -stdlib=libc++
+      RUSTFLAGS: -C link-arg=-stdlib=libc++
 
     steps:
       - name: Check out repository
