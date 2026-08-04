@@ -18,6 +18,10 @@ jobs:
     name: Verify source code
     runs-on: macos-14
     timeout-minutes: 15
+    env:
+      CXX: clang++
+      CXXFLAGS: -stdlib=libc++
+      RUSTFLAGS: -C link-arg=-lc++
 
     steps:
       - name: Check out repository
