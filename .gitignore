@@ -31,3 +31,5 @@ test_picture/
 *.db-shm
 *.db-wal
 *.svg
+!ui/assets/design-reference/nexfilm-logo.svg
+!ui/assets/design-reference/nexfilm-logo-dark.svg

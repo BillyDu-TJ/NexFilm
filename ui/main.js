@@ -256,6 +256,7 @@ const histogramPixels = new Uint8Array(HIST_W * HIST_H * 4);
 let histogramReadbackReady = false;
 let lastHistogramReadAt = 0;
 let sliderDragActive = false;
+let activeSliderEnd = null;
 
 // Library Multi-Selection State
 let allLibraryItems = [];
@@ -2507,22 +2508,20 @@ function scheduleBackendSync(key) {
 for (const key in sliders) {
     const s = sliders[key];
     const endSliderInteraction = () => {
-        if (!sliderDragActive) return;
+        if (activeSliderEnd !== endSliderInteraction) return;
+        activeSliderEnd = null;
         sliderDragActive = false;
         histogramReadbackReady = false;
         requestRender();
         scheduleInstantThumbnailUpdate();
     };
-    s.el.addEventListener('pointerdown', (event) => {
+    s.el.addEventListener('pointerdown', () => {
+        activeSliderEnd = endSliderInteraction;
         sliderDragActive = true;
         pushUndoState();
-        if (event.currentTarget?.setPointerCapture && event.pointerId != null) {
-            event.currentTarget.setPointerCapture(event.pointerId);
-        }
     });
     s.el.addEventListener('pointerup', endSliderInteraction);
     s.el.addEventListener('pointercancel', endSliderInteraction);
-    s.el.addEventListener('lostpointercapture', endSliderInteraction);
     s.el.addEventListener('input', (e) => {
         s.val.textContent = formatSliderValue(key, e.target.value);
         if (key === 'angle') {
@@ -2539,6 +2538,11 @@ for (const key in sliders) {
         scheduleBackendSync(key);
     });
 }
+
+// Native range inputs keep their own drag handling. Finish the interaction even
+// when the pointer is released outside the input or the window loses capture.
+window.addEventListener('pointerup', () => activeSliderEnd?.());
+window.addEventListener('pointercancel', () => activeSliderEnd?.());
 
 function setupEditableSliderValues() {
     Object.entries(sliders).forEach(([key, { el, val }]) => {

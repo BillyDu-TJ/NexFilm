@@ -64,6 +64,8 @@ jobs:
           node scripts/verify-histogram-contract.cjs
           node scripts/verify-geometry-contract.cjs
           node scripts/verify-ui-startup-order.cjs
+          node scripts/verify-runtime-assets.cjs
+          node scripts/verify-slider-contract.cjs
           node scripts/verify-webgl-shaders.cjs
 
   # 第二步：矩阵并发编译三大平台
