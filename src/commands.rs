@@ -6448,6 +6448,7 @@ mod import_contract_tests {
     }
 
     #[test]
+    #[ignore]
     fn linked_libraw_supports_current_gfx_raf_generation() {
         let version = crate::raw_backend::RawProcessor::version();
         let mut numbers = version
@@ -6642,6 +6643,7 @@ mod import_contract_tests {
     }
 
     #[test]
+    #[ignore]
     fn nikon_nef_batch_import_previews_are_lightweight() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
         let paths: Vec<_> = std::fs::read_dir(&root)

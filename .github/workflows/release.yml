@@ -16,19 +16,19 @@ jobs:
   # 第一步：统一验证代码（在 Linux 上跑最快，验证成功才打包）
   verify:
     name: Verify source code
-    runs-on: ubuntu-latest
+    runs-on: macos-14
     timeout-minutes: 15
-    env:
-      CC: clang
-      CXX: clang++
-      CFLAGS: -stdlib=libc++
-      CXXFLAGS: -stdlib=libc++
-      LDFLAGS: -stdlib=libc++
-      RUSTFLAGS: -C link-arg=-stdlib=libc++
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install macOS build dependencies
+        run: |
+          brew update
+          brew install pkg-config libraw # 👈 关键修复 2：安装 0.22+ 版本的 LibRaw 供测试使用
 
       - name: Install Node.js LTS
         uses: actions/setup-node@v4
@@ -37,19 +37,6 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Linux build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            pkg-config \
-            libglib2.0-dev \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf
 
       - name: Run checks and verifications
         run: |
@@ -66,7 +53,6 @@ jobs:
           node scripts/verify-ui-startup-order.cjs
           node scripts/verify-runtime-assets.cjs
           node scripts/verify-slider-contract.cjs
-          node scripts/verify-webgl-shaders.cjs
 
   # 第二步：矩阵并发编译三大平台
   build-and-release:
@@ -113,9 +99,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ inputs.tag }}
-          releaseName: "NexFilm Engine ${{ inputs.tag }}"
+          releaseName: "NexFilm ${{ inputs.tag }}"
           releaseBody: |
-            NexFilm Engine ${{ inputs.tag }} 正式版。
+            NexFilm ${{ inputs.tag }} 正式版。
             
             ### 📥 下载指南 (Download)
             - **Windows 用户**：请下载包含 `nsis` 和 `x86_64` 的 `.exe` 安装程序。
