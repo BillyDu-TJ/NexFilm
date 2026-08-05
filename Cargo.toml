@@ -20,10 +20,15 @@ base64 = "0.22"
 rfd = "0.14"
 imageproc = "0.23"
 flate2 = "1.1"
-rawlib = "0.7.1"
 dashmap = "6.2.1"
 tauri-plugin-dialog = "2.7.1"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+rawlib = "0.7.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rsraw-sys = "0.1.1"
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }

@@ -863,16 +863,16 @@ fn extract_embedded_preview_base64(path: &str, max_edge: u32) -> Option<String> 
             return encode_preview_jpeg_base64(image, max_edge, 86);
         }
     }
-    let mut processor = rawlib::RawProcessor::new().ok()?;
+    let mut processor = crate::raw_backend::RawProcessor::new().ok()?;
     processor.open_file(path).ok()?;
     processor.unpack_thumb().ok()?;
     let thumb = processor.get_thumbnail().ok()?;
 
-    if thumb.format == rawlib::ImageFormat::Jpeg {
+    if thumb.format == crate::raw_backend::ImageFormat::Jpeg {
         return Some(encode_preview_bytes_base64(&thumb.data, max_edge, 86));
     }
 
-    if thumb.format == rawlib::ImageFormat::Bitmap {
+    if thumb.format == crate::raw_backend::ImageFormat::Bitmap {
         let width = thumb.width as u32;
         let height = thumb.height as u32;
 
@@ -1612,7 +1612,7 @@ fn decode_image_buffer(
     // 16-bit output, camera white balance and matrix, linear gamma, fixed
     // brightness, and fixed linear-sRGB density-capture coordinates. Black and
     // white levels are applied by LibRaw before this buffer.
-    let options = rawlib::DecodeOptions {
+    let options = crate::raw_backend::DecodeOptions {
         half_size: mode == DecodeMode::DevelopProxy,
         demosaic_quality: 3,
         output_bps: 16,
@@ -1621,11 +1621,11 @@ fn decode_image_buffer(
         linear_gamma: true,
         use_camera_wb: true,
     };
-    let decoded =
-        rawlib::RawProcessor::extract_image_with_options(path, &options).map_err(|error| {
+    let decoded = crate::raw_backend::RawProcessor::extract_image_with_options(path, &options)
+        .map_err(|error| {
             format!(
                 "LibRaw {} cannot decode {path}: {error}",
-                rawlib::RawProcessor::version()
+                crate::raw_backend::RawProcessor::version()
             )
         })?;
 
@@ -6449,7 +6449,7 @@ mod import_contract_tests {
 
     #[test]
     fn linked_libraw_supports_current_gfx_raf_generation() {
-        let version = rawlib::RawProcessor::version();
+        let version = crate::raw_backend::RawProcessor::version();
         let mut numbers = version
             .split(['.', '-'])
             .filter_map(|part| part.parse::<u32>().ok());

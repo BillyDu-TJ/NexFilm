@@ -120,6 +120,18 @@
         };
     }
 
+    function needsFilmAreaConfirmation(geom) {
+        return !geom || geom.calibration_confirmed !== true;
+    }
+
+    function getFilmAreaCalibrationDraft(geom) {
+        const fullFrame = [[0, 0], [1, 0], [1, 1], [0, 1]];
+        if (needsFilmAreaConfirmation(geom) || !isValidCalibrationQuad(geom.calibration_points)) {
+            return fullFrame;
+        }
+        return geom.calibration_points.map(point => [Number(point[0]), Number(point[1])]);
+    }
+
     function mapPerspectivePoint(point, geom, scaleOverride) {
         const state = normalizeGeometryState(geom);
         const scale = Math.max(0.5, Math.min(3, Number(scaleOverride) || state.perspective_scale));
@@ -401,6 +413,8 @@
 
     return {
         normalizeGeometryState,
+        needsFilmAreaConfirmation,
+        getFilmAreaCalibrationDraft,
         mapPerspectivePoint,
         getConstrainedPerspectiveScale,
         getOrientedDimensions,

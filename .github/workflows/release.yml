@@ -16,7 +16,7 @@ jobs:
   # 第一步：统一验证代码（在 Linux 上跑最快，验证成功才打包）
   verify:
     name: Verify source code
-    runs-on: macos-14
+    runs-on: ubuntu-latest
     timeout-minutes: 15
 
     steps:
@@ -30,6 +30,19 @@ jobs:
 
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            pkg-config \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
       - name: Run checks and verifications
         run: |
@@ -62,12 +75,12 @@ jobs:
             args: --bundles nsis
           
           - name: macOS Apple Silicon (M-Series)
-            os: macos-14 # GitHub 的 macos-14 是原生的 ARM64 机器，编译极快
+            os: macos-15
             rust_target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin --bundles dmg
             
           - name: macOS Intel (x86)
-            os: macos-13 # GitHub 的 macos-13 是原生的 Intel 机器
+            os: macos-15-intel
             rust_target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin --bundles dmg
 
@@ -85,12 +98,8 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
-      # 如果你在 Tauri 前端用了 NPM/Yarn 依赖，请取消下面两行的注释
-      # - name: Install Frontend Dependencies
-      #   run: npm install
-
       - name: Build Installer and Publish Release
-        uses: tauri-apps/tauri-action@v0 # 注意这里改回 v0，完美支持 Tauri v2
+        uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:

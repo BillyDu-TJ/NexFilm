@@ -8,6 +8,7 @@ pub mod geometry;
 pub mod io_processor;
 pub mod persistence;
 pub mod pipeline;
+pub(crate) mod raw_backend;
 
 #[cfg(test)]
 mod tests {

@@ -29,6 +29,19 @@ assert.deepEqual(geometry.resolveCalibrationRenderPoints(square, false), square)
 
 assert.deepEqual(geometry.normalizeGeometryState({}).crop_rect, { x: 0, y: 0, width: 1, height: 1 });
 assert.equal(geometry.normalizeGeometryState({}).perspective_scale, 1);
+assert.equal(geometry.needsFilmAreaConfirmation({ calibration_confirmed: false }), true);
+assert.equal(geometry.needsFilmAreaConfirmation({ calibration_confirmed: true }), false);
+assert.equal(geometry.needsFilmAreaConfirmation({}), true);
+assert.deepEqual(
+    geometry.getFilmAreaCalibrationDraft({ calibration_confirmed: false, calibration_points: square }),
+    [[0, 0], [1, 0], [1, 1], [0, 1]],
+    'first-time film-area setup must default to the full frame'
+);
+assert.deepEqual(
+    geometry.getFilmAreaCalibrationDraft({ calibration_confirmed: true, calibration_points: square }),
+    square,
+    'manual recalibration must start from the saved film area'
+);
 const neutralPerspective = geometry.mapPerspectivePoint([0.2, 0.8], {});
 assert.ok(Math.abs(neutralPerspective[0] - 0.2) < 1e-12);
 assert.ok(Math.abs(neutralPerspective[1] - 0.8) < 1e-12);

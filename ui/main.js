@@ -3518,11 +3518,7 @@ function setImageElementThumbnail(img, thumbnail) {
 }
 
 async function selectImage(id) {
-    if (activeId === id && hasProcessedActiveImage && !isCalibrationMode) {
-        enterCalibrationMode();
-        btnAutoColor.disabled = true;
-        return;
-    }
+    if (activeId === id) return;
     if (activeId) {
         try {
             await flushPendingBackendSync();
@@ -3616,7 +3612,8 @@ async function selectImage(id) {
         readyProxyIds.delete(id);
         enableUI();
         current_geom = NexFilmGeometry.normalizeGeometryState(state.geom);
-        if (current_geom.calibration_confirmed !== true) {
+        const needsFilmAreaConfirmation = NexFilmGeometry.needsFilmAreaConfirmation(current_geom);
+        if (needsFilmAreaConfirmation) {
             current_geom.calibration_points = null;
         }
         calibrationRevision++;
@@ -3672,11 +3669,14 @@ async function selectImage(id) {
 
         canvasWrapper.style.display = 'block';
         updateCanvasTransform();
-        // Every Develop entry opens the film-area review UI. New or legacy
-        // unconfirmed images start with a full-frame draft; detection remains
-        // opt-in through Auto Area.
-        enterCalibrationMode();
-        btnAutoColor.disabled = true;
+        if (needsFilmAreaConfirmation) {
+            // First-time setup starts at the full frame. Border detection is
+            // only requested by the explicit Auto Area action.
+            enterCalibrationMode();
+            btnAutoColor.disabled = true;
+        } else {
+            btnAutoColor.disabled = !current_geom.calibration_points;
+        }
 
 
     } catch(e) {
@@ -4863,11 +4863,7 @@ function enterCalibrationMode() {
     document.getElementById('calibration-overlay').classList.remove('hidden');
     setDevelopInspectorCalibrationLocked(true);
     btnBatchApply.disabled = true;
-    if (current_geom.calibration_points) {
-        calibrationPoints = JSON.parse(JSON.stringify(current_geom.calibration_points));
-    } else {
-        calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
-    }
+    calibrationPoints = NexFilmGeometry.getFilmAreaCalibrationDraft(current_geom);
     requestAnimationFrame(updateCalibrationPolygon);
     if (activeProxyIsFull) requestRender();
 }
