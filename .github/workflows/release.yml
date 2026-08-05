@@ -22,6 +22,13 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          lfs: ture
+
+      - name: Install macOS build dependencies
+        run: |
+          brew update
+          brew install pkg-config libraw # 👈 关键修复 2：安装 0.22+ 版本的 LibRaw 供测试使用
 
       - name: Install Node.js LTS
         uses: actions/setup-node@v4
