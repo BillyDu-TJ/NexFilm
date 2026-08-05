@@ -18,6 +18,13 @@ jobs:
     name: Verify source code
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      CC: clang
+      CXX: clang++
+      CFLAGS: -stdlib=libc++
+      CXXFLAGS: -stdlib=libc++
+      LDFLAGS: -stdlib=libc++
+      RUSTFLAGS: -C link-arg=-stdlib=libc++
 
     steps:
       - name: Check out repository

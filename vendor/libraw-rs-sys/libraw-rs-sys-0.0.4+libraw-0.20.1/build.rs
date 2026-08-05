@@ -13,6 +13,14 @@ fn main() {
 fn build(out_dir: &Path) {
     let mut libraw = cc::Build::new();
     libraw.cpp(true);
+
+    let target = env::var("TARGET").unwrap_or_default();
+    if target.contains("apple") {
+        libraw.cpp_link_stdlib("c++"); // 强制要求 macOS 链接苹果的 libc++
+    } else if target.contains("linux") {
+        libraw.cpp_link_stdlib("stdc++"); // Linux 保持链接 libstdc++
+    }
+
     libraw.include("libraw/");
 
     libraw.file("libraw/src/decoders/canon_600.cpp");
