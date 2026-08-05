@@ -8,7 +8,11 @@ const convertFileSrc = tauriCore?.convertFileSrc ?? ((path, protocol) =>
     protocol + '://localhost/' + encodeURIComponent(path));
 const i18n = window.NexFilmI18n;
 const i18nText = (key, vars = {}) => i18n?.t(key, vars) ?? key;
-const { getContactSheetLayout, createContactSheetFilename } = window.NexFilmContactSheet;
+const {
+    getContactSheetLayout,
+    draw120EdgeCodes,
+    createContactSheetFilename,
+} = window.NexFilmContactSheet;
 const { getNeutralExposureOffsets } = window.NexFilmDensity;
 const { getHistogramScale, getHistogramY } = window.NexFilmHistogram;
 const { cloneSettingsValue, createCopyPayload, mergeCopyPayload } = window.NexFilmSettingsCopy;
@@ -5635,9 +5639,9 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
         const colWidth = layout.imageWidth;
         const colHeight = layout.imageHeight;
         
-        const borderH = colHeight * 0.18; // 18% for top and bottom borders
+        const borderH = colHeight * layout.borderRatio;
         const rowHeightTotal = colHeight + borderH * 2;
-        const vGap = is120 ? (rowHeightTotal * 0.15) : (rowHeightTotal * 0.08);
+        const vGap = rowHeightTotal * layout.verticalGapRatio;
         const footerHeight = 250;
         
         const canvasH = outerMargin + rows * rowHeightTotal + (rows > 1 ? (rows - 1) * vGap : 0) + footerHeight;
@@ -5748,12 +5752,15 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
                 
             } else {
                 // --- 120 Procedural ---
-                ctx.textAlign = 'center';
-                // Top text
-                ctx.fillText("NEXFILM", x + colWidth/2, y + borderH * 0.35);
-                // Bottom text (bold with arrow)
-                ctx.font = '900 24px "Helvetica Neue Extended", "Helvetica Neue", Arial, sans-serif';
-                ctx.fillText(`\u25C4 ${i+1}`, x + colWidth/2, y + borderH + colHeight + borderH * 0.65);
+                draw120EdgeCodes(ctx, {
+                    x,
+                    y,
+                    imageWidth: colWidth,
+                    imageHeight: colHeight,
+                    borderHeight: borderH,
+                    frameNumber: i + 1,
+                    filmName,
+                });
             }
         }
 
