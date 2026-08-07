@@ -274,6 +274,22 @@ body > header > div:last-child button:hover { background: var(--control) !import
     color: var(--muted) !important;
     background: transparent !important;
 }
+
+#toast-container {
+    top: 102px;
+    right: 16px;
+    width: min(360px, calc(100vw - 32px));
+    max-height: calc(100vh - 118px);
+    overflow: hidden;
+}
+#toast-container > div {
+    width: 100%;
+    min-width: 0;
+}
+#toast-container > div span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
 #btn-delete-rolls:disabled,
 #btn-promote-roll:disabled,
 #btn-edit-roll:disabled,
@@ -532,6 +548,18 @@ body > header > div:last-child button:hover { background: var(--control) !import
 }
 .perspective-panel-footer button:hover:not(:disabled) { background: var(--control-hover); }
 .perspective-panel button:disabled, .perspective-panel input:disabled { cursor: not-allowed; opacity: .38; }
+.crop-aspect-control { display: grid; gap: 8px; }
+.crop-aspect-control label { color: var(--text); font-size: 12px; font-weight: 540; }
+.crop-aspect-control select {
+    width: 100%;
+    min-height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    background: var(--control);
+    color: var(--text);
+    font-size: 12px;
+}
 #view-develop > div:last-child > div:nth-of-type(2) {
     padding: 18px 20px !important;
     background: var(--panel) !important;
@@ -657,6 +685,12 @@ body > header > div:last-child button:hover { background: var(--control) !import
     line-height: 1.5;
     text-align: left;
 }
+.batch-apply-control {
+    display: grid;
+    gap: 7px;
+    margin-top: 10px;
+}
+.batch-apply-control .batch-apply-hint { margin: 0 2px; }
 .calib-edge-handle { pointer-events: stroke; touch-action: none; }
 .calib-edge-horizontal { cursor: ns-resize; }
 .calib-edge-vertical { cursor: ew-resize; }

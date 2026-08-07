@@ -27,7 +27,7 @@ use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::sync::{MutexGuard, RwLockReadGuard, RwLockWriteGuard};
 use tauri::State;
@@ -38,12 +38,110 @@ static EXPORT_TEMP_ID: AtomicUsize = AtomicUsize::new(1);
 static RAYON_INIT: OnceLock<()> = OnceLock::new();
 static EXPORT_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 const EXPORT_TEMP_PREFIX: &str = ".nexfilm-part-";
+const STALE_DEVELOPMENT_OPERATION: &str = "STALE_DEVELOPMENT_OPERATION";
 const CHANNEL_CONTROL_SCALE: f32 = 0.5;
 const LUT_CONTROL_SCALE: f32 = 0.5;
 
 const FALLBACK_THUMB: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mM8c+bMfwAIGwK9t856VAAAAABJRU5ErkJggg==";
 const IMPORT_PREVIEW_LONG_EDGE: u32 = 1024;
 const PROXY_LONG_EDGE: f32 = 2560.0;
+const MAX_PREVIEW_PROXY_LONG_EDGE: u32 = 4096;
+
+fn claim_development_generation(
+    state: &EngineState,
+    id: &str,
+    generation: u64,
+) -> Result<Arc<AtomicU64>, String> {
+    let epoch = state
+        .development_generations
+        .entry(id.to_string())
+        .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+        .clone();
+    loop {
+        let current = epoch.load(Ordering::Acquire);
+        if generation < current {
+            return Err(STALE_DEVELOPMENT_OPERATION.into());
+        }
+        if generation == current
+            || epoch
+                .compare_exchange(current, generation, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+        {
+            return Ok(epoch);
+        }
+    }
+}
+
+fn ensure_current_development_generation(epoch: &AtomicU64, generation: u64) -> Result<(), String> {
+    (epoch.load(Ordering::Acquire) == generation)
+        .then_some(())
+        .ok_or_else(|| STALE_DEVELOPMENT_OPERATION.to_string())
+}
+
+fn forward_indexed_results_in_order<T>(
+    receiver: std::sync::mpsc::Receiver<(usize, T)>,
+    first_index: usize,
+    mut forward: impl FnMut(T) -> bool,
+) {
+    let mut next_index = first_index;
+    let mut completed = std::collections::BTreeMap::new();
+    while let Ok((index, item)) = receiver.recv() {
+        completed.insert(index, item);
+        while let Some(item) = completed.remove(&next_index) {
+            if !forward(item) {
+                return;
+            }
+            next_index += 1;
+        }
+    }
+}
+
+#[cfg(test)]
+mod development_generation_tests {
+    use super::{
+        claim_development_generation, ensure_current_development_generation, EngineState,
+        STALE_DEVELOPMENT_OPERATION,
+    };
+
+    #[test]
+    fn newer_generation_rejects_stale_development_writes() {
+        let state = EngineState::new();
+        let first = claim_development_generation(&state, "frame-a", 1).unwrap();
+        let second = claim_development_generation(&state, "frame-a", 2).unwrap();
+
+        assert_eq!(
+            ensure_current_development_generation(&first, 1).unwrap_err(),
+            STALE_DEVELOPMENT_OPERATION
+        );
+        ensure_current_development_generation(&second, 2).unwrap();
+        assert_eq!(
+            claim_development_generation(&state, "frame-a", 1).unwrap_err(),
+            STALE_DEVELOPMENT_OPERATION
+        );
+    }
+
+    #[test]
+    fn parallel_import_results_are_forwarded_in_selection_order() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        for result in [
+            (3, "frame-4"),
+            (1, "frame-2"),
+            (4, "frame-5"),
+            (2, "frame-3"),
+        ] {
+            sender.send(result).unwrap();
+        }
+        drop(sender);
+
+        let mut forwarded = Vec::new();
+        super::forward_indexed_results_in_order(receiver, 1, |item| {
+            forwarded.push(item);
+            true
+        });
+
+        assert_eq!(forwarded, ["frame-2", "frame-3", "frame-4", "frame-5"]);
+    }
+}
 
 fn resize_preview_image(mut img: image::DynamicImage, max_edge: u32) -> image::DynamicImage {
     let (w, h) = img.dimensions();
@@ -401,6 +499,13 @@ fn is_fff_extension(path: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("fff"))
 }
 
+fn is_dng_extension(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("dng"))
+}
+
 fn is_scanner_fff_tiff(path: &str) -> bool {
     if !is_fff_extension(path) {
         return false;
@@ -494,6 +599,470 @@ fn decode_scanner_fff_tiff_page(
             "Unsupported scanner FFF page format: {unsupported:?}"
         )),
     }
+}
+
+#[derive(Clone, Debug)]
+struct ClassicTiffDirectory {
+    little_endian: bool,
+    width: u32,
+    height: u32,
+    bits_per_sample: Vec<u16>,
+    compression: u16,
+    photometric: u16,
+    strip_offsets: Vec<u64>,
+    samples_per_pixel: u16,
+    rows_per_strip: u32,
+    strip_byte_counts: Vec<u64>,
+    planar_configuration: u16,
+    orientation: u16,
+    icc_profile: Option<Vec<u8>>,
+    sub_ifd_offsets: Vec<u64>,
+}
+
+#[derive(Clone, Debug)]
+struct ClassicTiffEntry {
+    type_code: u16,
+    count: u32,
+    value: [u8; 4],
+}
+
+fn classic_tiff_type_size(type_code: u16) -> Option<usize> {
+    match type_code {
+        1 | 2 | 6 | 7 => Some(1),
+        3 | 8 => Some(2),
+        4 | 9 | 11 => Some(4),
+        5 | 10 | 12 => Some(8),
+        _ => None,
+    }
+}
+
+fn read_classic_tiff_entry_data(
+    file: &mut std::fs::File,
+    file_len: u64,
+    little: bool,
+    entry: &ClassicTiffEntry,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let byte_len = usize::try_from(entry.count)
+        .ok()
+        .and_then(|count| classic_tiff_type_size(entry.type_code)?.checked_mul(count))
+        .ok_or_else(|| "TIFF tag length overflowed".to_string())?;
+    if byte_len > max_bytes {
+        return Err(format!(
+            "TIFF tag exceeds the {max_bytes}-byte metadata limit"
+        ));
+    }
+    if byte_len <= 4 {
+        return Ok(entry.value[..byte_len].to_vec());
+    }
+    let offset = if little {
+        u32::from_le_bytes(entry.value)
+    } else {
+        u32::from_be_bytes(entry.value)
+    } as u64;
+    let end = offset
+        .checked_add(byte_len as u64)
+        .ok_or_else(|| "TIFF tag offset overflowed".to_string())?;
+    if end > file_len {
+        return Err("TIFF tag points outside the file".into());
+    }
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| format!("Cannot seek to TIFF tag: {error}"))?;
+    let mut data = vec![0u8; byte_len];
+    file.read_exact(&mut data)
+        .map_err(|error| format!("Cannot read TIFF tag: {error}"))?;
+    Ok(data)
+}
+
+fn classic_tiff_unsigned_values(
+    file: &mut std::fs::File,
+    file_len: u64,
+    little: bool,
+    entry: &ClassicTiffEntry,
+) -> Result<Vec<u64>, String> {
+    let data = read_classic_tiff_entry_data(file, file_len, little, entry, 16 * 1024 * 1024)?;
+    match entry.type_code {
+        1 | 7 => Ok(data.into_iter().map(u64::from).collect()),
+        3 => Ok(data
+            .chunks_exact(2)
+            .map(|value| {
+                u64::from(if little {
+                    u16::from_le_bytes([value[0], value[1]])
+                } else {
+                    u16::from_be_bytes([value[0], value[1]])
+                })
+            })
+            .collect()),
+        4 => Ok(data
+            .chunks_exact(4)
+            .map(|value| {
+                u64::from(if little {
+                    u32::from_le_bytes(value.try_into().expect("four-byte TIFF value"))
+                } else {
+                    u32::from_be_bytes(value.try_into().expect("four-byte TIFF value"))
+                })
+            })
+            .collect()),
+        _ => Err(format!(
+            "Unsupported TIFF integer tag type {}",
+            entry.type_code
+        )),
+    }
+}
+
+fn read_classic_tiff_directory_impl(
+    path: &str,
+    page: usize,
+    explicit_ifd_offset: Option<u64>,
+) -> Result<ClassicTiffDirectory, String> {
+    let mut file =
+        std::fs::File::open(path).map_err(|error| format!("Cannot open TIFF {path}: {error}"))?;
+    let file_len = file
+        .metadata()
+        .map_err(|error| format!("Cannot inspect TIFF {path}: {error}"))?
+        .len();
+    let mut header = [0u8; 8];
+    file.read_exact(&mut header)
+        .map_err(|error| format!("Cannot read TIFF header: {error}"))?;
+    let little = match &header[..2] {
+        b"II" => true,
+        b"MM" => false,
+        _ => return Err("Unsupported TIFF byte order".into()),
+    };
+    if read_endian_u16(&header, 2, little) != Some(42) {
+        return Err("BigTIFF or invalid TIFF is not supported by the streaming decoder".into());
+    }
+    let mut ifd_offset = explicit_ifd_offset.unwrap_or(u64::from(
+        read_endian_u32(&header, 4, little).ok_or("TIFF header has no IFD offset")?,
+    ));
+    let target_page = if explicit_ifd_offset.is_some() {
+        0
+    } else {
+        page
+    };
+    let mut entries = HashMap::<u16, ClassicTiffEntry>::new();
+
+    for current_page in 0..=target_page {
+        if ifd_offset == 0 || ifd_offset.checked_add(2).is_none_or(|end| end > file_len) {
+            return Err(format!("TIFF page {target_page} does not exist"));
+        }
+        file.seek(SeekFrom::Start(ifd_offset))
+            .map_err(|error| format!("Cannot seek to TIFF page {current_page}: {error}"))?;
+        let mut count_bytes = [0u8; 2];
+        file.read_exact(&mut count_bytes)
+            .map_err(|error| format!("Cannot read TIFF IFD count: {error}"))?;
+        let entry_count =
+            usize::from(read_endian_u16(&count_bytes, 0, little).ok_or("Invalid TIFF IFD count")?);
+        if entry_count > 4096 {
+            return Err("TIFF IFD contains too many entries".into());
+        }
+        let entries_len = entry_count
+            .checked_mul(12)
+            .ok_or_else(|| "TIFF IFD length overflowed".to_string())?;
+        let entries_end = ifd_offset
+            .checked_add(2)
+            .and_then(|offset| offset.checked_add(entries_len as u64))
+            .and_then(|offset| offset.checked_add(4))
+            .ok_or_else(|| "TIFF IFD offset overflowed".to_string())?;
+        if entries_end > file_len {
+            return Err("TIFF IFD extends beyond the file".into());
+        }
+        let mut raw_entries = vec![0u8; entries_len];
+        file.read_exact(&mut raw_entries)
+            .map_err(|error| format!("Cannot read TIFF IFD entries: {error}"))?;
+        let mut next_bytes = [0u8; 4];
+        file.read_exact(&mut next_bytes)
+            .map_err(|error| format!("Cannot read next TIFF IFD offset: {error}"))?;
+        if current_page == target_page {
+            entries.clear();
+            for raw in raw_entries.chunks_exact(12) {
+                let Some(tag) = read_endian_u16(raw, 0, little) else {
+                    continue;
+                };
+                let Some(type_code) = read_endian_u16(raw, 2, little) else {
+                    continue;
+                };
+                let Some(count) = read_endian_u32(raw, 4, little) else {
+                    continue;
+                };
+                entries.insert(
+                    tag,
+                    ClassicTiffEntry {
+                        type_code,
+                        count,
+                        value: raw[8..12].try_into().expect("TIFF value field"),
+                    },
+                );
+            }
+            break;
+        }
+        ifd_offset = u64::from(if little {
+            u32::from_le_bytes(next_bytes)
+        } else {
+            u32::from_be_bytes(next_bytes)
+        });
+    }
+
+    let mut values = |tag: u16| -> Result<Option<Vec<u64>>, String> {
+        entries
+            .get(&tag)
+            .map(|entry| classic_tiff_unsigned_values(&mut file, file_len, little, entry))
+            .transpose()
+    };
+    let first = |tag_values: Option<Vec<u64>>, default: u64| {
+        tag_values
+            .and_then(|values| values.first().copied())
+            .unwrap_or(default)
+    };
+    let width = u32::try_from(first(values(256)?, 0)).map_err(|_| "Invalid TIFF width")?;
+    let height = u32::try_from(first(values(257)?, 0)).map_err(|_| "Invalid TIFF height")?;
+    if width == 0 || height == 0 {
+        return Err("TIFF page has invalid dimensions".into());
+    }
+    let bits_per_sample = values(258)?
+        .unwrap_or_else(|| vec![1])
+        .into_iter()
+        .map(|value| u16::try_from(value).map_err(|_| "Invalid TIFF bit depth".to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let compression =
+        u16::try_from(first(values(259)?, 1)).map_err(|_| "Invalid TIFF compression")?;
+    let photometric =
+        u16::try_from(first(values(262)?, 0)).map_err(|_| "Invalid TIFF photometric type")?;
+    let strip_offsets = values(273)?.unwrap_or_default();
+    let samples_per_pixel =
+        u16::try_from(first(values(277)?, 1)).map_err(|_| "Invalid TIFF sample count")?;
+    let rows_per_strip = u32::try_from(first(values(278)?, u64::from(height)))
+        .map_err(|_| "Invalid TIFF strip height")?;
+    let strip_byte_counts = values(279)?.unwrap_or_default();
+    let planar_configuration =
+        u16::try_from(first(values(284)?, 1)).map_err(|_| "Invalid TIFF planar configuration")?;
+    let orientation =
+        u16::try_from(first(values(274)?, 1)).map_err(|_| "Invalid TIFF orientation")?;
+    let sub_ifd_offsets = values(330)?.unwrap_or_default();
+    let icc_profile = entries.get(&34675).and_then(|entry| {
+        (entry.type_code == 7)
+            .then(|| {
+                read_classic_tiff_entry_data(&mut file, file_len, little, entry, 16 * 1024 * 1024)
+                    .ok()
+            })
+            .flatten()
+    });
+
+    Ok(ClassicTiffDirectory {
+        little_endian: little,
+        width,
+        height,
+        bits_per_sample,
+        compression,
+        photometric,
+        strip_offsets,
+        samples_per_pixel,
+        rows_per_strip: rows_per_strip.max(1),
+        strip_byte_counts,
+        planar_configuration,
+        orientation,
+        icc_profile,
+        sub_ifd_offsets,
+    })
+}
+
+fn read_classic_tiff_directory(path: &str, page: usize) -> Result<ClassicTiffDirectory, String> {
+    read_classic_tiff_directory_impl(path, page, None)
+}
+
+fn read_classic_tiff_subdirectory(
+    path: &str,
+    ifd_offset: u64,
+) -> Result<ClassicTiffDirectory, String> {
+    read_classic_tiff_directory_impl(path, 0, Some(ifd_offset))
+}
+
+fn read_uncompressed_tiff_row(
+    file: &mut std::fs::File,
+    directory: &ClassicTiffDirectory,
+    row: u32,
+    row_bytes: usize,
+) -> Result<Vec<u16>, String> {
+    let strip_index = usize::try_from(row / directory.rows_per_strip)
+        .map_err(|_| "TIFF strip index overflowed")?;
+    let strip_offset = *directory
+        .strip_offsets
+        .get(strip_index)
+        .ok_or("TIFF strip offset is missing")?;
+    let row_in_strip = u64::from(row % directory.rows_per_strip);
+    let offset = strip_offset
+        .checked_add(
+            row_in_strip
+                .checked_mul(row_bytes as u64)
+                .ok_or("TIFF row offset overflowed")?,
+        )
+        .ok_or("TIFF row offset overflowed")?;
+    if let Some(byte_count) = directory.strip_byte_counts.get(strip_index) {
+        let strip_end = strip_offset
+            .checked_add(*byte_count)
+            .ok_or("TIFF strip length overflowed")?;
+        if offset
+            .checked_add(row_bytes as u64)
+            .is_none_or(|end| end > strip_end)
+        {
+            return Err("TIFF scanline exceeds its strip".into());
+        }
+    }
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| format!("Cannot seek to TIFF scanline: {error}"))?;
+    let mut bytes = vec![0u8; row_bytes];
+    file.read_exact(&mut bytes)
+        .map_err(|error| format!("Cannot read TIFF scanline: {error}"))?;
+    let bits = directory.bits_per_sample[0];
+    Ok(if bits == 8 {
+        bytes
+            .into_iter()
+            .map(|value| u16::from(value) * 257)
+            .collect()
+    } else {
+        bytes
+            .chunks_exact(2)
+            .map(|value| {
+                if directory.little_endian {
+                    u16::from_le_bytes([value[0], value[1]])
+                } else {
+                    u16::from_be_bytes([value[0], value[1]])
+                }
+            })
+            .collect()
+    })
+}
+
+fn decode_uncompressed_tiff_directory_reduced(
+    path: &str,
+    directory: ClassicTiffDirectory,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    if directory.compression != 1
+        || !matches!(directory.photometric, 2 | 34892)
+        || directory.planar_configuration != 1
+        || directory.orientation != 1
+        || directory.samples_per_pixel < 3
+        || directory.strip_offsets.is_empty()
+    {
+        return Err("TIFF is not an uncompressed, top-left, chunky RGB image".into());
+    }
+    if directory.bits_per_sample.is_empty()
+        || !directory
+            .bits_per_sample
+            .iter()
+            .all(|bits| *bits == directory.bits_per_sample[0])
+        || !matches!(directory.bits_per_sample[0], 8 | 16)
+    {
+        return Err("TIFF streaming decoder supports uniform RGB8/RGB16 samples only".into());
+    }
+    let scale = (target_long_edge.max(1) as f64 / f64::from(directory.width.max(directory.height)))
+        .min(1.0);
+    let output_width = (f64::from(directory.width) * scale).round().max(1.0) as u32;
+    let output_height = (f64::from(directory.height) * scale).round().max(1.0) as u32;
+    let samples = usize::from(directory.samples_per_pixel);
+    let bytes_per_sample = usize::from(directory.bits_per_sample[0] / 8);
+    let row_bytes = usize::try_from(directory.width)
+        .ok()
+        .and_then(|width| width.checked_mul(samples))
+        .and_then(|count| count.checked_mul(bytes_per_sample))
+        .ok_or_else(|| "TIFF scanline length overflowed".to_string())?;
+    let output_len = usize::try_from(output_width)
+        .ok()
+        .and_then(|width| usize::try_from(output_height).ok()?.checked_mul(width))
+        .and_then(|pixels| pixels.checked_mul(3))
+        .ok_or_else(|| "Reduced TIFF buffer size overflowed".to_string())?;
+    let mut output = vec![0u16; output_len];
+    let mut file =
+        std::fs::File::open(path).map_err(|error| format!("Cannot reopen TIFF {path}: {error}"))?;
+
+    let x_samples = (0..output_width)
+        .map(|x| {
+            let position =
+                ((f64::from(x) + 0.5) * f64::from(directory.width) / f64::from(output_width) - 0.5)
+                    .clamp(0.0, f64::from(directory.width - 1));
+            let left = position.floor() as u32;
+            (
+                left,
+                (left + 1).min(directory.width - 1),
+                (position - f64::from(left)) as f32,
+            )
+        })
+        .collect::<Vec<_>>();
+
+    for output_y in 0..output_height {
+        let source_y = ((f64::from(output_y) + 0.5) * f64::from(directory.height)
+            / f64::from(output_height)
+            - 0.5)
+            .clamp(0.0, f64::from(directory.height - 1));
+        let top = source_y.floor() as u32;
+        let bottom = (top + 1).min(directory.height - 1);
+        let vertical_weight = (source_y - f64::from(top)) as f32;
+        let top_row = read_uncompressed_tiff_row(&mut file, &directory, top, row_bytes)?;
+        let bottom_row = if bottom == top {
+            top_row.clone()
+        } else {
+            read_uncompressed_tiff_row(&mut file, &directory, bottom, row_bytes)?
+        };
+        let row_start =
+            usize::try_from(output_y).unwrap() * usize::try_from(output_width).unwrap() * 3;
+        let output_row =
+            &mut output[row_start..row_start + usize::try_from(output_width).unwrap() * 3];
+        for (output_x, (left, right, horizontal_weight)) in x_samples.iter().copied().enumerate() {
+            let left = usize::try_from(left).unwrap() * samples;
+            let right = usize::try_from(right).unwrap() * samples;
+            for channel in 0..3 {
+                let top_value = top_row[left + channel] as f32 * (1.0 - horizontal_weight)
+                    + top_row[right + channel] as f32 * horizontal_weight;
+                let bottom_value = bottom_row[left + channel] as f32 * (1.0 - horizontal_weight)
+                    + bottom_row[right + channel] as f32 * horizontal_weight;
+                output_row[output_x * 3 + channel] =
+                    (top_value * (1.0 - vertical_weight) + bottom_value * vertical_weight)
+                        .round()
+                        .clamp(0.0, 65535.0) as u16;
+            }
+        }
+    }
+
+    ImageBuffer::from_raw(output_width, output_height, output)
+        .ok_or_else(|| "Cannot construct reduced TIFF image".to_string())
+}
+
+fn decode_uncompressed_tiff_reduced(
+    path: &str,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    let directory = read_classic_tiff_directory(path, 0)?;
+    decode_uncompressed_tiff_directory_reduced(path, directory, target_long_edge)
+}
+
+fn decode_uncompressed_linear_dng_reduced(
+    path: &str,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    let root = read_classic_tiff_directory(path, 0)?;
+    let mut best = None::<ClassicTiffDirectory>;
+    for offset in root.sub_ifd_offsets {
+        let Ok(candidate) = read_classic_tiff_subdirectory(path, offset) else {
+            continue;
+        };
+        if candidate.photometric != 34892
+            || candidate.compression != 1
+            || candidate.samples_per_pixel < 3
+        {
+            continue;
+        }
+        let candidate_pixels = u64::from(candidate.width) * u64::from(candidate.height);
+        let best_pixels = best
+            .as_ref()
+            .map(|directory| u64::from(directory.width) * u64::from(directory.height))
+            .unwrap_or(0);
+        if candidate_pixels > best_pixels {
+            best = Some(candidate);
+        }
+    }
+    let directory = best.ok_or("DNG has no uncompressed LinearRaw RGB SubIFD")?;
+    decode_uncompressed_tiff_directory_reduced(path, directory, target_long_edge)
 }
 
 fn linearize_scanner_fff(
@@ -762,49 +1331,19 @@ fn read_endian_u32(bytes: &[u8], offset: usize, little: bool) -> Option<u32> {
     })
 }
 
-fn extract_tiff_icc_profile(bytes: &[u8]) -> Option<Vec<u8>> {
-    let little = match bytes.get(0..2)? {
-        b"II" => true,
-        b"MM" => false,
-        _ => return None,
-    };
-    if read_endian_u16(bytes, 2, little)? != 42 {
-        return None;
-    }
-    let ifd_offset = usize::try_from(read_endian_u32(bytes, 4, little)?).ok()?;
-    let entry_count = usize::from(read_endian_u16(bytes, ifd_offset, little)?);
-    let entries_start = ifd_offset.checked_add(2)?;
-    for index in 0..entry_count {
-        let offset = entries_start.checked_add(index.checked_mul(12)?)?;
-        let tag = read_endian_u16(bytes, offset, little)?;
-        let type_code = read_endian_u16(bytes, offset + 2, little)?;
-        let count = usize::try_from(read_endian_u32(bytes, offset + 4, little)?).ok()?;
-        if tag != 34675 || type_code != 7 {
-            continue;
-        }
-        if count <= 4 {
-            return Some(bytes.get(offset + 8..offset + 8 + count)?.to_vec());
-        }
-        let value_offset = usize::try_from(read_endian_u32(bytes, offset + 8, little)?).ok()?;
-        return Some(
-            bytes
-                .get(value_offset..value_offset.checked_add(count)?)?
-                .to_vec(),
-        );
-    }
-    None
-}
-
 fn embedded_input_profile(path: &str) -> Option<ColorSpaceId> {
-    let bytes = std::fs::read(path).ok()?;
     let extension = std::path::Path::new(path)
         .extension()
         .and_then(|extension| extension.to_str())?
         .to_ascii_lowercase();
+    if matches!(extension.as_str(), "tif" | "tiff") {
+        let profile = read_classic_tiff_directory(path, 0).ok()?.icc_profile?;
+        return identify_icc_profile(&profile);
+    }
+    let bytes = std::fs::read(path).ok()?;
     let profile = match extension.as_str() {
         "jpg" | "jpeg" => extract_jpeg_icc_profile(&bytes),
         "png" => extract_png_icc_profile(&bytes),
-        "tif" | "tiff" => extract_tiff_icc_profile(&bytes),
         _ => None,
     }?;
     identify_icc_profile(&profile)
@@ -852,16 +1391,8 @@ fn decode_direct_image_preview_base64(path: &str, max_edge: u32) -> Option<Strin
 }
 
 fn extract_embedded_preview_base64(path: &str, max_edge: u32) -> Option<String> {
-    if let Some(bytes) = extract_tiff_jpeg_preview(path, max_edge) {
-        // Keep a display-ready JPEG untouched when it already fits the target.
-        if bytes.len() <= 256 * 1024
-            && jpeg_dimensions(&bytes).is_some_and(|(width, height)| width.max(height) <= max_edge)
-        {
-            return Some(general_purpose::STANDARD.encode(bytes));
-        }
-        if let Ok(image) = image::load_from_memory(&bytes) {
-            return encode_preview_jpeg_base64(image, max_edge, 86);
-        }
+    if let Some(preview) = extract_tiff_jpeg_preview_base64(path, max_edge) {
+        return Some(preview);
     }
     let mut processor = crate::raw_backend::RawProcessor::new().ok()?;
     processor.open_file(path).ok()?;
@@ -906,8 +1437,20 @@ fn extract_embedded_preview_base64(path: &str, max_edge: u32) -> Option<String> 
     Some(encode_preview_bytes_base64(&thumb.data, max_edge, 86))
 }
 
+fn extract_tiff_jpeg_preview_base64(path: &str, max_edge: u32) -> Option<String> {
+    let bytes = extract_tiff_jpeg_preview(path, max_edge)?;
+    // Keep a display-ready JPEG untouched when it already fits the target.
+    if bytes.len() <= 256 * 1024
+        && jpeg_dimensions(&bytes).is_some_and(|(width, height)| width.max(height) <= max_edge)
+    {
+        return Some(general_purpose::STANDARD.encode(bytes));
+    }
+    let image = image::load_from_memory(&bytes).ok()?;
+    encode_preview_jpeg_base64(image, max_edge, 86)
+}
+
 fn decode_fff_fallback_preview_base64(path: &str, max_edge: u32) -> Option<String> {
-    let image = decode_image_buffer(path, DecodeMode::DevelopProxy).ok()?;
+    let image = decode_reduced_tiff_for_working_space(path, max_edge).ok()?;
     encode_stretched_preview_jpeg_base64(image::DynamicImage::ImageRgb16(image), max_edge, 86)
 }
 
@@ -916,6 +1459,36 @@ fn decode_scanner_fff_preview_base64(path: &str, max_edge: u32) -> Option<String
     let preview_edge = preview.width().max(preview.height()).min(max_edge);
     let preview = image::DynamicImage::ImageRgb16(preview).to_rgb8();
     encode_preview_jpeg_base64(image::DynamicImage::ImageRgb8(preview), preview_edge, 86)
+}
+
+fn decode_tiff_page_preview_base64(path: &str, max_edge: u32) -> Option<String> {
+    // Scanner exports commonly store a compact RGB page after the full-size
+    // page. Reading that page first avoids touching hundreds of megabytes of
+    // pixel data during import.
+    for page in 1..=4 {
+        let Ok(preview) = decode_scanner_fff_tiff_page(path, page) else {
+            break;
+        };
+        if preview.width() >= 64 && preview.height() >= 64 {
+            let preview = image::DynamicImage::ImageRgb16(preview).to_rgb8();
+            return encode_preview_jpeg_base64(
+                image::DynamicImage::ImageRgb8(preview),
+                max_edge,
+                86,
+            );
+        }
+    }
+    None
+}
+
+fn decode_reduced_tiff_preview_base64(path: &str, max_edge: u32) -> Option<String> {
+    let image = decode_uncompressed_tiff_reduced(path, max_edge).ok()?;
+    encode_stretched_preview_jpeg_base64(image::DynamicImage::ImageRgb16(image), max_edge, 86)
+}
+
+fn decode_dng_root_preview_base64(path: &str, max_edge: u32) -> Option<String> {
+    let image = decode_uncompressed_tiff_reduced(path, max_edge).ok()?;
+    encode_stretched_preview_jpeg_base64(image::DynamicImage::ImageRgb16(image), max_edge, 86)
 }
 
 /// Import-stage decoder. Camera RAW is embedded-preview-only. Scanner FFF uses
@@ -928,6 +1501,11 @@ fn decode_import_preview_base64(path: &str, max_edge: u32) -> Option<String> {
     }
 
     if is_raw_extension(path) {
+        if is_dng_extension(path) {
+            return extract_tiff_jpeg_preview_base64(path, max_edge)
+                .or_else(|| decode_dng_root_preview_base64(path, max_edge))
+                .or_else(|| extract_embedded_preview_base64(path, max_edge));
+        }
         if is_scanner_fff_tiff(path) {
             return decode_scanner_fff_preview_base64(path, max_edge)
                 .or_else(|| decode_fff_fallback_preview_base64(path, max_edge));
@@ -939,8 +1517,16 @@ fn decode_import_preview_base64(path: &str, max_edge: u32) -> Option<String> {
         });
     }
     if is_tiff_extension(path) {
-        return extract_embedded_preview_base64(path, max_edge)
-            .or_else(|| decode_direct_image_preview_base64(path, max_edge));
+        return extract_tiff_jpeg_preview_base64(path, max_edge)
+            .or_else(|| decode_tiff_page_preview_base64(path, max_edge))
+            .or_else(|| decode_reduced_tiff_preview_base64(path, max_edge))
+            .or_else(|| {
+                let is_small = std::fs::metadata(path)
+                    .is_ok_and(|metadata| metadata.len() <= 128 * 1024 * 1024);
+                is_small
+                    .then(|| decode_direct_image_preview_base64(path, max_edge))
+                    .flatten()
+            });
     }
     None
 }
@@ -960,12 +1546,21 @@ fn decode_import_preview_result(path: &str, max_edge: u32) -> Result<String, Str
 }
 
 fn decode_develop_preview_base64(path: &str, max_edge: u32) -> Option<String> {
-    if is_direct_image_extension(path) {
+    if is_lightweight_direct_preview(path) {
         return decode_direct_image_preview_base64(path, max_edge);
     }
     if is_scanner_fff_tiff(path) {
         return decode_scanner_fff_preview_base64(path, max_edge)
             .or_else(|| decode_fff_fallback_preview_base64(path, max_edge));
+    }
+    if is_dng_extension(path) {
+        return extract_tiff_jpeg_preview_base64(path, max_edge)
+            .or_else(|| decode_dng_root_preview_base64(path, max_edge));
+    }
+    if is_tiff_extension(path) {
+        return extract_tiff_jpeg_preview_base64(path, max_edge)
+            .or_else(|| decode_tiff_page_preview_base64(path, max_edge))
+            .or_else(|| decode_reduced_tiff_preview_base64(path, max_edge));
     }
     extract_embedded_preview_base64(path, max_edge).or_else(|| {
         is_fff_extension(path)
@@ -1477,6 +2072,20 @@ enum DecodeMode {
     ExportFull,
 }
 
+fn preview_proxy_target_long_edge(requested: Option<u32>) -> u32 {
+    requested
+        .unwrap_or(PROXY_LONG_EDGE as u32)
+        .clamp(PROXY_LONG_EDGE as u32, MAX_PREVIEW_PROXY_LONG_EDGE)
+}
+
+fn preview_proxy_decode_mode(target_long_edge: u32) -> DecodeMode {
+    if target_long_edge > PROXY_LONG_EDGE as u32 {
+        DecodeMode::ExportFull
+    } else {
+        DecodeMode::DevelopProxy
+    }
+}
+
 fn libraw_output_color(colorspace: &str) -> Result<i32, String> {
     crate::color_science::libraw_output_color(colorspace)
 }
@@ -1508,6 +2117,80 @@ fn convert_linear_image(
             }
         });
     converted
+}
+
+fn convert_linear_image_in_place(
+    mut image: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    source: ColorSpaceId,
+    target: ColorSpaceId,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    if source == target {
+        return image;
+    }
+    let matrix = linear_conversion_matrix(source, target);
+    image.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+        let converted = apply_linear_matrix(
+            [
+                pixel[0] as f32 / 65535.0,
+                pixel[1] as f32 / 65535.0,
+                pixel[2] as f32 / 65535.0,
+            ],
+            matrix,
+        );
+        for channel in 0..3 {
+            pixel[channel] = (converted[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+        }
+    });
+    image
+}
+
+fn decode_reduced_tiff_for_working_space(
+    path: &str,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    let requested_profile = DENSITY_CAPTURE_PROFILE;
+    let mut image = decode_uncompressed_tiff_reduced(path, target_long_edge)?;
+    if is_scanner_fff_tiff(path) {
+        return Ok(linearize_scanner_fff(image, requested_profile));
+    }
+    if let Some(source_profile) = embedded_input_profile(path) {
+        let matrix = linear_conversion_matrix(source_profile, requested_profile);
+        image.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+            let linear = convert_encoded_to_linear_rgb_with_matrix(
+                [
+                    pixel[0] as f32 / 65535.0,
+                    pixel[1] as f32 / 65535.0,
+                    pixel[2] as f32 / 65535.0,
+                ],
+                source_profile,
+                matrix,
+            );
+            for channel in 0..3 {
+                pixel[channel] = (linear[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+            }
+        });
+        return Ok(image);
+    }
+    Ok(convert_linear_image_in_place(
+        image,
+        ColorSpaceId::SRgb,
+        requested_profile,
+    ))
+}
+
+fn decode_reduced_dng_for_working_space(
+    path: &str,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    // VueScan LinearRaw DNG stores already-interpolated, linear RGB samples.
+    // Read its uncompressed SubIFD directly so a 1.6 GB scan never has to be
+    // unpacked into a second full-size LibRaw buffer merely to build a proxy.
+    let image = decode_uncompressed_linear_dng_reduced(path, target_long_edge)?;
+    Ok(convert_linear_image_in_place(
+        image,
+        ColorSpaceId::SRgb,
+        DENSITY_CAPTURE_PROFILE,
+    ))
 }
 
 fn rgb16_image_from_bytes(
@@ -2142,7 +2825,7 @@ pub async fn import_images(
         if tx.send(to_work(first_path)).is_err() {
             return;
         }
-        let (result_tx, result_rx) = std::sync::mpsc::channel::<ImportWork>();
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<(usize, ImportWork)>();
         let preview_pool = rayon::ThreadPoolBuilder::new()
             .num_threads(
                 std::thread::available_parallelism()
@@ -2156,9 +2839,9 @@ pub async fn import_images(
         let process_path_for_workers = process_path.clone();
         let result_tx_for_workers = result_tx.clone();
         let run_workers = move || {
-            queued_paths
-                .par_iter()
-                .for_each_with(result_tx_for_workers, |sender, path| {
+            queued_paths.par_iter().enumerate().for_each_with(
+                result_tx_for_workers,
+                |sender, (offset, path)| {
                     let work = match process_path_for_workers(path) {
                         Ok(item) => ImportWork::Item(item),
                         Err(message) => ImportWork::Failed {
@@ -2166,8 +2849,9 @@ pub async fn import_images(
                             message,
                         },
                     };
-                    let _ = sender.send(work);
-                });
+                    let _ = sender.send((offset + 1, work));
+                },
+            );
         };
         // Keep the pool alive until the result channel closes. Dropping a
         // detached pool immediately can terminate workers before all previews
@@ -2178,15 +2862,10 @@ pub async fn import_images(
             std::thread::spawn(run_workers);
         }
         drop(result_tx);
-        // Deliver previews as soon as each worker finishes.  The frontend
-        // already owns the selection-order skeleton, so completion order does
-        // not change layout while avoiding a slow first frame blocking every
-        // later preview.
-        while let Ok(item) = result_rx.recv() {
-            if tx.send(item).is_err() {
-                return;
-            }
-        }
+        // Parallel preview work may complete out of order. Buffer only the
+        // completed gaps and publish in the caller's exact selection order so
+        // filenames such as 1..36 never shuffle in the filmstrip or library.
+        forward_indexed_results_in_order(result_rx, 1, |item| tx.send(item).is_ok());
         // tx drops here → consumer's rx.recv() returns Err →
         // consumer flushes remaining buffer and emits import_complete
     });
@@ -2208,6 +2887,7 @@ fn filmstrip_item(item: &FilmItem) -> FilmstripItem {
         embedded_thumbnail_base64: item.embedded_thumbnail_base64.clone(),
         rendered_thumbnail_base64: item.rendered_thumbnail_base64.clone(),
         thumbnail_kind: item.thumbnail_kind().to_string(),
+        base_analyzed: item.base_color != BaseColor::default(),
         state_available: true,
         file_missing,
     }
@@ -2303,6 +2983,7 @@ pub async fn get_roll_filmstrip(
                 embedded_thumbnail_base64: FALLBACK_THUMB.to_string(),
                 rendered_thumbnail_base64: None,
                 thumbnail_kind: "embedded".to_string(),
+                base_analyzed: false,
                 state_available: false,
                 file_missing: std::fs::File::open(path).is_err(),
             });
@@ -2960,9 +3641,11 @@ fn track_proxy_loaded(state: &EngineState, id: &str) {
 pub async fn switch_active_image(
     id: String,
     roll_id: String,
+    generation: u64,
     state: State<'_, EngineState>,
     _app_handle: tauri::AppHandle,
 ) -> Result<ActiveImageState, String> {
+    let epoch = claim_development_generation(&state, &id, generation)?;
     // State activation is deliberately ordered before proxy preparation. The
     // database is authoritative, including settings written by batch jobs for
     // frames that have never been rendered in this process.
@@ -2990,7 +3673,9 @@ pub async fn switch_active_image(
     .map_err(|error| format!("State-loading worker failed: {error}"))??;
 
     let (_, params, geom, base_color) = persisted;
+    ensure_current_development_generation(&epoch, generation)?;
     let mut item = item_arc.write().map_err(|error| error.to_string())?;
+    ensure_current_development_generation(&epoch, generation)?;
     if item.roll_id != roll_id || item.file_path != file_path {
         return Err("Image identity changed while loading persisted state".into());
     }
@@ -3007,29 +3692,69 @@ pub async fn switch_active_image(
 }
 
 #[tauri::command]
-pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<(), String> {
+pub async fn prepare_proxy(
+    id: String,
+    target_long_edge: Option<u32>,
+    state: State<'_, EngineState>,
+) -> Result<u32, String> {
+    let target_long_edge = preview_proxy_target_long_edge(target_long_edge);
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
-    let (file_path, has_proxy) = {
+    let (file_path, current_long_edge) = {
         let item = read_lock(&item_arc);
         if std::fs::File::open(&item.file_path).is_err() {
             return Err("FILE_MISSING".into());
         }
-        (item.file_path.clone(), item.proxy_image.is_some())
+        let current_long_edge = item
+            .proxy_image
+            .as_ref()
+            .map(|image| image.width().max(image.height()))
+            .unwrap_or(0);
+        (item.file_path.clone(), current_long_edge)
     };
 
-    if has_proxy {
+    if current_long_edge >= target_long_edge {
         track_proxy_loaded(&state, &id);
-        return Ok(());
+        return Ok(current_long_edge);
     }
 
     let loaded = tokio::task::spawn_blocking(move || -> Result<_, String> {
-        let img_buffer = decode_image_buffer(&file_path, DecodeMode::DevelopProxy)?;
+        let img_buffer = if is_dng_extension(&file_path) {
+            decode_reduced_dng_for_working_space(&file_path, target_long_edge).or_else(
+                |stream_error| {
+                    if std::fs::metadata(&file_path)
+                        .is_ok_and(|metadata| metadata.len() > 512 * 1024 * 1024)
+                    {
+                        return Err(format!(
+                            "Large LinearRaw DNG cannot use the bounded-memory decoder: {stream_error}"
+                        ));
+                    }
+                    let decode_mode = preview_proxy_decode_mode(target_long_edge);
+                    decode_image_buffer(&file_path, decode_mode)
+                },
+            )?
+        } else if is_tiff_extension(&file_path) || is_scanner_fff_tiff(&file_path) {
+            decode_reduced_tiff_for_working_space(&file_path, target_long_edge)
+                .or_else(|stream_error| {
+                    if std::fs::metadata(&file_path)
+                        .is_ok_and(|metadata| metadata.len() > 128 * 1024 * 1024)
+                    {
+                        return Err(format!(
+                            "Large TIFF cannot use the bounded-memory decoder: {stream_error}"
+                        ));
+                    }
+                    let decode_mode = preview_proxy_decode_mode(target_long_edge);
+                    decode_image_buffer(&file_path, decode_mode)
+                })?
+        } else {
+            let decode_mode = preview_proxy_decode_mode(target_long_edge);
+            decode_image_buffer(&file_path, decode_mode)?
+        };
         let (width, height) = img_buffer.dimensions();
-        let ratio_proxy = (PROXY_LONG_EDGE / (width.max(height) as f32)).min(1.0);
+        let ratio_proxy = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
         let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
         let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
         Ok(if ratio_proxy < 0.999 {
-            image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Triangle)
+            image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Lanczos3)
         } else {
             img_buffer
         })
@@ -3037,28 +3762,40 @@ pub async fn prepare_proxy(id: String, state: State<'_, EngineState>) -> Result<
     .await
     .map_err(|e| e.to_string())??;
 
-    {
+    let loaded_long_edge = loaded.width().max(loaded.height());
+    let retained_long_edge = {
         let mut item = write_lock(&item_arc);
         // The Develop proxy is always unmodified linear-sRGB capture data.
         // Geometry, inversion, and tone operations belong to the renderer.
-        if item.proxy_image.is_none() {
+        let retained_long_edge = item
+            .proxy_image
+            .as_ref()
+            .map(|image| image.width().max(image.height()))
+            .unwrap_or(0);
+        if loaded_long_edge > retained_long_edge {
             item.original_proxy = None;
             item.proxy_image = Some(loaded);
             item.pristine_proxy = None;
+            loaded_long_edge
+        } else {
+            retained_long_edge
         }
-    }
+    };
     track_proxy_loaded(&state, &id);
-    Ok(())
+    Ok(retained_long_edge)
 }
 
 #[tauri::command]
 pub async fn analyze_proxy_base_color(
     id: String,
+    generation: u64,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
+    let epoch = claim_development_generation(&state, &id, generation)?;
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
 
     tokio::task::spawn_blocking(move || {
+        ensure_current_development_generation(&epoch, generation)?;
         let base_color = {
             let item = read_lock(&item_arc);
             if item.base_color != BaseColor::default() {
@@ -3071,21 +3808,14 @@ pub async fn analyze_proxy_base_color(
             compute_auto_base(proxy)
         };
 
-        let (roll_id, file_path, previous_base_color) = {
-            let mut item = write_lock(&item_arc);
-            if item.base_color != BaseColor::default() {
-                return Ok(());
-            }
-            let previous = std::mem::replace(&mut item.base_color, base_color.clone());
-            (item.roll_id.clone(), item.file_path.clone(), previous)
-        };
-        if let Err(error) = persist_base_color(&roll_id, &file_path, &base_color) {
-            let mut item = write_lock(&item_arc);
-            if item.base_color == base_color {
-                item.base_color = previous_base_color;
-            }
-            return Err(error);
+        let mut item = write_lock(&item_arc);
+        ensure_current_development_generation(&epoch, generation)?;
+        if item.base_color != BaseColor::default() {
+            return Ok(());
         }
+        persist_base_color(&item.roll_id, &item.file_path, &base_color)?;
+        item.base_color = base_color;
+        item.pristine_proxy = None;
         Ok(())
     })
     .await
@@ -3121,12 +3851,69 @@ pub async fn analyze_proxy_density_limits(
 }
 
 #[tauri::command]
-pub async fn sync_thumbnail_buffer(
+pub async fn reset_image_development(
     id: String,
+    mut params: TuningParams,
+    generation: u64,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
+    let epoch = claim_development_generation(&state, &id, generation)?;
+    params.raw_decode.working_colorspace = DENSITY_CAPTURE_WORKING_SPACE.to_string();
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let mut item = write_lock(&item_arc);
+        ensure_current_development_generation(&epoch, generation)?;
+        let default_base = BaseColor::default();
+        let params_json = serde_json::to_string(&params)
+            .map_err(|error| format!("Failed to serialize reset parameters: {error}"))?;
+        let base_json = serde_json::to_string(&default_base)
+            .map_err(|error| format!("Failed to serialize reset base color: {error}"))?;
+        let connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open image database: {error}"))?;
+        let changed = connection
+            .execute(
+                "UPDATE image_states
+                 SET params = ?1, base_color = ?2, rendered_thumb_base64 = NULL,
+                     thumbnail_base64 = ?3, updated_at = ?4
+                 WHERE roll_id = ?5 AND file_path = ?6",
+                rusqlite::params![
+                    params_json,
+                    base_json,
+                    item.embedded_thumbnail_base64,
+                    persistence::now_timestamp(),
+                    item.roll_id,
+                    item.file_path,
+                ],
+            )
+            .map_err(|error| format!("Failed to reset image state: {error}"))?;
+        if changed != 1 {
+            return Err(format!(
+                "Persisted image state was not found: {}",
+                item.file_path
+            ));
+        }
+
+        item.params = params;
+        item.base_color = default_base;
+        item.rendered_thumbnail_base64 = None;
+        item.pristine_proxy = None;
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Reset worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn sync_thumbnail_buffer(
+    id: String,
+    generation: u64,
+    state: State<'_, EngineState>,
+) -> Result<(), String> {
+    let epoch = claim_development_generation(&state, &id, generation)?;
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
     tokio::task::spawn_blocking(move || {
+        ensure_current_development_generation(&epoch, generation)?;
         {
             let mut item = write_lock(&item_arc);
             if item.pristine_proxy.is_none() {
@@ -3147,20 +3934,10 @@ pub async fn sync_thumbnail_buffer(
         if new_thumbnail.is_empty() {
             return Ok(());
         }
-        let (roll_id, file_path, previous_thumbnail) = {
-            let mut item = write_lock(&item_arc);
-            let previous = item
-                .rendered_thumbnail_base64
-                .replace(new_thumbnail.clone());
-            (item.roll_id.clone(), item.file_path.clone(), previous)
-        };
-        if let Err(error) = persist_rendered_thumbnail(&roll_id, &file_path, &new_thumbnail) {
-            let mut item = write_lock(&item_arc);
-            if item.rendered_thumbnail_base64.as_deref() == Some(new_thumbnail.as_str()) {
-                item.rendered_thumbnail_base64 = previous_thumbnail;
-            }
-            return Err(error);
-        }
+        let mut item = write_lock(&item_arc);
+        ensure_current_development_generation(&epoch, generation)?;
+        persist_rendered_thumbnail(&item.roll_id, &item.file_path, &new_thumbnail)?;
+        item.rendered_thumbnail_base64 = Some(new_thumbnail);
         Ok(())
     })
     .await
@@ -3171,22 +3948,16 @@ pub async fn sync_thumbnail_buffer(
 pub async fn set_thumbnail_data(
     id: String,
     thumbnail: String,
+    generation: u64,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
+    let epoch = claim_development_generation(&state, &id, generation)?;
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
     tokio::task::spawn_blocking(move || {
-        let (roll_id, file_path, previous_thumbnail) = {
-            let mut item = write_lock(&item_arc);
-            let previous = item.rendered_thumbnail_base64.replace(thumbnail.clone());
-            (item.roll_id.clone(), item.file_path.clone(), previous)
-        };
-        if let Err(error) = persist_rendered_thumbnail(&roll_id, &file_path, &thumbnail) {
-            let mut item = write_lock(&item_arc);
-            if item.rendered_thumbnail_base64.as_deref() == Some(thumbnail.as_str()) {
-                item.rendered_thumbnail_base64 = previous_thumbnail;
-            }
-            return Err(error);
-        }
+        let mut item = write_lock(&item_arc);
+        ensure_current_development_generation(&epoch, generation)?;
+        persist_rendered_thumbnail(&item.roll_id, &item.file_path, &thumbnail)?;
+        item.rendered_thumbnail_base64 = Some(thumbnail);
         Ok(())
     })
     .await
@@ -3194,25 +3965,56 @@ pub async fn set_thumbnail_data(
 }
 
 #[tauri::command]
-pub async fn update_geometry(
+pub async fn clear_invalid_rendered_thumbnail(
     id: String,
-    geom: crate::app_state::GeometryState,
+    expected_thumbnail: String,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
     tokio::task::spawn_blocking(move || {
-        let (roll_id, file_path, previous_geom) = {
-            let mut item = write_lock(&item_arc);
-            let previous = std::mem::replace(&mut item.geom, geom.clone());
-            (item.roll_id.clone(), item.file_path.clone(), previous)
-        };
-        if let Err(error) = persist_geometry(&roll_id, &file_path, &geom) {
-            let mut item = write_lock(&item_arc);
-            if item.geom == geom {
-                item.geom = previous_geom;
-            }
-            return Err(error);
+        let mut item = write_lock(&item_arc);
+        if item.rendered_thumbnail_base64.as_deref() != Some(expected_thumbnail.as_str()) {
+            return Ok(());
         }
+        let connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open image database: {error}"))?;
+        let changed = connection
+            .execute(
+                "UPDATE image_states
+                 SET rendered_thumb_base64 = NULL, thumbnail_base64 = embedded_thumb_base64,
+                     updated_at = ?1
+                 WHERE roll_id = ?2 AND file_path = ?3 AND rendered_thumb_base64 = ?4",
+                rusqlite::params![
+                    persistence::now_timestamp(),
+                    item.roll_id,
+                    item.file_path,
+                    expected_thumbnail,
+                ],
+            )
+            .map_err(|error| format!("Failed to clear invalid thumbnail: {error}"))?;
+        if changed == 1 {
+            item.rendered_thumbnail_base64 = None;
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("Thumbnail cleanup worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn update_geometry(
+    id: String,
+    geom: crate::app_state::GeometryState,
+    generation: u64,
+    state: State<'_, EngineState>,
+) -> Result<(), String> {
+    let epoch = claim_development_generation(&state, &id, generation)?;
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut item = write_lock(&item_arc);
+        ensure_current_development_generation(&epoch, generation)?;
+        persist_geometry(&item.roll_id, &item.file_path, &geom)?;
+        item.geom = geom;
         Ok(())
     })
     .await
@@ -3291,6 +4093,35 @@ fn normalize_persisted_geometry(mut geom: GeometryState) -> GeometryState {
     geom
 }
 
+fn apply_batch_geometry_to_item(
+    item_geometry: &mut GeometryState,
+    geometry: &Value,
+    modules: &[String],
+) -> Result<(), String> {
+    let copies_full_geometry = modules.iter().any(|module| module == "geometry");
+    if copies_full_geometry {
+        *item_geometry = serde_json::from_value(geometry.clone())
+            .map_err(|error| format!("Invalid batch geometry payload: {error}"))?;
+        return Ok(());
+    }
+
+    if modules.iter().any(|module| module == "film_area") {
+        let points = geometry
+            .get("calibration_points")
+            .cloned()
+            .ok_or_else(|| "Batch film-area payload has no calibration points".to_string())?;
+        item_geometry.calibration_points = Some(
+            serde_json::from_value(points)
+                .map_err(|error| format!("Invalid batch film-area points: {error}"))?,
+        );
+        item_geometry.calibration_confirmed = geometry
+            .get("calibration_confirmed")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn batch_copy_settings(
     source: ImageKey,
@@ -3314,28 +4145,25 @@ pub async fn batch_copy_settings(
     .map_err(|error| format!("Batch settings worker failed: {error}"))??;
 
     if let Some(geometry) = commit.geometry.as_ref() {
-        match serde_json::from_value::<GeometryState>(geometry.clone()) {
-            Ok(geometry) => {
-                let updated = commit
-                    .result
-                    .targets
-                    .iter()
-                    .cloned()
-                    .collect::<HashSet<_>>();
-                for entry in state.items.iter() {
-                    let item_arc = entry.value().clone();
-                    let mut item = write_lock(&item_arc);
-                    let key = ImageKey {
-                        roll_id: item.roll_id.clone(),
-                        file_path: item.file_path.clone(),
-                    };
-                    if updated.contains(&key) {
-                        item.geom = geometry.clone();
-                    }
+        let updated = commit
+            .result
+            .targets
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
+        for entry in state.items.iter() {
+            let item_arc = entry.value().clone();
+            let mut item = write_lock(&item_arc);
+            let key = ImageKey {
+                roll_id: item.roll_id.clone(),
+                file_path: item.file_path.clone(),
+            };
+            if updated.contains(&key) {
+                if let Err(error) =
+                    apply_batch_geometry_to_item(&mut item.geom, geometry, &commit.result.modules)
+                {
+                    eprintln!("[Batch Settings] committed geometry cache refresh failed: {error}");
                 }
-            }
-            Err(error) => {
-                eprintln!("[Batch Settings] committed geometry cache refresh failed: {error}");
             }
         }
     }
@@ -3473,41 +4301,23 @@ pub async fn update_tuning_parameters(
     id: String,
     mut params: TuningParams,
     roll_id: String,
+    generation: u64,
     state: State<'_, EngineState>,
 ) -> Result<(), String> {
+    let epoch = claim_development_generation(&state, &id, generation)?;
     params.raw_decode.working_colorspace = DENSITY_CAPTURE_WORKING_SPACE.to_string();
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
     tokio::task::spawn_blocking(move || {
-        let (file_path, previous_params, previous_pristine, film_mode_changed) = {
-            let mut item = write_lock(&item_arc);
-            if item.roll_id != roll_id {
-                return Err("Image does not belong to the requested roll".into());
-            }
-            let previous_params = item.params.clone();
-            let film_mode_changed = previous_params.film_mode != params.film_mode;
-            let previous_pristine = if film_mode_changed {
-                item.pristine_proxy.take()
-            } else {
-                None
-            };
-            item.params = params.clone();
-            (
-                item.file_path.clone(),
-                previous_params,
-                previous_pristine,
-                film_mode_changed,
-            )
-        };
-        if let Err(error) = persist_tuning_parameters(&roll_id, &file_path, &params) {
-            let mut item = write_lock(&item_arc);
-            if item.params == params {
-                item.params = previous_params;
-                if film_mode_changed {
-                    item.pristine_proxy = previous_pristine;
-                }
-            }
-            return Err(error);
+        let mut item = write_lock(&item_arc);
+        ensure_current_development_generation(&epoch, generation)?;
+        if item.roll_id != roll_id {
+            return Err("Image does not belong to the requested roll".into());
         }
+        persist_tuning_parameters(&roll_id, &item.file_path, &params)?;
+        if item.params.film_mode != params.film_mode {
+            item.pristine_proxy = None;
+        }
+        item.params = params;
         Ok(())
     })
     .await
@@ -6289,7 +7099,8 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 mod import_contract_tests {
     use super::{
         compute_auto_base, compute_auto_color_limits, decode_image_buffer,
-        decode_import_preview_base64, decode_scanner_fff_tiff_page, is_better_preview_edge,
+        decode_import_preview_base64, decode_reduced_dng_for_working_space,
+        decode_reduced_tiff_for_working_space, is_better_preview_edge,
         is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
         is_tiff_extension, linearize_scanner_fff, persist_import_batch, render_shader_equivalent,
         rgb16_image_from_bytes, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
@@ -6463,69 +7274,198 @@ mod import_contract_tests {
     }
 
     #[test]
-    #[ignore = "large user-supplied FFF fixture; run explicitly when validating scanner FFF"]
-    fn hasselblad_fff_fixture_decodes_preview_and_linear_proxy() {
+    #[ignore = "large user-supplied FFF fixtures; run explicitly when validating scanner FFF"]
+    fn hasselblad_fff_fixtures_decode_visible_previews_and_linear_proxies() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
-        let Some(path) = std::fs::read_dir(&root)
+        let paths = [
+            root.join("图像 001.fff"),
+            root.join("哈苏fff").join("1 001-可以反相.fff"),
+            root.join("哈苏fff").join("无法反相.fff"),
+        ]
+        .into_iter()
+        .filter(|path| path.exists())
+        .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return;
+        }
+
+        for path in paths {
+            let decode_started = std::time::Instant::now();
+            let decoded =
+                decode_reduced_tiff_for_working_space(path.to_string_lossy().as_ref(), 2560)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert!(
+                decoded.width() > 256 && decoded.height() > 256,
+                "{}",
+                path.display()
+            );
+            assert!(
+                decoded.as_raw().iter().any(|value| *value > 0),
+                "{} produced a black proxy",
+                path.display()
+            );
+            let reduced =
+                image::imageops::resize(&decoded, 160, 512, image::imageops::FilterType::Triangle);
+            let mut geom = GeometryState::default();
+            geom.crop_rect.width = 0.5;
+            let transformed = render_shader_equivalent(
+                &reduced,
+                &TuningParams::default(),
+                &geom,
+                &BaseColor::default(),
+                None,
+            );
+            assert_eq!(transformed.dimensions(), (80, 512));
+
+            let preview_started = std::time::Instant::now();
+            let preview = decode_import_preview_base64(
+                path.to_string_lossy().as_ref(),
+                IMPORT_PREVIEW_LONG_EDGE,
+            )
+            .unwrap_or_else(|| panic!("{} could not be decoded", path.display()));
+            let preview_bytes = base64::engine::general_purpose::STANDARD
+                .decode(preview)
+                .expect("FFF preview must be base64");
+            let preview_image = image::load_from_memory(&preview_bytes)
+                .expect("FFF preview must contain a displayable image")
+                .to_rgb8();
+            assert!(preview_image.width() > 1 && preview_image.height() > 1);
+            assert!(
+                preview_image.as_raw().iter().any(|value| *value > 6),
+                "{} produced a black import preview",
+                path.display()
+            );
+
+            println!(
+                "{}: FFF preview {:?} ({}x{}), proxy {:?} ({:?})",
+                path.display(),
+                preview_started.elapsed(),
+                preview_image.width(),
+                preview_image.height(),
+                decode_started.elapsed(),
+                decoded.dimensions()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "large user-supplied scanner TIFF fixtures; run explicitly for memory validation"]
+    fn nikon_scanner_tiff_import_and_proxy_use_bounded_memory() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("尼康扫描仪tiff");
+        let mut paths = std::fs::read_dir(root)
             .ok()
             .into_iter()
             .flatten()
             .flatten()
             .map(|entry| entry.path())
-            .find(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("fff"))
+            .filter(|path| {
+                path.extension().is_some_and(|extension| {
+                    extension.eq_ignore_ascii_case("tif") || extension.eq_ignore_ascii_case("tiff")
+                })
             })
-        else {
+            .collect::<Vec<_>>();
+        paths.sort();
+        if paths.is_empty() {
             return;
-        };
+        }
+        for path in paths {
+            let started = std::time::Instant::now();
+            let preview = decode_import_preview_base64(
+                path.to_string_lossy().as_ref(),
+                IMPORT_PREVIEW_LONG_EDGE,
+            )
+            .unwrap_or_else(|| panic!("{} could not be decoded", path.display()));
+            let preview_bytes = base64::engine::general_purpose::STANDARD
+                .decode(preview)
+                .expect("TIFF preview must be base64");
+            let preview_image = image::load_from_memory(&preview_bytes)
+                .expect("TIFF preview must be displayable")
+                .to_rgb8();
+            assert!(preview_image.width().max(preview_image.height()) <= IMPORT_PREVIEW_LONG_EDGE);
+            assert!(
+                preview_image.as_raw().iter().any(|value| *value > 6),
+                "{} produced a black import preview",
+                path.display()
+            );
 
-        let decode_started = std::time::Instant::now();
-        let decoded =
-            decode_image_buffer(path.to_string_lossy().as_ref(), DecodeMode::DevelopProxy)
-                .expect("scanner FFF main image should decode as 16-bit TIFF");
-        assert!(decoded.width() > 256 && decoded.height() > 256);
-        assert!(decoded.as_raw().iter().any(|value| *value > 0));
-        let reduced =
-            image::imageops::resize(&decoded, 160, 512, image::imageops::FilterType::Triangle);
-        let mut geom = GeometryState::default();
-        geom.crop_rect.width = 0.5;
-        let transformed = render_shader_equivalent(
-            &reduced,
-            &TuningParams::default(),
-            &geom,
-            &BaseColor::default(),
-            None,
-        );
-        assert_eq!(transformed.dimensions(), (80, 512));
+            let proxy =
+                decode_reduced_tiff_for_working_space(path.to_string_lossy().as_ref(), 4096)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert_eq!(proxy.width().max(proxy.height()), 4096);
+            assert!(proxy.as_raw().iter().any(|value| *value > 0));
+            println!(
+                "{}: Nikon TIFF preview {:?}, proxy {:?} in {:?}",
+                path.display(),
+                (preview_image.width(), preview_image.height()),
+                proxy.dimensions(),
+                started.elapsed()
+            );
+        }
+    }
 
-        let reduced_page = decode_scanner_fff_tiff_page(path.to_string_lossy().as_ref(), 1)
-            .expect("scanner FFF should contain a reduced TIFF page");
-        assert!(reduced_page.width().max(reduced_page.height()) < IMPORT_PREVIEW_LONG_EDGE);
+    #[test]
+    #[ignore = "1-1.6 GB user-supplied Epson LinearRaw DNG; run explicitly for memory validation"]
+    fn epson_6400_dng_preview_is_visible_and_proxy_is_bounded() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("爱普森dng")
+            .join("6400DPI");
+        let mut paths = std::fs::read_dir(root)
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("dng"))
+            })
+            .collect::<Vec<_>>();
+        paths.sort();
+        if paths.is_empty() {
+            return;
+        }
 
-        let preview_started = std::time::Instant::now();
-        let preview =
-            decode_import_preview_base64(path.to_string_lossy().as_ref(), IMPORT_PREVIEW_LONG_EDGE)
-                .expect("FFF should expose a TIFF-compatible preview");
-        let preview_bytes = base64::engine::general_purpose::STANDARD
-            .decode(preview)
-            .expect("FFF preview must be base64");
-        let preview_image = image::load_from_memory(&preview_bytes)
-            .expect("FFF preview must contain a displayable image");
-        assert!(preview_image.width() > 1 && preview_image.height() > 1);
-        assert_eq!(
-            (preview_image.width(), preview_image.height()),
-            reduced_page.dimensions()
-        );
+        for path in paths {
+            let started = std::time::Instant::now();
+            let preview = decode_import_preview_base64(
+                path.to_string_lossy().as_ref(),
+                IMPORT_PREVIEW_LONG_EDGE,
+            )
+            .unwrap_or_else(|| panic!("{} could not be decoded", path.display()));
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(preview)
+                .expect("DNG preview must be base64");
+            let preview = image::load_from_memory(&bytes)
+                .expect("DNG preview must be displayable")
+                .to_rgb8();
+            let maximum = preview.as_raw().iter().copied().max().unwrap_or(0);
+            let visible = preview.as_raw().iter().filter(|value| **value > 6).count();
+            assert!(maximum > 12, "{} preview is black", path.display());
+            assert!(
+                visible > preview.as_raw().len() / 100,
+                "{} preview does not contain enough visible pixels",
+                path.display()
+            );
 
-        println!(
-            "FFF preview {:?} ({}x{}), proxy {:?} ({:?})",
-            preview_started.elapsed(),
-            preview_image.width(),
-            preview_image.height(),
-            decode_started.elapsed(),
-            decoded.dimensions()
-        );
+            let proxy = decode_reduced_dng_for_working_space(path.to_string_lossy().as_ref(), 4096)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert_eq!(proxy.width().max(proxy.height()), 4096);
+            assert!(
+                proxy.as_raw().iter().any(|value| *value > 16),
+                "{} produced a black Develop proxy",
+                path.display()
+            );
+            println!(
+                "{}: Epson DNG preview {:?}, proxy {:?} in {:?}",
+                path.display(),
+                preview.dimensions(),
+                proxy.dimensions(),
+                started.elapsed()
+            );
+        }
     }
 
     #[test]

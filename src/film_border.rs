@@ -8,8 +8,8 @@ use imageproc::gradients::{horizontal_sobel, vertical_sobel};
 use imageproc::point::Point;
 use serde::Serialize;
 
-const DEFAULT_INSET: f32 = 0.1;
-const MIN_AREA_RATIO: f64 = 0.12;
+const DEFAULT_INSET: f32 = 0.0;
+const MIN_AREA_RATIO: f64 = 0.025;
 const MAX_AREA_RATIO: f64 = 0.98;
 const MAX_SIDE_RATIO: f64 = 6.0;
 const MAX_DIAGONAL_RATIO: f64 = 3.0;
@@ -164,14 +164,14 @@ fn detect_from_gradient_projections(gray: &image::GrayImage) -> Option<[Point<i3
     let top_projection = gradient_projection_y(&y_gradient, width, -1);
     let bottom_projection = gradient_projection_y(&y_gradient, width, 1);
 
-    // These broad bands target the inner film gate while excluding the outer
-    // thumbnail boundary and most sprocket holes.
-    let (left_x, left_peak, left_prominence) = strongest_projection(&left_projection, 0.115, 0.35)?;
+    // Search almost the entire opposing halves. Small gates can sit well inside
+    // the old fixed bands, while a cropped scan may place an edge near a side.
+    let (left_x, left_peak, left_prominence) = strongest_projection(&left_projection, 0.015, 0.49)?;
     let (right_x, right_peak, right_prominence) =
-        strongest_projection(&right_projection, 0.65, 0.865)?;
-    let (top_y, top_peak, top_prominence) = strongest_projection(&top_projection, 0.08, 0.40)?;
+        strongest_projection(&right_projection, 0.51, 0.985)?;
+    let (top_y, top_peak, top_prominence) = strongest_projection(&top_projection, 0.015, 0.49)?;
     let (bottom_y, bottom_peak, bottom_prominence) =
-        strongest_projection(&bottom_projection, 0.60, 0.92)?;
+        strongest_projection(&bottom_projection, 0.51, 0.985)?;
 
     let prominences = [
         left_prominence,
@@ -242,14 +242,14 @@ fn gradient_projection_x(
     height: u32,
     polarity: i32,
 ) -> Vec<f64> {
-    let start_y = (height as f64 * 0.22).round() as u32;
-    let end_y = (height as f64 * 0.78).round() as u32;
+    let start_y = (height as f64 * 0.08).round() as u32;
+    let end_y = (height as f64 * 0.92).round() as u32;
     let values = (0..gradient.width())
         .map(|x| {
             let mut samples = (start_y..end_y)
-                .map(|y| gradient.get_pixel(x, y)[0])
+                .map(|y| (gradient.get_pixel(x, y)[0] as f64 * polarity as f64).max(0.0))
                 .collect::<Vec<_>>();
-            (median_i16(&mut samples) * polarity as f64).max(0.0)
+            upper_projection_quantile(&mut samples)
         })
         .collect::<Vec<_>>();
     smooth_projection(&values, (gradient.width() / 128).max(1) as usize)
@@ -260,26 +260,26 @@ fn gradient_projection_y(
     width: u32,
     polarity: i32,
 ) -> Vec<f64> {
-    let start_x = (width as f64 * 0.22).round() as u32;
-    let end_x = (width as f64 * 0.78).round() as u32;
+    let start_x = (width as f64 * 0.08).round() as u32;
+    let end_x = (width as f64 * 0.92).round() as u32;
     let values = (0..gradient.height())
         .map(|y| {
             let mut samples = (start_x..end_x)
-                .map(|x| gradient.get_pixel(x, y)[0])
+                .map(|x| (gradient.get_pixel(x, y)[0] as f64 * polarity as f64).max(0.0))
                 .collect::<Vec<_>>();
-            (median_i16(&mut samples) * polarity as f64).max(0.0)
+            upper_projection_quantile(&mut samples)
         })
         .collect::<Vec<_>>();
     smooth_projection(&values, (gradient.height() / 128).max(1) as usize)
 }
 
-fn median_i16(samples: &mut [i16]) -> f64 {
+fn upper_projection_quantile(samples: &mut [f64]) -> f64 {
     if samples.is_empty() {
         return 0.0;
     }
-    let middle = samples.len() / 2;
-    samples.select_nth_unstable(middle);
-    samples[middle] as f64
+    let index = ((samples.len() - 1) as f64 * 0.8).round() as usize;
+    samples.select_nth_unstable_by(index, |left, right| left.total_cmp(right));
+    samples[index]
 }
 
 fn smooth_projection(values: &[f64], radius: usize) -> Vec<f64> {
@@ -562,12 +562,29 @@ mod tests {
     }
 
     #[test]
-    fn blank_thumbnail_uses_centered_eighty_percent_fallback() {
+    fn blank_thumbnail_fallback_keeps_the_full_frame() {
         let image = DynamicImage::ImageLuma8(GrayImage::from_pixel(320, 200, Luma([16])));
         let result = detect_film_border(&image);
 
         assert_eq!(result.confidence, DetectionConfidence::Low);
         assert_eq!(result.points, FilmBorderDetection::fallback().points);
+    }
+
+    #[test]
+    fn detects_a_small_centered_gate() {
+        let mut image = GrayImage::from_pixel(400, 260, Luma([184]));
+        draw_filled_rect_mut(&mut image, Rect::at(154, 88).of_size(92, 84), Luma([58]));
+        for y in (96..168).step_by(10) {
+            draw_filled_rect_mut(&mut image, Rect::at(166, y).of_size(66, 3), Luma([86]));
+        }
+
+        let result = detect_film_border(&DynamicImage::ImageLuma8(image));
+
+        assert_eq!(result.confidence, DetectionConfidence::High);
+        assert!((result.points[0][0] - 154.0 / 399.0).abs() < 0.04);
+        assert!((result.points[0][1] - 88.0 / 259.0).abs() < 0.04);
+        assert!((result.points[2][0] - 246.0 / 399.0).abs() < 0.04);
+        assert!((result.points[2][1] - 172.0 / 259.0).abs() < 0.04);
     }
 
     #[test]

@@ -4,6 +4,7 @@ use serde_json::Value;
 use std::collections::HashSet;
 
 const GEOMETRY_MODULE: &str = "geometry";
+const FILM_AREA_MODULE: &str = "film_area";
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct ImageKey {
@@ -57,6 +58,20 @@ pub fn copy_settings_transaction(
         .map_err(|error| format!("Failed to start settings transaction: {error}"))?;
     let source_geometry = if modules.iter().any(|module| module == GEOMETRY_MODULE) {
         Some(read_json_column(&transaction, source, "geom", "source")?)
+    } else if modules.iter().any(|module| module == FILM_AREA_MODULE) {
+        let geometry = read_json_column(&transaction, source, "geom", "source")?;
+        let points = geometry
+            .get("calibration_points")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let confirmed = geometry
+            .get("calibration_confirmed")
+            .cloned()
+            .unwrap_or(Value::Bool(false));
+        Some(serde_json::json!({
+            "calibration_points": points,
+            "calibration_confirmed": confirmed,
+        }))
     } else {
         None
     };
@@ -109,7 +124,7 @@ fn validate_modules(modules: &[String]) -> Result<(), String> {
     }
     if let Some(module) = modules
         .iter()
-        .find(|module| module.as_str() != GEOMETRY_MODULE)
+        .find(|module| !matches!(module.as_str(), GEOMETRY_MODULE | FILM_AREA_MODULE))
     {
         return Err(format!("Unsupported settings module: {module}"));
     }
@@ -287,5 +302,110 @@ mod tests {
             serde_json::from_str::<Value>(&geometry).unwrap()["angle"],
             json!(0.0)
         );
+    }
+
+    #[test]
+    fn film_area_copy_preserves_each_targets_crop_and_orientation() {
+        let mut connection = connection();
+        let source = ImageKey {
+            roll_id: "r1".into(),
+            file_path: "source.nef".into(),
+        };
+        let target = ImageKey {
+            roll_id: "r1".into(),
+            file_path: "target.nef".into(),
+        };
+        insert(
+            &connection,
+            &source,
+            json!({
+                "calibration_points": [[0.2, 0.1], [0.8, 0.1], [0.8, 0.9], [0.2, 0.9]],
+                "calibration_confirmed": true,
+                "crop_rect": {"x": 0.2, "y": 0.2, "width": 0.6, "height": 0.6},
+                "rotate_90_count": 0
+            }),
+            "source",
+        );
+        insert(
+            &connection,
+            &target,
+            json!({
+                "calibration_points": null,
+                "calibration_confirmed": false,
+                "crop_rect": {"x": 0.05, "y": 0.1, "width": 0.8, "height": 0.7},
+                "rotate_90_count": 1,
+                "flip_h": true
+            }),
+            "target",
+        );
+
+        copy_settings_transaction(
+            &mut connection,
+            &source,
+            std::slice::from_ref(&target),
+            &[FILM_AREA_MODULE.to_string()],
+            99,
+        )
+        .unwrap();
+
+        let geometry: String = connection
+            .query_row(
+                "SELECT geom FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
+                params![target.roll_id, target.file_path],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let geometry: Value = serde_json::from_str(&geometry).unwrap();
+        assert_eq!(geometry["calibration_points"][0], json!([0.2, 0.1]));
+        assert_eq!(geometry["calibration_confirmed"], json!(true));
+        assert_eq!(geometry["crop_rect"]["x"], json!(0.05));
+        assert_eq!(geometry["rotate_90_count"], json!(1));
+        assert_eq!(geometry["flip_h"], json!(true));
+    }
+
+    #[test]
+    fn film_area_copy_accepts_an_unconfirmed_source_draft() {
+        let mut connection = connection();
+        let source = ImageKey {
+            roll_id: "r1".into(),
+            file_path: "source.nef".into(),
+        };
+        let target = ImageKey {
+            roll_id: "r1".into(),
+            file_path: "target.nef".into(),
+        };
+        let draft = json!([[0.15, 0.1], [0.85, 0.1], [0.85, 0.9], [0.15, 0.9]]);
+        insert(
+            &connection,
+            &source,
+            json!({"calibration_points": draft, "calibration_confirmed": false}),
+            "source",
+        );
+        insert(
+            &connection,
+            &target,
+            json!({"calibration_points": null, "calibration_confirmed": false}),
+            "target",
+        );
+
+        copy_settings_transaction(
+            &mut connection,
+            &source,
+            std::slice::from_ref(&target),
+            &[FILM_AREA_MODULE.to_string()],
+            101,
+        )
+        .unwrap();
+
+        let geometry: String = connection
+            .query_row(
+                "SELECT geom FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
+                params![target.roll_id, target.file_path],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let geometry: Value = serde_json::from_str(&geometry).unwrap();
+        assert_eq!(geometry["calibration_points"], draft);
+        assert_eq!(geometry["calibration_confirmed"], json!(false));
     }
 }

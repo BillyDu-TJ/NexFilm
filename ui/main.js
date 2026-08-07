@@ -18,6 +18,20 @@ const { getHistogramScale, getHistogramY } = window.NexFilmHistogram;
 const { cloneSettingsValue, createCopyPayload, mergeCopyPayload } = window.NexFilmSettingsCopy;
 const { updateRangeSelection } = window.NexFilmSelection;
 const {
+    normalizeWheelDelta,
+    horizontalWheelDelta,
+    canScrollBy,
+    getZoomViewUpdate,
+    getPreviewProxyTarget,
+    selectFilmAreaBatchTargets,
+    getNormalizedCropAspect,
+    fitCropRectToAspect,
+    constrainCropResize,
+    thumbnailPixelsAreUsable,
+    updateMatchingThumbnails,
+    getQuarterTurnAction,
+} = window.NexFilmInteractions;
+const {
     createExportInvokeArgs,
     describeResize,
     formatExportTemplate,
@@ -109,7 +123,7 @@ const btnCropMode = document.getElementById('btn-crop-mode');
 const btnPerspectiveMode = document.getElementById('btn-perspective-mode');
 const btnRecalibrate = document.getElementById('btn-recalibrate');
 const btnAutoArea = document.getElementById('btn-auto-area');
-const btnBatchApply = document.getElementById('btn-batch-apply');
+const batchApplyButtons = Array.from(document.querySelectorAll('[data-batch-apply]'));
 const btnResetCrop = document.getElementById('btn-reset-crop');
 const btnAutoColor = document.getElementById('btn-auto-color');
 const btnSprocketPicker = document.getElementById('btn-sprocket-picker');
@@ -119,6 +133,10 @@ const btnRotateRight = document.getElementById('btn-rotate-right');
 const btnFlipH = document.getElementById('btn-flip-h');
 const btnFlipV = document.getElementById('btn-flip-v');
 
+function setBatchApplyDisabled(disabled) {
+    batchApplyButtons.forEach(button => { button.disabled = disabled; });
+}
+
 const cropOverlay = document.getElementById('crop-overlay');
 const cropMask = document.getElementById('crop-mask');
 const cropBox = document.getElementById('crop-box');
@@ -127,6 +145,9 @@ const cropEdges = document.getElementById('crop-edges');
 const cropHandles = document.getElementById('crop-handles');
 const rotateHandleOuter = document.getElementById('rotate-handle-outer');
 const perspectiveOverlay = document.getElementById('perspective-overlay');
+const cropPanel = document.getElementById('crop-panel');
+const btnCloseCrop = document.getElementById('btn-close-crop');
+const cropAspectPreset = document.getElementById('crop-aspect-preset');
 const perspectivePanel = document.getElementById('perspective-panel');
 const btnClosePerspective = document.getElementById('btn-close-perspective');
 const btnResetPerspective = document.getElementById('btn-reset-perspective');
@@ -192,6 +213,7 @@ let copiedSettings = null;
 let isEyedropperActive = false;
 let isSprocketPickerActive = false;
 let activeId = null;
+let developOperationRevision = 0;
 let proxyPixels = null;
 let proxyWidth = 0;
 let proxyHeight = 0;
@@ -220,6 +242,7 @@ function requestDevelopLayoutSync() {
         if (activeId) {
             updateCanvasTransform();
             requestRender();
+            schedulePreviewResolutionRefresh();
         }
         requestModuleNavSync();
     });
@@ -233,20 +256,51 @@ if (typeof ResizeObserver !== 'undefined' && canvasWrapper?.parentElement) {
 
 canvasWrapper.parentElement.addEventListener('wheel', (e) => {
     if (!activeId) return;
+    const viewport = canvasWrapper.parentElement.getBoundingClientRect();
+    const delta = normalizeWheelDelta(e, viewport.height);
+    if (delta.y === 0) return;
+    const next = getZoomViewUpdate({
+        zoom: zoomLevel,
+        deltaY: delta.y,
+        minZoom: 0.1,
+        maxZoom: 10,
+        panX,
+        panY,
+        pointerX: e.clientX,
+        pointerY: e.clientY,
+        centerX: viewport.left + viewport.width / 2,
+        centerY: viewport.top + viewport.height / 2,
+    });
+    if (next.zoom === zoomLevel) return;
     e.preventDefault();
-    if (e.deltaY < 0) {
-        zoomLevel *= 1.1;
-    } else {
-        zoomLevel /= 1.1;
-    }
-    zoomLevel = Math.max(0.1, Math.min(zoomLevel, 10.0));
+    zoomLevel = next.zoom;
+    panX = next.panX;
+    panY = next.panY;
     updateCanvasTransform();
+    requestRender();
+    schedulePreviewResolutionRefresh();
 }, { passive: false });
 
 filmstripContainer.addEventListener('wheel', (e) => {
+    const delta = normalizeWheelDelta(e, filmstripContainer.clientWidth);
+    const horizontalDelta = horizontalWheelDelta(delta);
+    const maxScroll = Math.max(0, filmstripContainer.scrollWidth - filmstripContainer.clientWidth);
+    if (!canScrollBy(filmstripContainer.scrollLeft, maxScroll, horizontalDelta)) return;
     e.preventDefault();
-    filmstripContainer.scrollLeft += e.deltaY;
+    filmstripContainer.scrollLeft += horizontalDelta;
 }, { passive: false });
+
+function scrollInspectorFromWheel(e) {
+    if (!inspectorControls || inspectorControls.contains(e.target)) return;
+    const delta = normalizeWheelDelta(e, inspectorControls.clientHeight);
+    const maxScroll = Math.max(0, inspectorControls.scrollHeight - inspectorControls.clientHeight);
+    if (!canScrollBy(inspectorControls.scrollTop, maxScroll, delta.y)) return;
+    e.preventDefault();
+    inspectorControls.scrollTop += delta.y;
+}
+
+developInspector.addEventListener('wheel', scrollInspectorFromWheel, { passive: false });
+developModuleNav?.addEventListener('wheel', scrollInspectorFromWheel, { passive: false });
 
 let isWaveform = false;
 let lastPixels = null;
@@ -261,6 +315,7 @@ let activeSliderEnd = null;
 // Library Multi-Selection State
 let allLibraryItems = [];
 const itemIndex = new Map();
+const liveThumbnailById = new Map();
 let selectedLibraryIds = new Set();
 let lastSelectedLibraryId = null;
 let lastSelectionScope = null;
@@ -301,7 +356,8 @@ function itemIdentity(item) {
 function rememberItem(item) {
     if (!item || !item.id) return item;
     const previous = itemIndex.get(item.id) || {};
-    const merged = { ...previous, ...item };
+    const liveThumbnail = liveThumbnailById.get(item.id) || {};
+    const merged = { ...previous, ...item, ...liveThumbnail };
     if (merged.rendered_thumbnail_base64) {
         merged.thumbnail_base64 = merged.rendered_thumbnail_base64;
         merged.thumbnail_kind = 'rendered';
@@ -329,7 +385,10 @@ function forgetRollItems(rollIds) {
         if (deleted.has(item.roll_id)) removedItemIds.add(id);
     }
     allLibraryItems = allLibraryItems.filter(item => !deleted.has(item.roll_id));
-    removedItemIds.forEach(id => itemIndex.delete(id));
+    removedItemIds.forEach(id => {
+        itemIndex.delete(id);
+        liveThumbnailById.delete(id);
+    });
     selectedLibraryIds = new Set([...selectedLibraryIds].filter(id => !removedItemIds.has(id)));
     if (activeId && removedItemIds.has(activeId)) activeId = null;
 }
@@ -360,6 +419,7 @@ function forgetImageItems(targets) {
     allLibraryItems = allLibraryItems.filter(item => !deletedIdentities.has(itemIdentity(item)));
     for (const id of removedIds) {
         itemIndex.delete(id);
+        liveThumbnailById.delete(id);
         imageStates.delete(id);
         proxyCache.delete(id);
         readyProxyIds.delete(id);
@@ -452,7 +512,10 @@ function removeTransientItems(ids) {
     const removed = new Set(ids || []);
     if (removed.size === 0) return;
     allLibraryItems = allLibraryItems.filter(item => !removed.has(item.id));
-    removed.forEach(id => itemIndex.delete(id));
+    removed.forEach(id => {
+        itemIndex.delete(id);
+        liveThumbnailById.delete(id);
+    });
     selectedLibraryIds = new Set([...selectedLibraryIds].filter(id => !removed.has(id)));
 }
 
@@ -573,6 +636,7 @@ function setImportManagementBusy(busy) {
 
 function resetWorkingLibrary() {
     currentImageRequestToken++;
+    developOperationRevision++;
     isCalibrationMode = false;
     document.getElementById('calibration-overlay').classList.add('hidden');
     setDevelopInspectorCalibrationLocked(false);
@@ -1124,31 +1188,47 @@ function updateSliderTrack(el) {
 
 let thumbnailSyncTimeout = null;
 let thumbnailCaptureRAF = null;
+let thumbnailCaptureTimeout = null;
 let lastThumbnailCaptureAt = 0;
 let thumbnailPersistTimeout = null;
 let pendingThumbnailPersist = null;
 
 function captureActiveCanvasThumbnail() {
-    if (!activeId || !previewCanvas || !activeProxyIsFull || !gl) return;
+    if (!activeId || !previewCanvas || !activeProxyIsFull || !proxyHasAnalyzedBase || !gl) return false;
+    const persistId = activeId;
+    const generation = developOperationRevision;
     try {
         const maxEdge = 640;
         const scale = Math.min(1, maxEdge / Math.max(previewCanvas.width || 1, previewCanvas.height || 1));
         const width = Math.max(1, Math.round((previewCanvas.width || 1) * scale));
         const height = Math.max(1, Math.round((previewCanvas.height || 1) * scale));
-        if (!ensureThumbnailCaptureTarget(width, height)) return;
+        if (!ensureThumbnailCaptureTarget(width, height)) return false;
 
         const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
         const previousViewport = gl.getParameter(gl.VIEWPORT);
-        gl.useProgram(shaderProgram);
-        gl.bindVertexArray(vao);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, thumbnailFbo);
-        gl.viewport(0, 0, width, height);
-        gl.clearColor(0, 0, 0, 1);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
-        gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, thumbnailReadback);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
-        gl.viewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
+        let captureError;
+        try {
+            gl.getError();
+            gl.useProgram(shaderProgram);
+            gl.bindVertexArray(vao);
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, tex);
+            gl.bindFramebuffer(gl.FRAMEBUFFER, thumbnailFbo);
+            gl.viewport(0, 0, width, height);
+            gl.clearColor(0, 0, 0, 1);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, thumbnailReadback);
+            captureError = gl.getError();
+        } finally {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
+            gl.viewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
+        }
+        if (captureError !== gl.NO_ERROR || !thumbnailPixelsAreUsable(thumbnailReadback)) {
+            console.debug('Discarded an invalid thumbnail framebuffer readback', captureError);
+            return false;
+        }
+        if (persistId !== activeId || generation !== developOperationRevision) return false;
 
         const rowBytes = width * 4;
         for (let y = 0; y < height; y++) {
@@ -1166,31 +1246,20 @@ function captureActiveCanvasThumbnail() {
         const ctx = thumbCanvas.getContext('2d', { alpha: false });
         ctx.putImageData(new ImageData(thumbnailDisplayPixels, width, height), 0, 0);
         const dataUrl = thumbCanvas.toDataURL('image/jpeg', 0.72);
-        const persistId = activeId;
-        const item = findKnownItem(activeId);
-        if (item) {
-            item.thumbnail_base64 = dataUrl;
-            item.rendered_thumbnail_base64 = dataUrl;
-            item.thumbnail_kind = 'rendered';
-            rememberItem(item);
-        }
-        document.querySelectorAll(`img[data-img-id="${activeId}"]`).forEach(img => {
-            img.src = dataUrl;
-            img.style.transform = '';
-            img.style.objectFit = 'cover';
-            img.classList.remove('opacity-50', 'object-contain', 'p-4', 'p-2', 'bg-[#1C1C1E]');
-            img.classList.add('object-cover');
-        });
+        publishThumbnailUpdate(persistId, dataUrl, { rendered: true });
         pendingThumbnailPersist = {
             id: persistId,
-            thumbnail: dataUrl.startsWith('data:') ? dataUrl.split(',')[1] : dataUrl
+            thumbnail: dataUrl.startsWith('data:') ? dataUrl.split(',')[1] : dataUrl,
+            generation,
         };
         if (thumbnailPersistTimeout) clearTimeout(thumbnailPersistTimeout);
         thumbnailPersistTimeout = setTimeout(async () => {
             await flushPendingThumbnail();
         }, 1000);
+        return true;
     } catch (e) {
         console.error('thumbnail canvas capture failed', e);
+        return false;
     }
 }
 
@@ -1205,44 +1274,76 @@ async function flushPendingThumbnail() {
         try {
             await invoke('set_thumbnail_data', pending);
         } catch (error) {
-            if (!pendingThumbnailPersist) pendingThumbnailPersist = pending;
+            if (!String(error).includes('STALE_DEVELOPMENT_OPERATION') && !pendingThumbnailPersist) {
+                pendingThumbnailPersist = pending;
+            }
             throw error;
         }
     }
 }
 
 function scheduleInstantThumbnailUpdate({ immediate = false } = {}) {
-    if (!activeId || !activeProxyIsFull || thumbnailCaptureRAF) return;
+    if (!activeId || !activeProxyIsFull) return;
     const now = performance.now();
-    if (now - lastThumbnailCaptureAt < 250) return;
-    lastThumbnailCaptureAt = now;
+    const remaining = 250 - (now - lastThumbnailCaptureAt);
+    if (remaining > 0) {
+        if (thumbnailCaptureTimeout !== null) clearTimeout(thumbnailCaptureTimeout);
+        const targetId = activeId;
+        const generation = developOperationRevision;
+        thumbnailCaptureTimeout = setTimeout(() => {
+            thumbnailCaptureTimeout = null;
+            if (targetId === activeId && generation === developOperationRevision) {
+                scheduleInstantThumbnailUpdate({ immediate: true });
+            }
+        }, Math.ceil(remaining));
+        return;
+    }
+    if (thumbnailCaptureRAF) return;
     if (immediate) {
-        captureActiveCanvasThumbnail();
+        if (captureActiveCanvasThumbnail()) lastThumbnailCaptureAt = performance.now();
         return;
     }
     thumbnailCaptureRAF = requestAnimationFrame(() => {
         thumbnailCaptureRAF = null;
-        captureActiveCanvasThumbnail();
+        if (captureActiveCanvasThumbnail()) lastThumbnailCaptureAt = performance.now();
     });
+}
+
+function flushActiveThumbnailCapture() {
+    if (thumbnailCaptureTimeout !== null) {
+        clearTimeout(thumbnailCaptureTimeout);
+        thumbnailCaptureTimeout = null;
+    }
+    if (thumbnailCaptureRAF !== null) {
+        cancelAnimationFrame(thumbnailCaptureRAF);
+        thumbnailCaptureRAF = null;
+    }
+    if (captureActiveCanvasThumbnail()) lastThumbnailCaptureAt = performance.now();
 }
 
 function requestThumbnailSync() {
     scheduleInstantThumbnailUpdate();
     if (activeProxyIsFull) return;
     if (thumbnailSyncTimeout) clearTimeout(thumbnailSyncTimeout);
+    const targetId = activeId;
+    const generation = developOperationRevision;
     thumbnailSyncTimeout = setTimeout(async () => {
-        if (!activeId) return;
+        thumbnailSyncTimeout = null;
+        if (!targetId || targetId !== activeId || generation !== developOperationRevision) return;
         try {
-            await invoke('sync_thumbnail_buffer', { id: activeId });
+            await invoke('sync_thumbnail_buffer', { id: targetId, generation });
+            if (targetId !== activeId || generation !== developOperationRevision) return;
             allLibraryItems = await invoke('get_filmstrip');
             rememberItems(allLibraryItems);
-            const item = findKnownItem(activeId);
+            const item = findKnownItem(targetId);
             if (item && item.thumbnail_base64 !== "FILE_MISSING") {
-                document.querySelectorAll(`img[data-img-id="${activeId}"]`).forEach(img => {
-                    setImageElementThumbnail(img, item.thumbnail_base64);
+                document.querySelectorAll(`img[data-img-id="${targetId}"]`).forEach(img => {
+                    setImageElementThumbnail(img, item.thumbnail_base64, item);
                 });
             }
-        } catch(e) { console.error(e); }
+        } catch(e) {
+            if (!String(e).includes('STALE_DEVELOPMENT_OPERATION')) console.error(e);
+        }
     }, 300);
 }
 
@@ -1274,7 +1375,11 @@ function saveCurrentState() {
     return params;
 }
 
-async function updateBackendParams(targetId = activeId, paramsSnapshot = null) {
+async function updateBackendParams(
+    targetId = activeId,
+    paramsSnapshot = null,
+    generation = developOperationRevision,
+) {
     // DOM event listeners pass an Event as their first argument. Keep the IPC
     // contract strict even if this helper is accidentally used as a callback.
     if (typeof targetId !== 'string') targetId = activeId;
@@ -1283,7 +1388,12 @@ async function updateBackendParams(targetId = activeId, paramsSnapshot = null) {
         const item = findKnownItem(targetId);
         const rollId = item?.roll_id || 'LOOSE_DEFAULT';
         try {
-            await invoke('update_tuning_parameters', { id: targetId, params, rollId });
+            await invoke('update_tuning_parameters', {
+                id: targetId,
+                params,
+                rollId,
+                generation,
+            });
         } catch (error) {
             imageStates.delete(targetId);
             throw error;
@@ -2230,12 +2340,16 @@ function renderWebGL() {
 
     // With preserveDrawingBuffer disabled, capture in the same task as the
     // draw call, before the compositor is allowed to discard the back buffer.
-    if (!sliderDragActive) scheduleInstantThumbnailUpdate({ immediate: true });
+    // Keep every visible representation of the active frame live while the
+    // user drags. The capture scheduler coalesces this to at most 4 updates/s.
+    scheduleInstantThumbnailUpdate({ immediate: true });
 }
 
 // WebGL already owns the active texture and Rust owns the decoded proxy cache.
 // Keep only a small JS-side navigation cache to avoid a third large copy.
 const PROXY_CACHE_LIMIT = 3;
+const PREVIEW_PROXY_BASE_LONG_EDGE = 2560;
+const PREVIEW_PROXY_MAX_LONG_EDGE = 4096;
 const proxyCache = new Map(); // key: id, value: { arrayBuffer, geomKey, lastUsed: Date.now() }
 const readyProxyIds = new Set();
 
@@ -2304,8 +2418,7 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
             }
             const result = await response.arrayBuffer();
             if (token !== null && token !== currentImageRequestToken) {
-                if (loadingMask) loadingMask.classList.add('hidden');
-                return;
+                return false;
             }
             if (requestedGeomKey !== getProxyGeomKey(current_geom)) return false;
             
@@ -2357,6 +2470,32 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
             ? dataView.getUint32(24, true) === 1
             : proxyAnalyzedBaseIds.has(requestedId);
         const pixels = new Uint16Array(arrayBuffer, byteOffset + (dataView.byteLength >= 28 ? 28 : 24), width * height * 4);
+        const nextTexture = gl.createTexture();
+        if (!nextTexture) throw new Error('Could not allocate the preview texture.');
+        try {
+            gl.getError();
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, nextTexture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16UI, width, height, 0, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, pixels);
+            const textureError = gl.getError();
+            if (textureError !== gl.NO_ERROR) {
+                throw new Error(`Preview texture upload failed (WebGL ${textureError}).`);
+            }
+        } catch (error) {
+            gl.deleteTexture(nextTexture);
+            throw error;
+        }
+        if ((token !== null && token !== currentImageRequestToken) || requestedId !== activeId) {
+            gl.deleteTexture(nextTexture);
+            return false;
+        }
+
+        const previousTexture = tex;
+        tex = nextTexture;
         proxyPixels = pixels;
         proxyWidth = width;
         proxyHeight = height;
@@ -2366,18 +2505,20 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         // per-image state when the same proxy is reloaded after analysis.
         proxyHasAnalyzedBase = baseAnalyzed;
         readyProxyIds.add(requestedId);
-        addToCache(requestedId, arrayBuffer, requestedGeom);
-        
-        if (previewCanvas.width !== width || previewCanvas.height !== height) {
-            previewCanvas.width = width;
-            previewCanvas.height = height;
+        if (Math.max(width, height) <= PREVIEW_PROXY_BASE_LONG_EDGE) {
+            addToCache(requestedId, arrayBuffer, requestedGeom);
+        } else {
+            // Keep an upgraded buffer only for the active WebGL texture. Holding
+            // several 16-bit 4K RGBA copies in JS would make zooming consume
+            // hundreds of megabytes in addition to the Rust and GPU buffers.
+            proxyCache.delete(requestedId);
         }
         
-        gl.bindTexture(gl.TEXTURE_2D, tex);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16UI, width, height, 0, gl.RGBA_INTEGER, gl.UNSIGNED_SHORT, pixels);
-        
         updateCanvasTransform(width, height);
-        requestRender();
+        // Draw in this task. The placeholder is hidden only after this returns,
+        // so the compositor never observes an empty, resized canvas.
+        renderWebGL();
+        if (previousTexture && previousTexture !== nextTexture) gl.deleteTexture(previousTexture);
 
         return true;
     } catch(e) {
@@ -2468,11 +2609,13 @@ async function flushPendingBackendSync() {
     if (!pending) return;
     try {
         if (pending.key === 'angle') {
-            await persistGeometryQueued(pending.id, pending.geom);
+            await persistGeometryQueued(pending.id, pending.geom, pending.generation);
         }
-        await updateBackendParams(pending.id, pending.params);
+        await updateBackendParams(pending.id, pending.params, pending.generation);
     } catch (error) {
-        if (!pendingBackendSync) pendingBackendSync = pending;
+        if (!String(error).includes('STALE_DEVELOPMENT_OPERATION') && !pendingBackendSync) {
+            pendingBackendSync = pending;
+        }
         throw error;
     }
 }
@@ -2486,19 +2629,24 @@ function scheduleBackendSync(key) {
         id,
         key,
         params,
-        geom: JSON.parse(JSON.stringify(current_geom))
+        geom: JSON.parse(JSON.stringify(current_geom)),
+        generation: developOperationRevision,
     };
     backendSyncTimeout = setTimeout(async () => {
+        const targetId = pendingBackendSync?.id;
+        const generation = pendingBackendSync?.generation;
         const shouldReprocessGeometry = pendingBackendSync?.key === 'angle'
-            && pendingBackendSync?.id === activeId
+            && targetId === activeId
             && hasProcessedActiveImage;
         try {
             await flushPendingBackendSync();
+            if (targetId !== activeId || generation !== developOperationRevision) return;
             if (shouldReprocessGeometry) {
                 await reloadDevelopProxy(current_geom, { showLoading: false });
             }
             requestThumbnailSync();
         } catch (error) {
+            if (String(error).includes('STALE_DEVELOPMENT_OPERATION')) return;
             console.error("Failed to persist edit state", error);
             showToast("Could not save the latest edit: " + error, "error");
         }
@@ -2614,7 +2762,7 @@ function enableUI() {
     Object.values(perspectiveControls).forEach(control => { control.el.disabled = false; });
     btnRecalibrate.disabled = false;
     btnAutoArea.disabled = false;
-    btnBatchApply.disabled = !current_geom?.calibration_points;
+    setBatchApplyDisabled(false);
     btnResetCrop.disabled = false;
     btnAutoColor.disabled = !current_geom?.calibration_points || isCalibrationMode;
     btnSprocketPicker.disabled = false;
@@ -2646,7 +2794,7 @@ function disableUI() {
     Object.values(perspectiveControls).forEach(control => { control.el.disabled = true; });
     btnRecalibrate.disabled = true;
     btnAutoArea.disabled = true;
-    btnBatchApply.disabled = true;
+    setBatchApplyDisabled(true);
     btnResetCrop.disabled = true;
     btnAutoColor.disabled = true;
     btnSprocketPicker.disabled = true;
@@ -2942,6 +3090,7 @@ function createLibraryItemElement(item, orderedIds) {
         libImg.className = 'w-full h-full object-cover pointer-events-none';
     }
     libDiv.appendChild(libImg);
+    guardBlackThumbnail(libImg, findKnownItem(item.id) || item);
     appendMissingSourceBadge(libDiv, item);
     return libDiv;
 }
@@ -3184,10 +3333,11 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                                 libImg.src = "data:image/svg+xml;base64," + btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><rect width="100" height="100" fill="#2C2C2E"/><circle cx="50" cy="50" r="15" fill="none" stroke="#8E8E93" stroke-width="3" stroke-dasharray="23.5 23.5"><animateTransform attributeName="transform" type="rotate" repeatCount="indefinite" dur="1s" values="0 50 50;360 50 50"/></circle></svg>`);
                                 libImg.className = 'w-full h-full object-cover pointer-events-none opacity-80';
                             } else {
-                                libImg.src = existingItem.thumbnail_base64.startsWith('data:') ? existingItem.thumbnail_base64 : `data:image/jpeg;base64,${existingItem.thumbnail_base64}`;
+                                libImg.src = getThumbnailSrc(existingItem.id) || '';
                                 libImg.className = 'w-full h-full object-cover pointer-events-none';
                             }
                             libDiv.appendChild(libImg);
+                            guardBlackThumbnail(libImg, findKnownItem(existingItem.id) || existingItem);
                             appendMissingSourceBadge(libDiv, existingItem);
                             if (!existingItem.rendered_thumbnail_base64) {
                                 const undeveloped = document.createElement('div');
@@ -3283,6 +3433,23 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                             </div>
                         </div>
                     `;
+                    const knownRollItems = (roll.image_paths || [])
+                        .map(path => Array.from(itemIndex.values()).find(item =>
+                            item.roll_id === roll.roll_id
+                            && normalizePath(item.file_path) === normalizePath(path)
+                        ))
+                        .filter(item => item?.thumbnail_base64 && item.thumbnail_base64 !== 'FILE_MISSING')
+                        .slice(0, 8);
+                    card.querySelectorAll('.roll-preview-grid img').forEach((img, index) => {
+                        const previewItem = knownRollItems[index];
+                        if (!previewItem) return;
+                        img.dataset.imgId = previewItem.id;
+                        setImageElementThumbnail(
+                            img,
+                            getThumbnailSrc(previewItem.id) || previewSources[index],
+                            previewItem
+                        );
+                    });
                     card.querySelector('.roll-title').textContent = roll.film_stock || i18nText('status.unknownFilm');
                     card.querySelector('.roll-frame-count').textContent = `${roll.image_paths?.length || 0} frames`;
                     card.querySelector('.roll-format').textContent = `${roll.format || '135'} ${i18nText('common.formatSuffix')}`;
@@ -3351,7 +3518,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                     stripImg.className = 'w-full h-full object-cover rounded-[2px] pointer-events-none';
                 }
                 stripDiv.appendChild(stripImg);
-                guardBlackFilmstripThumbnail(stripImg, item);
+                guardBlackThumbnail(stripImg, findKnownItem(item.id) || item);
                 appendMissingSourceBadge(stripDiv, item);
             }
             filmstripContainer.appendChild(stripDiv);
@@ -3469,7 +3636,7 @@ function getThumbnailSrc(id) {
     return null;
 }
 
-function guardBlackFilmstripThumbnail(img, item) {
+function guardBlackThumbnail(img, item) {
     if (!img || !item?.rendered_thumbnail_base64 || !item?.embedded_thumbnail_base64) return;
     const inspect = () => {
         if (img.dataset.blackChecked === 'true') return;
@@ -3481,15 +3648,14 @@ function guardBlackFilmstripThumbnail(img, item) {
             const ctx = sample.getContext('2d', { willReadFrequently: true });
             ctx.drawImage(img, 0, 0, sample.width, sample.height);
             const pixels = ctx.getImageData(0, 0, sample.width, sample.height).data;
-            let maxChannel = 0;
-            for (let index = 0; index < pixels.length; index += 4) {
-                maxChannel = Math.max(maxChannel, pixels[index], pixels[index + 1], pixels[index + 2]);
-            }
-            if (maxChannel > 4) return;
-            img.src = item.embedded_thumbnail_base64.startsWith('data:')
-                ? item.embedded_thumbnail_base64
-                : 'data:image/jpeg;base64,' + item.embedded_thumbnail_base64;
+            if (thumbnailPixelsAreUsable(pixels)) return;
+            const invalidThumbnail = item.rendered_thumbnail_base64;
+            publishThumbnailUpdate(item.id, item.embedded_thumbnail_base64, { rendered: false });
             img.dataset.blackFallback = 'true';
+            void invoke('clear_invalid_rendered_thumbnail', {
+                id: item.id,
+                expectedThumbnail: invalidThumbnail,
+            }).catch(error => console.debug('invalid thumbnail cleanup skipped', error));
         } catch (error) {
             console.debug('thumbnail black-pixel guard skipped', error);
         }
@@ -3512,32 +3678,72 @@ async function showEmbeddedDevelopPreview(id, token) {
     }
 }
 
-function setImageElementThumbnail(img, thumbnail) {
+function setImageElementThumbnail(img, thumbnail, item = null) {
     if (!img || !thumbnail || thumbnail === 'FILE_MISSING') return;
+    delete img.dataset.blackChecked;
+    delete img.dataset.blackFallback;
     img.src = thumbnail.startsWith('data:') ? thumbnail : `data:image/jpeg;base64,${thumbnail}`;
     img.style.transform = '';
     img.style.objectFit = 'cover';
     img.classList.remove('opacity-50', 'object-contain', 'p-4', 'p-2', 'bg-[#1C1C1E]');
     img.classList.add('object-cover');
+    guardBlackThumbnail(img, item || findKnownItem(img.dataset.imgId));
+}
+
+function publishThumbnailUpdate(id, thumbnail, { rendered = true } = {}) {
+    if (!id || !thumbnail || thumbnail === 'FILE_MISSING') return null;
+    const live = {
+        thumbnail_base64: thumbnail,
+        rendered_thumbnail_base64: rendered ? thumbnail : null,
+        thumbnail_kind: rendered ? 'rendered' : 'embedded',
+    };
+    liveThumbnailById.set(id, live);
+
+    const known = findKnownItem(id);
+    if (known) Object.assign(known, live);
+    for (const item of allLibraryItems) {
+        if (item.id === id) Object.assign(item, live);
+    }
+    const updated = rememberItem({ ...(known || { id }), ...live });
+    updateMatchingThumbnails(document.querySelectorAll('img[data-img-id]'), id, img => {
+        setImageElementThumbnail(img, thumbnail, updated);
+    });
+
+    if (updated?.roll_id) {
+        for (const key of rollPreviewCache.keys()) {
+            if (key.startsWith(`${updated.roll_id}:`)) rollPreviewCache.delete(key);
+        }
+    }
+    return updated;
 }
 
 async function selectImage(id) {
     if (activeId === id) return;
+    const myToken = ++currentImageRequestToken;
     if (activeId) {
         try {
             await flushPendingBackendSync();
+            if (myToken !== currentImageRequestToken) return;
             const outgoingId = activeId;
             const outgoingParams = saveCurrentState();
             await updateBackendParams(outgoingId, outgoingParams);
-            scheduleInstantThumbnailUpdate();
+            if (myToken !== currentImageRequestToken) return;
+            flushActiveThumbnailCapture();
             await flushPendingThumbnail();
+            if (myToken !== currentImageRequestToken) return;
         } catch (error) {
+            if (myToken !== currentImageRequestToken) return;
             console.error("Failed to save the current image before switching", error);
             showToast("Could not save the current image. The image was not switched.", "error");
             return;
         }
     }
-    const myToken = ++currentImageRequestToken;
+    const generation = ++developOperationRevision;
+    if (previewResolutionTimer !== null) {
+        clearTimeout(previewResolutionTimer);
+        previewResolutionTimer = null;
+    }
+    previewResolutionTarget = 0;
     const selectedItem = findKnownItem(id);
     const hasRenderedPreview = !!selectedItem?.rendered_thumbnail_base64;
 
@@ -3565,10 +3771,8 @@ async function selectImage(id) {
             const rollId = currentRollViewId || 'LOOSE_DEFAULT';
             // Backend state is authoritative even when the UI has a cached copy.
             // This lightweight call also validates roll identity and source availability.
-            state = await invoke('switch_active_image', { id, rollId });
+            state = await invoke('switch_active_image', { id, rollId, generation });
             if (myToken !== currentImageRequestToken) {
-                hideThumbnailPlaceholder();
-                if (loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
                 return;
             }
             imageStates.set(id, {
@@ -3581,6 +3785,7 @@ async function selectImage(id) {
                 proxyAnalyzedBaseIds.delete(id);
             }
         } catch (err) {
+            if (myToken !== currentImageRequestToken) return;
             if (err === "FILE_MISSING") {
                 hideThumbnailPlaceholder();
                 if (loadingUI) { loadingUI.classList.add('hidden'); loadingUI.classList.remove('flex'); }
@@ -3621,7 +3826,7 @@ async function selectImage(id) {
             current_geom.calibration_points = null;
         }
         calibrationRevision++;
-        btnBatchApply.disabled = !current_geom.calibration_points;
+        setBatchApplyDisabled(false);
         updateUIFromParams(state.params, current_geom);
         updateThumbnailPlaceholderLayout(document.getElementById('thumbnail-placeholder'));
         await restoreLutForImage(state.params);
@@ -3684,6 +3889,7 @@ async function selectImage(id) {
 
 
     } catch(e) {
+        if (myToken !== currentImageRequestToken) return;
         hideThumbnailPlaceholder();
         const lu = document.getElementById('loading-proxy-ui');
         if (lu) { lu.classList.add('hidden'); lu.classList.remove('flex'); }
@@ -4434,11 +4640,13 @@ function updateCanvasTransform(w, h) {
     }
 }
 
-btnCropMode.addEventListener('click', () => {
-    isCropMode = !isCropMode;
+function setCropMode(enabled) {
+    isCropMode = !!enabled;
     if (isCropMode) {
         setPerspectiveMode(false);
         btnCropMode.classList.add('active');
+        cropPanel.classList.remove('hidden');
+        cropPanel.setAttribute('aria-hidden', 'false');
         cropOverlay.classList.remove('hidden');
         cropBox.classList.remove('hidden');
         cropMask.classList.remove('hidden');
@@ -4447,10 +4655,44 @@ btnCropMode.addEventListener('click', () => {
         updateCropOverlay();
     } else {
         btnCropMode.classList.remove('active');
+        cropPanel.classList.add('hidden');
+        cropPanel.setAttribute('aria-hidden', 'true');
         cropOverlay.classList.add('hidden');
     }
     updateCanvasTransform();
     requestRender();
+}
+
+btnCropMode.addEventListener('click', () => setCropMode(!isCropMode));
+btnCloseCrop.addEventListener('click', () => setCropMode(false));
+
+function activeNormalizedCropAspect() {
+    const orientedSize = NexFilmGeometry.getOrientedDimensions(
+        currentImageWidth,
+        currentImageHeight,
+        current_geom
+    );
+    return getNormalizedCropAspect(
+        cropAspectPreset.value,
+        orientedSize.width,
+        orientedSize.height
+    );
+}
+
+function refitCropToActiveAspect() {
+    const aspect = activeNormalizedCropAspect();
+    if (!(aspect > 0)) return;
+    current_geom.crop_rect = clampCropRect(
+        fitCropRectToAspect(current_geom.crop_rect, aspect, MIN_CROP_SIZE)
+    );
+}
+
+cropAspectPreset.addEventListener('change', () => {
+    if (!activeId) return;
+    pushUndoState();
+    refitCropToActiveAspect();
+    updateCropOverlay();
+    sendGeometrySync();
 });
 
 function formatPerspectiveValue(key, value) {
@@ -4479,6 +4721,8 @@ function setPerspectiveMode(enabled) {
     if (isPerspectiveMode) {
         isCropMode = false;
         btnCropMode.classList.remove('active');
+        cropPanel.classList.add('hidden');
+        cropPanel.setAttribute('aria-hidden', 'true');
         cropOverlay.classList.add('hidden');
         updatePerspectiveUI();
     }
@@ -4547,11 +4791,11 @@ function updateSpatialSamples(transform) {
 let geomSyncId = 0;
 let geometrySyncChain = Promise.resolve();
 
-function persistGeometryQueued(id, geom) {
+function persistGeometryQueued(id, geom, generation = developOperationRevision) {
     const snapshot = JSON.parse(JSON.stringify(geom));
     const write = geometrySyncChain
         .catch(() => {})
-        .then(() => invoke('update_geometry', { id, geom: snapshot }));
+        .then(() => invoke('update_geometry', { id, geom: snapshot, generation }));
     geometrySyncChain = write;
     return write;
 }
@@ -4583,23 +4827,24 @@ function sendGeometrySync() {
         });
 }
 
-btnRotateLeft.addEventListener('click', () => {
-    if (!activeId) return; pushUndoState();
-    const transformed = NexFilmGeometry.transformGeometryForQuarterTurn(current_geom, true);
-    current_geom.rotate_90_count += 1;
+function applyQuarterTurn(action) {
+    if (!activeId) return;
+    const turn = getQuarterTurnAction(action);
+    if (!turn) return;
+    pushUndoState();
+    const transformed = NexFilmGeometry.transformGeometryForQuarterTurn(
+        current_geom,
+        turn.clockwise
+    );
+    current_geom.rotate_90_count += turn.turnDelta;
     current_geom.crop_rect = transformed.cropRect;
     updateSpatialSamples(transformed);
+    refitCropToActiveAspect();
     sendGeometrySync();
-});
+}
 
-btnRotateRight.addEventListener('click', () => {
-    if (!activeId) return; pushUndoState();
-    const transformed = NexFilmGeometry.transformGeometryForQuarterTurn(current_geom, false);
-    current_geom.rotate_90_count -= 1;
-    current_geom.crop_rect = transformed.cropRect;
-    updateSpatialSamples(transformed);
-    sendGeometrySync();
-});
+btnRotateLeft.addEventListener('click', () => applyQuarterTurn('left'));
+btnRotateRight.addEventListener('click', () => applyQuarterTurn('right'));
 
 btnFlipH.addEventListener('click', () => {
     if (!activeId) return; pushUndoState();
@@ -4619,12 +4864,13 @@ btnFlipV.addEventListener('click', () => {
     sendGeometrySync();
 });
 
-async function doAutoColor() {
-    if (!activeId || !gl) return;
+async function doAutoColor(targetId = activeId, generation = developOperationRevision) {
+    if (!targetId || targetId !== activeId || !gl) return false;
     // Auto Color reads canonical 16-bit capture data on the Rust side. This
     // keeps the histogram independent of the current display controls and
     // avoids quantizing density through an 8-bit sRGB framebuffer.
-    const limits = await invoke('analyze_proxy_density_limits', { id: activeId });
+    const limits = await invoke('analyze_proxy_density_limits', { id: targetId });
+    if (targetId !== activeId || generation !== developOperationRevision) return false;
     const batchState = {
         dmin: limits.d_min,
         dmax: limits.d_max,
@@ -4642,8 +4888,10 @@ async function doAutoColor() {
     updateSliderTrack(sliders.expg.el);
     updateSliderTrack(sliders.expb.el);
 
-    await updateBackendParams();
+    await updateBackendParams(targetId, saveCurrentState(), generation);
+    if (targetId !== activeId || generation !== developOperationRevision) return false;
     renderWebGL();
+    return true;
 }
 
 const proxyPreparePromises = new Map();
@@ -4651,17 +4899,99 @@ const proxyDisplayPromises = new Map();
 const proxyPrewarmQueue = [];
 const proxyPrewarmQueued = new Set();
 let proxyPrewarmRunning = false;
+let previewResolutionTimer = null;
+let previewResolutionInFlight = null;
+let previewResolutionTarget = 0;
+const previewResolutionAttempts = new Map();
 
-function ensureProxyPrepared(id) {
+function ensureProxyPrepared(id, targetLongEdge = null) {
     const existing = proxyPreparePromises.get(id);
-    if (existing) return existing;
-    const promise = invoke('prepare_proxy', { id }).finally(() => {
-        if (proxyPreparePromises.get(id) === promise) {
+    const requestedTarget = Number.isFinite(Number(targetLongEdge))
+        ? Math.round(Number(targetLongEdge))
+        : PREVIEW_PROXY_BASE_LONG_EDGE;
+    if (existing) {
+        if (requestedTarget <= existing.targetLongEdge) return existing.promise;
+        return existing.promise.then(() => ensureProxyPrepared(id, requestedTarget));
+    }
+    const entry = { targetLongEdge: requestedTarget, promise: null };
+    const promise = invoke('prepare_proxy', { id, targetLongEdge: requestedTarget }).finally(() => {
+        if (proxyPreparePromises.get(id) === entry) {
             proxyPreparePromises.delete(id);
         }
     });
-    proxyPreparePromises.set(id, promise);
+    entry.promise = promise;
+    proxyPreparePromises.set(id, entry);
     return promise;
+}
+
+function activePreviewProxyTarget() {
+    if (!activeId || !activeProxyIsFull || !previewCanvas.width || !previewCanvas.height) return null;
+    const display = previewCanvas.getBoundingClientRect();
+    return getPreviewProxyTarget({
+        displayWidth: display.width,
+        displayHeight: display.height,
+        renderedWidth: previewCanvas.width,
+        renderedHeight: previewCanvas.height,
+        sourceLongEdge: Math.max(proxyWidth, proxyHeight),
+        currentLongEdge: Math.max(proxyWidth, proxyHeight),
+        attemptedLongEdge: previewResolutionAttempts.get(activeId) || 0,
+        pixelRatio: window.devicePixelRatio || 1,
+        baseLongEdge: Math.min(PREVIEW_PROXY_BASE_LONG_EDGE, maximumPreviewProxyLongEdge()),
+        maxLongEdge: maximumPreviewProxyLongEdge(),
+        step: 1024,
+    });
+}
+
+function maximumPreviewProxyLongEdge() {
+    const gpuLimit = Number(gl?.getParameter(gl.MAX_TEXTURE_SIZE)) || PREVIEW_PROXY_MAX_LONG_EDGE;
+    return Math.max(1, Math.min(PREVIEW_PROXY_MAX_LONG_EDGE, gpuLimit));
+}
+
+function schedulePreviewResolutionRefresh() {
+    const target = activePreviewProxyTarget();
+    if (!target) return;
+    previewResolutionTarget = Math.max(previewResolutionTarget, target);
+    if (previewResolutionTimer !== null) clearTimeout(previewResolutionTimer);
+    previewResolutionTimer = setTimeout(() => {
+        previewResolutionTimer = null;
+        void refreshActivePreviewResolution();
+    }, 180);
+}
+
+async function refreshActivePreviewResolution() {
+    if (previewResolutionInFlight || !activeId) return;
+    const targetId = activeId;
+    const token = currentImageRequestToken;
+    const targetLongEdge = previewResolutionTarget || activePreviewProxyTarget();
+    previewResolutionTarget = 0;
+    if (!targetLongEdge) return;
+    previewResolutionAttempts.set(targetId, Math.max(
+        previewResolutionAttempts.get(targetId) || 0,
+        targetLongEdge
+    ));
+
+    previewResolutionInFlight = (async () => {
+        try {
+            const preparedLongEdge = Number(await ensureProxyPrepared(targetId, targetLongEdge)) || 0;
+            if (token !== currentImageRequestToken || targetId !== activeId) return;
+            if (preparedLongEdge <= Math.max(proxyWidth, proxyHeight)) return;
+
+            proxyCache.delete(targetId);
+            readyProxyIds.delete(targetId);
+            const loaded = await loadProxyImage(token, current_geom);
+            if (loaded && token === currentImageRequestToken && targetId === activeId) {
+                requestRender();
+            }
+        } catch (error) {
+            // Adaptive resolution is an enhancement. Keep the already rendered
+            // proxy usable when a full-resolution decode cannot be produced.
+            console.debug('High-resolution preview refresh skipped', error);
+        }
+    })().finally(() => {
+        previewResolutionInFlight = null;
+        if (activePreviewProxyTarget()) schedulePreviewResolutionRefresh();
+    });
+    await previewResolutionInFlight;
 }
 
 function queueProxyPrewarm(id) {
@@ -4733,7 +5063,9 @@ function ensureProxyDisplayed(id, options = {}) {
     const existing = proxyDisplayPromises.get(id);
     if (existing) return existing;
     const promise = (async () => {
-        await ensureProxyPrepared(id);
+        // Prepare the highest texture size supported by this renderer before
+        // the first reveal. Zooming then only scales an already sharp frame.
+        await ensureProxyPrepared(id, maximumPreviewProxyLongEdge());
         if (id !== activeId) return false;
         return reloadDevelopProxy(current_geom, {
             showLoading: false,
@@ -4797,18 +5129,28 @@ async function runAutoInvert() {
         showToast("Confirm the film area before Auto Invert.", "info");
         return;
     }
+    try {
+        await flushPendingBackendSync();
+    } catch (error) {
+        showToast("Auto invert failed: " + error, "error");
+        return;
+    }
     const targetId = activeId;
     const token = currentImageRequestToken;
+    const generation = ++developOperationRevision;
     const geomSnapshot = JSON.parse(JSON.stringify(current_geom));
+    btnAutoColor.disabled = true;
     try {
-        await persistGeometryQueued(targetId, geomSnapshot);
+        await persistGeometryQueued(targetId, geomSnapshot, generation);
     } catch (error) {
         showToast("Auto invert failed: " + error, "error");
         return;
     }
     try {
         await ensureProxyPrepared(targetId);
-        await invoke('analyze_proxy_base_color', { id: targetId });
+        if (generation !== developOperationRevision || targetId !== activeId) return;
+        await invoke('analyze_proxy_base_color', { id: targetId, generation });
+        if (generation !== developOperationRevision || targetId !== activeId) return;
         proxyAnalyzedBaseIds.add(targetId);
         proxyHasAnalyzedBase = true;
         const pendingDisplay = proxyDisplayPromises.get(targetId);
@@ -4825,12 +5167,19 @@ async function runAutoInvert() {
         });
         if (!loaded) return;
         await new Promise(resolve => requestAnimationFrame(resolve));
-        await doAutoColor();
+        const colored = await doAutoColor(targetId, generation);
+        if (!colored) return;
         previewCanvas.style.display = 'block';
         hideThumbnailPlaceholder();
         requestThumbnailSync();
     } catch (error) {
-        showToast("Auto invert failed: " + error, "error");
+        if (!String(error).includes('STALE_DEVELOPMENT_OPERATION')) {
+            showToast("Auto invert failed: " + error, "error");
+        }
+    } finally {
+        if (targetId === activeId && generation === developOperationRevision) {
+            btnAutoColor.disabled = !current_geom?.calibration_points || isCalibrationMode;
+        }
     }
 }
 
@@ -4849,7 +5198,7 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
     current_geom.rotate_90_count = 0;
     current_geom.calibration_points = null;
     current_geom.calibration_confirmed = false;
-    btnBatchApply.disabled = true;
+    setBatchApplyDisabled(false);
     currentSprocketUV = new Float32Array([-1.0, -1.0]);
     if (isCropMode) updateCropOverlay();
     updatePerspectiveUI();
@@ -4866,7 +5215,7 @@ function enterCalibrationMode() {
     isCalibrationMode = true;
     document.getElementById('calibration-overlay').classList.remove('hidden');
     setDevelopInspectorCalibrationLocked(true);
-    btnBatchApply.disabled = true;
+    setBatchApplyDisabled(false);
     calibrationPoints = NexFilmGeometry.getFilmAreaCalibrationDraft(current_geom);
     requestAnimationFrame(updateCalibrationPolygon);
     if (activeProxyIsFull) requestRender();
@@ -4913,7 +5262,7 @@ function setAutoAreaBusy(id, busy) {
 
 function applyFilmAreaDetection(result) {
     calibrationPoints = validateFilmAreaDetection(result);
-    btnBatchApply.disabled = true;
+    setBatchApplyDisabled(false);
     updateCalibrationPolygon();
 }
 
@@ -5039,13 +5388,35 @@ async function showDeleteImagesDialog(imageCount) {
 
 btnResetColor.addEventListener('click', async () => {
     if (!activeId) return;
-    
+    const targetId = activeId;
     const isConfirmed = await showConfirm("Are you sure you want to reset all color adjustments?");
-    if (!isConfirmed) return;
+    if (!isConfirmed || targetId !== activeId) return;
 
-    
     pushUndoState();
-    
+    const generation = ++developOperationRevision;
+    if (backendSyncTimeout) {
+        clearTimeout(backendSyncTimeout);
+        backendSyncTimeout = null;
+    }
+    if (pendingBackendSync?.id === targetId) pendingBackendSync = null;
+    if (thumbnailSyncTimeout) {
+        clearTimeout(thumbnailSyncTimeout);
+        thumbnailSyncTimeout = null;
+    }
+    if (thumbnailCaptureRAF) {
+        cancelAnimationFrame(thumbnailCaptureRAF);
+        thumbnailCaptureRAF = null;
+    }
+    if (thumbnailCaptureTimeout !== null) {
+        clearTimeout(thumbnailCaptureTimeout);
+        thumbnailCaptureTimeout = null;
+    }
+    if (thumbnailPersistTimeout) {
+        clearTimeout(thumbnailPersistTimeout);
+        thumbnailPersistTimeout = null;
+    }
+    if (pendingThumbnailPersist?.id === targetId) pendingThumbnailPersist = null;
+
     currentDMin = [0.1, 0.1, 0.1];
     currentDMax = [2.0, 2.0, 2.0];
     updateDMinMaxDisplay();
@@ -5070,10 +5441,36 @@ btnResetColor.addEventListener('click', async () => {
         s.val.textContent = formatSliderValue(key, s.el.value);
         updateSliderTrack(s.el);
     }
-    
-    updateBackendParams();
-    renderWebGL();
-    requestThumbnailSync();
+    const params = saveCurrentState();
+    btnResetColor.disabled = true;
+    btnAutoColor.disabled = true;
+    try {
+        await invoke('reset_image_development', { id: targetId, params, generation });
+        if (targetId !== activeId || generation !== developOperationRevision) return;
+        proxyAnalyzedBaseIds.delete(targetId);
+        proxyHasAnalyzedBase = false;
+        currentBaseDensity = [0, 0, 0];
+        const item = findKnownItem(targetId);
+        if (item) {
+            item.base_analyzed = false;
+            publishThumbnailUpdate(targetId, item.embedded_thumbnail_base64, { rendered: false });
+        }
+        imageStates.set(targetId, {
+            params,
+            geom: JSON.parse(JSON.stringify(current_geom)),
+        });
+        requestRender();
+        showToast("Color adjustments and inversion reset.", "success");
+    } catch (error) {
+        if (!String(error).includes('STALE_DEVELOPMENT_OPERATION')) {
+            showToast("Reset failed: " + error, "error");
+        }
+    } finally {
+        if (targetId === activeId && generation === developOperationRevision) {
+            btnResetColor.disabled = false;
+            btnAutoColor.disabled = !current_geom?.calibration_points || isCalibrationMode;
+        }
+    }
 });
 
 function getRenderRect() { return canvasWrapper.getBoundingClientRect(); }
@@ -5218,6 +5615,13 @@ window.addEventListener('pointermove', (e) => {
             newRect.height = Math.min(1, Math.max(top + MIN_CROP_SIZE, bottom + dy)) - top;
         }
     }
+    newRect = constrainCropResize(
+        dragStartRect,
+        newRect,
+        dragType,
+        activeNormalizedCropAspect(),
+        MIN_CROP_SIZE
+    );
     current_geom.crop_rect = clampCropRect(newRect); updateCropOverlay();
 });
 
@@ -5248,20 +5652,13 @@ window.addEventListener('pointerup', e => finishCropDrag(e, true));
 window.addEventListener('pointercancel', e => finishCropDrag(e, false));
 
 function batchTargetItems(mode) {
-    const source = findKnownItem(activeId);
-    if (!source) return [];
     const candidates = uniqueItemsByPath(Array.from(itemIndex.values()));
-    if (mode === 'selected') {
-        return Array.from(selectedLibraryIds)
-            .map(findKnownItem)
-            .filter(item => item && item.id !== activeId && item.file_path);
-    }
-    return candidates.filter(item =>
-        item.id !== activeId &&
-        item.roll_id === source.roll_id &&
-        item.file_path &&
-        !item.rendered_thumbnail_base64
-    );
+    return selectFilmAreaBatchTargets({
+        items: candidates,
+        activeId,
+        selectedIds: selectedLibraryIds,
+        mode,
+    });
 }
 
 function refreshBatchTargetCounts() {
@@ -5281,15 +5678,12 @@ function closeBatchApplyModal() {
     batchApplyModal.classList.add('opacity-0', 'pointer-events-none');
 }
 
-btnBatchApply.addEventListener('click', () => {
-    if (!activeId || !current_geom?.calibration_points) {
-        showToast("Set a film area before applying it to other frames.", "info");
-        return;
-    }
+batchApplyButtons.forEach(button => button.addEventListener('click', () => {
+    if (!activeId) return;
     refreshBatchTargetCounts();
     batchApplyModal.classList.remove('opacity-0', 'pointer-events-none');
     setTimeout(() => batchApplyModalContent.classList.remove('scale-95'), 10);
-});
+}));
 
 btnCloseBatchApply.addEventListener('click', closeBatchApplyModal);
 btnCancelBatchApply.addEventListener('click', closeBatchApplyModal);
@@ -5309,6 +5703,10 @@ btnConfirmBatchApply.addEventListener('click', async () => {
     try {
         // Batch Apply is an explicit commit point: persist the current draft
         // before the backend transaction reads its geometry as the source.
+        if (isCalibrationMode && Array.isArray(calibrationPoints)) {
+            current_geom.calibration_points = calibrationPoints.map(point => [...point]);
+            current_geom.calibration_confirmed = true;
+        }
         await persistGeometryQueued(activeId, current_geom);
         const result = await invoke('batch_copy_settings', {
             source: {
@@ -5319,7 +5717,7 @@ btnConfirmBatchApply.addEventListener('click', async () => {
                 roll_id: item.roll_id || 'LOOSE_DEFAULT',
                 file_path: item.file_path
             })),
-            modules: ['geometry']
+            modules: ['film_area']
         });
         closeBatchApplyModal();
         showToast(`Film area applied to ${result.updated} frame(s).`, "success");
@@ -5488,7 +5886,7 @@ btnPasteSettings.addEventListener('click', async () => {
 
         updateCanvasTransform();
         requestRender();
-        btnBatchApply.disabled = !current_geom?.calibration_points;
+        setBatchApplyDisabled(false);
         if (isCropMode) updateCropOverlay();
         requestThumbnailSync();
         showToast("Settings pasted.", "success");
@@ -5872,7 +6270,7 @@ function cloneCalibrationPoints(points = calibrationPoints) {
 function setCalibrationDraft(points) {
     if (!NexFilmGeometry.isValidCalibrationQuad(points)) return false;
     calibrationPoints = cloneCalibrationPoints(points);
-    btnBatchApply.disabled = true;
+    setBatchApplyDisabled(false);
 
     if (!calibrationRAF) {
         calibrationRAF = requestAnimationFrame(() => {
@@ -5966,7 +6364,7 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
         document.getElementById('calibration-overlay').classList.add('hidden');
         setDevelopInspectorCalibrationLocked(false);
         btnAutoColor.disabled = false;
-        btnBatchApply.disabled = false;
+        setBatchApplyDisabled(false);
         if (activeProxyIsFull) requestRender();
         showToast("Film area saved. Run Auto Invert when ready.", "success");
     } catch (e) {

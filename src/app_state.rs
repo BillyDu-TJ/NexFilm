@@ -336,6 +336,7 @@ pub struct FilmstripItem {
     pub embedded_thumbnail_base64: String,
     pub rendered_thumbnail_base64: Option<String>,
     pub thumbnail_kind: String,
+    pub base_analyzed: bool,
     pub state_available: bool,
     pub file_missing: bool,
 }
@@ -352,6 +353,9 @@ pub struct Roll {
 
 pub struct EngineState {
     pub items: dashmap::DashMap<String, std::sync::Arc<std::sync::RwLock<FilmItem>>>,
+    /// Monotonic per-image edit epochs used to reject stale asynchronous writes.
+    pub development_generations:
+        dashmap::DashMap<String, std::sync::Arc<std::sync::atomic::AtomicU64>>,
     pub film_border_cache: dashmap::DashMap<String, crate::film_border::FilmBorderDetection>,
     pub item_order: RwLock<Vec<String>>,
     pub active_id: RwLock<Option<String>>,
@@ -368,6 +372,7 @@ impl EngineState {
     pub fn new() -> Self {
         EngineState {
             items: dashmap::DashMap::new(),
+            development_generations: dashmap::DashMap::new(),
             film_border_cache: dashmap::DashMap::new(),
             item_order: RwLock::new(Vec::new()),
             active_id: RwLock::new(None),

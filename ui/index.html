@@ -26,7 +26,7 @@
 </head>
 <body data-theme="light" class="text-zinc-300 h-screen w-screen overflow-hidden font-sans selection:bg-zinc-700 flex flex-col bg-[#121214]">
     
-    <div id="toast-container" class="fixed top-4 right-4 z-50 flex flex-col gap-2 pointer-events-none"></div>
+    <div id="toast-container" class="fixed z-50 flex flex-col gap-2 pointer-events-none" role="status" aria-live="polite" aria-atomic="false"></div>
 
     <!-- Drag Overlay -->
     <div id="drag-overlay" class="hidden fixed inset-0 z-[100] bg-blue-500/20 border-4 border-blue-500/50 backdrop-blur-sm flex items-center justify-center pointer-events-none transition-all duration-200">
@@ -391,10 +391,37 @@
                     <div class="film-area-actions">
                         <button id="btn-auto-area" class="film-area-action film-area-action-secondary" title="Detect film area from cached thumbnail" data-i18n-title="develop.autoArea" disabled>Auto Area</button>
                         <button id="btn-confirm-calibration" class="film-area-action film-area-action-primary">Save Area</button>
-                        <button id="btn-batch-apply" class="film-area-action film-area-action-secondary" title="Apply film area to other frames" data-i18n-title="develop.batchApply" disabled>Batch Apply</button>
+                        <button id="btn-batch-apply-calibration" data-batch-apply class="film-area-action film-area-action-secondary" title="Apply film area to other frames" data-i18n-title="develop.batchApply" disabled>Batch Apply</button>
                         <p class="batch-apply-hint" data-i18n="develop.batchHint">仅在每张照片的胶片位置保持一致时使用。</p>
                     </div>
                 </div>
+
+                <aside id="crop-panel" class="perspective-panel hidden" aria-hidden="true" aria-labelledby="crop-panel-title">
+                    <div class="perspective-panel-header">
+                        <div>
+                            <h2 id="crop-panel-title">Crop</h2>
+                            <span>Geometry</span>
+                        </div>
+                        <button id="btn-close-crop" class="perspective-icon-btn" type="button" title="Close crop controls" aria-label="Close crop controls">&times;</button>
+                    </div>
+                    <div class="perspective-panel-body">
+                        <div class="crop-aspect-control">
+                            <label for="crop-aspect-preset">Aspect Ratio</label>
+                            <select id="crop-aspect-preset">
+                                <option value="free">Free</option>
+                                <option value="original">Original</option>
+                                <option value="1:1">1:1</option>
+                                <option value="2:3">2:3</option>
+                                <option value="3:2">3:2</option>
+                                <option value="3:4">3:4</option>
+                                <option value="4:3">4:3</option>
+                                <option value="4:5">4:5</option>
+                                <option value="5:4">5:4</option>
+                                <option value="16:9">16:9</option>
+                            </select>
+                        </div>
+                    </div>
+                </aside>
 
                 <aside id="perspective-panel" class="perspective-panel hidden" aria-hidden="true" aria-labelledby="perspective-panel-title">
                     <div class="perspective-panel-header">
@@ -462,6 +489,10 @@
                         <div class="inspector-segmented inspector-action-segment">
                             <button id="btn-auto-color" class="flex-[3] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Auto Invert</button>
                             <button id="btn-reset-color" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Reset</button>
+                        </div>
+                        <div class="batch-apply-control">
+                            <button id="btn-batch-apply" data-batch-apply type="button" title="Apply film area to other frames" data-i18n-title="develop.batchApply" disabled>Batch Apply</button>
+                            <p class="batch-apply-hint" data-i18n="develop.batchHint">仅在每张照片的胶片位置保持一致时使用。</p>
                         </div>
                     </div>
 
@@ -1040,7 +1071,7 @@
                 <fieldset class="batch-target-options">
                     <label class="batch-target-option">
                         <input type="radio" name="batch-target" value="roll-unprocessed" checked>
-                        <span>All unprocessed frames in this roll</span>
+                        <span data-i18n="batch.allUnprocessed">All other frames in this roll</span>
                         <span id="batch-roll-count" class="batch-target-count">0</span>
                     </label>
                     <label class="batch-target-option">
@@ -1051,7 +1082,7 @@
                 </fieldset>
                 <div class="flex justify-end gap-3 pt-2">
                     <button id="btn-cancel-batch-apply" class="px-5 py-2 text-[12px] font-bold uppercase tracking-wider text-zinc-400 hover:text-zinc-200 transition-colors">Cancel</button>
-                    <button id="btn-confirm-batch-apply" class="px-6 py-2 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm">Apply Geometry</button>
+                    <button id="btn-confirm-batch-apply" class="px-6 py-2 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm" data-i18n="batch.applyFilmArea">Apply Film Area</button>
                 </div>
             </div>
         </div>
@@ -1203,6 +1234,7 @@
     </div>
 
     <script src="geometry.js"></script>
+    <script src="develop-interactions.js"></script>
     <script src="contact-sheet.js"></script>
     <script src="density-math.js"></script>
     <script src="histogram-math.js"></script>
