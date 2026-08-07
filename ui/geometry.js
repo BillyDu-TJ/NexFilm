@@ -111,6 +111,7 @@
             perspective_vertical: numberOrZero(state.perspective_vertical),
             perspective_horizontal: numberOrZero(state.perspective_horizontal),
             perspective_aspect: numberOrZero(state.perspective_aspect),
+            lens_distortion: Math.max(-100, Math.min(100, numberOrZero(state.lens_distortion))),
             perspective_scale: Number.isFinite(Number(state.perspective_scale))
                 && Number(state.perspective_scale) > 0 ? Number(state.perspective_scale) : 1,
             constrain_crop: !!state.constrain_crop,
@@ -146,6 +147,16 @@
         return mapped.every(Number.isFinite) ? mapped : null;
     }
 
+    function mapLensDistortionPoint(point, geom) {
+        const distortion = Math.max(-100, Math.min(100, numberOrZero(geom?.lens_distortion)));
+        const x = numberOrZero(point[0]) * 2 - 1;
+        const y = numberOrZero(point[1]) * 2 - 1;
+        const radiusSquared = x * x + y * y;
+        const factor = 1 + distortion * 0.004 * radiusSquared;
+        const mapped = [(x * factor + 1) * 0.5, (y * factor + 1) * 0.5];
+        return mapped.every(Number.isFinite) ? mapped : null;
+    }
+
     function getConstrainedPerspectiveScale(geom) {
         const state = normalizeGeometryState(geom);
         const crop = state.crop_rect;
@@ -161,7 +172,10 @@
                     [crop.x, crop.y + (1 - t) * crop.height],
                 ];
                 for (const point of samples) {
-                    const mapped = mapPerspectivePoint(point, state, scale);
+                    const perspectivePoint = mapPerspectivePoint(point, state, scale);
+                    const mapped = perspectivePoint
+                        ? mapLensDistortionPoint(perspectivePoint, state)
+                        : null;
                     if (!mapped || mapped[0] < 0 || mapped[0] > 1 || mapped[1] < 0 || mapped[1] > 1) return false;
                 }
             }
@@ -188,10 +202,12 @@
         if (!perspectivePoint) return null;
         const divisor = homography[2] * perspectivePoint[0] + homography[5] * perspectivePoint[1] + homography[8];
         if (!Number.isFinite(divisor) || Math.abs(divisor) < 1e-8) return null;
-        const orientedPoint = [
+        const homographyPoint = [
             (homography[0] * perspectivePoint[0] + homography[3] * perspectivePoint[1] + homography[6]) / divisor,
             (homography[1] * perspectivePoint[0] + homography[4] * perspectivePoint[1] + homography[7]) / divisor,
         ];
+        const orientedPoint = mapLensDistortionPoint(homographyPoint, geom);
+        if (!orientedPoint) return null;
         return mapOrientedPointToSource(orientedPoint, width, height, geom);
     }
 
@@ -416,6 +432,7 @@
         needsFilmAreaConfirmation,
         getFilmAreaCalibrationDraft,
         mapPerspectivePoint,
+        mapLensDistortionPoint,
         getConstrainedPerspectiveScale,
         getOrientedDimensions,
         mapOrientedPointToSource,

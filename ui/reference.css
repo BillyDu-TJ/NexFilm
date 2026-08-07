@@ -1696,6 +1696,24 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
     overflow-y: auto !important;
 }
 
+/* Keep the archive inside the application viewport so the roll list owns the
+ * scroll position instead of growing beyond the window. */
+#views > [id^="view-"] {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+}
+#view-history > div:last-child,
+#view-library > div:last-child,
+#view-develop > div:first-child,
+#view-develop > div:last-child {
+    min-height: 0;
+}
+#view-history > div:last-child > .history-content,
+#view-library > div:last-child > .library-content {
+    min-height: 0;
+}
+
 #library-rolls-grid:not(.hidden) {
     padding: 8px !important;
 }

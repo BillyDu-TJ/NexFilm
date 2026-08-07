@@ -143,12 +143,25 @@ assert.deepEqual(updatedLocations, ['library', 'filmstrip', 'history']);
 assert.deepEqual(
     interactions.getQuarterTurnAction('left'),
     { clockwise: false, turnDelta: -1 },
-    'Rotate Left must apply a counter-clockwise quarter turn'
+    'Rotate Counterclockwise must apply a counter-clockwise quarter turn'
 );
 assert.deepEqual(
     interactions.getQuarterTurnAction('right'),
     { clockwise: true, turnDelta: 1 },
-    'Rotate Right must apply a clockwise quarter turn'
+    'Rotate Clockwise must apply a clockwise quarter turn'
+);
+assert.equal(interactions.snapRotationDegrees(1.8), 0, 'rotation stops at zero within the snap range');
+assert.equal(interactions.snapRotationDegrees(88.5), 90, 'rotation stops at ninety degrees within the snap range');
+assert.equal(interactions.snapRotationDegrees(86), 86, 'rotation remains continuous outside the snap range');
+assert.deepEqual(
+    interactions.decomposeRotationDegrees(92),
+    { degrees: 90, quarterTurns: 1, angle: 0 },
+    'a snapped quarter turn is stored without residual straighten angle'
+);
+assert.equal(
+    interactions.composeRotationDegrees({ angle: -3, rotate_90_count: 1 }),
+    87,
+    'crop rotation input reflects quarter turns and residual angle together'
 );
 
 console.log('Develop mouse interaction tests passed.');

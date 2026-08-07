@@ -29,6 +29,7 @@ assert.deepEqual(geometry.resolveCalibrationRenderPoints(square, false), square)
 
 assert.deepEqual(geometry.normalizeGeometryState({}).crop_rect, { x: 0, y: 0, width: 1, height: 1 });
 assert.equal(geometry.normalizeGeometryState({}).perspective_scale, 1);
+assert.equal(geometry.normalizeGeometryState({}).lens_distortion, 0);
 assert.equal(geometry.needsFilmAreaConfirmation({ calibration_confirmed: false }), true);
 assert.equal(geometry.needsFilmAreaConfirmation({ calibration_confirmed: true }), false);
 assert.equal(geometry.needsFilmAreaConfirmation({}), true);
@@ -45,6 +46,13 @@ assert.deepEqual(
 const neutralPerspective = geometry.mapPerspectivePoint([0.2, 0.8], {});
 assert.ok(Math.abs(neutralPerspective[0] - 0.2) < 1e-12);
 assert.ok(Math.abs(neutralPerspective[1] - 0.8) < 1e-12);
+const neutralDistortion = geometry.mapLensDistortionPoint([0.2, 0.8], {});
+assert.ok(Math.abs(neutralDistortion[0] - 0.2) < 1e-12);
+assert.ok(Math.abs(neutralDistortion[1] - 0.8) < 1e-12);
+const barrelCorrection = geometry.mapLensDistortionPoint([0.1, 0.5], { lens_distortion: -50 });
+const pincushionCorrection = geometry.mapLensDistortionPoint([0.1, 0.5], { lens_distortion: 50 });
+assert.ok(barrelCorrection[0] > 0.1);
+assert.ok(pincushionCorrection[0] < 0.1);
 const constrainedScale = geometry.getConstrainedPerspectiveScale({
     perspective_vertical: 60,
     perspective_horizontal: -45,

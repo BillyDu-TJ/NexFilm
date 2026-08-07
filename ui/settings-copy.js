@@ -27,7 +27,7 @@
         perspective: {
             geom: [
                 'angle', 'perspective_vertical', 'perspective_horizontal',
-                'perspective_aspect', 'perspective_scale', 'constrain_crop'
+                'perspective_aspect', 'lens_distortion', 'perspective_scale', 'constrain_crop'
             ]
         }
     };

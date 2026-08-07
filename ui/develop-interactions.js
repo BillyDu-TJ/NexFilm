@@ -233,6 +233,32 @@
         return null;
     }
 
+    function snapRotationDegrees(value, threshold = 2) {
+        const degrees = Math.max(-180, Math.min(180, finite(value)));
+        const snapDistance = Math.max(0, finite(threshold));
+        const nearestQuarterTurn = Math.round(degrees / 90) * 90;
+        return Math.abs(degrees - nearestQuarterTurn) <= snapDistance
+            ? nearestQuarterTurn
+            : degrees;
+    }
+
+    function decomposeRotationDegrees(value, threshold = 2) {
+        const degrees = snapRotationDegrees(value, threshold);
+        const quarterTurns = Math.round(degrees / 90);
+        return {
+            degrees,
+            quarterTurns,
+            angle: degrees - quarterTurns * 90,
+        };
+    }
+
+    function composeRotationDegrees(geom) {
+        let degrees = finite(geom?.angle) + Math.trunc(finite(geom?.rotate_90_count)) * 90;
+        while (degrees > 180) degrees -= 360;
+        while (degrees <= -180) degrees += 360;
+        return Math.abs(degrees) < 1e-9 ? 0 : degrees;
+    }
+
     return {
         normalizeWheelDelta,
         horizontalWheelDelta,
@@ -247,5 +273,8 @@
         thumbnailPixelsAreUsable,
         updateMatchingThumbnails,
         getQuarterTurnAction,
+        snapRotationDegrees,
+        decomposeRotationDegrees,
+        composeRotationDegrees,
     };
 }));

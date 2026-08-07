@@ -8,9 +8,9 @@ use crate::color_science::{
     ColorSpaceId, DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
 };
 use crate::core_math::{
-    apply_homography, apply_perspective_uv, apply_post_gamma_adjustments_with_luma, density_luma,
-    neutral_density_bounds, normalize_density_channel, shader_homography, sprocket_white_mask,
-    DENSITY_LUMA_COEFFICIENTS,
+    apply_homography, apply_lens_distortion_uv, apply_perspective_uv,
+    apply_post_gamma_adjustments_with_luma, density_luma, neutral_density_bounds,
+    normalize_density_channel, shader_homography, sprocket_white_mask, DENSITY_LUMA_COEFFICIENTS,
 };
 use crate::persistence::{self, MATH_VERSION, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
@@ -1961,6 +1961,10 @@ fn compute_auto_color_limits(
                     continue;
                 };
                 let Some(oriented_uv) = apply_homography(&homography, perspective_uv) else {
+                    continue;
+                };
+                let Some(oriented_uv) = apply_lens_distortion_uv(oriented_uv, geom.lens_distortion)
+                else {
                     continue;
                 };
                 let source_uv =
@@ -4122,6 +4126,7 @@ fn normalize_persisted_geometry(mut geom: GeometryState) -> GeometryState {
     if !geom.calibration_confirmed {
         geom.calibration_points = None;
     }
+    geom.lens_distortion = geom.lens_distortion.clamp(-100.0, 100.0);
     geom
 }
 
@@ -4557,6 +4562,9 @@ fn render_shader_equivalent(
                 return;
             };
             let Some(warped_uv) = apply_homography(&homography, perspective_uv) else {
+                return;
+            };
+            let Some(warped_uv) = apply_lens_distortion_uv(warped_uv, geom.lens_distortion) else {
                 return;
             };
             let Some(raw) = sample_rgb16_nearest(source, warped_uv) else {
@@ -6137,24 +6145,38 @@ pub struct DeleteRollsResult {
     pub failed_source_files: Vec<String>,
 }
 
-fn delete_source_paths(
+fn process_source_paths<F>(
     source_paths: HashMap<String, String>,
     protected_paths: &HashSet<String>,
     result: &mut DeleteRollsResult,
-) {
+    mut move_to_trash: F,
+) where
+    F: FnMut(&str) -> Result<(), String>,
+{
     for (normalized, path) in source_paths {
         if protected_paths.contains(&normalized) {
             result.protected_source_files += 1;
             continue;
         }
-        match std::fs::remove_file(&path) {
+        if !std::path::Path::new(&path).exists() {
+            result.missing_source_files += 1;
+            continue;
+        }
+        match move_to_trash(&path) {
             Ok(()) => result.deleted_source_files += 1,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                result.missing_source_files += 1;
-            }
             Err(error) => result.failed_source_files.push(format!("{path}: {error}")),
         }
     }
+}
+
+fn trash_source_paths(
+    source_paths: HashMap<String, String>,
+    protected_paths: &HashSet<String>,
+    result: &mut DeleteRollsResult,
+) {
+    process_source_paths(source_paths, protected_paths, result, |path| {
+        trash::delete(path).map_err(|error| error.to_string())
+    });
 }
 
 #[tauri::command]
@@ -6265,7 +6287,7 @@ pub async fn delete_rolls(
             }))
             .collect();
         result = tokio::task::spawn_blocking(move || {
-            delete_source_paths(source_paths, &protected_paths, &mut result);
+            trash_source_paths(source_paths, &protected_paths, &mut result);
             result
         })
         .await
@@ -6399,7 +6421,7 @@ pub async fn delete_images(
             }))
             .collect::<HashSet<_>>();
         result = tokio::task::spawn_blocking(move || {
-            delete_source_paths(source_paths, &protected_paths, &mut result);
+            trash_source_paths(source_paths, &protected_paths, &mut result);
             result
         })
         .await
@@ -7689,9 +7711,9 @@ mod import_contract_tests {
 #[cfg(test)]
 mod library_management_contract_tests {
     use super::{
-        activate_library_roll, clear_library_membership, delete_source_paths,
-        load_all_image_states_from_connection, migrate_legacy_loose_roll, normalize_path,
-        persist_import_batch, DeleteRollsResult,
+        activate_library_roll, clear_library_membership, load_all_image_states_from_connection,
+        migrate_legacy_loose_roll, normalize_path, persist_import_batch, process_source_paths,
+        DeleteRollsResult,
     };
     use crate::app_state::{BaseColor, EngineState, FilmItem, GeometryState, Roll, TuningParams};
     use std::sync::{Arc, RwLock};
@@ -7840,7 +7862,7 @@ mod library_management_contract_tests {
     }
 
     #[test]
-    fn source_deletion_removes_only_unshared_existing_files() {
+    fn source_recycling_selects_only_unshared_existing_files() {
         let root = std::env::temp_dir().join(format!(
             "nexfilm-delete-test-{}-{}",
             std::process::id(),
@@ -7861,7 +7883,9 @@ mod library_management_contract_tests {
             std::collections::HashSet::from([normalize_path(protected.to_string_lossy().as_ref())]);
         let mut result = DeleteRollsResult::default();
 
-        delete_source_paths(paths, &protected_paths, &mut result);
+        process_source_paths(paths, &protected_paths, &mut result, |path| {
+            std::fs::remove_file(path).map_err(|error| error.to_string())
+        });
 
         assert_eq!(result.deleted_source_files, 1);
         assert_eq!(result.protected_source_files, 1);

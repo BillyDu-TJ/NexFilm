@@ -23,6 +23,7 @@ flate2 = "1.1"
 dashmap = "6.2.1"
 tauri-plugin-dialog = "2.7.1"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
+trash = "5.2.6"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 rawlib = "0.7.1"

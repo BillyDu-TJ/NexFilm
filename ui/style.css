@@ -162,7 +162,17 @@ body > header > div:last-child button:hover { background: var(--control) !import
     background: var(--panel) !important;
     box-shadow: none !important;
 }
-#view-library, #view-history, #view-develop { border-radius: 0 !important; overflow: hidden; }
+#view-library, #view-history, #view-develop {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    border-radius: 0 !important;
+    overflow: hidden;
+}
+#view-history > div:last-child,
+#view-library > div:last-child,
+#view-develop > div:first-child,
+#view-develop > div:last-child { min-height: 0; }
 
 /* Library */
 #view-library > div:first-child,
@@ -248,7 +258,12 @@ body > header > div:last-child button:hover { background: var(--control) !import
     text-transform: none !important;
     letter-spacing: 0 !important;
 }
-#delete-action-bar { border-radius: 6px !important; background: color-mix(in srgb, var(--danger) 90%, #1a1a1a) !important; }
+#delete-action-bar {
+    border-radius: 6px !important;
+    background: color-mix(in srgb, var(--danger) 90%, #1a1a1a) !important;
+    pointer-events: auto;
+}
+#btn-confirm-delete:disabled { opacity: .45; cursor: not-allowed; }
 #library-rolls-grid { gap: 0 !important; }
 .roll-row {
     min-height: 176px;
@@ -559,6 +574,28 @@ body > header > div:last-child button:hover { background: var(--control) !import
     background: var(--control);
     color: var(--text);
     font-size: 12px;
+}
+.crop-rotation-control { padding-top: 4px; border-top: 1px solid var(--line); }
+.crop-angle-field {
+    display: inline-flex !important;
+    min-width: 86px;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 5px;
+    color: var(--muted) !important;
+    font-size: 11px !important;
+}
+.crop-angle-field input {
+    width: 64px;
+    min-height: 30px;
+    padding: 0 7px;
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    background: var(--control);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-align: right;
 }
 #view-develop > div:last-child > div:nth-of-type(2) {
     padding: 18px 20px !important;

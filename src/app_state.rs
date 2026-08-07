@@ -265,6 +265,8 @@ pub struct GeometryState {
     pub perspective_horizontal: f32,
     #[serde(default)]
     pub perspective_aspect: f32,
+    #[serde(default)]
+    pub lens_distortion: f32,
     #[serde(default = "default_perspective_scale")]
     pub perspective_scale: f32,
     #[serde(default)]
@@ -286,6 +288,7 @@ impl Default for GeometryState {
             perspective_vertical: 0.0,
             perspective_horizontal: 0.0,
             perspective_aspect: 0.0,
+            lens_distortion: 0.0,
             perspective_scale: default_perspective_scale(),
             constrain_crop: false,
             flip_h: false,

@@ -31,6 +31,8 @@ const {
     thumbnailPixelsAreUsable,
     updateMatchingThumbnails,
     getQuarterTurnAction,
+    decomposeRotationDegrees,
+    composeRotationDegrees,
 } = window.NexFilmInteractions;
 const {
     createExportInvokeArgs,
@@ -149,6 +151,8 @@ const perspectiveOverlay = document.getElementById('perspective-overlay');
 const cropPanel = document.getElementById('crop-panel');
 const btnCloseCrop = document.getElementById('btn-close-crop');
 const cropAspectPreset = document.getElementById('crop-aspect-preset');
+const cropRotationInput = document.getElementById('crop-rotation-input');
+const cropRotationRange = document.getElementById('crop-rotation-range');
 const perspectivePanel = document.getElementById('perspective-panel');
 const btnClosePerspective = document.getElementById('btn-close-perspective');
 const btnResetPerspective = document.getElementById('btn-reset-perspective');
@@ -158,6 +162,10 @@ const perspectiveControls = {
     perspective_horizontal: { el: document.getElementById('perspective-horizontal'), val: document.getElementById('val-perspective-horizontal') },
     perspective_aspect: { el: document.getElementById('perspective-aspect'), val: document.getElementById('val-perspective-aspect') },
     perspective_scale: { el: document.getElementById('perspective-scale'), val: document.getElementById('val-perspective-scale') },
+};
+const lensDistortionControls = {
+    barrel: { el: document.getElementById('distortion-barrel'), val: document.getElementById('val-distortion-barrel'), sign: -1 },
+    pincushion: { el: document.getElementById('distortion-pincushion'), val: document.getElementById('val-distortion-pincushion'), sign: 1 },
 };
 const perspectiveConstrain = document.getElementById('perspective-constrain');
 
@@ -571,6 +579,18 @@ function updateLibrarySelectionUI() {
     if (typeof updateExportDialogState === 'function') updateExportDialogState();
 }
 
+function updateRollDeletionUI() {
+    const actionBar = document.getElementById('delete-action-bar');
+    const count = document.getElementById('delete-count');
+    const confirm = document.getElementById('btn-confirm-delete');
+    if (!actionBar || !count || !confirm) return;
+    const visible = currentView === 'history' && !historyRollViewId && isDeleteMode;
+    actionBar.classList.toggle('hidden', !visible);
+    count.textContent = `${selectedRollIds.size} ${i18nText('history.selectedForDeletion').toUpperCase()}`;
+    confirm.disabled = selectedRollIds.size === 0;
+    confirm.setAttribute('aria-disabled', String(confirm.disabled));
+}
+
 btnSelectAll.addEventListener('click', () => {
     allLibraryItems.forEach(item => selectedLibraryIds.add(item.id));
     lastSelectedLibraryId = null;
@@ -664,6 +684,11 @@ function resetWorkingLibrary() {
 
 function switchView(viewName) {
     currentView = viewName;
+    if (viewName !== 'history') {
+        isDeleteMode = false;
+        selectedRollIds.clear();
+    }
+    updateRollDeletionUI();
     const views = [
         { name: 'history', nav: navHistory, el: viewHistory },
         { name: 'library', nav: navLibrary, el: viewLibrary },
@@ -998,11 +1023,11 @@ window.addEventListener('keydown', async (e) => {
 });
 
 document.getElementById('btn-delete-rolls').addEventListener('click', () => {
-    if (navHistory.classList.contains('text-zinc-100') && !historyRollViewId) {
-        isDeleteMode = !isDeleteMode;
-        if (!isDeleteMode) selectedRollIds.clear();
-        renderLibraryAndFilmstrip();
-    }
+    if (currentView !== 'history' || historyRollViewId) return;
+    isDeleteMode = !isDeleteMode;
+    if (!isDeleteMode) selectedRollIds.clear();
+    updateRollDeletionUI();
+    void renderLibraryAndFilmstrip();
 });
 
 document.getElementById('btn-confirm-delete').addEventListener('click', async () => {
@@ -1013,7 +1038,8 @@ document.getElementById('btn-confirm-delete').addEventListener('click', async ()
 document.getElementById('btn-cancel-delete').addEventListener('click', () => {
     isDeleteMode = false;
     selectedRollIds.clear();
-    renderLibraryAndFilmstrip();
+    updateRollDeletionUI();
+    void renderLibraryAndFilmstrip();
 });
 
 async function requestRollDeletion(rollIds) {
@@ -1040,6 +1066,7 @@ async function requestRollDeletion(rollIds) {
         }
         selectedRollIds.clear();
         isDeleteMode = false;
+        updateRollDeletionUI();
         const deletedHistoryRoll = uniqueRollIds.includes(historyRollViewId);
         if (uniqueRollIds.includes(currentWorkingRollId)) {
             resetWorkingLibrary();
@@ -1051,10 +1078,10 @@ async function requestRollDeletion(rollIds) {
 
         let message = `${uniqueRollIds.length} roll(s) removed from NexFilm`;
         if (choice === 'files') {
-            message += `; ${result.deleted_source_files || 0} source file(s) deleted`;
+            message += `; ${i18nText('delete.sourceFilesMoved', { count: result.deleted_source_files || 0 })}`;
             if (result.protected_source_files) message += `, ${result.protected_source_files} shared file(s) kept`;
             if (result.failed_source_files?.length) {
-                showToast(`${message}. ${result.failed_source_files.length} source file(s) could not be deleted.`, 'error');
+                showToast(`${message}. ${result.failed_source_files.length} source file(s) could not be moved to the Recycle Bin.`, 'error');
                 return;
             }
         }
@@ -1142,10 +1169,10 @@ async function requestImageDeletion(ids) {
 
         let message = `${result.removed_images || targets.length} photo(s) removed from NexFilm`;
         if (choice === 'files') {
-            message += `; ${result.deleted_source_files || 0} source file(s) deleted`;
+            message += `; ${i18nText('delete.sourceFilesMoved', { count: result.deleted_source_files || 0 })}`;
             if (result.protected_source_files) message += `, ${result.protected_source_files} shared file(s) kept`;
             if (result.failed_source_files?.length) {
-                showToast(`${message}. ${result.failed_source_files.length} source file(s) could not be deleted.`, 'error');
+                showToast(`${message}. ${result.failed_source_files.length} source file(s) could not be moved to the Recycle Bin.`, 'error');
                 return;
             }
         }
@@ -1442,6 +1469,7 @@ let u_image_loc;
 let u_crop_loc;
 let u_homography_loc;
 let u_perspective_loc;
+let u_lens_distortion_loc;
 let u_sprocket_uv_loc;
 let u_sprocket_tolerance_loc;
 let u_sprocket_feather_loc;
@@ -1510,6 +1538,7 @@ function initWebGL() {
     
     uniform mat3 u_homography;
     uniform vec4 u_perspective;
+    uniform float u_lens_distortion;
     uniform mat3 u_geometry_uv;
     uniform vec2 u_sprocket_uv;
     uniform float u_sprocket_tolerance;
@@ -1589,6 +1618,13 @@ function initWebGL() {
         return (centered / divisor + 1.0) * 0.5;
     }
 
+    vec2 applyLensDistortion(vec2 uv) {
+        vec2 centered = uv * 2.0 - 1.0;
+        float radiusSquared = dot(centered, centered);
+        float factor = 1.0 + clamp(u_lens_distortion, -100.0, 100.0) * 0.004 * radiusSquared;
+        return (centered * factor + 1.0) * 0.5;
+    }
+
     vec2 mapOrientedToSource(vec2 uv) {
         vec3 p = u_geometry_uv * vec3(uv, 1.0);
         return p.xy / p.z;
@@ -1603,7 +1639,9 @@ function initWebGL() {
     }
 
     void main() {
-        vec2 oriented_uv = applyHomography(applyPerspective(v_texcoord), u_homography);
+        vec2 oriented_uv = applyLensDistortion(
+            applyHomography(applyPerspective(v_texcoord), u_homography)
+        );
         vec2 warped_uv = mapOrientedToSource(oriented_uv);
         if (warped_uv.x < 0.0 || warped_uv.x > 1.0 || warped_uv.y < 0.0 || warped_uv.y > 1.0) {
             outColor = vec4(0.0, 0.0, 0.0, 1.0);
@@ -1769,6 +1807,7 @@ function initWebGL() {
     u_crop_loc = gl.getUniformLocation(shaderProgram, "u_crop");
     u_homography_loc = gl.getUniformLocation(shaderProgram, "u_homography");
     u_perspective_loc = gl.getUniformLocation(shaderProgram, "u_perspective");
+    u_lens_distortion_loc = gl.getUniformLocation(shaderProgram, "u_lens_distortion");
     u_sprocket_uv_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_uv");
     u_sprocket_tolerance_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_tolerance");
     u_sprocket_feather_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_feather");
@@ -2268,6 +2307,7 @@ function renderWebGL() {
         current_geom.perspective_aspect,
         current_geom.perspective_scale
     );
+    gl.uniform1f(u_lens_distortion_loc, current_geom.lens_distortion);
     gl.uniform2fv(u_sprocket_uv_loc, currentSprocketUV);
     gl.uniform1f(u_sprocket_tolerance_loc, currentSprocketTolerance);
     gl.uniform1f(u_sprocket_feather_loc, currentSprocketFeather);
@@ -2760,6 +2800,10 @@ function enableUI() {
     btnResetPerspective.disabled = false;
     perspectiveConstrain.disabled = false;
     Object.values(perspectiveControls).forEach(control => { control.el.disabled = false; });
+    Object.values(lensDistortionControls).forEach(control => { control.el.disabled = false; });
+    cropAspectPreset.disabled = false;
+    cropRotationInput.disabled = false;
+    cropRotationRange.disabled = false;
     btnRecalibrate.disabled = false;
     btnAutoArea.disabled = false;
     setBatchApplyDisabled(false);
@@ -2792,6 +2836,10 @@ function disableUI() {
     btnResetPerspective.disabled = true;
     perspectiveConstrain.disabled = true;
     Object.values(perspectiveControls).forEach(control => { control.el.disabled = true; });
+    Object.values(lensDistortionControls).forEach(control => { control.el.disabled = true; });
+    cropAspectPreset.disabled = true;
+    cropRotationInput.disabled = true;
+    cropRotationRange.disabled = true;
     btnRecalibrate.disabled = true;
     btnAutoArea.disabled = true;
     setBatchApplyDisabled(true);
@@ -3367,12 +3415,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                     if (filters.dates.length > 0 && !filters.dates.includes(r.date)) return false;
                     return true;
                 });
-                if (isDeleteMode) {
-                    document.getElementById('delete-action-bar').classList.remove('hidden');
-                    document.getElementById('delete-count').textContent = `${selectedRollIds.size} ${i18nText('history.selectedForDeletion').toUpperCase()}`;
-                } else {
-                    document.getElementById('delete-action-bar').classList.add('hidden');
-                }
+                updateRollDeletionUI();
                 
                 for (const roll of filteredRolls) {
                     if (renderVersion !== currentVersion) return;
@@ -3403,7 +3446,8 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                         if (isDeleteMode) {
                             if (selectedRollIds.has(roll.roll_id)) selectedRollIds.delete(roll.roll_id);
                             else selectedRollIds.add(roll.roll_id);
-                            renderLibraryAndFilmstrip();
+                            updateRollDeletionUI();
+                            void renderLibraryAndFilmstrip();
                         } else {
                             historyRollViewId = roll.roll_id;
                             selectedLibraryIds.clear();
@@ -4643,6 +4687,7 @@ function setCropMode(enabled) {
     isCropMode = !!enabled;
     if (isCropMode) {
         setPerspectiveMode(false);
+        updateCropRotationUI();
         btnCropMode.classList.add('active');
         cropPanel.classList.remove('hidden');
         cropPanel.setAttribute('aria-hidden', 'false');
@@ -4664,6 +4709,58 @@ function setCropMode(enabled) {
 
 btnCropMode.addEventListener('click', () => setCropMode(!isCropMode));
 btnCloseCrop.addEventListener('click', () => setCropMode(false));
+
+function updateCropRotationUI() {
+    const degrees = composeRotationDegrees(current_geom);
+    cropRotationInput.value = String(Math.round(degrees * 10) / 10);
+    cropRotationRange.value = String(degrees);
+    updateSliderTrack(cropRotationRange);
+}
+
+function applyCropRotationDegrees(value) {
+    if (!activeId) return;
+    const target = decomposeRotationDegrees(value, 2);
+    const currentQuarterTurns = Math.trunc(current_geom.rotate_90_count || 0);
+    const targetQuarterTurns = target.quarterTurns
+        + Math.round((currentQuarterTurns - target.quarterTurns) / 4) * 4;
+    let delta = targetQuarterTurns - currentQuarterTurns;
+    while (delta !== 0) {
+        const clockwise = delta > 0;
+        const transformed = NexFilmGeometry.transformGeometryForQuarterTurn(current_geom, clockwise);
+        current_geom.rotate_90_count += clockwise ? 1 : -1;
+        current_geom.crop_rect = transformed.cropRect;
+        updateSpatialSamples(transformed);
+        delta += clockwise ? -1 : 1;
+    }
+    current_geom.angle = target.angle;
+    refitCropToActiveAspect();
+    updatePerspectiveUI();
+    updateCanvasTransform();
+    if (isCropMode) updateCropOverlay();
+    requestRender();
+}
+
+cropRotationRange.addEventListener('pointerdown', pushUndoState);
+cropRotationRange.addEventListener('input', event => applyCropRotationDegrees(event.target.value));
+cropRotationRange.addEventListener('change', sendGeometrySync);
+cropRotationInput.addEventListener('focus', pushUndoState);
+cropRotationInput.addEventListener('input', event => {
+    if (event.target.value === '') return;
+    applyCropRotationDegrees(event.target.value);
+});
+cropRotationInput.addEventListener('change', event => {
+    if (event.target.value === '') {
+        updateCropRotationUI();
+        return;
+    }
+    sendGeometrySync();
+});
+cropRotationInput.addEventListener('keydown', event => {
+    if (event.key === 'Enter') {
+        event.preventDefault();
+        cropRotationInput.blur();
+    }
+});
 
 function activeNormalizedCropAspect() {
     const orientedSize = NexFilmGeometry.getOrientedDimensions(
@@ -4700,6 +4797,16 @@ function formatPerspectiveValue(key, value) {
     return `${Math.round(value)}`;
 }
 
+function updateLensDistortionUI() {
+    const value = Math.max(-100, Math.min(100, Number(current_geom.lens_distortion) || 0));
+    Object.values(lensDistortionControls).forEach(control => {
+        const amount = control.sign < 0 ? Math.max(0, -value) : Math.max(0, value);
+        control.el.value = String(amount);
+        control.val.textContent = String(Math.round(amount));
+        updateSliderTrack(control.el);
+    });
+}
+
 function updatePerspectiveUI() {
     current_geom = NexFilmGeometry.normalizeGeometryState(current_geom);
     Object.entries(perspectiveControls).forEach(([key, control]) => {
@@ -4709,6 +4816,8 @@ function updatePerspectiveUI() {
         updateSliderTrack(control.el);
     });
     perspectiveConstrain.checked = current_geom.constrain_crop;
+    updateLensDistortionUI();
+    updateCropRotationUI();
 }
 
 function setPerspectiveMode(enabled) {
@@ -4754,6 +4863,18 @@ Object.entries(perspectiveControls).forEach(([key, control]) => {
     control.el.addEventListener('change', sendGeometrySync);
 });
 
+Object.values(lensDistortionControls).forEach(control => {
+    control.el.addEventListener('pointerdown', pushUndoState);
+    control.el.addEventListener('input', event => {
+        current_geom.lens_distortion = control.sign * Number.parseFloat(event.target.value);
+        constrainPerspectiveScale();
+        updatePerspectiveUI();
+        updateCanvasTransform();
+        requestRender();
+    });
+    control.el.addEventListener('change', sendGeometrySync);
+});
+
 perspectiveConstrain.addEventListener('change', () => {
     pushUndoState();
     current_geom.constrain_crop = perspectiveConstrain.checked;
@@ -4770,6 +4891,7 @@ btnResetPerspective.addEventListener('click', () => {
         perspective_vertical: 0,
         perspective_horizontal: 0,
         perspective_aspect: 0,
+        lens_distortion: 0,
         perspective_scale: 1,
         constrain_crop: false,
     });
@@ -4839,6 +4961,7 @@ function applyQuarterTurn(action) {
     current_geom.crop_rect = transformed.cropRect;
     updateSpatialSamples(transformed);
     refitCropToActiveAspect();
+    updatePerspectiveUI();
     sendGeometrySync();
 }
 
@@ -5190,6 +5313,7 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
     current_geom.perspective_vertical = 0.0;
     current_geom.perspective_horizontal = 0.0;
     current_geom.perspective_aspect = 0.0;
+    current_geom.lens_distortion = 0.0;
     current_geom.perspective_scale = 1.0;
     current_geom.constrain_crop = false;
     current_geom.flip_h = false;
@@ -6728,9 +6852,11 @@ canvasWrapper.parentElement.addEventListener('mousedown', e => {
             let w_homo = hMat[2]*perspectiveUv[0] + hMat[5]*perspectiveUv[1] + hMat[8];
             const raw_u = (hMat[0]*perspectiveUv[0] + hMat[3]*perspectiveUv[1] + hMat[6]) / w_homo;
             const raw_v = (hMat[1]*perspectiveUv[0] + hMat[4]*perspectiveUv[1] + hMat[7]) / w_homo;
+            const lensUv = NexFilmGeometry.mapLensDistortionPoint([raw_u, raw_v], current_geom);
+            if (!lensUv) return;
             
             pushUndoState();
-            currentSprocketUV = new Float32Array([raw_u, raw_v]);
+            currentSprocketUV = new Float32Array(lensUv);
             isSprocketPickerActive = false;
             canvasWrapper.parentElement.style.cursor = '';
             btnSprocketPicker.classList.remove('bg-zinc-600');

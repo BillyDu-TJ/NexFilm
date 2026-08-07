@@ -252,13 +252,13 @@
                         </button>
                     </div>
                     <div class="w-px h-4 bg-zinc-700"></div>
-                    <button id="btn-rotate-left" class="toolbar-btn" title="Rotate Left" data-i18n-title="develop.rotateLeft" aria-label="Rotate Left" data-i18n-aria-label="develop.rotateLeft" disabled>
+                    <button id="btn-rotate-left" class="toolbar-btn" title="Rotate Counterclockwise" data-i18n-title="develop.rotateLeft" aria-label="Rotate Counterclockwise" data-i18n-aria-label="develop.rotateLeft" disabled>
                         <svg class="toolbar-icon" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M6.28571 11C5.84048 11 5.40397 10.9389 4.97619 10.8167C4.54841 10.6944 4.14683 10.5111 3.77143 10.2667L4.53095 9.50714C4.80159 9.65555 5.08532 9.76695 5.38214 9.84133C5.67897 9.91571 5.98016 9.95273 6.28571 9.95238C7.30714 9.95238 8.17352 9.59654 8.88486 8.88486C9.59619 8.17317 9.95203 7.30679 9.95238 6.28571C9.95273 5.26463 9.59706 4.39825 8.88538 3.68657C8.1737 2.97489 7.30714 2.61905 6.28571 2.61905H6.20714L7.01905 3.43095L6.28571 4.19048L4.19048 2.09524L6.28571 0L7.01905 0.759524L6.20714 1.57143H6.28571C7.59524 1.57143 8.70833 2.02976 9.625 2.94643C10.5417 3.8631 11 4.97619 11 6.28571C11 6.94048 10.8757 7.55386 10.627 8.12586C10.3784 8.69786 10.0423 9.19548 9.61872 9.61871C9.19513 10.042 8.69751 10.3781 8.12586 10.627C7.55421 10.876 6.94083 11.0003 6.28571 11ZM3.14286 9.42857L0 6.28571L3.14286 3.14286L6.28571 6.28571L3.14286 9.42857Z" fill="currentColor"/></svg>
-                        <span data-i18n="develop.rotateLeft">Rotate Left</span>
+                        <span data-i18n="develop.rotateLeft">Rotate Counterclockwise</span>
                     </button>
-                    <button id="btn-rotate-right" class="toolbar-btn" title="Rotate Right" data-i18n-title="develop.rotateRight" aria-label="Rotate Right" data-i18n-aria-label="develop.rotateRight" disabled>
+                    <button id="btn-rotate-right" class="toolbar-btn" title="Rotate Clockwise" data-i18n-title="develop.rotateRight" aria-label="Rotate Clockwise" data-i18n-aria-label="develop.rotateRight" disabled>
                         <svg class="toolbar-icon" viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M4.71429 11C4.05952 11 3.44632 10.8757 2.87467 10.627C2.30302 10.3784 1.8054 10.0423 1.38181 9.61872C0.958223 9.19513 0.621937 8.69751 0.372953 8.12586C0.123969 7.55421 -0.000348473 6.94083 7.33627e-07 6.28571C7.33627e-07 4.97619 0.458334 3.8631 1.375 2.94643C2.29167 2.02976 3.40476 1.57143 4.71429 1.57143H4.79286L3.98095 0.759524L4.71429 0L6.80952 2.09524L4.71429 4.19048L3.98095 3.43095L4.79286 2.61905H4.71429C3.69286 2.61905 2.82648 2.97489 2.11514 3.68657C1.40381 4.39825 1.04797 5.26464 1.04762 6.28571C1.04727 7.30679 1.40311 8.17335 2.11514 8.88538C2.82718 9.59741 3.69356 9.95308 4.71429 9.95238C5.01984 9.95238 5.32103 9.91519 5.61786 9.84081C5.91468 9.76643 6.19841 9.65521 6.46905 9.50714L7.22857 10.2667C6.85317 10.5111 6.45159 10.6944 6.02381 10.8167C5.59603 10.9389 5.15952 11 4.71429 11ZM7.85714 9.42857L4.71429 6.28571L7.85714 3.14286L11 6.28571L7.85714 9.42857Z" fill="currentColor"/></svg>
-                        <span data-i18n="develop.rotateRight">Rotate Right</span>
+                        <span data-i18n="develop.rotateRight">Rotate Clockwise</span>
                     </button>
                     <div class="w-px h-4 bg-zinc-700"></div>
                     <button id="btn-flip-h" class="toolbar-btn" title="Flip Horizontal" data-i18n-title="develop.flipHorizontal" aria-label="Flip Horizontal" data-i18n-aria-label="develop.flipHorizontal" disabled>
@@ -420,6 +420,23 @@
                                 <option value="16:9">16:9</option>
                             </select>
                         </div>
+                        <div class="perspective-control crop-rotation-control">
+                            <div>
+                                <label for="crop-rotation-input" data-i18n="develop.rotation">Rotation</label>
+                                <span class="crop-angle-field">
+                                    <input id="crop-rotation-input" type="number" min="-180" max="180" step="0.1" value="0" inputmode="decimal" disabled>
+                                    <span aria-hidden="true">&deg;</span>
+                                </span>
+                            </div>
+                            <input id="crop-rotation-range" type="range" min="-180" max="180" step="0.1" value="0" list="crop-rotation-stops" class="custom-range silver-track" disabled>
+                            <datalist id="crop-rotation-stops">
+                                <option value="-180"></option>
+                                <option value="-90"></option>
+                                <option value="0"></option>
+                                <option value="90"></option>
+                                <option value="180"></option>
+                            </datalist>
+                        </div>
                     </div>
                 </aside>
 
@@ -433,7 +450,7 @@
                     </div>
                     <div class="perspective-panel-body">
                         <div class="perspective-control">
-                            <div><label for="perspective-rotate">Rotate</label><output id="val-perspective-rotate" for="perspective-rotate">0.00&deg;</output></div>
+                            <div><label for="perspective-rotate" data-i18n="develop.fineRotate">Fine Rotate</label><output id="val-perspective-rotate" for="perspective-rotate">0.00&deg;</output></div>
                             <input id="perspective-rotate" type="range" min="-45" max="45" step="0.01" value="0" class="custom-range silver-track" disabled>
                         </div>
                         <div class="perspective-control">
@@ -447,6 +464,14 @@
                         <div class="perspective-control">
                             <div><label for="perspective-aspect">Aspect</label><output id="val-perspective-aspect" for="perspective-aspect">0</output></div>
                             <input id="perspective-aspect" type="range" min="-100" max="100" step="1" value="0" class="custom-range silver-track" disabled>
+                        </div>
+                        <div class="perspective-control">
+                            <div><label for="distortion-barrel" data-i18n="develop.barrelDistortion">Barrel Correction</label><output id="val-distortion-barrel" for="distortion-barrel">0</output></div>
+                            <input id="distortion-barrel" type="range" min="0" max="100" step="1" value="0" class="custom-range silver-track" disabled>
+                        </div>
+                        <div class="perspective-control">
+                            <div><label for="distortion-pincushion" data-i18n="develop.pincushionDistortion">Pincushion Correction</label><output id="val-distortion-pincushion" for="distortion-pincushion">0</output></div>
+                            <input id="distortion-pincushion" type="range" min="0" max="100" step="1" value="0" class="custom-range silver-track" disabled>
                         </div>
                         <div class="perspective-control">
                             <div><label for="perspective-scale">Scale</label><output id="val-perspective-scale" for="perspective-scale">100%</output></div>

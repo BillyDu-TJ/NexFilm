@@ -236,6 +236,24 @@ pub fn apply_perspective_uv(
     (mapped[0].is_finite() && mapped[1].is_finite()).then_some(mapped)
 }
 
+/// Applies the inverse radial mapping used by the Develop lens-distortion
+/// controls. Negative values correct barrel distortion; positive values
+/// correct pincushion distortion.
+#[inline]
+pub fn apply_lens_distortion_uv(uv: [f32; 2], distortion: f32) -> Option<[f32; 2]> {
+    let centered = [uv[0] * 2.0 - 1.0, uv[1] * 2.0 - 1.0];
+    let radius_squared = centered[0] * centered[0] + centered[1] * centered[1];
+    let factor = 1.0 + distortion.clamp(-100.0, 100.0) * 0.004 * radius_squared;
+    let mapped = [
+        (centered[0] * factor + 1.0) * 0.5,
+        (centered[1] * factor + 1.0) * 0.5,
+    ];
+    mapped
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(mapped)
+}
+
 #[inline]
 pub fn shader_smoothstep(edge0: f32, edge1: f32, value: f32) -> f32 {
     let range = edge1 - edge0;
@@ -264,9 +282,9 @@ pub fn sprocket_white_mask(luma_difference: f32, tolerance: f32, feather: f32) -
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_homography, apply_perspective_uv, apply_post_gamma_adjustments, density_luma,
-        neutral_density_bounds, neutralize_rgb, normalize_density_channel, shader_homography,
-        sprocket_white_mask,
+        apply_homography, apply_lens_distortion_uv, apply_perspective_uv,
+        apply_post_gamma_adjustments, density_luma, neutral_density_bounds, neutralize_rgb,
+        normalize_density_channel, shader_homography, sprocket_white_mask,
     };
 
     #[test]
@@ -312,6 +330,21 @@ mod tests {
         let mapped = apply_perspective_uv([0.0, 1.0], 50.0, -35.0, 20.0, 1.25).unwrap();
         assert!(mapped.iter().all(|value| value.is_finite()));
         assert_ne!(mapped, [0.0, 1.0]);
+    }
+
+    #[test]
+    fn lens_distortion_mapping_is_identity_at_zero() {
+        let mapped = apply_lens_distortion_uv([0.2, 0.8], 0.0).unwrap();
+        assert!((mapped[0] - 0.2).abs() < 1e-6);
+        assert!((mapped[1] - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn barrel_and_pincushion_corrections_move_edges_in_opposite_directions() {
+        let barrel = apply_lens_distortion_uv([0.1, 0.5], -50.0).unwrap();
+        let pincushion = apply_lens_distortion_uv([0.1, 0.5], 50.0).unwrap();
+        assert!(barrel[0] > 0.1);
+        assert!(pincushion[0] < 0.1);
     }
 
     #[test]

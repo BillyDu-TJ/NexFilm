@@ -18,12 +18,13 @@ const currentGeom = {
     crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0, flip_h: false,
     flip_v: false, rotate_90_count: 0, calibration_points: null,
     calibration_confirmed: false, perspective_vertical: 0, perspective_horizontal: 0,
-    perspective_aspect: 0, perspective_scale: 1, constrain_crop: false
+    perspective_aspect: 0, lens_distortion: 0, perspective_scale: 1, constrain_crop: false
 };
 const sourceGeom = {
     crop_rect: { x: 0.1, y: 0.2, width: 0.7, height: 0.6 }, angle: 2.5, flip_h: true,
     flip_v: false, rotate_90_count: 1,
     perspective_vertical: 24, perspective_horizontal: -12, perspective_aspect: 8,
+    lens_distortion: -32,
     perspective_scale: 1.18, constrain_crop: true,
     calibration_points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
     calibration_confirmed: true
@@ -53,6 +54,13 @@ const rotateOnly = mergeCopyPayload(
 assert.equal(rotateOnly.geom.flip_h, true);
 assert.equal(rotateOnly.geom.rotate_90_count, 1);
 assert.equal(rotateOnly.geom.angle, 0);
+
+const perspectiveOnly = mergeCopyPayload(
+    currentParams,
+    currentGeom,
+    createCopyPayload(sourceParams, sourceGeom, ['perspective'])
+);
+assert.equal(perspectiveOnly.geom.lens_distortion, -32);
 
 const legacyEdit = mergeCopyPayload(
     currentParams,
