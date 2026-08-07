@@ -685,12 +685,6 @@ body > header > div:last-child button:hover { background: var(--control) !import
     line-height: 1.5;
     text-align: left;
 }
-.batch-apply-control {
-    display: grid;
-    gap: 7px;
-    margin-top: 10px;
-}
-.batch-apply-control .batch-apply-hint { margin: 0 2px; }
 .calib-edge-handle { pointer-events: stroke; touch-action: none; }
 .calib-edge-horizontal { cursor: ns-resize; }
 .calib-edge-vertical { cursor: ew-resize; }
@@ -1560,7 +1554,7 @@ body > header > div:last-child button:hover { transform: translateY(-1px); }
 .toolbar-btn:hover:not(:disabled) { background: var(--control) !important; color: var(--text) !important; }
 .toolbar-btn.active { background: var(--accent-soft) !important; color: var(--accent) !important; }
 #view-develop > div:first-child > div:nth-child(2) { padding: 20px !important; background: var(--workspace) !important; }
-#canvas-wrapper { box-shadow: 0 16px 40px rgba(0, 0, 0, .34); transition: transform var(--motion-base) var(--ease-emphasized), opacity var(--motion-base) var(--ease-standard); }
+#canvas-wrapper { box-shadow: 0 16px 40px rgba(0, 0, 0, .34); transition: opacity var(--motion-base) var(--ease-standard); }
 #filmstrip-container { height: 98px !important; padding: 10px 14px !important; gap: 8px !important; background: var(--chrome) !important; }
 .film-item { width: 96px !important; height: 66px !important; border-radius: 3px !important; outline: 1px solid transparent; outline-offset: 2px; transition: opacity var(--motion-fast) var(--ease-standard), outline-color var(--motion-fast) var(--ease-standard), transform var(--motion-fast) var(--ease-emphasized); animation: nexfilm-item-in 180ms var(--ease-emphasized) both; }
 .film-item:hover { transform: translateY(-2px) !important; }

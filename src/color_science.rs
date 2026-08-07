@@ -567,6 +567,7 @@ fn description_tag(value: &str) -> Vec<u8> {
     // structure, but their count fields are mandatory and may be zero.
     out.extend_from_slice(&0u32.to_be_bytes());
     out.extend_from_slice(&0u32.to_be_bytes());
+    out.extend_from_slice(&0u16.to_be_bytes());
     out.push(0);
     out.extend_from_slice(&[0u8; 67]);
     out
@@ -594,7 +595,7 @@ pub fn build_icc_profile(id: ColorSpaceId) -> Vec<u8> {
     let tag_table_size = 4 + tags.len() * 12;
     let mut output = vec![0u8; header_size + tag_table_size];
     output[4..8].copy_from_slice(b"nexf");
-    output[8..12].copy_from_slice(&0x04300000u32.to_be_bytes());
+    output[8..12].copy_from_slice(&0x02100000u32.to_be_bytes());
     output[12..16].copy_from_slice(b"mntr");
     output[16..20].copy_from_slice(b"RGB ");
     output[20..24].copy_from_slice(b"XYZ ");
@@ -722,6 +723,11 @@ mod tests {
             let profile = build_icc_profile(space);
             assert_eq!(&profile[36..40], b"acsp");
             assert_eq!(
+                u32::from_be_bytes(profile[8..12].try_into().unwrap()),
+                0x02100000,
+                "the v2 desc/TRC structures require an ICC v2 header"
+            );
+            assert_eq!(
                 u32::from_be_bytes(profile[0..4].try_into().unwrap()) as usize,
                 profile.len()
             );
@@ -744,7 +750,15 @@ mod tests {
         assert_eq!(&desc[0..4], b"desc");
         let ascii_count = u32::from_be_bytes(desc[8..12].try_into().unwrap()) as usize;
         let mac_count_offset = 12 + ascii_count + 8;
-        assert_eq!(desc[mac_count_offset], 0);
+        assert_eq!(
+            u16::from_be_bytes(
+                desc[mac_count_offset..mac_count_offset + 2]
+                    .try_into()
+                    .unwrap()
+            ),
+            0
+        );
+        assert_eq!(desc[mac_count_offset + 2], 0);
     }
 
     #[test]

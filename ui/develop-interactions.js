@@ -56,6 +56,13 @@
         };
     }
 
+    function getCanvasCompositeTransform(options) {
+        const zoom = Math.max(0.0001, finite(options?.zoom) || 1);
+        const panX = finite(options?.panX);
+        const panY = finite(options?.panY);
+        return `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`;
+    }
+
     function getPreviewProxyTarget(options) {
         const displayLongEdge = Math.max(
             1,
@@ -231,6 +238,7 @@
         horizontalWheelDelta,
         canScrollBy,
         getZoomViewUpdate,
+        getCanvasCompositeTransform,
         getPreviewProxyTarget,
         selectFilmAreaBatchTargets,
         getNormalizedCropAspect,

@@ -273,7 +273,7 @@
 
                 <!-- Main Preview -->
                 <div class="flex-1 w-full h-full p-8 flex items-center justify-center overflow-hidden bg-black relative">
-                    <div id="canvas-wrapper" class="relative shrink-0" style="display: none; contain: layout style paint;">
+                    <div id="canvas-wrapper" class="relative shrink-0" style="display: none; contain: layout style paint; will-change: transform;">
                         <canvas id="dummy-pusher" class="block" style="max-width: 100%; max-height: 100%; object-fit: contain; visibility: hidden; pointer-events: none;"></canvas>
                         <canvas id="preview-canvas" class="absolute top-0 left-0 w-full h-full" style="object-fit: fill; will-change: contents;"></canvas>
                         
@@ -489,10 +489,6 @@
                         <div class="inspector-segmented inspector-action-segment">
                             <button id="btn-auto-color" class="flex-[3] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Auto Invert</button>
                             <button id="btn-reset-color" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Reset</button>
-                        </div>
-                        <div class="batch-apply-control">
-                            <button id="btn-batch-apply" data-batch-apply type="button" title="Apply film area to other frames" data-i18n-title="develop.batchApply" disabled>Batch Apply</button>
-                            <p class="batch-apply-hint" data-i18n="develop.batchHint">仅在每张照片的胶片位置保持一致时使用。</p>
                         </div>
                     </div>
 

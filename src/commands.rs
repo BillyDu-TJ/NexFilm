@@ -976,6 +976,23 @@ fn decode_uncompressed_tiff_directory_reduced(
     let mut file =
         std::fs::File::open(path).map_err(|error| format!("Cannot reopen TIFF {path}: {error}"))?;
 
+    if output_width == directory.width && output_height == directory.height {
+        for output_y in 0..output_height {
+            let source_row =
+                read_uncompressed_tiff_row(&mut file, &directory, output_y, row_bytes)?;
+            let output_start =
+                usize::try_from(output_y).unwrap() * usize::try_from(output_width).unwrap() * 3;
+            let output_row = &mut output
+                [output_start..output_start + usize::try_from(output_width).unwrap() * 3];
+            output_row
+                .par_chunks_exact_mut(3)
+                .zip(source_row.par_chunks_exact(samples))
+                .for_each(|(target, source)| target.copy_from_slice(&source[..3]));
+        }
+        return ImageBuffer::from_raw(output_width, output_height, output)
+            .ok_or_else(|| "Cannot construct full-size TIFF image".to_string());
+    }
+
     let x_samples = (0..output_width)
         .map(|x| {
             let position =
@@ -2325,6 +2342,21 @@ fn decode_image_buffer(
         native_profile,
         requested_profile,
     ))
+}
+
+fn decode_export_source(path: &str) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    // Use the same direct source decoder as Develop for large scanner files.
+    // This keeps preview/export colors aligned and avoids LibRaw's additional
+    // full-resolution allocation for LinearRaw DNG.
+    if is_dng_extension(path) {
+        return decode_reduced_dng_for_working_space(path, u32::MAX)
+            .or_else(|_| decode_image_buffer(path, DecodeMode::ExportFull));
+    }
+    if is_tiff_extension(path) || is_scanner_fff_tiff(path) {
+        return decode_reduced_tiff_for_working_space(path, u32::MAX)
+            .or_else(|_| decode_image_buffer(path, DecodeMode::ExportFull));
+    }
+    decode_image_buffer(path, DecodeMode::ExportFull)
 }
 
 fn persist_import_batch(
@@ -4677,6 +4709,17 @@ enum ExportFormat {
     Tiff16,
 }
 
+fn export_profile_for_output(format: ExportFormat, output_space: ColorSpaceId) -> Option<Vec<u8>> {
+    // JPEG viewers universally treat an untagged JPEG as sRGB. Avoid attaching
+    // a generated matrix profile to standard sRGB JPEGs so their appearance
+    // matches the browser canvas and the operating system's native sRGB path.
+    if format == ExportFormat::Jpeg && output_space == ColorSpaceId::SRgb {
+        None
+    } else {
+        Some(crate::color_science::build_icc_profile(output_space))
+    }
+}
+
 impl ExportFormat {
     fn parse(value: &str) -> Result<Self, String> {
         match value {
@@ -5786,7 +5829,7 @@ pub async fn batch_export_images(
             let params_owned = snapshot.params.clone();
             let geom_owned = snapshot.geom.clone();
             let base_color_owned = snapshot.base_color.clone();
-            match decode_image_buffer(&file_path, DecodeMode::ExportFull) {
+            match decode_export_source(&file_path) {
                 Ok(original) => {
                     let params = &params_owned;
                     let base_color = &base_color_owned;
@@ -5912,14 +5955,14 @@ pub async fn batch_export_images(
                         }
                     };
 
-                    let profile = crate::color_science::build_icc_profile(output_space);
+                    let profile = export_profile_for_output(export_format, output_space);
                     match write_export_image_with_profile(
                         out_buffer,
                         &snapshot.output_path,
                         export_format,
                         quality,
                         snapshot.export_metadata.as_ref(),
-                        Some(&profile),
+                        profile.as_deref(),
                     ) {
                         Ok(()) => {
                             success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -7836,9 +7879,10 @@ mod export_contract_tests {
     use super::{
         build_response_buffer_from_proxy, co_sited_density_extremes, compute_auto_color_limits,
         density_histogram_extremes, embedded_input_profile, encode_export_buffer,
-        export_dimensions, gaussian_blur_rgb16_parallel, render_shader_equivalent,
-        reserve_export_path, sanitize_export_file_stem, validate_export_color_space,
-        write_export_image, write_export_image_with_profile, ExportConflictPolicy, ExportFormat,
+        export_dimensions, export_profile_for_output, gaussian_blur_rgb16_parallel,
+        render_shader_equivalent, reserve_export_path, sanitize_export_file_stem,
+        validate_export_color_space, write_export_image, write_export_image_with_profile,
+        ExportConflictPolicy, ExportFormat,
     };
     use crate::app_state::{BaseColor, FilmMode, GeometryState, TuningParams};
     use crate::color_science::ColorSpaceId;
@@ -8065,6 +8109,47 @@ mod export_contract_tests {
                     <= 1
             );
         }
+    }
+
+    #[test]
+    fn srgb_jpeg_uses_the_standard_implicit_profile() {
+        assert!(export_profile_for_output(ExportFormat::Jpeg, ColorSpaceId::SRgb).is_none());
+        assert!(export_profile_for_output(ExportFormat::Png, ColorSpaceId::SRgb).is_some());
+        assert!(export_profile_for_output(ExportFormat::Jpeg, ColorSpaceId::DisplayP3).is_some());
+
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-srgb-jpeg-test-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("frame.jpg");
+        let source = ImageBuffer::from_pixel(2, 2, Rgb([11_796, 32_768, 48_168]));
+        let profile = export_profile_for_output(ExportFormat::Jpeg, ColorSpaceId::SRgb);
+        write_export_image_with_profile(
+            source,
+            &path,
+            ExportFormat::Jpeg,
+            100,
+            None,
+            profile.as_deref(),
+        )
+        .unwrap();
+        let encoded = std::fs::read(&path).unwrap();
+        assert!(
+            !encoded.windows(12).any(|bytes| bytes == b"ICC_PROFILE\0"),
+            "standard sRGB JPEG must not carry the generated matrix profile"
+        );
+        let decoded = image::open(&path).unwrap().to_rgb8();
+        assert_eq!(decoded.dimensions(), (2, 2));
+        let expected = [46u8, 128u8, 188u8];
+        for (actual, expected) in decoded.get_pixel(0, 0).0.into_iter().zip(expected) {
+            assert!(
+                actual.abs_diff(expected) <= 2,
+                "sRGB JPEG pixel changed from {expected} to {actual}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

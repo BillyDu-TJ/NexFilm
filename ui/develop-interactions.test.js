@@ -31,6 +31,25 @@ assert.ok(zoomed.zoom > 1);
 assert.ok(zoomed.panX < 0, 'zooming at the right side must keep that image point under the pointer');
 assert.equal(zoomed.panY, 0);
 
+const zoomedBack = interactions.getZoomViewUpdate({
+    zoom: zoomed.zoom,
+    deltaY: 120,
+    minZoom: 0.1,
+    maxZoom: 10,
+    panX: zoomed.panX,
+    panY: zoomed.panY,
+    pointerX: 750,
+    pointerY: 300,
+    centerX: 500,
+    centerY: 300,
+});
+assert.ok(Math.abs(zoomedBack.zoom - 1) < 1e-12, 'opposite wheel steps must restore the zoom');
+assert.ok(Math.abs(zoomedBack.panX) < 1e-12, 'opposite wheel steps must not drift the image');
+assert.equal(
+    interactions.getCanvasCompositeTransform({ zoom: 2, panX: -15.5, panY: 8.25 }),
+    'translate3d(-15.5px, 8.25px, 0) scale(2)'
+);
+
 const clamped = interactions.getZoomViewUpdate({ zoom: 10, deltaY: -1000, minZoom: 0.1, maxZoom: 10 });
 assert.equal(clamped.zoom, 10);
 

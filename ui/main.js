@@ -22,6 +22,7 @@ const {
     horizontalWheelDelta,
     canScrollBy,
     getZoomViewUpdate,
+    getCanvasCompositeTransform,
     getPreviewProxyTarget,
     selectFilmAreaBatchTargets,
     getNormalizedCropAspect,
@@ -277,7 +278,6 @@ canvasWrapper.parentElement.addEventListener('wheel', (e) => {
     panX = next.panX;
     panY = next.panY;
     updateCanvasTransform();
-    requestRender();
     schedulePreviewResolutionRefresh();
 }, { passive: false });
 
@@ -2349,7 +2349,7 @@ function renderWebGL() {
 // Keep only a small JS-side navigation cache to avoid a third large copy.
 const PROXY_CACHE_LIMIT = 3;
 const PREVIEW_PROXY_BASE_LONG_EDGE = 2560;
-const PREVIEW_PROXY_MAX_LONG_EDGE = 4096;
+const PREVIEW_PROXY_MAX_LONG_EDGE = 8192;
 const proxyCache = new Map(); // key: id, value: { arrayBuffer, geomKey, lastUsed: Date.now() }
 const readyProxyIds = new Set();
 
@@ -4613,12 +4613,11 @@ function updateCanvasTransform(w, h) {
         targetH = targetW / aspect;
     }
     
-    targetW *= zoomLevel;
-    targetH *= zoomLevel;
-
     canvasWrapper.style.width = `${targetW}px`;
     canvasWrapper.style.height = `${targetH}px`;
-    dummyPusher.style.display = 'none'; canvasWrapper.style.transform = `translate(${panX}px, ${panY}px)`;
+    canvasWrapper.style.transformOrigin = '50% 50%';
+    dummyPusher.style.display = 'none';
+    canvasWrapper.style.transform = getCanvasCompositeTransform({ zoom: zoomLevel, panX, panY });
 
     if (isCropMode) {
         previewCanvas.style.width = '100%';
@@ -5063,9 +5062,9 @@ function ensureProxyDisplayed(id, options = {}) {
     const existing = proxyDisplayPromises.get(id);
     if (existing) return existing;
     const promise = (async () => {
-        // Prepare the highest texture size supported by this renderer before
-        // the first reveal. Zooming then only scales an already sharp frame.
-        await ensureProxyPrepared(id, maximumPreviewProxyLongEdge());
+        // Reveal a lightweight proxy immediately. After zooming stops, the
+        // adaptive path replaces it only when the sharper texture is ready.
+        await ensureProxyPrepared(id, PREVIEW_PROXY_BASE_LONG_EDGE);
         if (id !== activeId) return false;
         return reloadDevelopProxy(current_geom, {
             showLoading: false,
