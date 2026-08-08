@@ -2424,3 +2424,125 @@ body[data-theme="dark"] > header nav button.border-zinc-100::after { background:
     #develop-module-nav { flex-basis: 16px; width: 16px; min-width: 16px; padding-inline: 3px; }
     #view-develop { gap: 6px !important; }
 }
+
+/* Scope enhancements stay inside the existing histogram frame. */
+.scope-canvas-frame {
+    position: relative;
+    width: 100%;
+    height: 116px;
+    overflow: hidden;
+    border: 0;
+    border-radius: 5px;
+    background: var(--figma-workspace);
+    box-shadow: none;
+}
+.scope-canvas-frame canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+.scope-canvas-frame canvas.hidden { display: none; }
+.scope-channel-tabs {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    padding: 2px;
+    border: 1px solid rgba(255, 255, 255, .12);
+    border-radius: 3px;
+    background: rgba(28, 28, 30, .72);
+    backdrop-filter: blur(4px);
+}
+.scope-channel-btn {
+    min-width: 20px;
+    height: 18px;
+    padding: 0 4px;
+    border: 0;
+    border-radius: 2px;
+    background: transparent;
+    color: rgba(255, 255, 255, .62);
+    font-size: 9px;
+    font-weight: 600;
+    line-height: 18px;
+    cursor: pointer;
+}
+.scope-clipping-toggle {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, .2);
+    border-radius: 2px;
+    background: transparent;
+    color: rgba(255, 255, 255, .7);
+    font-size: 11px;
+    font-weight: 800;
+    line-height: 16px;
+    cursor: pointer;
+}
+.scope-clipping-toggle:hover,
+.scope-clipping-toggle:focus-visible {
+    color: #fff;
+    background: rgba(255, 255, 255, .12);
+    outline: none;
+}
+.scope-clipping-toggle.active {
+    border-color: #ff7068;
+    background: rgba(255, 75, 65, .28);
+    color: #fff;
+}
+.scope-channel-btn:hover,
+.scope-channel-btn:focus-visible {
+    color: #fff;
+    background: rgba(255, 255, 255, .12);
+    outline: none;
+}
+.scope-channel-btn.active {
+    color: #fff;
+    background: rgba(255, 255, 255, .20);
+}
+.scope-channel-tabs.waveform-mode .scope-channel-btn { display: none; }
+.scope-channel-red { color: #ff7770; }
+.scope-channel-green { color: #6ce98a; }
+.scope-channel-blue { color: #78a0ff; }
+.scope-threshold-handle {
+    position: absolute;
+    bottom: 0;
+    z-index: 4;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    transform: translateX(-50%);
+    cursor: ew-resize;
+    touch-action: none;
+}
+.scope-threshold-handle::before {
+    content: "";
+    position: absolute;
+    left: 3px;
+    bottom: 2px;
+    width: 0;
+    height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-bottom: 9px solid rgba(225, 225, 228, .92);
+    filter: drop-shadow(0 0 1px rgba(0, 0, 0, .9));
+}
+.scope-threshold-handle:hover::before,
+.scope-threshold-handle:focus-visible::before { border-bottom-color: #fff; }
+.scope-threshold-handle:focus-visible { outline: none; }
+.scope-threshold-shadow.active::before { border-bottom-color: #4f83ff; }
+.scope-threshold-highlight.active::before { border-bottom-color: #ff554c; }
+body[data-theme="light"] .scope-channel-tabs { background: rgba(42, 42, 44, .72); }
+
+.perspective-control output.slider-value,
+#export-quality-val.slider-value {
+    min-width: 42px;
+    padding: 1px 4px;
+    text-align: right;
+}

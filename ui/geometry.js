@@ -118,6 +118,9 @@
             flip_h: !!state.flip_h,
             flip_v: !!state.flip_v,
             rotate_90_count: Math.trunc(numberOrZero(state.rotate_90_count)),
+            calibration_confirmed: state.calibration_confirmed === true
+                || state.calibration_confirmed === 1
+                || String(state.calibration_confirmed).toLowerCase() === 'true',
         };
     }
 

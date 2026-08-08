@@ -387,10 +387,10 @@
                 
                 <div id="right-panel-blocker" class="absolute inset-0 z-50 bg-[#1C1C1E]/80 backdrop-blur-[4px] hidden flex flex-col items-center justify-center p-6 text-center">
                     <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Film Area</h3>
-                    <p class="film-area-description" data-i18n="develop.filmAreaDescription">拖动四角或四边，框定胶片实际成像区域。完成后再运行自动反相与校色。</p>
+                    <p class="film-area-description" data-i18n="develop.filmAreaDescription">范围可以包含片基；请将尺孔、胶片边缘外露的白色底板或其他高光区域排除在框外。</p>
                     <div class="film-area-actions">
                         <button id="btn-auto-area" class="film-area-action film-area-action-secondary" title="Detect film area from cached thumbnail" data-i18n-title="develop.autoArea" disabled>Auto Area</button>
-                        <button id="btn-confirm-calibration" class="film-area-action film-area-action-primary">Save Area</button>
+                        <button id="btn-confirm-calibration" class="film-area-action film-area-action-primary" data-i18n="develop.saveArea">Save Area</button>
                         <button id="btn-batch-apply-calibration" data-batch-apply class="film-area-action film-area-action-secondary" title="Apply film area to other frames" data-i18n-title="develop.batchApply" disabled>Batch Apply</button>
                         <p class="batch-apply-hint" data-i18n="develop.batchHint">仅在每张照片的胶片位置保持一致时使用。</p>
                     </div>
@@ -490,15 +490,25 @@
                 <!-- Histogram / Waveform Area -->
                 <div id="inspector-scopes" class="px-6 py-5 border-b border-[#28282c] bg-[#1a1a1ef0] backdrop-blur sticky top-0 z-10 shadow-sm">
                     <div class="flex justify-between items-center gap-3 mb-3">
-                        <h2 class="text-[10px] font-bold text-zinc-500 tracking-[0.2em] uppercase" id="viz-title">Scopes</h2>
+                        <h2 class="text-[10px] font-bold text-zinc-500 tracking-[0.2em] uppercase" id="viz-title" data-i18n="develop.scopes">Scopes</h2>
                         <div id="viz-mode-tabs" class="viz-mode-tabs" role="tablist" aria-label="Scope display">
-                            <button id="btn-viz-histogram" class="viz-mode-tab active" type="button" role="tab" aria-selected="true" aria-controls="histogram-canvas" tabindex="0">Histogram</button>
-                            <button id="btn-viz-waveform" class="viz-mode-tab" type="button" role="tab" aria-selected="false" aria-controls="waveform-canvas" tabindex="-1">Waveform</button>
+                            <button id="btn-viz-histogram" class="viz-mode-tab active" type="button" role="tab" aria-selected="true" aria-controls="histogram-canvas" tabindex="0" data-i18n="scopes.histogram">Histogram</button>
+                            <button id="btn-viz-waveform" class="viz-mode-tab" type="button" role="tab" aria-selected="false" aria-controls="waveform-canvas" tabindex="-1" data-i18n="scopes.waveform">Waveform</button>
                         </div>
                     </div>
-                    <div class="w-full h-[140px] bg-[#121214] rounded-md overflow-hidden relative shadow-inner border border-[#28282c]">
+                    <div class="scope-canvas-frame">
                         <canvas id="histogram-canvas" class="w-full h-full absolute top-0 left-0"></canvas>
                         <canvas id="waveform-canvas" class="w-full h-full absolute top-0 left-0 hidden"></canvas>
+                        <div id="scope-channel-tabs" class="scope-channel-tabs" role="group" aria-label="Scope channels" data-i18n-aria-label="scopes.channels">
+                            <button id="scope-clipping-toggle" type="button" class="scope-clipping-toggle" aria-pressed="false" aria-label="Clipping preview" data-i18n-aria-label="scopes.clippingPreview" title="Clipping preview" data-i18n-title="scopes.clippingPreview">!</button>
+                            <button type="button" class="scope-channel-btn active" data-scope-channel="rgb" aria-pressed="true">RGB</button>
+                            <button type="button" class="scope-channel-btn scope-channel-red" data-scope-channel="red" aria-pressed="false">R</button>
+                            <button type="button" class="scope-channel-btn scope-channel-green" data-scope-channel="green" aria-pressed="false">G</button>
+                            <button type="button" class="scope-channel-btn scope-channel-blue" data-scope-channel="blue" aria-pressed="false">B</button>
+                            <button type="button" class="scope-channel-btn" data-scope-channel="luma" aria-pressed="false" data-i18n-title="scopes.luma" title="Luma">Y</button>
+                        </div>
+                        <button id="scope-shadow-handle" class="scope-threshold-handle scope-threshold-shadow" type="button" aria-label="Shadow clipping threshold" data-i18n-aria-label="scopes.shadowThreshold" title="Shadow clipping threshold"></button>
+                        <button id="scope-highlight-handle" class="scope-threshold-handle scope-threshold-highlight" type="button" aria-label="Highlight clipping threshold" data-i18n-aria-label="scopes.highlightThreshold" title="Highlight clipping threshold"></button>
                     </div>
                 </div>
 
@@ -582,21 +592,21 @@
                         <div class="flex flex-col gap-5">
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
-                                    <label class="text-[11px] font-medium text-red-400 tracking-wide">Red / Cyan</label>
+                                    <label class="text-[11px] font-medium text-cyan-600 tracking-wide" data-i18n="fields.redCyan">Cyan / Red</label>
                                     <span id="val-expr" class="text-[10px] font-mono text-zinc-400">0.000</span>
                                 </div>
                                 <input type="range" id="expr" class="w-full custom-range red-track" min="-1.00" max="1.00" step="0.001" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
-                                    <label class="text-[11px] font-medium text-emerald-400 tracking-wide">Green / Magenta</label>
+                                    <label class="text-[11px] font-medium text-fuchsia-600 tracking-wide" data-i18n="fields.greenMagenta">Magenta / Green</label>
                                     <span id="val-expg" class="text-[10px] font-mono text-zinc-400">0.000</span>
                                 </div>
                                 <input type="range" id="expg" class="w-full custom-range green-track" min="-1.00" max="1.00" step="0.001" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
-                                    <label class="text-[11px] font-medium text-blue-400 tracking-wide">Blue / Yellow</label>
+                                    <label class="text-[11px] font-medium text-yellow-600 tracking-wide" data-i18n="fields.blueYellow">Yellow / Blue</label>
                                     <span id="val-expb" class="text-[10px] font-mono text-zinc-400">0.000</span>
                                 </div>
                                 <input type="range" id="expb" class="w-full custom-range blue-track" min="-1.00" max="1.00" step="0.001" value="0.00" disabled>
@@ -835,9 +845,9 @@
                     </fieldset>
                     <fieldset class="copy-settings-group">
                         <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="develop.printerLights">Printer Lights</span></label></legend>
-                        <label><input type="checkbox" value="printerRed" class="copy-setting-option"><span data-i18n="fields.redCyan">Red / Cyan</span></label>
-                        <label><input type="checkbox" value="printerGreen" class="copy-setting-option"><span data-i18n="fields.greenMagenta">Green / Magenta</span></label>
-                        <label><input type="checkbox" value="printerBlue" class="copy-setting-option"><span data-i18n="fields.blueYellow">Blue / Yellow</span></label>
+                        <label><input type="checkbox" value="printerRed" class="copy-setting-option"><span data-i18n="fields.redCyan">Cyan / Red</span></label>
+                        <label><input type="checkbox" value="printerGreen" class="copy-setting-option"><span data-i18n="fields.greenMagenta">Magenta / Green</span></label>
+                        <label><input type="checkbox" value="printerBlue" class="copy-setting-option"><span data-i18n="fields.blueYellow">Yellow / Blue</span></label>
                     </fieldset>
                     <fieldset class="copy-settings-group">
                         <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="develop.aesthetics">Aesthetics</span></label></legend>
@@ -1259,6 +1269,7 @@
     <script src="contact-sheet.js"></script>
     <script src="density-math.js"></script>
     <script src="histogram-math.js"></script>
+    <script src="range-math.js"></script>
     <script src="color-science.js"></script>
     <script src="selection.js"></script>
     <script src="settings-copy.js"></script>

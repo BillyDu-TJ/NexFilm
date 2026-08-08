@@ -32,6 +32,8 @@ assert.equal(geometry.normalizeGeometryState({}).perspective_scale, 1);
 assert.equal(geometry.normalizeGeometryState({}).lens_distortion, 0);
 assert.equal(geometry.needsFilmAreaConfirmation({ calibration_confirmed: false }), true);
 assert.equal(geometry.needsFilmAreaConfirmation({ calibration_confirmed: true }), false);
+assert.equal(geometry.normalizeGeometryState({ calibration_confirmed: 1 }).calibration_confirmed, true);
+assert.equal(geometry.normalizeGeometryState({ calibration_confirmed: 'true' }).calibration_confirmed, true);
 assert.equal(geometry.needsFilmAreaConfirmation({}), true);
 assert.deepEqual(
     geometry.getFilmAreaCalibrationDraft({ calibration_confirmed: false, calibration_points: square }),

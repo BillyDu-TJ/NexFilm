@@ -184,7 +184,11 @@ fn detect_from_gradient_projections(gray: &image::GrayImage) -> Option<[Point<i3
         .iter()
         .filter(|prominence| **prominence >= MIN_GRADIENT_PROMINENCE)
         .count();
-    if strong_edges < 3 || mean_prominence < MIN_GRADIENT_PROMINENCE {
+    // A single missing edge can still be a genuine scan, but accepting three
+    // arbitrary peaks makes subject edges look like the film gate and then
+    // causes a severe perspective stretch after saving. Require all four gate
+    // edges for the automatic path; otherwise fall back to manual framing.
+    if strong_edges < 4 || mean_prominence < MIN_GRADIENT_PROMINENCE {
         return None;
     }
 

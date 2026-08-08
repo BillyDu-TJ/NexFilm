@@ -14,7 +14,14 @@ const {
     createContactSheetFilename,
 } = window.NexFilmContactSheet;
 const { getNeutralExposureOffsets } = window.NexFilmDensity;
-const { getHistogramScale, getHistogramY } = window.NexFilmHistogram;
+const {
+    getHistogramScale,
+    getHistogramY,
+    normalizeScopeChannel,
+    getToneZones,
+    countOverflow,
+} = window.NexFilmHistogram;
+const { finiteNumber, clampRangeValue, resetRangeValue } = window.NexFilmRangeMath;
 const { cloneSettingsValue, createCopyPayload, mergeCopyPayload } = window.NexFilmSettingsCopy;
 const { updateRangeSelection } = window.NexFilmSelection;
 const {
@@ -88,6 +95,11 @@ const waveCanvas = document.getElementById('waveform-canvas');
 const vizModeTabs = document.getElementById('viz-mode-tabs');
 const btnVizHistogram = document.getElementById('btn-viz-histogram');
 const btnVizWaveform = document.getElementById('btn-viz-waveform');
+const scopeChannelTabs = document.getElementById('scope-channel-tabs');
+const scopeClippingToggle = document.getElementById('scope-clipping-toggle');
+const scopeCanvasFrame = document.querySelector('.scope-canvas-frame');
+const scopeShadowHandle = document.getElementById('scope-shadow-handle');
+const scopeHighlightHandle = document.getElementById('scope-highlight-handle');
 
 const histCtx = histCanvas.getContext('2d');
 const waveCtx = waveCanvas.getContext('2d');
@@ -319,6 +331,15 @@ let histogramReadbackReady = false;
 let lastHistogramReadAt = 0;
 let sliderDragActive = false;
 let activeSliderEnd = null;
+let scopeChannel = 'rgb';
+let scopeClippingPreviewEnabled = false;
+let scopeShadowLimit = 0.02;
+let scopeHighlightLimit = 0.98;
+let scopeThresholdDrag = null;
+
+function getScopeWarningMask() {
+    return scopeClippingPreviewEnabled ? 3 : 0;
+}
 
 // Library Multi-Selection State
 let allLibraryItems = [];
@@ -657,7 +678,11 @@ function setImportManagementBusy(busy) {
 function resetWorkingLibrary() {
     currentImageRequestToken++;
     developOperationRevision++;
+    calibrationRevision++;
+    clearDevelopSamplingTools();
     isCalibrationMode = false;
+    calibrationDragState = null;
+    resetDevelopViewport();
     document.getElementById('calibration-overlay').classList.add('hidden');
     setDevelopInspectorCalibrationLocked(false);
     activeId = null;
@@ -1238,6 +1263,7 @@ function captureActiveCanvasThumbnail() {
             gl.getError();
             gl.useProgram(shaderProgram);
             gl.bindVertexArray(vao);
+            gl.uniform1i(u_scope_warning_loc, 0);
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, tex);
             gl.bindFramebuffer(gl.FRAMEBUFFER, thumbnailFbo);
@@ -1248,6 +1274,7 @@ function captureActiveCanvasThumbnail() {
             gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, thumbnailReadback);
             captureError = gl.getError();
         } finally {
+            gl.uniform1i(u_scope_warning_loc, getScopeWarningMask());
             gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
             gl.viewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
         }
@@ -1474,6 +1501,9 @@ let u_sprocket_uv_loc;
 let u_sprocket_tolerance_loc;
 let u_sprocket_feather_loc;
 let u_calib_bounds_loc;
+let u_scope_warning_loc;
+let u_shadow_threshold_loc;
+let u_highlight_threshold_loc;
 let u_calib_pts_loc;
 let u_border_exposure_loc;
 let u_baseline_pass_loc;
@@ -1544,6 +1574,9 @@ function initWebGL() {
     uniform float u_sprocket_tolerance;
     uniform float u_sprocket_feather;
     uniform vec4 u_calib_bounds;
+    uniform int u_scope_warning;
+    uniform float u_shadow_threshold;
+    uniform float u_highlight_threshold;
 
     const mat3 STATUS_M = mat3(
         1.0197, -0.0052, 0.0131,
@@ -1734,10 +1767,33 @@ function initWebGL() {
         }
 
         if (u_sprocket_uv.x >= 0.0) {
-            // Spatial Masking: skip if inside calibration quad
-            if (!(v_texcoord.x >= u_calib_bounds.x && v_texcoord.x <= u_calib_bounds.z && 
-                  v_texcoord.y >= u_calib_bounds.y && v_texcoord.y <= u_calib_bounds.w)) {
+            bool has_visible_border = u_calib_bounds.x > 0.001 || u_calib_bounds.y > 0.001
+                || u_calib_bounds.z < 0.999 || u_calib_bounds.w < 0.999;
+            bool outside_calibration = v_texcoord.x < u_calib_bounds.x || v_texcoord.x > u_calib_bounds.z
+                || v_texcoord.y < u_calib_bounds.y || v_texcoord.y > u_calib_bounds.w;
+            bool apply_sprocket_mask = outside_calibration;
+            if (!has_visible_border) {
+                float horizontal_edge = min(u_sprocket_uv.x, 1.0 - u_sprocket_uv.x);
+                float vertical_edge = min(u_sprocket_uv.y, 1.0 - u_sprocket_uv.y);
+                bool sampled_horizontal_edge = vertical_edge <= horizontal_edge;
+                float sampled_edge = sampled_horizontal_edge ? vertical_edge : horizontal_edge;
+                float edge_band = clamp(sampled_edge * 1.75, 0.08, 0.24);
+                float pixel_edge = sampled_horizontal_edge
+                    ? min(v_texcoord.y, 1.0 - v_texcoord.y)
+                    : min(v_texcoord.x, 1.0 - v_texcoord.x);
+                apply_sprocket_mask = pixel_edge <= edge_band;
+            }
+            if (apply_sprocket_mask) {
                 final_rgb = mix(final_rgb, vec3(1.0), mask);
+            }
+        }
+
+        if (u_scope_warning != 0) {
+            float preview_luma = getLuma(final_rgb);
+            if ((u_scope_warning & 1) != 0 && preview_luma <= u_shadow_threshold) {
+                final_rgb = mix(final_rgb, vec3(0.05, 0.34, 1.0), 0.78);
+            } else if ((u_scope_warning & 2) != 0 && preview_luma >= u_highlight_threshold) {
+                final_rgb = mix(final_rgb, vec3(1.0, 0.12, 0.06), 0.78);
             }
         }
         
@@ -1812,6 +1868,9 @@ function initWebGL() {
     u_sprocket_tolerance_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_tolerance");
     u_sprocket_feather_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_feather");
     u_calib_bounds_loc = gl.getUniformLocation(shaderProgram, "u_calib_bounds");
+    u_scope_warning_loc = gl.getUniformLocation(shaderProgram, "u_scope_warning");
+    u_shadow_threshold_loc = gl.getUniformLocation(shaderProgram, "u_shadow_threshold");
+    u_highlight_threshold_loc = gl.getUniformLocation(shaderProgram, "u_highlight_threshold");
     
     gl.getExtension("OES_texture_float_linear");
 
@@ -2042,6 +2101,9 @@ function setVisualizationMode(mode, { focus = false } = {}) {
     unselectedButton.tabIndex = -1;
     histCanvas.classList.toggle('hidden', isWaveform);
     waveCanvas.classList.toggle('hidden', !isWaveform);
+    scopeChannelTabs.classList.toggle('waveform-mode', isWaveform);
+    scopeShadowHandle.classList.toggle('hidden', isWaveform);
+    scopeHighlightHandle.classList.toggle('hidden', isWaveform);
     if (lastPixels) updateDataViz(lastPixels);
     if (focus) selectedButton.focus();
 }
@@ -2057,6 +2119,72 @@ vizModeTabs.addEventListener('keydown', event => {
     setVisualizationMode(mode, { focus: true });
 });
 
+function updateScopeControls() {
+    scopeShadowHandle.style.left = `${scopeShadowLimit * 100}%`;
+    scopeHighlightHandle.style.left = `${scopeHighlightLimit * 100}%`;
+    scopeShadowHandle.classList.toggle('active', scopeClippingPreviewEnabled);
+    scopeHighlightHandle.classList.toggle('active', scopeClippingPreviewEnabled);
+    scopeClippingToggle.classList.toggle('active', scopeClippingPreviewEnabled);
+    scopeClippingToggle.setAttribute('aria-pressed', String(scopeClippingPreviewEnabled));
+}
+
+function drawToneBands(context, width, height, vertical) {
+    const zones = getToneZones();
+    context.save();
+    zones.forEach((zone, index) => {
+        context.fillStyle = index % 2 === 0
+            ? 'rgba(255, 255, 255, 0.025)'
+            : 'rgba(0, 0, 0, 0.025)';
+        if (vertical) {
+            context.fillRect(zone.start * width, 0, (zone.end - zone.start) * width, height);
+        } else {
+            const top = (1 - zone.end) * height;
+            context.fillRect(0, top, width, (zone.end - zone.start) * height);
+        }
+    });
+    context.strokeStyle = 'rgba(255, 255, 255, 0.09)';
+    context.lineWidth = 1;
+    for (let index = 1; index < zones.length; index++) {
+        const position = zones[index].start;
+        context.beginPath();
+        if (vertical) {
+            const x = Math.round(position * width) + 0.5;
+            context.moveTo(x, 0);
+            context.lineTo(x, height);
+        } else {
+            const y = Math.round((1 - position) * height) + 0.5;
+            context.moveTo(0, y);
+            context.lineTo(width, y);
+        }
+        context.stroke();
+    }
+    context.restore();
+}
+
+function drawHistogramClipGuides(width, height) {
+    const shadowX = scopeShadowLimit * width;
+    const highlightX = scopeHighlightLimit * width;
+    histCtx.save();
+    if (scopeClippingPreviewEnabled) {
+        histCtx.fillStyle = 'rgba(42, 105, 255, 0.16)';
+        histCtx.fillRect(0, 0, shadowX, height);
+        histCtx.fillStyle = 'rgba(255, 58, 48, 0.16)';
+        histCtx.fillRect(highlightX, 0, width - highlightX, height);
+    }
+    histCtx.lineWidth = 1;
+    histCtx.strokeStyle = 'rgba(83, 136, 255, 0.7)';
+    histCtx.beginPath();
+    histCtx.moveTo(Math.round(shadowX) + 0.5, 0);
+    histCtx.lineTo(Math.round(shadowX) + 0.5, height);
+    histCtx.stroke();
+    histCtx.strokeStyle = 'rgba(255, 82, 72, 0.7)';
+    histCtx.beginPath();
+    histCtx.moveTo(Math.round(highlightX) + 0.5, 0);
+    histCtx.lineTo(Math.round(highlightX) + 0.5, height);
+    histCtx.stroke();
+    histCtx.restore();
+}
+
 function drawHistogram(pixels) {
     const rHist = new Uint32Array(256);
     const gHist = new Uint32Array(256);
@@ -2070,9 +2198,16 @@ function drawHistogram(pixels) {
         rHist[r]++; gHist[g]++; bHist[b]++; lHist[l]++;
     }
 
-    // Use a robust interior-bin scale so isolated clipping spikes do not
-    // flatten the useful distribution. Endpoint peaks remain visible, capped.
-    const maxVal = getHistogramScale([rHist, gHist, bHist]);
+    const histogramsByChannel = {
+        red: rHist,
+        green: gHist,
+        blue: bHist,
+        luma: lHist,
+    };
+    const scaleHistograms = scopeChannel === 'rgb'
+        ? [rHist, gHist, bHist]
+        : [histogramsByChannel[scopeChannel]];
+    const maxVal = getHistogramScale(scaleHistograms);
 
     const histWidth = histCanvas.offsetWidth;
     const histHeight = histCanvas.offsetHeight;
@@ -2081,6 +2216,7 @@ function drawHistogram(pixels) {
     const w = histCanvas.width, h = histCanvas.height;
     
     histCtx.clearRect(0, 0, w, h);
+    drawHistogramClipGuides(w, h);
     histCtx.globalCompositeOperation = 'screen';
 
     function drawChannel(hist, color) {
@@ -2096,22 +2232,26 @@ function drawHistogram(pixels) {
         histCtx.fill();
     }
 
-    drawChannel(rHist, 'rgba(255, 60, 60, 0.6)');
-    drawChannel(gHist, 'rgba(60, 255, 60, 0.6)');
-    drawChannel(bHist, 'rgba(60, 60, 255, 0.6)');
+    if (scopeChannel === 'rgb' || scopeChannel === 'red') {
+        drawChannel(rHist, scopeChannel === 'red' ? 'rgba(255, 72, 64, 0.82)' : 'rgba(255, 60, 60, 0.58)');
+    }
+    if (scopeChannel === 'rgb' || scopeChannel === 'green') {
+        drawChannel(gHist, scopeChannel === 'green' ? 'rgba(55, 235, 95, 0.82)' : 'rgba(60, 255, 60, 0.58)');
+    }
+    if (scopeChannel === 'rgb' || scopeChannel === 'blue') {
+        drawChannel(bHist, scopeChannel === 'blue' ? 'rgba(67, 126, 255, 0.85)' : 'rgba(60, 92, 255, 0.62)');
+    }
+    if (scopeChannel === 'luma') {
+        drawChannel(lHist, 'rgba(232, 235, 239, 0.72)');
+    }
     
     histCtx.globalCompositeOperation = 'source-over';
-    
-    histCtx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
-    histCtx.lineWidth = 1;
-    histCtx.beginPath();
-    for (let i = 0; i < 256; i++) {
-        const x = (i / 255) * w;
-        const y = getHistogramY(lHist[i], maxVal, h);
-        if (i === 0) histCtx.moveTo(x, y);
-        else histCtx.lineTo(x, y);
-    }
-    histCtx.stroke();
+
+    const overflow = countOverflow(pixels, scopeShadowLimit, scopeHighlightLimit);
+    const total = Math.max(1, overflow.total);
+    scopeShadowHandle.title = `${i18nText('scopes.shadowThreshold')}: ${Math.round(scopeShadowLimit * 100)}% · ${(overflow.shadows / total * 100).toFixed(1)}%`;
+    scopeHighlightHandle.title = `${i18nText('scopes.highlightThreshold')}: ${Math.round(scopeHighlightLimit * 100)}% · ${(overflow.highlights / total * 100).toFixed(1)}%`;
+    updateScopeControls();
 }
 
 function drawWaveform(pixels) {
@@ -2120,48 +2260,103 @@ function drawWaveform(pixels) {
     if (waveCanvas.width !== waveWidth) waveCanvas.width = waveWidth;
     if (waveCanvas.height !== waveHeight) waveCanvas.height = waveHeight;
     const w = waveCanvas.width, h = waveCanvas.height;
-    
+    const colW = w / 3;
     waveCtx.clearRect(0, 0, w, h);
     waveCtx.globalCompositeOperation = 'screen';
-    
-    const colW = w / 3;
-    
-    // Draw Red
-    waveCtx.fillStyle = 'rgba(255, 60, 60, 0.15)';
-    for (let y = 0; y < HIST_H; y+=1) {
-        for (let x = 0; x < HIST_W; x+=1) {
-            const idx = (y * HIST_W + x) * 4;
-            const r = pixels[idx];
-            const plotX = (x / HIST_W) * colW;
-            const plotY_R = h - (r / 255.0) * h;
-            waveCtx.fillRect(plotX, plotY_R, 1.5, 1.5);
+
+    const channels = [
+        { component: 0, offset: 0, color: 'rgba(255, 60, 60, 0.15)' },
+        { component: 1, offset: colW, color: 'rgba(60, 255, 60, 0.15)' },
+        { component: 2, offset: colW * 2, color: 'rgba(60, 150, 255, 0.15)' },
+    ];
+    channels.forEach(({ component, offset, color }) => {
+        waveCtx.fillStyle = color;
+        for (let y = 0; y < HIST_H; y++) {
+            for (let x = 0; x < HIST_W; x++) {
+                const source = (y * HIST_W + x) * 4;
+                const plotX = offset + (x / HIST_W) * colW;
+                const plotY = h - (pixels[source + component] / 255) * h;
+                waveCtx.fillRect(plotX, plotY, 1.5, 1.5);
+            }
         }
-    }
-    
-    // Draw Green
-    waveCtx.fillStyle = 'rgba(60, 255, 60, 0.15)';
-    for (let y = 0; y < HIST_H; y+=1) {
-        for (let x = 0; x < HIST_W; x+=1) {
-            const idx = (y * HIST_W + x) * 4;
-            const g = pixels[idx+1];
-            const plotX = colW + (x / HIST_W) * colW;
-            const plotY_G = h - (g / 255.0) * h;
-            waveCtx.fillRect(plotX, plotY_G, 1.5, 1.5);
-        }
-    }
-    
-    // Draw Blue
-    waveCtx.fillStyle = 'rgba(60, 150, 255, 0.15)';
-    for (let y = 0; y < HIST_H; y+=1) {
-        for (let x = 0; x < HIST_W; x+=1) {
-            const idx = (y * HIST_W + x) * 4;
-            const b = pixels[idx+2];
-            const plotX = colW * 2 + (x / HIST_W) * colW;
-            const plotY_B = h - (b / 255.0) * h;
-            waveCtx.fillRect(plotX, plotY_B, 1.5, 1.5);
-        }
+    });
+    waveCtx.globalCompositeOperation = 'source-over';
+
+    const shadowY = (1 - scopeShadowLimit) * h;
+    const highlightY = (1 - scopeHighlightLimit) * h;
+    if (scopeClippingPreviewEnabled) {
+        waveCtx.fillStyle = 'rgba(42, 105, 255, 0.13)';
+        waveCtx.fillRect(0, shadowY, w, h - shadowY);
+        waveCtx.fillStyle = 'rgba(255, 58, 48, 0.13)';
+        waveCtx.fillRect(0, 0, w, highlightY);
     }
 }
+
+scopeClippingToggle.addEventListener('click', () => {
+    scopeClippingPreviewEnabled = !scopeClippingPreviewEnabled;
+    updateScopeControls();
+    if (lastPixels) {
+        if (isWaveform) drawWaveform(lastPixels);
+        else drawHistogram(lastPixels);
+    }
+    requestRender();
+});
+
+scopeChannelTabs.addEventListener('click', event => {
+    const button = event.target.closest('[data-scope-channel]');
+    if (!button || isWaveform) return;
+    scopeChannel = normalizeScopeChannel(button.dataset.scopeChannel);
+    scopeChannelTabs.querySelectorAll('[data-scope-channel]').forEach(candidate => {
+        const selected = candidate === button;
+        candidate.classList.toggle('active', selected);
+        candidate.setAttribute('aria-pressed', String(selected));
+    });
+    if (lastPixels) {
+        if (isWaveform) drawWaveform(lastPixels);
+        else drawHistogram(lastPixels);
+    }
+});
+
+function updateScopeThresholdFromPointer(event) {
+    if (!scopeThresholdDrag || event.pointerId !== scopeThresholdDrag.pointerId) return;
+    const rect = scopeCanvasFrame.getBoundingClientRect();
+    const normalized = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+    if (scopeThresholdDrag.kind === 'shadow') {
+        scopeShadowLimit = Math.min(0.25, normalized);
+    } else {
+        scopeHighlightLimit = Math.max(0.75, normalized);
+    }
+    updateScopeControls();
+    if (lastPixels) drawHistogram(lastPixels);
+}
+
+function beginScopeThresholdDrag(kind, event) {
+    event.preventDefault();
+    scopeThresholdDrag = {
+        kind,
+        pointerId: event.pointerId,
+    };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    updateScopeControls();
+}
+
+function finishScopeThresholdDrag(event) {
+    if (!scopeThresholdDrag || event.pointerId !== scopeThresholdDrag.pointerId) return;
+    scopeThresholdDrag = null;
+    updateScopeControls();
+    if (scopeClippingPreviewEnabled) requestRender();
+    if (lastPixels) {
+        if (isWaveform) drawWaveform(lastPixels);
+        else drawHistogram(lastPixels);
+    }
+}
+
+scopeShadowHandle.addEventListener('pointerdown', event => beginScopeThresholdDrag('shadow', event));
+scopeHighlightHandle.addEventListener('pointerdown', event => beginScopeThresholdDrag('highlight', event));
+window.addEventListener('pointermove', updateScopeThresholdFromPointer);
+window.addEventListener('pointerup', finishScopeThresholdDrag);
+window.addEventListener('pointercancel', finishScopeThresholdDrag);
+updateScopeControls();
 
 let vizTimeout = null;
 let lastVizTime = 0;
@@ -2312,6 +2507,11 @@ function renderWebGL() {
     gl.uniform1f(u_sprocket_tolerance_loc, currentSprocketTolerance);
     gl.uniform1f(u_sprocket_feather_loc, currentSprocketFeather);
     gl.uniform4f(u_calib_bounds_loc, minX, minY, maxX, maxY);
+    // Scope readback always measures the clean image. Clipping warnings are
+    // enabled only for the main preview below.
+    gl.uniform1i(u_scope_warning_loc, 0);
+    gl.uniform1f(u_shadow_threshold_loc, scopeShadowLimit);
+    gl.uniform1f(u_highlight_threshold_loc, scopeHighlightLimit);
     
     const geometryUv = NexFilmGeometry.createInverseGeometryMatrix(
         proxyWidth,
@@ -2340,7 +2540,7 @@ function renderWebGL() {
     // scopes, but doing it during a range drag makes the preview feel sticky.
     // Keep the preview GPU-only until the pointer is released, then force one
     // readback in the next frame.
-    const shouldRefreshViz = !sliderDragActive
+    const shouldRefreshViz = !sliderDragActive && !scopeThresholdDrag
         && (!histogramReadbackReady || now - lastHistogramReadAt >= 33);
     if (shouldRefreshViz) {
         gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
@@ -2352,6 +2552,8 @@ function renderWebGL() {
         lastHistogramReadAt = now;
         requestAnimationFrame(() => updateDataViz(histogramPixels));
     }
+
+    gl.uniform1i(u_scope_warning_loc, getScopeWarningMask());
 
     // Render to Main Canvas
     const orientedSize = NexFilmGeometry.getOrientedDimensions(
@@ -2703,10 +2905,10 @@ for (const key in sliders) {
         requestRender();
         scheduleInstantThumbnailUpdate();
     };
-    s.el.addEventListener('pointerdown', () => {
+    s.el.addEventListener('pointerdown', event => {
         activeSliderEnd = endSliderInteraction;
         sliderDragActive = true;
-        pushUndoState();
+        if (event.detail <= 1) pushUndoState();
     });
     s.el.addEventListener('pointerup', endSliderInteraction);
     s.el.addEventListener('pointercancel', endSliderInteraction);
@@ -2732,62 +2934,107 @@ for (const key in sliders) {
 window.addEventListener('pointerup', () => activeSliderEnd?.());
 window.addEventListener('pointercancel', () => activeSliderEnd?.());
 
+function setupEditableRangeValue(el, val, { format = value => String(value), recordUndo = false } = {}) {
+    if (!el || !val || val.dataset.rangeEditingReady === 'true') return;
+    val.dataset.rangeEditingReady = 'true';
+    val.classList.add('slider-value');
+    val.contentEditable = 'plaintext-only';
+    val.spellcheck = false;
+    val.title = 'Click to enter a value';
+
+    const restoreValue = () => {
+        val.textContent = format(el.value);
+    };
+    const commitValue = () => {
+        if (el.disabled) {
+            restoreValue();
+            return;
+        }
+        const parsed = finiteNumber(val.textContent, Number.NaN);
+        if (!Number.isFinite(parsed)) {
+            restoreValue();
+            return;
+        }
+        const next = clampRangeValue(parsed, el.min, el.max, el.step);
+        if (Number(el.value) === next) {
+            restoreValue();
+            return;
+        }
+        if (recordUndo && activeId) pushUndoState();
+        el.value = String(next);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        restoreValue();
+    };
+
+    val.addEventListener('focus', () => {
+        if (el.disabled) {
+            val.blur();
+            return;
+        }
+        const range = document.createRange();
+        range.selectNodeContents(val);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+    });
+    val.addEventListener('blur', commitValue);
+    val.addEventListener('keydown', event => {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            val.blur();
+        } else if (event.key === 'Escape') {
+            event.preventDefault();
+            restoreValue();
+            val.blur();
+        }
+    });
+}
+
 function setupEditableSliderValues() {
     Object.entries(sliders).forEach(([key, { el, val }]) => {
-        if (!el || !val) return;
-        val.classList.add('slider-value');
-        val.contentEditable = 'plaintext-only';
-        val.spellcheck = false;
-        val.title = 'Click to enter a value';
+        setupEditableRangeValue(el, val, {
+            format: value => formatSliderValue(key, value),
+            recordUndo: true,
+        });
+    });
 
-        const restoreValue = () => {
-            val.textContent = formatSliderValue(key, el.value);
+    document.querySelectorAll('output[for]').forEach(output => {
+        const el = document.getElementById(output.getAttribute('for'));
+        if (!el || el.type !== 'range') return;
+        const format = value => {
+            if (el.id === 'perspective-rotate') return finiteNumber(value).toFixed(2) + '°';
+            if (el.id === 'perspective-scale') return Math.round(finiteNumber(value)) + '%';
+            return String(Math.round(finiteNumber(value)));
         };
-        const commitValue = () => {
-            if (el.disabled) {
-                restoreValue();
-                return;
-            }
-            const parsed = Number.parseFloat(val.textContent);
-            if (!Number.isFinite(parsed)) {
-                restoreValue();
-                return;
-            }
-            const min = Number.parseFloat(el.min);
-            const max = Number.parseFloat(el.max);
-            const next = Math.min(max, Math.max(min, parsed));
-            pushUndoState();
+        setupEditableRangeValue(el, output, {
+            format,
+            recordUndo: Boolean(el.closest('#view-develop')),
+        });
+    });
+}
+
+function setupRangeDoubleClickReset() {
+    document.querySelectorAll('input[type="range"]').forEach(el => {
+        el.addEventListener('dblclick', event => {
+            event.preventDefault();
+            if (el.disabled) return;
+            const next = resetRangeValue({
+                min: el.min,
+                max: el.max,
+                step: el.step,
+                defaultValue: el.dataset.resetValue ?? el.defaultValue ?? el.getAttribute('value') ?? 0,
+            });
+            if (Number(el.value) === next) return;
             el.value = String(next);
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
-        };
-
-        val.addEventListener('focus', () => {
-            if (el.disabled) {
-                val.blur();
-                return;
-            }
-            const range = document.createRange();
-            range.selectNodeContents(val);
-            const selection = window.getSelection();
-            selection.removeAllRanges();
-            selection.addRange(range);
-        });
-        val.addEventListener('blur', commitValue);
-        val.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') {
-                event.preventDefault();
-                val.blur();
-            } else if (event.key === 'Escape') {
-                event.preventDefault();
-                restoreValue();
-                val.blur();
-            }
         });
     });
 }
 
 setupEditableSliderValues();
+setupRangeDoubleClickReset();
 
 function enableUI() {
     for (const key in sliders) {
@@ -3099,6 +3346,7 @@ function createLibraryItemElement(item, orderedIds) {
     };
     libDiv.ondblclick = event => {
         clearNativeSelection(event);
+        if (item.status === 'importing') return;
         setSingleImageSelection(item.id, 'library');
         currentImportSessionPaths = null;
         if (item.roll_id) {
@@ -3353,6 +3601,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                         };
                         libDiv.ondblclick = event => {
                             clearNativeSelection(event);
+                            if (existingItem.status === 'importing') return;
                             setSingleImageSelection(existingItem.id, `history:${historyRollViewId}`);
                             // State 3 (Continue Editing / Import by Roll): allow switching to develop
                             // State 4 (History preview): selection only, no develop switching
@@ -3533,6 +3782,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
             const stripDiv = document.createElement('div');
             stripDiv.className = `film-item shrink-0 ${item.id === activeId ? 'active' : ''}`;
             stripDiv.onclick = event => {
+                if (item.status === 'importing') return;
                 selectImage(item.id);
                 updateImageSelection(item.id, event, filmstripItemIds, filmstripSelectionScope);
             };
@@ -3764,6 +4014,9 @@ function publishThumbnailUpdate(id, thumbnail, { rendered = true } = {}) {
 async function selectImage(id) {
     if (activeId === id) return;
     const myToken = ++currentImageRequestToken;
+    calibrationRevision++;
+    calibrationDragState = null;
+    clearDevelopSamplingTools();
     if (activeId) {
         try {
             await flushPendingBackendSync();
@@ -3803,6 +4056,8 @@ async function selectImage(id) {
     // selection. The authoritative persisted state below decides whether the
     // area overlay is shown once the lightweight state switch completes.
     isCalibrationMode = false;
+    calibrationDragState = null;
+    resetDevelopViewport();
     document.getElementById('calibration-overlay').classList.add('hidden');
     setDevelopInspectorCalibrationLocked(false);
     btnAutoColor.disabled = true;
@@ -4719,7 +4974,13 @@ function updateCropRotationUI() {
 
 function applyCropRotationDegrees(value) {
     if (!activeId) return;
-    const target = decomposeRotationDegrees(value, 2);
+    const degrees = clampRangeValue(
+        value,
+        cropRotationRange.min,
+        cropRotationRange.max,
+        cropRotationRange.step
+    );
+    const target = decomposeRotationDegrees(degrees, 2);
     const currentQuarterTurns = Math.trunc(current_geom.rotate_90_count || 0);
     const targetQuarterTurns = target.quarterTurns
         + Math.round((currentQuarterTurns - target.quarterTurns) / 4) * 4;
@@ -4740,7 +5001,9 @@ function applyCropRotationDegrees(value) {
     requestRender();
 }
 
-cropRotationRange.addEventListener('pointerdown', pushUndoState);
+cropRotationRange.addEventListener('pointerdown', event => {
+    if (event.detail <= 1) pushUndoState();
+});
 cropRotationRange.addEventListener('input', event => applyCropRotationDegrees(event.target.value));
 cropRotationRange.addEventListener('change', sendGeometrySync);
 cropRotationInput.addEventListener('focus', pushUndoState);
@@ -4753,6 +5016,14 @@ cropRotationInput.addEventListener('change', event => {
         updateCropRotationUI();
         return;
     }
+    const next = clampRangeValue(
+        event.target.value,
+        cropRotationInput.min,
+        cropRotationInput.max,
+        cropRotationInput.step
+    );
+    event.target.value = String(next);
+    applyCropRotationDegrees(next);
     sendGeometrySync();
 });
 cropRotationInput.addEventListener('keydown', event => {
@@ -4851,7 +5122,9 @@ function constrainPerspectiveScale() {
 }
 
 Object.entries(perspectiveControls).forEach(([key, control]) => {
-    control.el.addEventListener('pointerdown', pushUndoState);
+    control.el.addEventListener('pointerdown', event => {
+        if (event.detail <= 1) pushUndoState();
+    });
     control.el.addEventListener('input', event => {
         const rawValue = Number.parseFloat(event.target.value);
         current_geom[key] = key === 'perspective_scale' ? rawValue / 100 : rawValue;
@@ -4864,7 +5137,9 @@ Object.entries(perspectiveControls).forEach(([key, control]) => {
 });
 
 Object.values(lensDistortionControls).forEach(control => {
-    control.el.addEventListener('pointerdown', pushUndoState);
+    control.el.addEventListener('pointerdown', event => {
+        if (event.detail <= 1) pushUndoState();
+    });
     control.el.addEventListener('input', event => {
         current_geom.lens_distortion = control.sign * Number.parseFloat(event.target.value);
         constrainPerspectiveScale();
@@ -4901,7 +5176,9 @@ btnResetPerspective.addEventListener('click', () => {
 
 
 function updateSpatialSamples(transform) {
-    if (current_geom.calibration_points) {
+    if (isCalibrationMode && transform.calibrationPoints) {
+        calibrationPoints = cloneCalibrationPoints(transform.calibrationPoints);
+    } else if (current_geom.calibration_points) {
         current_geom.calibration_points = transform.calibrationPoints;
     }
     if (currentSprocketUV[0] >= 0 && currentSprocketUV[1] >= 0) {
@@ -4924,7 +5201,9 @@ function persistGeometryQueued(id, geom, generation = developOperationRevision) 
 function sendGeometrySync() {
     if (!activeId) return;
     const targetId = activeId;
+    const generation = developOperationRevision;
     const geomSnapshot = JSON.parse(JSON.stringify(current_geom));
+    const paramsSnapshot = saveCurrentState();
     geomSyncId++;
     const currentSyncId = geomSyncId;
     
@@ -4934,7 +5213,8 @@ function sendGeometrySync() {
     // Geometry writes must be serialized. Parallel IPC calls can commit out
     // of order in SQLite, which makes a flip visibly snap back when an older
     // request finishes after the newer one.
-    void persistGeometryQueued(targetId, geomSnapshot)
+    void persistGeometryQueued(targetId, geomSnapshot, generation)
+        .then(() => updateBackendParams(targetId, paramsSnapshot, generation))
         .then(() => {
             if (geomSyncId !== currentSyncId || targetId !== activeId) return;
             // Geometry is a GPU display transform; the canonical proxy does
@@ -4953,10 +5233,10 @@ function applyQuarterTurn(action) {
     const turn = getQuarterTurnAction(action);
     if (!turn) return;
     pushUndoState();
-    const transformed = NexFilmGeometry.transformGeometryForQuarterTurn(
-        current_geom,
-        turn.clockwise
-    );
+    const transformSource = isCalibrationMode
+        ? { ...current_geom, calibration_points: cloneCalibrationPoints() }
+        : current_geom;
+    const transformed = NexFilmGeometry.transformGeometryForQuarterTurn(transformSource, turn.clockwise);
     current_geom.rotate_90_count += turn.turnDelta;
     current_geom.crop_rect = transformed.cropRect;
     updateSpatialSamples(transformed);
@@ -4970,7 +5250,10 @@ btnRotateRight.addEventListener('click', () => applyQuarterTurn('right'));
 
 btnFlipH.addEventListener('click', () => {
     if (!activeId) return; pushUndoState();
-    const transformed = NexFilmGeometry.transformGeometryForFlip(current_geom, true, false);
+    const transformSource = isCalibrationMode
+        ? { ...current_geom, calibration_points: cloneCalibrationPoints() }
+        : current_geom;
+    const transformed = NexFilmGeometry.transformGeometryForFlip(transformSource, true, false);
     current_geom.flip_h = !current_geom.flip_h;
     current_geom.crop_rect = transformed.cropRect;
     updateSpatialSamples(transformed);
@@ -4979,7 +5262,10 @@ btnFlipH.addEventListener('click', () => {
 
 btnFlipV.addEventListener('click', () => {
     if (!activeId) return; pushUndoState();
-    const transformed = NexFilmGeometry.transformGeometryForFlip(current_geom, false, true);
+    const transformSource = isCalibrationMode
+        ? { ...current_geom, calibration_points: cloneCalibrationPoints() }
+        : current_geom;
+    const transformed = NexFilmGeometry.transformGeometryForFlip(transformSource, false, true);
     current_geom.flip_v = !current_geom.flip_v;
     current_geom.crop_rect = transformed.cropRect;
     updateSpatialSamples(transformed);
@@ -5354,6 +5640,20 @@ function validateFilmAreaDetection(result) {
     if (!NexFilmGeometry.isValidCalibrationQuad(points)) {
         throw new Error('The detector returned an invalid point order.');
     }
+    const sideLengths = points.map((point, index) => {
+        const next = points[(index + 1) % points.length];
+        return Math.hypot(next[0] - point[0], next[1] - point[1]);
+    });
+    const shortestSide = Math.min(...sideLengths);
+    const longestSide = Math.max(...sideLengths);
+    const diagonalLengths = [
+        Math.hypot(points[2][0] - points[0][0], points[2][1] - points[0][1]),
+        Math.hypot(points[3][0] - points[1][0], points[3][1] - points[1][1]),
+    ];
+    const diagonalRatio = Math.max(...diagonalLengths) / Math.max(1e-6, Math.min(...diagonalLengths));
+    if (shortestSide < 0.04 || longestSide / Math.max(1e-6, shortestSide) > 6 || diagonalRatio > 3) {
+        throw new Error('The detected film area is too distorted. Set the area manually.');
+    }
     return points;
 }
 
@@ -5419,15 +5719,43 @@ btnAutoColor.addEventListener('click', async () => {
     await runAutoInvert();
 });
 
-btnSprocketPicker.addEventListener('click', () => {
-    isSprocketPickerActive = !isSprocketPickerActive;
+function updateDevelopSamplingCursor() {
+    const cursor = isSprocketPickerActive || isEyedropperActive ? 'crosshair' : '';
+    canvasWrapper.parentElement.style.cursor = cursor;
+    canvasWrapper.style.cursor = cursor;
+    previewCanvas.style.cursor = cursor;
+}
+
+function setSprocketPickerActive(active) {
+    isSprocketPickerActive = Boolean(active);
+    btnSprocketPicker.classList.toggle('bg-zinc-600', isSprocketPickerActive);
     if (isSprocketPickerActive) {
-        canvasWrapper.parentElement.style.cursor = 'crosshair';
-        btnSprocketPicker.classList.add('bg-zinc-600');
-    } else {
-        canvasWrapper.parentElement.style.cursor = '';
+        isEyedropperActive = false;
+        btnWbEyedropper.classList.remove('text-white');
+    }
+    updateDevelopSamplingCursor();
+}
+
+function setEyedropperActive(active) {
+    isEyedropperActive = Boolean(active);
+    btnWbEyedropper.classList.toggle('text-white', isEyedropperActive);
+    if (isEyedropperActive) {
+        isSprocketPickerActive = false;
         btnSprocketPicker.classList.remove('bg-zinc-600');
     }
+    updateDevelopSamplingCursor();
+}
+
+function clearDevelopSamplingTools() {
+    isSprocketPickerActive = false;
+    isEyedropperActive = false;
+    btnSprocketPicker.classList.remove('bg-zinc-600');
+    btnWbEyedropper.classList.remove('text-white');
+    updateDevelopSamplingCursor();
+}
+
+btnSprocketPicker.addEventListener('click', () => {
+    setSprocketPickerActive(!isSprocketPickerActive);
 });
 
 async function showConfirm(message) {
@@ -6030,14 +6358,10 @@ btnPasteSettings.addEventListener('click', async () => {
 });
 
 btnWbEyedropper.addEventListener('click', () => {
-    isEyedropperActive = !isEyedropperActive;
-    if (isEyedropperActive) {
-        btnWbEyedropper.classList.add('text-white');
-        previewCanvas.style.cursor = 'crosshair';
+    const nextActive = !isEyedropperActive;
+    setEyedropperActive(nextActive);
+    if (nextActive) {
         showToast("White Balance Eyedropper activated. Click on a neutral gray area.", "success");
-    } else {
-        btnWbEyedropper.classList.remove('text-white');
-        previewCanvas.style.cursor = 'default';
     }
 });
 
@@ -6116,9 +6440,7 @@ previewCanvas.addEventListener('click', (e) => {
         updateBackendParams();
         requestRender();
         
-        isEyedropperActive = false;
-        btnWbEyedropper.classList.remove('text-white');
-        previewCanvas.style.cursor = 'default';
+        setEyedropperActive(false);
         showToast("White Balance updated.", "success");
     }
 });
@@ -6317,14 +6639,20 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
 
 function updateCalibrationPolygon() {
     if (!isCalibrationMode) return;
+    const svg = document.getElementById('calibration-svg');
     const polygon = document.getElementById('calibration-polygon');
     const grid = document.getElementById('calibration-grid');
     const handles = document.querySelectorAll('.calib-handle');
     const dots = document.querySelectorAll('.calib-dot');
     const edgeHandles = document.querySelectorAll('.calib-edge-handle');
     const edgeDots = document.querySelectorAll('.calib-edge-dot');
-    const svgRect = document.getElementById('calibration-svg').getBoundingClientRect();
-    if (!svgRect.width || !svgRect.height) {
+    const svgRect = svg.getBoundingClientRect();
+    // getBoundingClientRect() includes the wrapper's zoom transform. SVG
+    // coordinates, however, are laid out in the untransformed CSS viewport.
+    // Mixing the two makes a second drag after zoom jump to the wrong corner.
+    const svgWidth = svg.clientWidth || Number.parseFloat(getComputedStyle(svg).width) || 0;
+    const svgHeight = svg.clientHeight || Number.parseFloat(getComputedStyle(svg).height) || 0;
+    if (!svgRect.width || !svgRect.height || !svgWidth || !svgHeight) {
         requestAnimationFrame(updateCalibrationPolygon);
         return;
     }
@@ -6332,8 +6660,8 @@ function updateCalibrationPolygon() {
     let pointsStr = '';
     const pts = [];
     calibrationPoints.forEach((p, i) => {
-        const cx = p[0] * svgRect.width;
-        const cy = p[1] * svgRect.height;
+        const cx = p[0] * svgWidth;
+        const cy = p[1] * svgHeight;
         pts.push({x: cx, y: cy});
         pointsStr += `${cx},${cy} `;
         if (handles[i]) {
@@ -6476,6 +6804,11 @@ window.addEventListener('resize', () => {
 
 document.getElementById('btn-confirm-calibration').addEventListener('click', async () => {
     if (!activeId) return;
+    if (!NexFilmGeometry.isValidCalibrationQuad(calibrationPoints)) {
+        showToast(i18nText('errors.autoAreaFailed'), "error");
+        return;
+    }
+    calibrationRevision++;
     pushUndoState();
     const previousGeom = JSON.parse(JSON.stringify(current_geom));
     current_geom.calibration_points = JSON.parse(JSON.stringify(calibrationPoints));
@@ -6566,6 +6899,7 @@ listen('import_progress', (event) => {
     const payloadIdentity = itemIdentity(payload);
     let item = allLibraryItems.find(i => i.status === 'importing' && itemIdentity(i) === payloadIdentity);
     let searchId = payload.id;
+    const activeWasTransient = !!item && activeId === item.id;
     
     if (item) {
         searchId = item.id; // Keep track of the old skeleton id to update the DOM
@@ -6605,6 +6939,16 @@ listen('import_progress', (event) => {
     }
     rememberItem(item);
     allLibraryItems = uniqueItemsByPath(allLibraryItems);
+
+    if (activeWasTransient) {
+        // A user may have double-clicked an importing skeleton before the
+        // backend assigned its real ID. Invalidate that request and reopen the
+        // committed item instead of leaving the stale temporary ID active.
+        currentImageRequestToken++;
+        activeId = null;
+        resetDevelopViewport();
+        void selectImage(payload.id);
+    }
 
     // Update DOM matching the skeleton id (or real id)
     document.querySelectorAll(`.film-item[data-id="${searchId}"], .library-item[data-id="${searchId}"]`).forEach(el => {
@@ -6833,6 +7177,21 @@ document.getElementById('btn-export-roll').addEventListener('click', async () =>
 });
 
 let panX = 0, panY = 0, isPanning = false, startPanX = 0, startPanY = 0, isSpacePressed = false;
+function resetDevelopViewTransform() {
+    zoomLevel = 1.0;
+    panX = 0;
+    panY = 0;
+    isPanning = false;
+    startPanX = 0;
+    startPanY = 0;
+}
+
+function resetDevelopViewport() {
+    resetDevelopViewTransform();
+    currentImageWidth = 1;
+    currentImageHeight = 1;
+}
+
 window.addEventListener('keydown', e => { if(e.code==='Space') isSpacePressed=true; });
 window.addEventListener('keyup', e => { if(e.code==='Space') isSpacePressed=false; });
 
@@ -6857,14 +7216,30 @@ canvasWrapper.parentElement.addEventListener('mousedown', e => {
             
             pushUndoState();
             currentSprocketUV = new Float32Array(lensUv);
-            isSprocketPickerActive = false;
-            canvasWrapper.parentElement.style.cursor = '';
-            btnSprocketPicker.classList.remove('bg-zinc-600');
+            const sampledId = activeId;
+            const generation = developOperationRevision;
+            const paramsSnapshot = saveCurrentState();
+            setSprocketPickerActive(false);
+            histogramReadbackReady = false;
             requestRender();
+            void updateBackendParams(sampledId, paramsSnapshot, generation)
+                .then(() => {
+                    if (sampledId === activeId && generation === developOperationRevision) {
+                        requestThumbnailSync();
+                    }
+                })
+                .catch(error => {
+                    if (String(error).includes('STALE_DEVELOPMENT_OPERATION')) return;
+                    console.error('Failed to save sprocket sample', error);
+                    showToast('Could not save sprocket sample: ' + error, 'error');
+                });
         }
         return;
     }
-    if (!activeId || isCropMode || isPerspectiveMode || isCalibrationMode) return;
+    if (!activeId || isCropMode || isPerspectiveMode) return;
+    // Corner and edge handles own their drag gesture. Blank calibration
+    // overlay space remains available for panning the image and mask together.
+    if (isCalibrationMode && e.target.closest?.('.calib-handle, .calib-edge-handle')) return;
     if (e.button === 0 || e.button === 1) {
         isPanning = true;
         startPanX = e.clientX - panX;
@@ -6878,10 +7253,14 @@ window.addEventListener('mousemove', e => {
     panY = e.clientY - startPanY;
     updateCanvasTransform();
 });
-window.addEventListener('mouseup', () => isPanning = false);
+window.addEventListener('mouseup', () => {
+    isPanning = false;
+});
 canvasWrapper.parentElement.addEventListener('dblclick', e => {
-    if (!activeId || isCropMode || isPerspectiveMode || isCalibrationMode) return;
-    zoomLevel = 1.0; panX = 0; panY = 0;
+    if (!activeId || isCropMode || isPerspectiveMode) return;
+    if (isCalibrationMode && e.target.closest?.('.calib-handle, .calib-edge-handle')) return;
+    e.preventDefault();
+    resetDevelopViewTransform();
     updateCanvasTransform();
 });
 
@@ -6969,9 +7348,7 @@ document.getElementById('menu-view-library')?.addEventListener('click', () => {
 document.getElementById('menu-view-develop')?.addEventListener('click', () => switchView('develop'));
 document.getElementById('menu-view-rolls')?.addEventListener('click', () => switchView('history'));
 document.getElementById('menu-view-reset')?.addEventListener('click', () => {
-    zoomLevel = 1.0;
-    panX = 0;
-    panY = 0;
+    resetDevelopViewTransform();
     if (currentView === 'develop') updateCanvasTransform();
 });
 document.getElementById('menu-about')?.addEventListener('click', () => {

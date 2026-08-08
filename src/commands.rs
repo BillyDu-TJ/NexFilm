@@ -2815,7 +2815,12 @@ pub async fn import_images(
                         pristine_proxy: None,
                         base_color: base_color.clone(),
                         params: params.clone(),
-                        geom: normalize_persisted_geometry(geom.clone()),
+                        geom: normalize_persisted_geometry_for_rendered_image(
+                            geom.clone(),
+                            rendered_thumb
+                                .as_deref()
+                                .is_some_and(|thumbnail| !thumbnail.is_empty()),
+                        ),
                         is_loose: loose,
                         in_library: in_lib,
                     });
@@ -4130,6 +4135,46 @@ fn normalize_persisted_geometry(mut geom: GeometryState) -> GeometryState {
     geom
 }
 
+fn normalize_persisted_geometry_for_rendered_image(
+    mut geom: GeometryState,
+    has_rendered_thumbnail: bool,
+) -> GeometryState {
+    // Older versions could persist a rendered positive without the newer
+    // calibration_confirmed flag. Treat that state as a committed full-frame
+    // calibration so reopening an already processed frame does not re-open the
+    // film-area blocker.
+    if has_rendered_thumbnail && !geom.calibration_confirmed {
+        if geom.calibration_points.is_none() {
+            geom.calibration_points = Some([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        }
+        geom.calibration_confirmed = true;
+    }
+    normalize_persisted_geometry(geom)
+}
+
+#[inline]
+fn should_apply_sprocket_mask(crop_uv: [f32; 2], bounds: [f32; 4], sprocket_uv: [f32; 2]) -> bool {
+    let [min_x, min_y, max_x, max_y] = bounds;
+    let has_visible_border = min_x > 0.001 || min_y > 0.001 || max_x < 0.999 || max_y < 0.999;
+    if has_visible_border {
+        return crop_uv[0] < min_x
+            || crop_uv[0] > max_x
+            || crop_uv[1] < min_y
+            || crop_uv[1] > max_y;
+    }
+
+    // A full-frame calibration has no explicit outside region. Restrict the
+    // mask to the pair of edge bands nearest the sampled perforation instead
+    // of allowing a matching midtone anywhere in the photograph to turn white.
+    let horizontal_edge = sprocket_uv[0].min(1.0 - sprocket_uv[0]);
+    let vertical_edge = sprocket_uv[1].min(1.0 - sprocket_uv[1]);
+    if vertical_edge <= horizontal_edge {
+        crop_uv[1].min(1.0 - crop_uv[1]) <= (vertical_edge * 1.75).clamp(0.08, 0.24)
+    } else {
+        crop_uv[0].min(1.0 - crop_uv[0]) <= (horizontal_edge * 1.75).clamp(0.08, 0.24)
+    }
+}
+
 fn apply_batch_geometry_to_item(
     item_geometry: &mut GeometryState,
     geometry: &Value,
@@ -4659,11 +4704,11 @@ fn render_shader_equivalent(
                 .zip(luma_coefficients)
                 .map(|(value, coefficient)| value * coefficient)
                 .sum::<f32>();
-                let outside_calibration = crop_uv[0] < min_x
-                    || crop_uv[0] > max_x
-                    || crop_uv[1] < min_y
-                    || crop_uv[1] > max_y;
-                if outside_calibration {
+                if should_apply_sprocket_mask(
+                    crop_uv,
+                    [min_x, min_y, max_x, max_y],
+                    sprocket_uv.expect("sprocket target requires a sample point"),
+                ) {
                     let mask = sprocket_white_mask(raw_luma - target_luma, tolerance, feather);
                     for channel in &mut rendered {
                         *channel += (1.0 - *channel) * mask;
@@ -6762,7 +6807,7 @@ fn load_image_state_from_connection(
     let mut stmt = connection
         .prepare(
             "SELECT COALESCE(rendered_thumb_base64, embedded_thumb_base64, thumbnail_base64),
-                params, geom, base_color
+                COALESCE(length(rendered_thumb_base64), 0) > 0, params, geom, base_color
          FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
         )
         .map_err(|error| format!("Failed to prepare image-state read: {error}"))?;
@@ -6775,9 +6820,10 @@ fn load_image_state_from_connection(
         .map_err(|error| format!("Failed to read image state: {error}"))?
     {
         let thumb: String = row.get(0).map_err(|error| error.to_string())?;
-        let params_str: String = row.get(1).map_err(|error| error.to_string())?;
-        let geom_str: String = row.get(2).map_err(|error| error.to_string())?;
-        let base_color_str: String = row.get(3).map_err(|error| error.to_string())?;
+        let has_rendered_thumbnail: bool = row.get(1).map_err(|error| error.to_string())?;
+        let params_str: String = row.get(2).map_err(|error| error.to_string())?;
+        let geom_str: String = row.get(3).map_err(|error| error.to_string())?;
+        let base_color_str: String = row.get(4).map_err(|error| error.to_string())?;
 
         let params = serde_json::from_str(&params_str)
             .map_err(|error| format!("Invalid persisted tuning parameters: {error}"))?;
@@ -6789,7 +6835,7 @@ fn load_image_state_from_connection(
         return Ok(Some((
             thumb,
             params,
-            normalize_persisted_geometry(geom),
+            normalize_persisted_geometry_for_rendered_image(geom, has_rendered_thumbnail),
             base_color,
         )));
     }
@@ -6840,7 +6886,14 @@ fn load_all_image_states_from_connection(
         let params = serde_json::from_str(&params)
             .map_err(|error| format!("Invalid tuning parameters for {file_path}: {error}"))?;
         let geom = serde_json::from_str(&geom)
-            .map(normalize_persisted_geometry)
+            .map(|geom| {
+                normalize_persisted_geometry_for_rendered_image(
+                    geom,
+                    rendered_thumb
+                        .as_deref()
+                        .is_some_and(|thumbnail| !thumbnail.is_empty()),
+                )
+            })
             .map_err(|error| format!("Invalid geometry for {file_path}: {error}"))?;
         let base_color = serde_json::from_str(&base_color)
             .map_err(|error| format!("Invalid base color for {file_path}: {error}"))?;
@@ -7904,7 +7957,8 @@ mod export_contract_tests {
         build_response_buffer_from_proxy, co_sited_density_extremes, compute_auto_color_limits,
         density_histogram_extremes, embedded_input_profile, encode_export_buffer,
         export_dimensions, export_profile_for_output, gaussian_blur_rgb16_parallel,
-        render_shader_equivalent, reserve_export_path, sanitize_export_file_stem,
+        normalize_persisted_geometry_for_rendered_image, render_shader_equivalent,
+        reserve_export_path, sanitize_export_file_stem, should_apply_sprocket_mask,
         validate_export_color_space, write_export_image, write_export_image_with_profile,
         ExportConflictPolicy, ExportFormat,
     };
@@ -7928,6 +7982,42 @@ mod export_contract_tests {
             base_g: u16::MAX,
             base_b: u16::MAX,
         }
+    }
+
+    #[test]
+    fn rendered_legacy_state_is_treated_as_confirmed_calibration() {
+        let normalized =
+            normalize_persisted_geometry_for_rendered_image(GeometryState::default(), true);
+        assert!(normalized.calibration_confirmed);
+        assert_eq!(
+            normalized.calibration_points,
+            Some([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        );
+
+        let untouched =
+            normalize_persisted_geometry_for_rendered_image(GeometryState::default(), false);
+        assert!(!untouched.calibration_confirmed);
+        assert!(untouched.calibration_points.is_none());
+    }
+
+    #[test]
+    fn full_frame_sprocket_mask_is_restricted_to_sampled_edge_band() {
+        let full_bounds = [0.0, 0.0, 1.0, 1.0];
+        assert!(should_apply_sprocket_mask(
+            [0.5, 0.04],
+            full_bounds,
+            [0.5, 0.05],
+        ));
+        assert!(!should_apply_sprocket_mask(
+            [0.5, 0.5],
+            full_bounds,
+            [0.5, 0.05],
+        ));
+        assert!(should_apply_sprocket_mask(
+            [0.1, 0.5],
+            [0.2, 0.2, 0.8, 0.8],
+            [0.1, 0.5],
+        ));
     }
 
     #[test]
