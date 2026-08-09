@@ -3,9 +3,10 @@ use crate::app_state::{
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
 use crate::color_science::{
-    apply_linear_matrix, canonical_output_space, convert_encoded_to_linear_rgb_with_matrix,
-    identify_icc_profile, libraw_native_profile, linear_conversion_matrix, parse_output_space,
-    ColorSpaceId, DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
+    apply_linear_matrix, canonical_output_space, compress_linear_srgb_for_density,
+    convert_encoded_to_linear_rgb_with_matrix, identify_icc_profile, libraw_native_profile,
+    linear_conversion_matrix, parse_output_space, ColorSpaceId, DENSITY_CAPTURE_PROFILE,
+    DENSITY_CAPTURE_WORKING_SPACE,
 };
 use crate::core_math::{
     apply_homography, apply_lens_distortion_uv, apply_perspective_uv,
@@ -2139,10 +2140,6 @@ fn preview_proxy_decode_mode(target_long_edge: u32) -> DecodeMode {
     }
 }
 
-fn libraw_output_color(colorspace: &str) -> Result<i32, String> {
-    crate::color_science::libraw_output_color(colorspace)
-}
-
 fn convert_linear_image(
     image: ImageBuffer<Rgb<u16>, Vec<u16>>,
     source: ColorSpaceId,
@@ -2371,17 +2368,18 @@ fn decode_image_buffer(
         ));
     }
 
-    // RAW_DECODE_VERSION 6 contract: camera FFF files, including tethered
+    // RAW_DECODE_VERSION 7 contract: camera FFF files, including tethered
     // Hasselblad digital-back captures, use LibRaw instead of the Flextight
-    // scanner path. RAW output remains unsigned 16-bit with camera white
-    // balance and matrix, linear gamma, fixed brightness, and fixed linear-sRGB
-    // density-capture coordinates. Black and white levels are applied by LibRaw.
+    // scanner path. LibRaw emits linear ProPhoto D65 transport samples. The
+    // matrix and positive-domain gamut compression happen in f32 before the
+    // density pipeline receives its fixed linear-sRGB coordinates. Scanner FFF
+    // files never reach this branch.
     let options = crate::raw_backend::DecodeOptions {
         half_size: mode == DecodeMode::DevelopProxy,
         demosaic_quality: 3,
         output_bps: 16,
         no_auto_bright: true,
-        output_color: libraw_output_color(DENSITY_CAPTURE_WORKING_SPACE)?,
+        output_color: 4,
         linear_gamma: true,
         use_camera_wb: true,
     };
@@ -2395,12 +2393,27 @@ fn decode_image_buffer(
         decoded.bits,
         &decoded.data,
     )?;
-    let native_profile = libraw_native_profile(libraw_output_color(DENSITY_CAPTURE_WORKING_SPACE)?);
-    Ok(convert_linear_image(
-        decoded,
-        native_profile,
-        requested_profile,
-    ))
+    let native_profile = libraw_native_profile(options.output_color);
+    let matrix = linear_conversion_matrix(native_profile, requested_profile);
+    let mut converted = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(decoded.width(), decoded.height());
+    converted
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(decoded.as_raw().par_chunks_exact(3))
+        .for_each(|(target, pixel)| {
+            let rgb = compress_linear_srgb_for_density(apply_linear_matrix(
+                [
+                    pixel[0] as f32 / 65535.0,
+                    pixel[1] as f32 / 65535.0,
+                    pixel[2] as f32 / 65535.0,
+                ],
+                matrix,
+            ));
+            for channel in 0..3 {
+                target[channel] = (rgb[channel] * 65535.0).round() as u16;
+            }
+        });
+    Ok(converted)
 }
 
 fn decode_export_source(path: &str) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {

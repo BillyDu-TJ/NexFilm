@@ -434,6 +434,38 @@ pub fn apply_linear_matrix(rgb: [f32; 3], matrix: [f32; 9]) -> [f32; 3] {
     ]
 }
 
+/// Fit linear-sRGB values into the positive transmission domain used by the
+/// logarithmic film-density pipeline. Camera matrices can legitimately
+/// produce signed/out-of-gamut values; converting those values directly to
+/// u16 would clip each channel independently and create false color spikes.
+/// The chroma vector is compressed toward the neutral axis while preserving
+/// the Rec. 709 luminance used by Status M.
+pub fn compress_linear_srgb_for_density(rgb: [f32; 3]) -> [f32; 3] {
+    const ABSOLUTE_FLOOR: f32 = 1.0 / 65_535.0;
+    // Limit the darkest channel to 2D below the pixel luminance. This keeps
+    // the input valid for -log10() without creating a 4.8D one-count spike.
+    const CHROMA_FLOOR_RATIO: f32 = 0.01;
+    const CEILING: f32 = 1.0 - ABSOLUTE_FLOOR;
+    let luma = crate::core_math::density_luma(rgb);
+    let floor = ABSOLUTE_FLOOR.max(luma.max(0.0) * CHROMA_FLOOR_RATIO);
+    if luma <= floor {
+        return [floor; 3];
+    }
+    if luma >= CEILING {
+        return [CEILING; 3];
+    }
+
+    let mut scale = 1.0f32;
+    for channel in rgb {
+        if channel < floor {
+            scale = scale.min((luma - floor) / (luma - channel));
+        } else if channel > CEILING {
+            scale = scale.min((CEILING - luma) / (channel - luma));
+        }
+    }
+    rgb.map(|channel| (luma + (channel - luma) * scale).clamp(floor, CEILING))
+}
+
 pub fn convert_encoded_rgb(rgb: [f32; 3], source: ColorSpaceId, target: ColorSpaceId) -> [f32; 3] {
     let source_profile = profile(source);
     let target_profile = profile(target);
@@ -711,6 +743,26 @@ mod tests {
                 .any(|(d65, d50)| (d65 - d50).abs() > 1e-3),
             "D65 and D50 ProPhoto paths must not be treated as identical"
         );
+    }
+
+    #[test]
+    fn density_gamut_compression_preserves_in_gamut_values() {
+        let rgb = [0.12, 0.47, 0.83];
+        let compressed = compress_linear_srgb_for_density(rgb);
+        for channel in 0..3 {
+            assert!((compressed[channel] - rgb[channel]).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn density_gamut_compression_removes_signed_channels_without_losing_luma() {
+        let rgb = [-0.08, 0.32, 0.54];
+        let compressed = compress_linear_srgb_for_density(rgb);
+        assert!(compressed.iter().all(|value| *value > 0.0 && *value < 1.0));
+        let source_luma = crate::core_math::density_luma(rgb);
+        let compressed_luma = crate::core_math::density_luma(compressed);
+        assert!((source_luma - compressed_luma).abs() < 1e-5);
+        assert!(compressed[0] >= compressed_luma * 0.01 - 1e-6);
     }
 
     #[test]
