@@ -38,11 +38,11 @@
 ## 中文说明
 
 > [!IMPORTANT]
-> NexFilm Engine v1.0 是首个正式版本。Windows 与 macOS 安装包目前未进行代码签名，macOS DMG 也未经过 Apple 公证。请只从本仓库的 Releases 下载，并始终保留原始扫描文件；正式批量输出前，建议先导出少量画面检查结果。
+> NexFilm Engine v1.0.1 是当前稳定版本。Windows 与 macOS 安装包目前未进行代码签名，macOS DMG 也未经过 Apple 公证。请只从本仓库的 Releases 下载，并始终保留原始扫描文件；正式批量输出前，建议先导出少量画面检查结果。
 
 ### 下载与安装
 
-从 [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest) 下载与电脑架构匹配的 v1.0 安装包：
+从 [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest) 下载与电脑架构匹配的 v1.0.1 安装包：
 
 | 平台 | 下载文件 | 安装方式 |
 | --- | --- | --- |
@@ -51,6 +51,24 @@
 | macOS Intel | 文件名含 <code>x86_64</code> 的 <code>.dmg</code> | 打开 DMG，将 NexFilm Engine 拖入 Applications |
 
 不要下载 Releases 中自动生成的 <code>Source code</code> 压缩包，它们不是可直接运行的安装包。若 macOS 阻止首次启动，请先确认文件来自本仓库，再在 Finder 中右键应用并选择 **打开**，或前往 **系统设置 → 隐私与安全性** 允许启动。
+
+### v1.0.1 更新内容
+
+新增功能：
+
+- 支持鼠标滚轮操作。
+- 支持桶形畸变与枕形畸变校正。
+- 增加裁切比例选择。
+- 增加预览质量选项。
+- 删除文件时会先移入系统回收站，降低误删风险。
+
+修复与优化：
+
+- 修复大型文件（如哈苏 FFF）导入失败的问题。
+- 修复提示弹窗被其他界面元素遮挡的问题。
+- 优化软件状态一致性，使操作流程更加稳定。
+- 优化旋转功能。
+- 修复 Rolls 页面无法翻页和删除的问题。
 
 ### NexFilm 是什么
 
@@ -98,6 +116,9 @@ Library 与 Develop 显示当前工作卷；历史胶卷保存在 **Rolls**。�
 ### 文件格式与色彩输出
 
 输入选择器支持常见相机 RAW，包括 DNG、NEF/NRW、CR2/CR3、ARW/SRF/SR2、RAF、RW2、ORF/ORI、SRW、PEF、3FR、ERF、KDC/DCR、IIQ、MOS、MRW、X3F、RWL、FFF 和 RAW，以及 TIFF、JPEG、PNG。RAW 与 FFF 兼容性取决于内置解码器和具体设备；遇到问题时请在 [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) 中注明相机或扫描仪型号、文件格式与错误信息。
+
+> [!WARNING]
+> Nikon Z8 使用 **HE/HE*** 高效率 RAW 压缩格式拍摄的 NEF 文件目前无法导入，因为 LibRaw 暂不支持解码该格式。此限制当前无法在 NexFilm 内修复；如需导入，请在相机中改用 LibRaw 支持的 RAW 记录格式。
 
 由于 JPEG 难以获得线性数据，且扫描仪出图几乎没有片基部分，因此不能保证校色效果。请使用 JPEG 时注意校色效果，在效果较差时自行
 通过 RGB 补偿完成校色。
@@ -166,16 +187,17 @@ cargo tauri build --target aarch64-apple-darwin --bundles dmg
 cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ~~~
 
-### 维护者：发布 v1.0
+### 维护者：发布 v1.0.1
 
-仓库使用单一的手动工作流 [Build and Release NexFilm 1.0](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml)。运行时输入标签 <code>v1.0</code>；工作流会先在 Linux 上执行 Rust 与前端校验，随后并行构建 Windows x64、macOS Apple Silicon 和 macOS Intel 安装包，并发布为正式 GitHub Release。
+仓库使用单一的手动工作流 [Build and Release NexFilm 1.0.1](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml)。运行时输入标签 <code>v1.0.1</code>；工作流会先执行 Rust 与前端校验，随后并行构建 Windows x64、macOS Apple Silicon 和 macOS Intel 安装包，并发布为正式 GitHub Release。
 
-发布前请确认 <code>Cargo.toml</code> 与 <code>tauri.conf.json</code> 均为 <code>1.0.0</code>，提交并推送全部发布文件，再从 Actions 手动运行一次工作流。当前配置为 <code>releaseDraft: false</code>、<code>prerelease: false</code>。
+发布前请确认 <code>Cargo.toml</code>、<code>Cargo.lock</code> 与 <code>tauri.conf.json</code> 均为 <code>1.0.1</code>，提交并推送全部发布文件，再从 Actions 手动运行一次工作流。当前配置为 <code>releaseDraft: false</code>、<code>prerelease: false</code>。
 
 ### 已知限制
 
 - Windows 和 macOS 安装包尚未进行代码签名；macOS DMG 尚未经过 Apple 公证。
 - 不同 RAW 相机、扫描仪与 FFF 文件的兼容性仍需持续验证。
+- Nikon Z8 的 HE/HE* 高效率 RAW 压缩格式暂时无法由 LibRaw 解码。
 - Linux 暂无经过验证的正式安装包。
 - 数据库引用原始文件路径，不会复制原图；移动或删除源文件会导致画面离线。
 - WebGL 预览与全尺寸导出仍需在更多真实 RAW 文件上持续进行像素级一致性验证。
@@ -208,11 +230,11 @@ cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ## English
 
 > [!IMPORTANT]
-> NexFilm Engine v1.0 is the first stable release. Windows and macOS packages are currently unsigned, and macOS DMGs are not notarized by Apple. Download only from this repository's Releases page, keep the original scans, and test a small export before processing a full roll.
+> NexFilm Engine v1.0.1 is the current stable release. Windows and macOS packages are currently unsigned, and macOS DMGs are not notarized by Apple. Download only from this repository's Releases page, keep the original scans, and test a small export before processing a full roll.
 
 ### Download and install
 
-Download the v1.0 package for your system from [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest):
+Download the v1.0.1 package for your system from [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest):
 
 | Platform | Package | Installation |
 | --- | --- | --- |
@@ -221,6 +243,24 @@ Download the v1.0 package for your system from [GitHub Releases](https://github.
 | macOS Intel | <code>.dmg</code> containing <code>x86_64</code> | Open the DMG and drag NexFilm Engine to Applications |
 
 The automatically generated <code>Source code</code> archives are not application installers. If macOS blocks the first launch, verify that the DMG came from this repository, then right-click the app in Finder and choose **Open**, or allow it under **System Settings → Privacy & Security**.
+
+### What's new in v1.0.1
+
+New features:
+
+- Mouse-wheel controls.
+- Barrel and pincushion distortion correction.
+- Crop aspect-ratio presets.
+- Preview-quality selection.
+- Deleted files are now moved to the system trash first.
+
+Fixes and improvements:
+
+- Fixed import failures for large files such as Hasselblad FFF images.
+- Fixed notification dialogs being obscured by other interface elements.
+- Improved application-state consistency for a more stable workflow.
+- Improved rotation controls.
+- Fixed pagination and deletion on the Rolls page.
 
 ### What is NexFilm?
 
@@ -268,6 +308,9 @@ Library and Develop show the current working roll; previous rolls remain under *
 ### File formats and color output
 
 The input picker supports common camera RAW formats, including DNG, NEF/NRW, CR2/CR3, ARW/SRF/SR2, RAF, RW2, ORF/ORI, SRW, PEF, 3FR, ERF, KDC/DCR, IIQ, MOS, MRW, X3F, RWL, FFF, and RAW, plus TIFF, JPEG, and PNG. RAW and FFF compatibility depends on the bundled decoder and the specific device. Report failures through [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) with the camera or scanner model, file format, and error.
+
+> [!WARNING]
+> Nikon Z8 NEF files recorded with **HE/HE*** high-efficiency RAW compression cannot currently be imported because LibRaw does not support decoding this format. NexFilm cannot work around this limitation at present; use a RAW recording format supported by LibRaw when import compatibility is required.
 
 Because JPEG is hard to get linear information, we DON'T guarantee the color calibration effect. So if you are unsatisfied about the result, please adjust Printer Light module to optimize. 
 
@@ -317,16 +360,17 @@ cargo tauri build --target aarch64-apple-darwin --bundles dmg
 cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ~~~
 
-### Maintainers: publish v1.0
+### Maintainers: publish v1.0.1
 
-The repository uses one manual workflow: [Build and Release NexFilm 1.0](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml). Run it with tag <code>v1.0</code>. It verifies the Rust and frontend sources on Linux, then builds Windows x64, macOS Apple Silicon, and macOS Intel packages in parallel and publishes a stable GitHub Release.
+The repository uses one manual workflow: [Build and Release NexFilm 1.0.1](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml). Run it with tag <code>v1.0.1</code>. It verifies the Rust and frontend sources, then builds Windows x64, macOS Apple Silicon, and macOS Intel packages in parallel and publishes a stable GitHub Release.
 
-Before running it, confirm that both <code>Cargo.toml</code> and <code>tauri.conf.json</code> contain version <code>1.0.0</code>, then commit and push every release file. The current workflow uses <code>releaseDraft: false</code> and <code>prerelease: false</code>.
+Before running it, confirm that <code>Cargo.toml</code>, <code>Cargo.lock</code>, and <code>tauri.conf.json</code> contain version <code>1.0.1</code>, then commit and push every release file. The current workflow uses <code>releaseDraft: false</code> and <code>prerelease: false</code>.
 
 ### Known limitations
 
 - Windows and macOS packages are unsigned; macOS DMGs are not Apple-notarized.
 - Compatibility still needs broader validation across RAW cameras, scanners, and FFF variants.
+- Nikon Z8 HE/HE* high-efficiency RAW compression is not currently decodable by LibRaw.
 - No verified Linux release package is currently provided.
 - The database references source paths and does not copy originals; moved or deleted files become unavailable until relocated.
 - Pixel-level consistency between WebGL preview and full-resolution export continues to be tested against more real RAW files.

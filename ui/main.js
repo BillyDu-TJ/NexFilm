@@ -21,7 +21,7 @@ const {
     getToneZones,
     countOverflow,
 } = window.NexFilmHistogram;
-const { finiteNumber, clampRangeValue, resetRangeValue } = window.NexFilmRangeMath;
+const { finiteNumber, clampRangeValue, resetRangeValue, getWheelRangeValue } = window.NexFilmRangeMath;
 const { cloneSettingsValue, createCopyPayload, mergeCopyPayload } = window.NexFilmSettingsCopy;
 const { updateRangeSelection } = window.NexFilmSelection;
 const {
@@ -337,6 +337,8 @@ let histogramReadbackReady = false;
 let lastHistogramReadAt = 0;
 let sliderDragActive = false;
 let activeSliderEnd = null;
+let rangeWheelCommitTimer = null;
+let rangeWheelActiveElement = null;
 let scopeChannel = 'rgb';
 let scopeClippingPreviewEnabled = false;
 let scopeShadowLimit = 0.02;
@@ -2940,6 +2942,56 @@ for (const key in sliders) {
 window.addEventListener('pointerup', () => activeSliderEnd?.());
 window.addEventListener('pointercancel', () => activeSliderEnd?.());
 
+function finishRangeWheelInteraction() {
+    if (rangeWheelCommitTimer !== null) {
+        window.clearTimeout(rangeWheelCommitTimer);
+        rangeWheelCommitTimer = null;
+    }
+    const el = rangeWheelActiveElement;
+    rangeWheelActiveElement = null;
+    if (!el) return;
+    sliderDragActive = false;
+    histogramReadbackReady = false;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    requestRender();
+    scheduleInstantThumbnailUpdate();
+}
+
+function setupRangeWheelInput() {
+    document.querySelectorAll('#view-develop input[type="range"]').forEach(el => {
+        if (el.dataset.rangeWheelReady === 'true') return;
+        el.dataset.rangeWheelReady = 'true';
+        el.addEventListener('wheel', event => {
+            if (el.disabled) return;
+            const delta = normalizeWheelDelta(event, el.clientWidth || 100);
+            const next = getWheelRangeValue({
+                value: el.value,
+                min: el.min,
+                max: el.max,
+                step: el.step,
+                deltaX: delta.x,
+                deltaY: delta.y,
+                shiftKey: event.shiftKey,
+                altKey: event.altKey,
+            });
+            if (Number(el.value) === next) return;
+            event.preventDefault();
+            if (rangeWheelActiveElement && rangeWheelActiveElement !== el) {
+                finishRangeWheelInteraction();
+            }
+            if (!rangeWheelActiveElement) {
+                rangeWheelActiveElement = el;
+                sliderDragActive = true;
+                if (activeId) pushUndoState();
+            }
+            el.value = String(next);
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            if (rangeWheelCommitTimer !== null) window.clearTimeout(rangeWheelCommitTimer);
+            rangeWheelCommitTimer = window.setTimeout(finishRangeWheelInteraction, 180);
+        }, { passive: false });
+    });
+}
+
 function setupEditableRangeValue(el, val, { format = value => String(value), recordUndo = false } = {}) {
     if (!el || !val || val.dataset.rangeEditingReady === 'true') return;
     val.dataset.rangeEditingReady = 'true';
@@ -3041,6 +3093,7 @@ function setupRangeDoubleClickReset() {
 
 setupEditableSliderValues();
 setupRangeDoubleClickReset();
+setupRangeWheelInput();
 
 function enableUI() {
     for (const key in sliders) {
