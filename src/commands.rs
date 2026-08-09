@@ -506,15 +506,47 @@ fn is_dng_extension(path: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("dng"))
 }
 
+const FFF_SCANNER_METADATA_LIMIT: u64 = 1024 * 1024;
+
+fn contains_ascii_identifier(bytes: &[u8], identifier: &[u8]) -> bool {
+    bytes
+        .windows(identifier.len())
+        .any(|window| window.eq_ignore_ascii_case(identifier))
+}
+
+fn contains_hasselblad_imacon_scanner_identifier(bytes: &[u8]) -> bool {
+    // Hasselblad and Imacon film scanners belong to the Flextight family.
+    // Requiring that device identity prevents camera-back FFF files from being
+    // classified as scans merely because both formats use a TIFF container.
+    contains_ascii_identifier(bytes, b"FLEXTIGHT")
+        || (contains_ascii_identifier(bytes, b"IMACON")
+            && contains_ascii_identifier(bytes, b"SCANNER"))
+}
+
 fn is_scanner_fff_tiff(path: &str) -> bool {
     if !is_fff_extension(path) {
         return false;
     }
-    let mut header = [0u8; 4];
-    std::fs::File::open(path)
-        .and_then(|mut file| file.read_exact(&mut header))
-        .is_ok()
-        && matches!(header, [b'I', b'I', 42, 0] | [b'M', b'M', 0, 42])
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(file_len) = file.metadata().map(|metadata| metadata.len()) else {
+        return false;
+    };
+    let read_len = usize::try_from(file_len.min(FFF_SCANNER_METADATA_LIMIT)).unwrap_or(0);
+    if read_len < 8 {
+        return false;
+    }
+    let mut metadata = vec![0u8; read_len];
+    if file.read_exact(&mut metadata).is_err()
+        || !matches!(
+            metadata.get(..4),
+            Some([b'I', b'I', 42, 0] | [b'M', b'M', 0, 42])
+        )
+    {
+        return false;
+    }
+    contains_hasselblad_imacon_scanner_identifier(&metadata)
 }
 
 fn decode_scanner_fff_tiff_page(
@@ -2339,10 +2371,11 @@ fn decode_image_buffer(
         ));
     }
 
-    // RAW_DECODE_VERSION 5 contract: LibRaw 0.22.2 camera/RAF tables, unsigned
-    // 16-bit output, camera white balance and matrix, linear gamma, fixed
-    // brightness, and fixed linear-sRGB density-capture coordinates. Black and
-    // white levels are applied by LibRaw before this buffer.
+    // RAW_DECODE_VERSION 6 contract: camera FFF files, including tethered
+    // Hasselblad digital-back captures, use LibRaw instead of the Flextight
+    // scanner path. RAW output remains unsigned 16-bit with camera white
+    // balance and matrix, linear gamma, fixed brightness, and fixed linear-sRGB
+    // density-capture coordinates. Black and white levels are applied by LibRaw.
     let options = crate::raw_backend::DecodeOptions {
         half_size: mode == DecodeMode::DevelopProxy,
         demosaic_quality: 3,
@@ -7242,7 +7275,7 @@ mod import_contract_tests {
         decode_import_preview_base64, decode_reduced_dng_for_working_space,
         decode_reduced_tiff_for_working_space, is_better_preview_edge,
         is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
-        is_tiff_extension, libraw_decode_error_message, linearize_scanner_fff,
+        is_scanner_fff_tiff, is_tiff_extension, libraw_decode_error_message, linearize_scanner_fff,
         persist_import_batch, raw_decode_failure_hint, render_shader_equivalent,
         rgb16_image_from_bytes, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
     };
@@ -7313,6 +7346,100 @@ mod import_contract_tests {
         let encoded = image::ImageBuffer::from_pixel(1, 1, image::Rgb([32768u16; 3]));
         let linear = linearize_scanner_fff(encoded, ColorSpaceId::SRgb);
         assert!((18_000..=20_000).contains(&linear.get_pixel(0, 0)[0]));
+    }
+
+    #[test]
+    fn scanner_fff_classifier_requires_a_flextight_or_imacon_scanner_identity() {
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-fff-classifier-test-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let write_fixture = |name: &str, identity: &[u8]| {
+            let path = root.join(name);
+            let mut bytes = b"MM\0*\0\0\0\x08".to_vec();
+            bytes.extend_from_slice(identity);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+
+        let flextight = write_fixture("flextight.fff", b"ColorModel: Flextight X5 & 949");
+        let imacon = write_fixture("imacon.fff", b"Imacon film scanner");
+        let camera = write_fixture("camera.fff", b"Hasselblad CFV 100C/907X");
+        let generic = write_fixture("generic.fff", b"generic TIFF RGB image");
+        let wrong_extension = write_fixture("flextight.tiff", b"Flextight X5");
+
+        assert!(is_scanner_fff_tiff(flextight.to_string_lossy().as_ref()));
+        assert!(is_scanner_fff_tiff(imacon.to_string_lossy().as_ref()));
+        assert!(!is_scanner_fff_tiff(camera.to_string_lossy().as_ref()));
+        assert!(!is_scanner_fff_tiff(generic.to_string_lossy().as_ref()));
+        assert!(!is_scanner_fff_tiff(
+            wrong_extension.to_string_lossy().as_ref()
+        ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn supplied_scanner_and_camera_fff_fixtures_are_routed_separately() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        for path in [
+            root.join("图像 001.fff"),
+            root.join("哈苏fff").join("1 001-可以反相.fff"),
+            root.join("哈苏fff").join("无法反相.fff"),
+        ] {
+            if path.exists() {
+                assert!(
+                    is_scanner_fff_tiff(path.to_string_lossy().as_ref()),
+                    "{} must use the scanner FFF pipeline",
+                    path.display()
+                );
+            }
+        }
+        for path in [
+            root.join("哈苏fff").join("任务 _1233.fff"),
+            root.join("哈苏fff").join("任务 _1343.fff"),
+        ] {
+            if path.exists() {
+                assert!(
+                    !is_scanner_fff_tiff(path.to_string_lossy().as_ref()),
+                    "{} must use the camera RAW pipeline",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "large user-supplied CFV-100C fixtures; run explicitly for RAW pipeline validation"]
+    fn hasselblad_cfv_100c_fff_fixtures_decode_through_the_camera_raw_pipeline() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("哈苏fff");
+        for path in [root.join("任务 _1233.fff"), root.join("任务 _1343.fff")] {
+            if !path.exists() {
+                continue;
+            }
+            assert!(
+                !is_scanner_fff_tiff(path.to_string_lossy().as_ref()),
+                "{} must not use the scanner FFF pipeline",
+                path.display()
+            );
+            let decoded =
+                decode_image_buffer(path.to_string_lossy().as_ref(), DecodeMode::DevelopProxy)
+                    .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            assert!(
+                decoded.width() > 4000 && decoded.height() > 3000,
+                "{} returned an embedded preview instead of a RAW proxy: {:?}",
+                path.display(),
+                decoded.dimensions()
+            );
+            assert!(
+                decoded.as_raw().iter().any(|value| *value > 0),
+                "{} produced a black RAW proxy",
+                path.display()
+            );
+        }
     }
 
     #[test]

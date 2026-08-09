@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DATABASE_PATH: &str = "nexfilm_user.db";
 pub const MATH_VERSION: i64 = 3;
-pub const RAW_DECODE_VERSION: i64 = 5;
+pub const RAW_DECODE_VERSION: i64 = 6;
 
 /// Development builds intentionally keep the database beside the repository so
 /// existing projects continue to open as before. Release builds use the normal
@@ -118,7 +118,7 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
             geom TEXT,
             base_color TEXT,
             math_version INTEGER NOT NULL DEFAULT 3,
-            raw_decode_version INTEGER NOT NULL DEFAULT 5,
+            raw_decode_version INTEGER NOT NULL DEFAULT 6,
             updated_at INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (roll_id, file_path)
         )",
