@@ -2253,6 +2253,33 @@ fn rgb16_image_from_bytes(
     Ok(image_buffer)
 }
 
+fn raw_decode_failure_hint(path: &str) -> Option<&'static str> {
+    let extension = std::path::Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if extension == "nef" {
+        Some(
+            "If this is a Nikon Z 8/Z 9 HE/HE* NEF, LibRaw does not support that compression yet; use a standard/lossless NEF recording option or convert the original to TIFF/DNG before importing.",
+        )
+    } else {
+        None
+    }
+}
+
+fn libraw_decode_error_message(path: &str, error: impl std::fmt::Display) -> String {
+    let mut message = format!(
+        "LibRaw {} cannot decode {path}: {error}",
+        crate::raw_backend::RawProcessor::version()
+    );
+    if let Some(hint) = raw_decode_failure_hint(path) {
+        message.push_str(". ");
+        message.push_str(hint);
+    }
+    message
+}
+
 fn decode_image_buffer(
     path: &str,
     mode: DecodeMode,
@@ -2326,12 +2353,7 @@ fn decode_image_buffer(
         use_camera_wb: true,
     };
     let decoded = crate::raw_backend::RawProcessor::extract_image_with_options(path, &options)
-        .map_err(|error| {
-            format!(
-                "LibRaw {} cannot decode {path}: {error}",
-                crate::raw_backend::RawProcessor::version()
-            )
-        })?;
+        .map_err(|error| libraw_decode_error_message(path, error))?;
 
     let decoded = rgb16_image_from_bytes(
         decoded.width as u32,
@@ -7220,7 +7242,8 @@ mod import_contract_tests {
         decode_import_preview_base64, decode_reduced_dng_for_working_space,
         decode_reduced_tiff_for_working_space, is_better_preview_edge,
         is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
-        is_tiff_extension, linearize_scanner_fff, persist_import_batch, render_shader_equivalent,
+        is_tiff_extension, libraw_decode_error_message, linearize_scanner_fff,
+        persist_import_batch, raw_decode_failure_hint, render_shader_equivalent,
         rgb16_image_from_bytes, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
     };
     use crate::app_state::{BaseColor, FilmItem, GeometryState, TuningParams};
@@ -7374,6 +7397,19 @@ mod import_contract_tests {
         let image = rgb16_image_from_bytes(2, 1, 4, 16, &bytes).unwrap();
         assert_eq!(image.get_pixel(0, 0).0, [0, 32768, u16::MAX]);
         assert_eq!(image.get_pixel(1, 0).0, [u16::MAX, 1, 16383]);
+    }
+
+    #[test]
+    fn nikon_nef_decode_errors_include_high_efficiency_guidance() {
+        assert!(raw_decode_failure_hint("frame.NEF")
+            .unwrap()
+            .contains("Nikon Z 8/Z 9 HE/HE* NEF"));
+        assert!(raw_decode_failure_hint("frame.raf").is_none());
+
+        let message = libraw_decode_error_message("frame.NEF", "unsupported format");
+        assert!(message.contains("LibRaw"));
+        assert!(message.contains("unsupported format"));
+        assert!(message.contains("standard/lossless NEF"));
     }
 
     #[test]

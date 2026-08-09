@@ -272,7 +272,7 @@
                 </div>
 
                 <!-- Main Preview -->
-                <div class="flex-1 w-full h-full p-8 flex items-center justify-center overflow-hidden bg-black relative">
+                <div id="preview-viewport" class="flex-1 w-full h-full p-8 flex items-center justify-center overflow-hidden bg-black relative">
                     <div id="canvas-wrapper" class="relative shrink-0" style="display: none; contain: layout style paint; will-change: transform;">
                         <canvas id="dummy-pusher" class="block" style="max-width: 100%; max-height: 100%; object-fit: contain; visibility: hidden; pointer-events: none;"></canvas>
                         <canvas id="preview-canvas" class="absolute top-0 left-0 w-full h-full" style="object-fit: fill; will-change: contents;"></canvas>
@@ -357,6 +357,9 @@
                             <path d="M12.5 0V100 M25 0V100 M37.5 0V100 M50 0V100 M62.5 0V100 M75 0V100 M87.5 0V100 M0 12.5H100 M0 25H100 M0 37.5H100 M0 50H100 M0 62.5H100 M0 75H100 M0 87.5H100"/>
                             <path class="perspective-grid-major" d="M50 0V100 M0 50H100"/>
                         </svg>
+                    </div>
+                    <div id="zoom-hud" class="zoom-hud hidden" aria-live="polite" aria-label="Preview zoom" data-i18n-aria-label="develop.previewZoom">
+                        <span id="zoom-hud-value">100%</span>
                     </div>
                 </div>
                 

@@ -30,6 +30,7 @@ const {
     canScrollBy,
     getZoomViewUpdate,
     getCanvasCompositeTransform,
+    formatZoomPercent,
     getPreviewProxyTarget,
     selectFilmAreaBatchTargets,
     getNormalizedCropAspect,
@@ -80,9 +81,12 @@ const btnEditRoll = document.getElementById('btn-edit-roll');
 
 // DOM: Develop View
 const filmstripContainer = document.getElementById('filmstrip-container');
+const previewViewport = document.getElementById('preview-viewport');
 const canvasWrapper = document.getElementById('canvas-wrapper');
 const previewCanvas = document.getElementById('preview-canvas');
 const dummyPusher = document.getElementById('dummy-pusher');
+const zoomHud = document.getElementById('zoom-hud');
+const zoomHudValue = document.getElementById('zoom-hud-value');
 const developInspector = document.getElementById('develop-inspector');
 const inspectorControls = document.getElementById('inspector-controls');
 const rightPanelBlocker = document.getElementById('right-panel-blocker');
@@ -247,6 +251,7 @@ let isPerspectiveMode = false;
 let currentImageWidth = 1;
 let currentImageHeight = 1;
 let zoomLevel = 1.0;
+let zoomHudHideTimer = null;
 
 let originalFilmOptions = document.getElementById('roll-film-select')?.innerHTML || null;
 let missingFileId = null;
@@ -270,14 +275,14 @@ function requestDevelopLayoutSync() {
 }
 
 window.addEventListener('resize', requestDevelopLayoutSync);
-if (typeof ResizeObserver !== 'undefined' && canvasWrapper?.parentElement) {
+if (typeof ResizeObserver !== 'undefined' && previewViewport) {
     const developWorkspaceObserver = new ResizeObserver(requestDevelopLayoutSync);
-    developWorkspaceObserver.observe(canvasWrapper.parentElement);
+    developWorkspaceObserver.observe(previewViewport);
 }
 
-canvasWrapper.parentElement.addEventListener('wheel', (e) => {
+previewViewport.addEventListener('wheel', (e) => {
     if (!activeId) return;
-    const viewport = canvasWrapper.parentElement.getBoundingClientRect();
+    const viewport = previewViewport.getBoundingClientRect();
     const delta = normalizeWheelDelta(e, viewport.height);
     if (delta.y === 0) return;
     const next = getZoomViewUpdate({
@@ -298,6 +303,7 @@ canvasWrapper.parentElement.addEventListener('wheel', (e) => {
     panX = next.panX;
     panY = next.panY;
     updateCanvasTransform();
+    updateZoomHud({ transient: true });
     schedulePreviewResolutionRefresh();
 }, { passive: false });
 
@@ -728,7 +734,7 @@ function switchView(viewName) {
         // Keep the old view mounted for the short exit transition. This makes
         // navigation feel continuous without changing any view-specific state.
         if (isActive) {
-            v.el.style.display = 'flex';
+            v.el.style.display = v.name === 'develop' ? 'grid' : 'flex';
             v.el.classList.remove('is-leaving', 'opacity-0', 'pointer-events-none');
             v.el.classList.add('is-active');
             v.el.setAttribute('aria-hidden', 'false');
@@ -4896,7 +4902,7 @@ function updateCanvasTransform(w, h) {
     }
     if (isNaN(aspect) || aspect === 0) aspect = 1;
 
-    const parent = canvasWrapper.parentElement;
+    const parent = previewViewport || canvasWrapper.parentElement;
     const parentStyle = getComputedStyle(parent);
     const horizontalPadding = parseFloat(parentStyle.paddingLeft) + parseFloat(parentStyle.paddingRight);
     const verticalPadding = parseFloat(parentStyle.paddingTop) + parseFloat(parentStyle.paddingBottom);
@@ -4935,6 +4941,32 @@ function updateCanvasTransform(w, h) {
         previewCanvas.style.top = '0';
         
         cropOverlay.classList.add('hidden');
+    }
+}
+
+function updateZoomHud({ transient = false } = {}) {
+    if (!zoomHud || !zoomHudValue) return;
+
+    if (zoomHudHideTimer !== null) {
+        window.clearTimeout(zoomHudHideTimer);
+        zoomHudHideTimer = null;
+    }
+
+    if (!activeId) {
+        zoomHud.classList.add('hidden');
+        zoomHud.classList.remove('is-visible');
+        return;
+    }
+
+    zoomHudValue.textContent = formatZoomPercent(zoomLevel);
+    zoomHud.classList.remove('hidden');
+    zoomHud.classList.add('is-visible');
+
+    if (transient && Math.abs(zoomLevel - 1) < 0.005) {
+        zoomHudHideTimer = window.setTimeout(() => {
+            zoomHud.classList.remove('is-visible');
+            zoomHudHideTimer = null;
+        }, 1400);
     }
 }
 
@@ -5721,7 +5753,7 @@ btnAutoColor.addEventListener('click', async () => {
 
 function updateDevelopSamplingCursor() {
     const cursor = isSprocketPickerActive || isEyedropperActive ? 'crosshair' : '';
-    canvasWrapper.parentElement.style.cursor = cursor;
+    (previewViewport || canvasWrapper.parentElement).style.cursor = cursor;
     canvasWrapper.style.cursor = cursor;
     previewCanvas.style.cursor = cursor;
 }
@@ -7184,6 +7216,7 @@ function resetDevelopViewTransform() {
     isPanning = false;
     startPanX = 0;
     startPanY = 0;
+    updateZoomHud({ transient: true });
 }
 
 function resetDevelopViewport() {
@@ -7195,7 +7228,7 @@ function resetDevelopViewport() {
 window.addEventListener('keydown', e => { if(e.code==='Space') isSpacePressed=true; });
 window.addEventListener('keyup', e => { if(e.code==='Space') isSpacePressed=false; });
 
-canvasWrapper.parentElement.addEventListener('mousedown', e => {
+previewViewport.addEventListener('mousedown', e => {
     if (isSprocketPickerActive) {
         if (!gl || !activeId) return;
         const rect = previewCanvas.getBoundingClientRect();
@@ -7256,7 +7289,7 @@ window.addEventListener('mousemove', e => {
 window.addEventListener('mouseup', () => {
     isPanning = false;
 });
-canvasWrapper.parentElement.addEventListener('dblclick', e => {
+previewViewport.addEventListener('dblclick', e => {
     if (!activeId || isCropMode || isPerspectiveMode) return;
     if (isCalibrationMode && e.target.closest?.('.calib-handle, .calib-edge-handle')) return;
     e.preventDefault();

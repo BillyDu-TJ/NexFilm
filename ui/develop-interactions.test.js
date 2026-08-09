@@ -49,6 +49,9 @@ assert.equal(
     interactions.getCanvasCompositeTransform({ zoom: 2, panX: -15.5, panY: 8.25 }),
     'translate3d(-15.5px, 8.25px, 0) scale(2)'
 );
+assert.equal(interactions.formatZoomPercent(1), '100%');
+assert.equal(interactions.formatZoomPercent(1.234), '123%');
+assert.equal(interactions.formatZoomPercent(0.625), '62.5%');
 
 const clamped = interactions.getZoomViewUpdate({ zoom: 10, deltaY: -1000, minZoom: 0.1, maxZoom: 10 });
 assert.equal(clamped.zoom, 10);

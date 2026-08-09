@@ -63,6 +63,13 @@
         return `translate3d(${panX}px, ${panY}px, 0) scale(${zoom})`;
     }
 
+    function formatZoomPercent(zoom) {
+        const safeZoom = Math.max(0.0001, finite(zoom) || 1);
+        const percent = safeZoom * 100;
+        const rounded = percent >= 100 ? Math.round(percent) : Math.round(percent * 10) / 10;
+        return `${rounded}%`;
+    }
+
     function getPreviewProxyTarget(options) {
         const displayLongEdge = Math.max(
             1,
@@ -265,6 +272,7 @@
         canScrollBy,
         getZoomViewUpdate,
         getCanvasCompositeTransform,
+        formatZoomPercent,
         getPreviewProxyTarget,
         selectFilmAreaBatchTargets,
         getNormalizedCropAspect,
