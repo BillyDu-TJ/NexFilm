@@ -7279,8 +7279,10 @@ mod import_contract_tests {
         persist_import_batch, raw_decode_failure_hint, render_shader_equivalent,
         rgb16_image_from_bytes, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
     };
-    use crate::app_state::{BaseColor, FilmItem, GeometryState, TuningParams};
-    use crate::color_science::ColorSpaceId;
+    use crate::app_state::{BaseColor, FilmItem, FilmMode, GeometryState, TuningParams};
+    use crate::color_science::{
+        apply_linear_matrix, linear_conversion_matrix, ColorSpaceId, DENSITY_CAPTURE_PROFILE,
+    };
     use base64::Engine as _;
 
     #[test]
@@ -7438,6 +7440,297 @@ mod import_contract_tests {
                 decoded.as_raw().iter().any(|value| *value > 0),
                 "{} produced a black RAW proxy",
                 path.display()
+            );
+        }
+    }
+
+    #[derive(Debug)]
+    struct AbEndpointStats {
+        zero: [u64; 3],
+        maximum: [u64; 3],
+        pixels: u64,
+    }
+
+    fn ab_endpoint_stats(image: &image::ImageBuffer<image::Rgb<u16>, Vec<u16>>) -> AbEndpointStats {
+        let mut stats = AbEndpointStats {
+            zero: [0; 3],
+            maximum: [0; 3],
+            pixels: (image.width() as u64) * (image.height() as u64),
+        };
+        for pixel in image.as_raw().chunks_exact(3) {
+            for channel in 0..3 {
+                stats.zero[channel] += u64::from(pixel[channel] == 0);
+                stats.maximum[channel] += u64::from(pixel[channel] == u16::MAX);
+            }
+        }
+        stats
+    }
+
+    fn ab_compress_to_positive_linear_srgb(rgb: [f32; 3]) -> [f32; 3] {
+        const FLOOR: f32 = 1.0 / 65_535.0;
+        const CEILING: f32 = 1.0 - FLOOR;
+        let luma = crate::core_math::density_luma(rgb);
+        if luma <= FLOOR {
+            return [FLOOR; 3];
+        }
+        if luma >= CEILING {
+            return [CEILING; 3];
+        }
+
+        // Move only along the chroma vector toward the neutral axis. This
+        // preserves linear-sRGB luminance while fitting every channel into the
+        // positive transmission domain required by the logarithmic film math.
+        let mut scale = 1.0f32;
+        for channel in rgb {
+            if channel < FLOOR {
+                scale = scale.min((luma - FLOOR) / (luma - channel));
+            } else if channel > CEILING {
+                scale = scale.min((CEILING - luma) / (channel - luma));
+            }
+        }
+        rgb.map(|channel| (luma + (channel - luma) * scale).clamp(FLOOR, CEILING))
+    }
+
+    fn ab_compress_to_density_safe_linear_srgb(rgb: [f32; 3]) -> [f32; 3] {
+        const ABSOLUTE_FLOOR: f32 = 1.0 / 65_535.0;
+        const CHROMA_FLOOR_RATIO: f32 = 0.01;
+        const CEILING: f32 = 1.0 - ABSOLUTE_FLOOR;
+        let luma = crate::core_math::density_luma(rgb);
+        let floor = ABSOLUTE_FLOOR.max(luma.max(0.0) * CHROMA_FLOOR_RATIO);
+        if luma <= floor {
+            return [floor; 3];
+        }
+        if luma >= CEILING {
+            return [CEILING; 3];
+        }
+
+        // Keep the luminance axis fixed, but do not allow an out-of-gamut
+        // channel to become an extreme density spike after -log10().
+        let mut scale = 1.0f32;
+        for channel in rgb {
+            if channel < floor {
+                scale = scale.min((luma - floor) / (luma - channel));
+            } else if channel > CEILING {
+                scale = scale.min((CEILING - luma) / (channel - luma));
+            }
+        }
+        rgb.map(|channel| (luma + (channel - luma) * scale).clamp(floor, CEILING))
+    }
+
+    fn ab_render_variant(
+        output_root: &std::path::Path,
+        frame: &str,
+        variant: &str,
+        source: &image::ImageBuffer<image::Rgb<u16>, Vec<u16>>,
+    ) -> ([u16; 3], [f32; 3], [f32; 3]) {
+        let base = compute_auto_base(source);
+        let limits = compute_auto_color_limits(
+            source,
+            &GeometryState::default(),
+            &base,
+            FilmMode::Color,
+            false,
+        )
+        .unwrap_or_else(|error| panic!("{frame}/{variant}: {error}"));
+        let mut params = TuningParams::default();
+        params.density.d_min = limits.d_min;
+        params.density.d_max = limits.d_max;
+        let rendered =
+            render_shader_equivalent(source, &params, &GeometryState::default(), &base, None);
+        let frame_root = output_root.join(frame);
+        std::fs::create_dir_all(&frame_root).unwrap();
+        source
+            .save(frame_root.join(format!("{variant}-negative.png")))
+            .unwrap();
+        rendered
+            .save(frame_root.join(format!("{variant}-positive.png")))
+            .unwrap();
+        (
+            [base.base_r, base.base_g, base.base_b],
+            limits.d_min,
+            limits.d_max,
+        )
+    }
+
+    #[test]
+    #[ignore = "manual CFV-100C gamut-transport A/B; writes diagnostic PNGs under target"]
+    fn hasselblad_cfv_100c_prophoto_transport_ab() {
+        const DIAGNOSTIC_EDGE: u32 = 1600;
+        let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("哈苏fff");
+        let output_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("fff-gamut-ab");
+        std::fs::create_dir_all(&output_root).unwrap();
+
+        let transport_to_srgb =
+            linear_conversion_matrix(ColorSpaceId::ProPhotoRgbD65, DENSITY_CAPTURE_PROFILE);
+        for (frame, path) in [
+            ("1233", fixture_root.join("任务 _1233.fff")),
+            ("1343", fixture_root.join("任务 _1343.fff")),
+        ] {
+            if !path.exists() {
+                continue;
+            }
+            let path_text = path.to_string_lossy();
+            let current = decode_image_buffer(&path_text, DecodeMode::DevelopProxy)
+                .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let current_stats = ab_endpoint_stats(&current);
+            let current_small =
+                image::imageops::resize(
+                    &current,
+                    DIAGNOSTIC_EDGE,
+                    ((DIAGNOSTIC_EDGE as f64 * current.height() as f64 / current.width() as f64)
+                        .round() as u32)
+                        .max(1),
+                    image::imageops::FilterType::Triangle,
+                );
+            drop(current);
+            let current_auto =
+                ab_render_variant(&output_root, frame, "a-current-srgb", &current_small);
+
+            let options = crate::raw_backend::DecodeOptions {
+                half_size: true,
+                demosaic_quality: 3,
+                output_bps: 16,
+                no_auto_bright: true,
+                output_color: 4,
+                linear_gamma: true,
+                use_camera_wb: true,
+            };
+            let decoded = crate::raw_backend::RawProcessor::extract_image_with_options(
+                path.as_path(),
+                &options,
+            )
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+            let transport = rgb16_image_from_bytes(
+                decoded.width as u32,
+                decoded.height as u32,
+                decoded.colors as usize,
+                decoded.bits,
+                &decoded.data,
+            )
+            .unwrap();
+            let transport_stats = ab_endpoint_stats(&transport);
+
+            let mut signed_min = [f32::INFINITY; 3];
+            let mut signed_max = [f32::NEG_INFINITY; 3];
+            let mut signed_below_zero = [0u64; 3];
+            let mut signed_above_one = [0u64; 3];
+            for pixel in transport.as_raw().chunks_exact(3) {
+                let converted = apply_linear_matrix(
+                    [
+                        pixel[0] as f32 / 65_535.0,
+                        pixel[1] as f32 / 65_535.0,
+                        pixel[2] as f32 / 65_535.0,
+                    ],
+                    transport_to_srgb,
+                );
+                for channel in 0..3 {
+                    signed_min[channel] = signed_min[channel].min(converted[channel]);
+                    signed_max[channel] = signed_max[channel].max(converted[channel]);
+                    signed_below_zero[channel] += u64::from(converted[channel] < 0.0);
+                    signed_above_one[channel] += u64::from(converted[channel] > 1.0);
+                }
+            }
+
+            let transport_small = image::imageops::resize(
+                &transport,
+                DIAGNOSTIC_EDGE,
+                ((DIAGNOSTIC_EDGE as f64 * transport.height() as f64 / transport.width() as f64)
+                    .round() as u32)
+                    .max(1),
+                image::imageops::FilterType::Triangle,
+            );
+            drop(transport);
+            let mut direct = image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::new(
+                transport_small.width(),
+                transport_small.height(),
+            );
+            let mut compressed = image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::new(
+                transport_small.width(),
+                transport_small.height(),
+            );
+            let mut density_safe = image::ImageBuffer::<image::Rgb<u16>, Vec<u16>>::new(
+                transport_small.width(),
+                transport_small.height(),
+            );
+            for ((source, direct_pixel), compressed_pixel) in transport_small
+                .pixels()
+                .zip(direct.pixels_mut())
+                .zip(compressed.pixels_mut())
+            {
+                let signed = apply_linear_matrix(
+                    [
+                        source[0] as f32 / 65_535.0,
+                        source[1] as f32 / 65_535.0,
+                        source[2] as f32 / 65_535.0,
+                    ],
+                    transport_to_srgb,
+                );
+                *direct_pixel = image::Rgb(
+                    signed.map(|value| (value.clamp(0.0, 1.0) * 65_535.0).round() as u16),
+                );
+                *compressed_pixel = image::Rgb(
+                    ab_compress_to_positive_linear_srgb(signed)
+                        .map(|value| (value * 65_535.0).round() as u16),
+                );
+            }
+            for (source, density_safe_pixel) in
+                transport_small.pixels().zip(density_safe.pixels_mut())
+            {
+                let signed = apply_linear_matrix(
+                    [
+                        source[0] as f32 / 65_535.0,
+                        source[1] as f32 / 65_535.0,
+                        source[2] as f32 / 65_535.0,
+                    ],
+                    transport_to_srgb,
+                );
+                *density_safe_pixel = image::Rgb(
+                    ab_compress_to_density_safe_linear_srgb(signed)
+                        .map(|value| (value * 65_535.0).round() as u16),
+                );
+            }
+            let direct_stats = ab_endpoint_stats(&direct);
+            let compressed_stats = ab_endpoint_stats(&compressed);
+            let density_safe_stats = ab_endpoint_stats(&density_safe);
+            let direct_auto =
+                ab_render_variant(&output_root, frame, "b-transport-direct-clamp", &direct);
+            let compressed_auto =
+                ab_render_variant(&output_root, frame, "c-transport-compressed", &compressed);
+            let density_safe_auto = ab_render_variant(
+                &output_root,
+                frame,
+                "d-transport-density-safe",
+                &density_safe,
+            );
+
+            println!("frame={frame} current endpoints={current_stats:?} auto={current_auto:?}");
+            println!(
+                "frame={frame} transport endpoints={transport_stats:?} signed_min={signed_min:?} signed_max={signed_max:?} below_zero={signed_below_zero:?} above_one={signed_above_one:?}"
+            );
+            println!("frame={frame} direct endpoints={direct_stats:?} auto={direct_auto:?}");
+            println!(
+                "frame={frame} compressed endpoints={compressed_stats:?} auto={compressed_auto:?}"
+            );
+            println!(
+                "frame={frame} density-safe endpoints={density_safe_stats:?} auto={density_safe_auto:?}"
+            );
+
+            assert_eq!(current_stats.pixels, transport_stats.pixels);
+            assert!(
+                signed_below_zero.iter().any(|count| *count > 0),
+                "{frame} must expose signed linear-sRGB values for this A/B"
+            );
+            assert!(
+                compressed_stats.zero.iter().all(|count| *count == 0),
+                "{frame} compressed transport must remain positive before density math"
+            );
+            assert!(
+                density_safe_stats.zero.iter().all(|count| *count == 0),
+                "{frame} density-safe transport must remain positive before density math"
             );
         }
     }
