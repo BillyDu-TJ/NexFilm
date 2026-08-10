@@ -1,5 +1,173 @@
 #[cfg(not(target_os = "macos"))]
-pub(crate) use rawlib::{DecodeOptions, ImageFormat, RawProcessor};
+mod non_macos {
+    pub(crate) use rawlib::{DecodeOptions, ImageFormat, RawProcessor};
+    use std::ffi::CStr;
+    #[cfg(not(windows))]
+    use std::ffi::CString;
+    use std::os::raw::{c_char, c_int, c_uchar, c_ushort};
+    use std::path::Path;
+
+    #[derive(Debug, Clone)]
+    pub(crate) struct CameraRgbData {
+        pub(crate) width: u16,
+        pub(crate) height: u16,
+        pub(crate) colors: u16,
+        pub(crate) bits: u16,
+        pub(crate) data: Vec<u8>,
+        /// Matrix used by LibRaw for camera RGB -> linear sRGB.
+        pub(crate) camera_to_srgb: [f32; 9],
+    }
+
+    enum LibRawData {}
+
+    #[repr(C)]
+    struct LibRawProcessedImage {
+        image_type: c_int,
+        height: c_ushort,
+        width: c_ushort,
+        colors: c_ushort,
+        bits: c_ushort,
+        data_size: u32,
+        data: [c_uchar; 1],
+    }
+
+    extern "C" {
+        fn libraw_init(flags: c_int) -> *mut LibRawData;
+        fn libraw_close(data: *mut LibRawData);
+        #[cfg(not(windows))]
+        fn libraw_open_file(data: *mut LibRawData, path: *const c_char) -> c_int;
+        #[cfg(windows)]
+        fn libraw_open_wfile(data: *mut LibRawData, path: *const u16) -> c_int;
+        fn libraw_unpack(data: *mut LibRawData) -> c_int;
+        fn libraw_dcraw_process(data: *mut LibRawData) -> c_int;
+        fn libraw_dcraw_make_mem_image(
+            data: *mut LibRawData,
+            error: *mut c_int,
+        ) -> *mut LibRawProcessedImage;
+        fn libraw_dcraw_clear_mem(image: *mut LibRawProcessedImage);
+        fn libraw_strerror(error: c_int) -> *const c_char;
+        fn libraw_set_half_size(data: *mut LibRawData, value: c_int);
+        fn libraw_set_use_camera_wb(data: *mut LibRawData, value: c_int);
+        fn libraw_set_demosaic(data: *mut LibRawData, value: c_int);
+        fn libraw_set_output_bps(data: *mut LibRawData, value: c_int);
+        fn libraw_set_no_auto_bright(data: *mut LibRawData, value: c_int);
+        fn libraw_set_output_color(data: *mut LibRawData, value: c_int);
+        fn libraw_set_gamma(data: *mut LibRawData, index: c_int, value: f32);
+        fn libraw_get_rgb_cam(data: *mut LibRawData, row: c_int, column: c_int) -> f32;
+    }
+
+    struct Processor(*mut LibRawData);
+
+    impl Drop for Processor {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { libraw_close(self.0) };
+            }
+        }
+    }
+
+    fn error_message(code: c_int) -> String {
+        unsafe {
+            let message = libraw_strerror(code);
+            if message.is_null() {
+                format!("LibRaw error {code}")
+            } else {
+                format!(
+                    "LibRaw error {code}: {}",
+                    CStr::from_ptr(message).to_string_lossy()
+                )
+            }
+        }
+    }
+
+    fn check(code: c_int) -> Result<(), String> {
+        if code == 0 {
+            Ok(())
+        } else {
+            Err(error_message(code))
+        }
+    }
+
+    fn open_file(data: *mut LibRawData, path: &Path) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            let wide = path
+                .as_os_str()
+                .encode_wide()
+                .chain(std::iter::once(0))
+                .collect::<Vec<_>>();
+            return check(unsafe { libraw_open_wfile(data, wide.as_ptr()) });
+        }
+        #[cfg(not(windows))]
+        {
+            let path = CString::new(path.to_string_lossy().as_bytes())
+                .map_err(|error| format!("RAW path contains a null byte: {error}"))?;
+            check(unsafe { libraw_open_file(data, path.as_ptr()) })
+        }
+    }
+
+    /// Decode after LibRaw's black-level, white-balance and demosaic stages,
+    /// but before its output-gamut matrix. The latter is applied by the caller
+    /// in f32 so signed matrix results are not clipped to unsigned 16-bit.
+    pub(crate) fn extract_camera_rgb_with_options<P: AsRef<Path>>(
+        path: P,
+        options: &DecodeOptions,
+    ) -> Result<CameraRgbData, String> {
+        let processor = Processor(unsafe { libraw_init(0) });
+        if processor.0.is_null() {
+            return Err("Failed to initialize LibRaw".to_string());
+        }
+        open_file(processor.0, path.as_ref())?;
+        unsafe {
+            libraw_set_half_size(processor.0, i32::from(options.half_size));
+            libraw_set_use_camera_wb(processor.0, i32::from(options.use_camera_wb));
+            libraw_set_demosaic(processor.0, options.demosaic_quality);
+            libraw_set_output_bps(processor.0, options.output_bps);
+            libraw_set_no_auto_bright(processor.0, i32::from(options.no_auto_bright));
+            libraw_set_output_color(processor.0, 0);
+            if options.linear_gamma {
+                libraw_set_gamma(processor.0, 0, 1.0);
+                libraw_set_gamma(processor.0, 1, 1.0);
+            }
+        }
+        check(unsafe { libraw_unpack(processor.0) })?;
+        check(unsafe { libraw_dcraw_process(processor.0) })?;
+
+        let mut camera_to_srgb = [0.0; 9];
+        for row in 0..3 {
+            for column in 0..3 {
+                camera_to_srgb[row * 3 + column] =
+                    unsafe { libraw_get_rgb_cam(processor.0, row as c_int, column as c_int) };
+            }
+        }
+
+        let mut error = 0;
+        let image = unsafe { libraw_dcraw_make_mem_image(processor.0, &mut error) };
+        if image.is_null() {
+            return Err(error_message(error));
+        }
+        let image_ref = unsafe { &*image };
+        let result = CameraRgbData {
+            width: image_ref.width,
+            height: image_ref.height,
+            colors: image_ref.colors,
+            bits: image_ref.bits,
+            data: unsafe {
+                std::slice::from_raw_parts(image_ref.data.as_ptr(), image_ref.data_size as usize)
+                    .to_vec()
+            },
+            camera_to_srgb,
+        };
+        unsafe { libraw_dcraw_clear_mem(image) };
+        Ok(result)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub(crate) use non_macos::{
+    extract_camera_rgb_with_options, DecodeOptions, ImageFormat, RawProcessor,
+};
 
 #[cfg(target_os = "macos")]
 mod macos {
@@ -32,6 +200,16 @@ mod macos {
         pub(crate) colors: u16,
         pub(crate) bits: u16,
         pub(crate) data: Vec<u8>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub(crate) struct CameraRgbData {
+        pub(crate) width: u16,
+        pub(crate) height: u16,
+        pub(crate) colors: u16,
+        pub(crate) bits: u16,
+        pub(crate) data: Vec<u8>,
+        pub(crate) camera_to_srgb: [f32; 9],
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +375,41 @@ mod macos {
         }
     }
 
+    pub(crate) fn extract_camera_rgb_with_options<P: AsRef<Path>>(
+        path: P,
+        options: &DecodeOptions,
+    ) -> Result<CameraRgbData> {
+        let mut processor = RawProcessor::new()?;
+        processor.open_file(path)?;
+        let mut camera_options = *options;
+        camera_options.output_color = 0;
+        processor.set_decode_options(&camera_options);
+        let status = unsafe { ffi::libraw_unpack(processor.data) };
+        processor.check(status)?;
+        let status = unsafe { ffi::libraw_dcraw_process(processor.data) };
+        processor.check(status)?;
+
+        let mut camera_to_srgb = [0.0; 9];
+        for row in 0..3 {
+            for column in 0..3 {
+                camera_to_srgb[row * 3 + column] =
+                    unsafe { ffi::libraw_get_rgb_cam(processor.data, row as i32, column as i32) };
+            }
+        }
+
+        let mut error_code = 0;
+        let image = unsafe { ffi::libraw_dcraw_make_mem_image(processor.data, &mut error_code) };
+        let decoded = processor.copy_image(image, error_code)?;
+        Ok(CameraRgbData {
+            width: decoded.width,
+            height: decoded.height,
+            colors: decoded.colors,
+            bits: decoded.bits,
+            data: decoded.data,
+            camera_to_srgb,
+        })
+    }
+
     impl Drop for RawProcessor {
         fn drop(&mut self) {
             if !self.data.is_null() {
@@ -219,4 +432,6 @@ mod macos {
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) use macos::{DecodeOptions, ImageFormat, RawProcessor};
+pub(crate) use macos::{
+    extract_camera_rgb_with_options, CameraRgbData, DecodeOptions, ImageFormat, RawProcessor,
+};

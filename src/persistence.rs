@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DATABASE_PATH: &str = "nexfilm_user.db";
 pub const MATH_VERSION: i64 = 3;
-pub const RAW_DECODE_VERSION: i64 = 6;
+pub const RAW_DECODE_VERSION: i64 = 8;
 
 /// Development builds intentionally keep the database beside the repository so
 /// existing projects continue to open as before. Release builds use the normal
