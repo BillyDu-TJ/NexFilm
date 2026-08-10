@@ -339,6 +339,14 @@ let sliderDragActive = false;
 let activeSliderEnd = null;
 let rangeWheelCommitTimer = null;
 let rangeWheelActiveElement = null;
+let rangeWheelArmedElement = null;
+
+// Scrolling over a range input should be harmless until the user explicitly
+// clicks that input. Clicking elsewhere disarms the previous range.
+document.addEventListener('pointerdown', event => {
+    const range = event.target.closest?.('#view-develop input[type="range"]');
+    rangeWheelArmedElement = range || null;
+});
 let scopeChannel = 'rgb';
 let scopeClippingPreviewEnabled = false;
 let scopeShadowLimit = 0.02;
@@ -2659,14 +2667,29 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
     
     if (!arrayBuffer) {
         try {
-            const response = await fetch(convertFileSrc(activeId, 'nexfilm-proxy'), {
-                cache: 'no-store'
-            });
-            if (!response.ok) {
-                const message = await response.text();
-                throw new Error(message || 'Proxy request failed (' + response.status + ')');
+            // The URI protocol is served from a worker while LibRaw proxy
+            // preparation runs in another worker. On slower CPUs the request
+            // can briefly arrive between those operations. Treat that state
+            // as transient instead of failing Auto Invert immediately.
+            const maxAttempts = 5;
+            let result = null;
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                const response = await fetch(convertFileSrc(activeId, 'nexfilm-proxy'), {
+                    cache: 'no-store'
+                });
+                if (response.ok) {
+                    result = await response.arrayBuffer();
+                    break;
+                }
+                const message = (await response.text()).trim();
+                const notReady = response.status === 409 || message === 'PROXY_NOT_READY';
+                if (!notReady || attempt === maxAttempts - 1) {
+                    throw new Error(message || 'Proxy request failed (' + response.status + ')');
+                }
+                await new Promise(resolve => setTimeout(resolve, 40 * (2 ** attempt)));
+                if (token !== null && token !== currentImageRequestToken) return false;
             }
-            const result = await response.arrayBuffer();
+            if (!result) return false;
             if (token !== null && token !== currentImageRequestToken) {
                 return false;
             }
@@ -2962,7 +2985,7 @@ function setupRangeWheelInput() {
         if (el.dataset.rangeWheelReady === 'true') return;
         el.dataset.rangeWheelReady = 'true';
         el.addEventListener('wheel', event => {
-            if (el.disabled) return;
+            if (el.disabled || rangeWheelArmedElement !== el) return;
             const delta = normalizeWheelDelta(event, el.clientWidth || 100);
             const next = getWheelRangeValue({
                 value: el.value,
@@ -5694,11 +5717,17 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
     current_geom.calibration_confirmed = false;
     setBatchApplyDisabled(false);
     currentSprocketUV = new Float32Array([-1.0, -1.0]);
+    // Reset must also refresh the lightweight, pre-invert view. Previously
+    // rendering was gated by hasProcessedActiveImage, leaving the old
+    // rotated/scaled canvas visible until the first full development pass.
+    resetDevelopViewTransform();
+    updateCropRotationUI();
+    updateCanvasTransform();
     if (isCropMode) updateCropOverlay();
     updatePerspectiveUI();
     await persistGeometryQueued(activeId, current_geom);
     await updateBackendParams();
-    if (hasProcessedActiveImage) requestRender();
+    requestRender();
     requestThumbnailSync();
 });
 
@@ -6013,17 +6042,21 @@ function getRenderRect() { return canvasWrapper.getBoundingClientRect(); }
 
 function updateCropOverlay() {
     if (!isCropMode) return;
-    const overlayRect = cropOverlay.getBoundingClientRect();
-    if (!overlayRect.width || !overlayRect.height) return;
-    const x = current_geom.crop_rect.x * overlayRect.width;
-    const y = current_geom.crop_rect.y * overlayRect.height;
-    const w = current_geom.crop_rect.width * overlayRect.width;
-    const h = current_geom.crop_rect.height * overlayRect.height;
+    // SVG attributes live in the overlay's local coordinate system. The
+    // bounding rect includes the wrapper's zoom transform, which would make
+    // the crop box drift and scale twice when the image is zoomed or panned.
+    const overlayWidth = cropOverlay.clientWidth;
+    const overlayHeight = cropOverlay.clientHeight;
+    if (!overlayWidth || !overlayHeight) return;
+    const x = current_geom.crop_rect.x * overlayWidth;
+    const y = current_geom.crop_rect.y * overlayHeight;
+    const w = current_geom.crop_rect.width * overlayWidth;
+    const h = current_geom.crop_rect.height * overlayHeight;
 
     cropBox.setAttribute('x', x); cropBox.setAttribute('y', y);
     cropBox.setAttribute('width', w); cropBox.setAttribute('height', h);
 
-    const maskPath = `M0,0 H${overlayRect.width} V${overlayRect.height} H0 Z M${x},${y} V${y + h} H${x + w} V${y} Z`;
+    const maskPath = `M0,0 H${overlayWidth} V${overlayHeight} H0 Z M${x},${y} V${y + h} H${x + w} V${y} Z`;
     cropMask.setAttribute('d', maskPath);
 
     const gridCommands = [];
@@ -6084,7 +6117,10 @@ function clampCropRect(rect) {
 }
 
 cropOverlay.addEventListener('pointerdown', (e) => {
-    if (!isCropMode || e.button !== 0) return;
+    // Space-drag and middle-button drag pan the image even when the pointer
+    // starts inside the crop box. Leave those gestures for the viewport
+    // handler; ordinary left-drag continues to edit the crop geometry.
+    if (!isCropMode || e.button !== 0 || isSpacePressed) return;
     const target = e.target;
 
     if (target.classList.contains('crop-handle') && isCropMode) {
@@ -7278,8 +7314,23 @@ function resetDevelopViewport() {
     currentImageHeight = 1;
 }
 
-window.addEventListener('keydown', e => { if(e.code==='Space') isSpacePressed=true; });
-window.addEventListener('keyup', e => { if(e.code==='Space') isSpacePressed=false; });
+window.addEventListener('keydown', e => {
+    if (e.code !== 'Space') return;
+    const target = e.target;
+    const typing = target instanceof HTMLElement
+        && (target.matches('input, textarea, select, [contenteditable="true"]')
+            || target.isContentEditable);
+    if (activeId && !typing) {
+        // Prevent a focused toolbar button (notably Crop) from receiving the
+        // browser's implicit Space click while Space-dragging the canvas.
+        e.preventDefault();
+        isSpacePressed = true;
+    }
+});
+window.addEventListener('keyup', e => {
+    if (e.code === 'Space') isSpacePressed = false;
+});
+window.addEventListener('blur', () => { isSpacePressed = false; });
 
 previewViewport.addEventListener('mousedown', e => {
     if (isSprocketPickerActive) {
@@ -7322,9 +7373,9 @@ previewViewport.addEventListener('mousedown', e => {
         }
         return;
     }
-    if (!activeId || isCropMode || isPerspectiveMode) return;
-    // Corner and edge handles own their drag gesture. Blank calibration
-    // overlay space remains available for panning the image and mask together.
+    if (!activeId || isPerspectiveMode) return;
+    // Crop handles own their drag gesture. Blank viewport space remains
+    // available for panning the image and crop mask together.
     if (isCalibrationMode && e.target.closest?.('.calib-handle, .calib-edge-handle')) return;
     if (e.button === 0 || e.button === 1) {
         isPanning = true;

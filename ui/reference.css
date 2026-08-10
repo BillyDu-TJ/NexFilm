@@ -1109,8 +1109,11 @@ body[data-theme="dark"] #zoom-hud {
 
 .film-item {
     flex: 0 0 clamp(84px, 7.5vw, 108px);
-    width: auto !important;
-    height: auto !important;
+    /* Keep every filmstrip slot landscape even when its rendered thumbnail
+     * was captured after a 90-degree rotation. The image itself is cropped
+     * inside this stable frame via object-fit: cover. */
+    width: clamp(84px, 7.5vw, 108px) !important;
+    height: clamp(56px, 5vw, 72px) !important;
     aspect-ratio: 3 / 2;
     border-radius: 3px !important;
     background: var(--ui-surface-soft) !important;

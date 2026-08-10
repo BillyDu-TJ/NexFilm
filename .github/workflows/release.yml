@@ -1,12 +1,12 @@
-name: Build and Release NexFilm 1.0.1
+name: Build and Release NexFilm 1.0.2
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, for example v1.0.1"
+        description: "Release tag, for example v1.0.2"
         required: true
-        default: "v1.0.1"
+        default: "v1.0.2"
         type: string
 
 permissions:
@@ -103,26 +103,20 @@ jobs:
           releaseBody: |
             NexFilm ${{ inputs.tag }} 正式版。
 
-            ### 新增功能
-            - 支持鼠标滚轮操作。
-            - 支持桶形畸变与枕形畸变校正。
-            - 增加裁切比例选择和预览质量选项。
-            - 删除文件时先移入系统回收站。
-
             ### 修复与优化
-            - 修复大型文件（如哈苏 FFF）导入失败。
-            - 修复提示弹窗被遮挡。
-            - 优化软件状态一致性、使用流程和旋转功能。
-            - 修复 Rolls 页面无法翻页和删除的问题。
+            - 优化相机 RAW 源文件处理管线：导入阶段优先提取嵌入预览，Develop 阶段按需生成有界的 16 位线性代理，自动反相复用同一代理。
+            - 修复 Intel Mac 上 RAW 代理尚未就绪时自动反相偶发失败的问题。
+            - 修复旋转后胶片条缩略图容器变形，以及裁切遮罩与缩放/平移不同步的问题。
+            - 调整调整条滚轮交互，必须先点击调整条才会响应滚轮。
 
             > Nikon Z8 的 HE/HE* 高效率 RAW 文件因 LibRaw 暂不支持解码，目前无法导入。
             
             ### 📥 下载指南 (Download)
             - **Windows 用户**：请下载包含 `nsis` 和 `x86_64` 的 `.exe` 安装程序。
-            - **Mac (M1/M2/M3)**：请下载包含 `aarch64` 的 `.dmg`。
+            - **Mac (Apple Silicon)**：请下载包含 `aarch64` 的 `.dmg`。
             - **Mac (Intel)**：请下载包含 `x86_64` 的 `.dmg`。
             
-            ⚠️ *Note: Mac 安装包暂未签名，如提示“文件损坏”，请在终端运行 `xattr -cr /Applications/NexFilm.app`。*
+            ⚠️ *Note: Mac 安装包暂未签名，如提示“文件损坏”，请在终端运行 `xattr -cr "/Applications/NexFilm Engine.app"`。*
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}

@@ -38,11 +38,11 @@
 ## 中文说明
 
 > [!IMPORTANT]
-> NexFilm Engine v1.0.1 是当前稳定版本。Windows 与 macOS 安装包目前未进行代码签名，macOS DMG 也未经过 Apple 公证。请只从本仓库的 Releases 下载，并始终保留原始扫描文件；正式批量输出前，建议先导出少量画面检查结果。
+> NexFilm Engine v1.0.2 是当前稳定版本。Windows 与 macOS 安装包目前未进行代码签名，macOS DMG 也未经过 Apple 公证。请只从本仓库的 Releases 下载，并始终保留原始扫描文件；正式批量输出前，建议先导出少量画面检查结果。
 
 ### 下载与安装
 
-从 [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest) 下载与电脑架构匹配的 v1.0.1 安装包：
+从 [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest) 下载与电脑架构匹配的 v1.0.2 安装包：
 
 | 平台 | 下载文件 | 安装方式 |
 | --- | --- | --- |
@@ -52,7 +52,7 @@
 
 不要下载 Releases 中自动生成的 <code>Source code</code> 压缩包，它们不是可直接运行的安装包。若 macOS 阻止首次启动，请先确认文件来自本仓库，再在 Finder 中右键应用并选择 **打开**，或前往 **系统设置 → 隐私与安全性** 允许启动。
 
-### v1.0.1 更新内容
+### v1.0.2 更新内容
 
 新增功能：
 
@@ -63,6 +63,11 @@
 - 删除文件时会先移入系统回收站，降低误删风险。
 
 修复与优化：
+
+- 优化相机 RAW 处理管线：导入阶段优先提取嵌入预览，Develop 阶段按需生成有界的 16 位线性代理，Auto Invert 复用同一代理。
+- 修复 Intel Mac 上 RAW 代理尚未就绪时自动反相偶发失败的问题。
+- 修复旋转后胶片条缩略图容器变形，以及裁切遮罩与缩放/平移不同步的问题。
+- 调整调整条滚轮交互，必须先点击调整条才会响应滚轮。
 
 - 修复大型文件（如哈苏 FFF）导入失败的问题。
 - 修复提示弹窗被其他界面元素遮挡的问题。
@@ -187,11 +192,11 @@ cargo tauri build --target aarch64-apple-darwin --bundles dmg
 cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ~~~
 
-### 维护者：发布 v1.0.1
+### 维护者：发布 v1.0.2
 
-仓库使用单一的手动工作流 [Build and Release NexFilm 1.0.1](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml)。运行时输入标签 <code>v1.0.1</code>；工作流会先执行 Rust 与前端校验，随后并行构建 Windows x64、macOS Apple Silicon 和 macOS Intel 安装包，并发布为正式 GitHub Release。
+仓库使用单一的手动工作流 [Build and Release NexFilm 1.0.2](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml)。运行时输入标签 <code>v1.0.2</code>；工作流会先执行 Rust 与前端校验，随后并行构建 Windows x64、macOS Apple Silicon 和 macOS Intel 安装包，并发布为正式 GitHub Release。
 
-发布前请确认 <code>Cargo.toml</code>、<code>Cargo.lock</code> 与 <code>tauri.conf.json</code> 均为 <code>1.0.1</code>，提交并推送全部发布文件，再从 Actions 手动运行一次工作流。当前配置为 <code>releaseDraft: false</code>、<code>prerelease: false</code>。
+发布前请确认 <code>Cargo.toml</code>、<code>Cargo.lock</code> 与 <code>tauri.conf.json</code> 均为 <code>1.0.2</code>，提交并推送全部发布文件，再从 Actions 手动运行一次工作流。当前配置为 <code>releaseDraft: false</code>、<code>prerelease: false</code>。
 
 ### 已知限制
 
@@ -230,11 +235,11 @@ cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ## English
 
 > [!IMPORTANT]
-> NexFilm Engine v1.0.1 is the current stable release. Windows and macOS packages are currently unsigned, and macOS DMGs are not notarized by Apple. Download only from this repository's Releases page, keep the original scans, and test a small export before processing a full roll.
+> NexFilm Engine v1.0.2 is the current stable release. Windows and macOS packages are currently unsigned, and macOS DMGs are not notarized by Apple. Download only from this repository's Releases page, keep the original scans, and test a small export before processing a full roll.
 
 ### Download and install
 
-Download the v1.0.1 package for your system from [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest):
+Download the v1.0.2 package for your system from [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest):
 
 | Platform | Package | Installation |
 | --- | --- | --- |
@@ -244,7 +249,7 @@ Download the v1.0.1 package for your system from [GitHub Releases](https://githu
 
 The automatically generated <code>Source code</code> archives are not application installers. If macOS blocks the first launch, verify that the DMG came from this repository, then right-click the app in Finder and choose **Open**, or allow it under **System Settings → Privacy & Security**.
 
-### What's new in v1.0.1
+### What's new in v1.0.2
 
 New features:
 
@@ -255,6 +260,11 @@ New features:
 - Deleted files are now moved to the system trash first.
 
 Fixes and improvements:
+
+- Reworked camera-RAW processing: import prefers embedded previews, Develop generates a bounded 16-bit linear proxy on demand, and Auto Invert reuses that proxy.
+- Fixed intermittent Auto Invert failures on Intel Macs when the RAW proxy was still being prepared.
+- Fixed rotated filmstrip thumbnails changing the slot shape, and kept crop overlays synchronized with zoom and pan.
+- Range controls now respond to the mouse wheel only after the control has been clicked.
 
 - Fixed import failures for large files such as Hasselblad FFF images.
 - Fixed notification dialogs being obscured by other interface elements.
@@ -360,11 +370,11 @@ cargo tauri build --target aarch64-apple-darwin --bundles dmg
 cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ~~~
 
-### Maintainers: publish v1.0.1
+### Maintainers: publish v1.0.2
 
-The repository uses one manual workflow: [Build and Release NexFilm 1.0.1](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml). Run it with tag <code>v1.0.1</code>. It verifies the Rust and frontend sources, then builds Windows x64, macOS Apple Silicon, and macOS Intel packages in parallel and publishes a stable GitHub Release.
+The repository uses one manual workflow: [Build and Release NexFilm 1.0.2](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml). Run it with tag <code>v1.0.2</code>. It verifies the Rust and frontend sources, then builds Windows x64, macOS Apple Silicon, and macOS Intel packages in parallel and publishes a stable GitHub Release.
 
-Before running it, confirm that <code>Cargo.toml</code>, <code>Cargo.lock</code>, and <code>tauri.conf.json</code> contain version <code>1.0.1</code>, then commit and push every release file. The current workflow uses <code>releaseDraft: false</code> and <code>prerelease: false</code>.
+Before running it, confirm that <code>Cargo.toml</code>, <code>Cargo.lock</code>, and <code>tauri.conf.json</code> contain version <code>1.0.2</code>, then commit and push every release file. The current workflow uses <code>releaseDraft: false</code> and <code>prerelease: false</code>.
 
 ### Known limitations
 
