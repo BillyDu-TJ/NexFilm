@@ -4,9 +4,8 @@ use crate::app_state::{
 use crate::batch_settings::{BatchCopyResult, ImageKey};
 use crate::color_science::{
     apply_linear_matrix, canonical_output_space, compress_linear_srgb_for_density,
-    convert_encoded_to_linear_rgb_with_matrix, identify_icc_profile, libraw_native_profile,
-    linear_conversion_matrix, parse_output_space, ColorSpaceId, DENSITY_CAPTURE_PROFILE,
-    DENSITY_CAPTURE_WORKING_SPACE,
+    convert_encoded_to_linear_rgb_with_matrix, identify_icc_profile, linear_conversion_matrix,
+    parse_output_space, ColorSpaceId, DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
 };
 use crate::core_math::{
     apply_homography, apply_lens_distortion_uv, apply_perspective_uv,
@@ -2368,38 +2367,38 @@ fn decode_image_buffer(
         ));
     }
 
-    // RAW_DECODE_VERSION 7 contract: camera FFF files, including tethered
+    // RAW_DECODE_VERSION 8 contract: camera FFF files, including tethered
     // Hasselblad digital-back captures, use LibRaw instead of the Flextight
-    // scanner path. LibRaw emits linear ProPhoto D65 transport samples. The
-    // matrix and positive-domain gamut compression happen in f32 before the
-    // density pipeline receives its fixed linear-sRGB coordinates. Scanner FFF
-    // files never reach this branch.
+    // scanner path. LibRaw performs black subtraction, camera white balance and
+    // demosaic in camera RGB, but its signed output-gamut matrix is applied here
+    // in f32. This avoids LibRaw's unsigned-16 CLIP after convert_to_rgb().
     let options = crate::raw_backend::DecodeOptions {
         half_size: mode == DecodeMode::DevelopProxy,
         demosaic_quality: 3,
         output_bps: 16,
         no_auto_bright: true,
-        output_color: 4,
+        output_color: 0,
         linear_gamma: true,
         use_camera_wb: true,
     };
-    let decoded = crate::raw_backend::RawProcessor::extract_image_with_options(path, &options)
+    let decoded = crate::raw_backend::extract_camera_rgb_with_options(path, &options)
         .map_err(|error| libraw_decode_error_message(path, error))?;
 
-    let decoded = rgb16_image_from_bytes(
+    let camera_rgb = rgb16_image_from_bytes(
         decoded.width as u32,
         decoded.height as u32,
         decoded.colors as usize,
         decoded.bits,
         &decoded.data,
     )?;
-    let native_profile = libraw_native_profile(options.output_color);
-    let matrix = linear_conversion_matrix(native_profile, requested_profile);
-    let mut converted = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(decoded.width(), decoded.height());
+    debug_assert_eq!(requested_profile, ColorSpaceId::SRgb);
+    let matrix = decoded.camera_to_srgb;
+    let mut converted =
+        ImageBuffer::<Rgb<u16>, Vec<u16>>::new(camera_rgb.width(), camera_rgb.height());
     converted
         .as_mut()
         .par_chunks_exact_mut(3)
-        .zip(decoded.as_raw().par_chunks_exact(3))
+        .zip(camera_rgb.as_raw().par_chunks_exact(3))
         .for_each(|(target, pixel)| {
             let rgb = compress_linear_srgb_for_density(apply_linear_matrix(
                 [
@@ -7294,9 +7293,11 @@ mod import_contract_tests {
     };
     use crate::app_state::{BaseColor, FilmItem, FilmMode, GeometryState, TuningParams};
     use crate::color_science::{
-        apply_linear_matrix, linear_conversion_matrix, ColorSpaceId, DENSITY_CAPTURE_PROFILE,
+        apply_linear_matrix, compress_linear_srgb_for_density, linear_conversion_matrix,
+        ColorSpaceId, DENSITY_CAPTURE_PROFILE,
     };
     use base64::Engine as _;
+    use rayon::prelude::*;
 
     #[test]
     fn import_only_directly_decodes_small_encoded_images() {
@@ -7565,6 +7566,77 @@ mod import_contract_tests {
         )
     }
 
+    fn ab_decode_raw_transport(
+        path: &std::path::Path,
+        output_color: i32,
+    ) -> image::ImageBuffer<image::Rgb<u16>, Vec<u16>> {
+        let options = crate::raw_backend::DecodeOptions {
+            half_size: true,
+            demosaic_quality: 3,
+            output_bps: 16,
+            no_auto_bright: true,
+            output_color,
+            linear_gamma: true,
+            use_camera_wb: true,
+        };
+        let decoded = crate::raw_backend::RawProcessor::extract_image_with_options(path, &options)
+            .unwrap_or_else(|error| {
+                panic!("{} (output_color={output_color}): {error}", path.display())
+            });
+        rgb16_image_from_bytes(
+            decoded.width as u32,
+            decoded.height as u32,
+            decoded.colors as usize,
+            decoded.bits,
+            &decoded.data,
+        )
+        .unwrap_or_else(|error| panic!("{} (output_color={output_color}): {error}", path.display()))
+    }
+
+    fn ab_decode_camera_f32(
+        path: &std::path::Path,
+    ) -> image::ImageBuffer<image::Rgb<u16>, Vec<u16>> {
+        let options = crate::raw_backend::DecodeOptions {
+            half_size: true,
+            demosaic_quality: 3,
+            output_bps: 16,
+            no_auto_bright: true,
+            output_color: 0,
+            linear_gamma: true,
+            use_camera_wb: true,
+        };
+        let decoded = crate::raw_backend::extract_camera_rgb_with_options(path, &options)
+            .unwrap_or_else(|error| panic!("{} (camera-rgb): {error}", path.display()));
+        let camera = rgb16_image_from_bytes(
+            decoded.width as u32,
+            decoded.height as u32,
+            decoded.colors as usize,
+            decoded.bits,
+            &decoded.data,
+        )
+        .unwrap_or_else(|error| panic!("{} (camera-rgb): {error}", path.display()));
+        let mut output = image::ImageBuffer::new(camera.width(), camera.height());
+        output
+            .as_mut()
+            .par_chunks_exact_mut(3)
+            .zip(camera.as_raw().par_chunks_exact(3))
+            .for_each(|(target, pixel)| {
+                let signed = apply_linear_matrix(
+                    [
+                        pixel[0] as f32 / 65535.0,
+                        pixel[1] as f32 / 65535.0,
+                        pixel[2] as f32 / 65535.0,
+                    ],
+                    decoded.camera_to_srgb,
+                );
+                let rgb = compress_linear_srgb_for_density(signed);
+                for channel in 0..3 {
+                    target[channel] = (rgb[channel] * 65535.0).round() as u16;
+                }
+            });
+        output
+    }
+
     #[test]
     #[ignore = "manual CFV-100C gamut-transport A/B; writes diagnostic PNGs under target"]
     fn hasselblad_cfv_100c_prophoto_transport_ab() {
@@ -7603,28 +7675,7 @@ mod import_contract_tests {
             let current_auto =
                 ab_render_variant(&output_root, frame, "a-current-srgb", &current_small);
 
-            let options = crate::raw_backend::DecodeOptions {
-                half_size: true,
-                demosaic_quality: 3,
-                output_bps: 16,
-                no_auto_bright: true,
-                output_color: 4,
-                linear_gamma: true,
-                use_camera_wb: true,
-            };
-            let decoded = crate::raw_backend::RawProcessor::extract_image_with_options(
-                path.as_path(),
-                &options,
-            )
-            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
-            let transport = rgb16_image_from_bytes(
-                decoded.width as u32,
-                decoded.height as u32,
-                decoded.colors as usize,
-                decoded.bits,
-                &decoded.data,
-            )
-            .unwrap();
+            let transport = ab_decode_raw_transport(path.as_path(), 4);
             let transport_stats = ab_endpoint_stats(&transport);
 
             let mut signed_min = [f32::INFINITY; 3];
@@ -7730,6 +7781,37 @@ mod import_contract_tests {
             );
             println!(
                 "frame={frame} density-safe endpoints={density_safe_stats:?} auto={density_safe_auto:?}"
+            );
+
+            for (variant, output_color) in [("e-camera-rgb", 0), ("f-aces-ap0", 6)] {
+                let raw = ab_decode_raw_transport(path.as_path(), output_color);
+                let raw_stats = ab_endpoint_stats(&raw);
+                let raw_small = image::imageops::resize(
+                    &raw,
+                    DIAGNOSTIC_EDGE,
+                    ((DIAGNOSTIC_EDGE as f64 * raw.height() as f64 / raw.width() as f64).round()
+                        as u32)
+                        .max(1),
+                    image::imageops::FilterType::Triangle,
+                );
+                let raw_auto = ab_render_variant(&output_root, frame, variant, &raw_small);
+                println!("frame={frame} {variant} endpoints={raw_stats:?} auto={raw_auto:?}");
+            }
+
+            let camera_f32 = ab_decode_camera_f32(path.as_path());
+            let camera_f32_stats = ab_endpoint_stats(&camera_f32);
+            let camera_f32_small = image::imageops::resize(
+                &camera_f32,
+                DIAGNOSTIC_EDGE,
+                ((DIAGNOSTIC_EDGE as f64 * camera_f32.height() as f64 / camera_f32.width() as f64)
+                    .round() as u32)
+                    .max(1),
+                image::imageops::FilterType::Triangle,
+            );
+            let camera_f32_auto =
+                ab_render_variant(&output_root, frame, "g-camera-f32", &camera_f32_small);
+            println!(
+                "frame={frame} camera-f32 endpoints={camera_f32_stats:?} auto={camera_f32_auto:?}"
             );
 
             assert_eq!(current_stats.pixels, transport_stats.pixels);
