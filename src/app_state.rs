@@ -7,6 +7,150 @@ use std::sync::RwLock;
 /// active working set, so the cache is deliberately smaller than v1.0.
 /// Exceeding this triggers physical drop of the oldest proxy data.
 pub const MAX_PROXY_CACHE: usize = 2;
+pub const CALIBRATION_PROFILE_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CalibrationLevel {
+    SmartAuto,
+    Calibrated,
+    Spectral,
+}
+
+impl Default for CalibrationLevel {
+    fn default() -> Self {
+        Self::SmartAuto
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CalibrationReferenceKind {
+    /// Retained only so a damaged/future reference row cannot prevent other
+    /// Profiles from loading. The UI never creates this value.
+    Unknown,
+    DarkFrame,
+    OpenGate,
+    FlatField,
+    TransmissionTarget,
+    FilmBase,
+    FullExposure,
+    SpectralCapture,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CalibrationReference {
+    pub reference_id: String,
+    pub kind: CalibrationReferenceKind,
+    pub file_path: String,
+    pub file_name: String,
+    #[serde(default)]
+    pub file_size: u64,
+    #[serde(default)]
+    pub modified_at: Option<i64>,
+    pub added_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CalibrationConfigProfile {
+    pub profile_id: String,
+    pub schema_version: u32,
+    pub name: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(default)]
+    pub camera: String,
+    #[serde(default)]
+    pub light_source: String,
+    #[serde(default)]
+    pub lens: String,
+    #[serde(default)]
+    pub calibration_level: CalibrationLevel,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub references: Vec<CalibrationReference>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CalibrationProfileAvailability {
+    Available,
+    NeedsAttention,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CalibrationProfileView {
+    pub profile: CalibrationConfigProfile,
+    pub availability: CalibrationProfileAvailability,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RollCalibrationFormat {
+    Film135,
+    Film120,
+    Loose,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RollFrameStatus {
+    Set,
+    NotSet,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RollBaseStatus {
+    Sampled,
+    Estimated,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RollDmaxStatus {
+    FullExposure,
+    FilmProfile,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RollCalibrationMode {
+    Configured,
+    SmartAuto,
+    Legacy,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RollToneStatus {
+    Preserve,
+    FullTone,
+    Mixed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RollCalibrationStatus {
+    pub roll_id: String,
+    pub format: RollCalibrationFormat,
+    pub requested_profile_id: Option<String>,
+    pub resolved_profile_id: Option<String>,
+    pub profile_name: Option<String>,
+    pub fallback_to_smart_auto: bool,
+    pub frame: RollFrameStatus,
+    pub base: RollBaseStatus,
+    pub dmax: RollDmaxStatus,
+    pub calibration: RollCalibrationMode,
+    pub tone: RollToneStatus,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -553,6 +697,10 @@ pub struct Roll {
     pub image_paths: Vec<String>,
     #[serde(default)]
     pub density_anchors: DensityAnchors,
+    /// `None` is the explicit Smart Auto choice. Existing rolls deserialize
+    /// to it without being changed by the application's last-used selection.
+    #[serde(default)]
+    pub calibration_profile_id: Option<String>,
 }
 
 pub struct EngineState {

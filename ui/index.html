@@ -57,6 +57,7 @@
             <div id="menu-view-popover" role="menu" class="menu-popover absolute left-0 top-full mt-0 hidden group-hover:block bg-[#1C1C1E] border border-[#28282c] shadow-lg rounded w-40 py-1 z-50">
                 <button type="button" class="menu-item" id="menu-view-library" data-i18n="nav.library">Library</button>
                 <button type="button" class="menu-item" id="menu-view-develop" data-i18n="nav.develop">Develop</button>
+                <button type="button" class="menu-item" id="menu-view-calibration" data-i18n="nav.calibration">Calibration</button>
                 <button type="button" class="menu-item" id="menu-view-rolls" data-i18n="nav.rolls">Rolls</button>
                 <button type="button" class="menu-item" id="menu-view-reset" data-i18n="menu.resetView">Reset View</button>
             </div>
@@ -81,6 +82,7 @@
             <nav class="flex h-full gap-2">
                 <button id="nav-library" data-i18n="nav.library" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-100 border-zinc-100">Library</button>
                 <button id="nav-develop" data-i18n="nav.develop" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Develop</button>
+                <button id="nav-calibration" data-i18n="nav.calibration" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Calibration</button>
                 <button id="nav-history" data-i18n="nav.rolls" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Rolls</button>
                 <button id="nav-sponsor" data-i18n="nav.sponsor" type="button" aria-haspopup="dialog" aria-controls="sponsor-modal" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Sponsor</button>
             </nav>
@@ -220,6 +222,74 @@
                 <div id="library-grid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-6 hidden">
                     <!-- Library Items -->
                 </div>
+            </div>
+        </section>
+
+        <!-- ============================== -->
+        <!-- VIEW: CALIBRATION              -->
+        <!-- ============================== -->
+        <section id="view-calibration" class="calibration-workspace transition-opacity duration-300 z-10" style="display: none;" aria-hidden="true" aria-labelledby="calibration-view-title">
+            <div class="calibration-toolbar">
+                <div>
+                    <h1 id="calibration-view-title" data-i18n="calibrationConfig.title">Calibration Config Profiles</h1>
+                    <p data-i18n="calibrationConfig.subtitle">Manage capture references and the configuration used by each roll.</p>
+                </div>
+                <button id="btn-new-calibration-profile" type="button" class="calibration-primary-button" data-i18n="calibrationConfig.newProfile">New Profile</button>
+            </div>
+            <div class="calibration-layout">
+                <aside class="calibration-profile-panel" aria-labelledby="calibration-profile-list-title">
+                    <div class="calibration-panel-heading">
+                        <h2 id="calibration-profile-list-title" data-i18n="calibrationConfig.profiles">Profiles</h2>
+                        <span id="calibration-profile-count">0</span>
+                    </div>
+                    <div id="calibration-profile-list" class="calibration-profile-list custom-scrollbar"></div>
+                </aside>
+                <section class="calibration-detail-panel" aria-live="polite">
+                    <div id="calibration-empty-state" class="calibration-empty-state">
+                        <div class="calibration-empty-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none"><path d="M4 7h16v12H4zM8 7V4h8v3M8 12h8M8 16h5"/></svg>
+                        </div>
+                        <h2 data-i18n="calibrationConfig.emptyTitle">Add your hardware calibration files</h2>
+                        <p data-i18n="calibrationConfig.emptyBody">Create one Profile for your fixed copy setup, then select it per Roll in Develop.</p>
+                        <button id="btn-empty-new-calibration-profile" type="button" class="calibration-secondary-button" data-i18n="calibrationConfig.newProfile">New Profile</button>
+                    </div>
+                    <div id="calibration-profile-detail" class="calibration-profile-detail hidden custom-scrollbar">
+                        <header class="calibration-detail-header">
+                            <div>
+                                <div class="calibration-detail-badges">
+                                    <span id="calibration-detail-level"></span>
+                                    <span id="calibration-detail-availability"></span>
+                                </div>
+                                <h2 id="calibration-detail-name"></h2>
+                                <p id="calibration-detail-created"></p>
+                            </div>
+                            <div class="calibration-detail-actions">
+                                <button id="btn-edit-calibration-profile" type="button" class="calibration-secondary-button" data-i18n="actions.editInfo">Edit Info</button>
+                                <button id="btn-delete-calibration-profile" type="button" class="calibration-danger-button" data-i18n-title="actions.delete" aria-label="Delete Profile" data-i18n-aria-label="calibrationConfig.deleteProfile">&times;</button>
+                            </div>
+                        </header>
+                        <dl class="calibration-metadata-grid">
+                            <div><dt data-i18n="calibrationConfig.camera">Camera</dt><dd id="calibration-detail-camera"></dd></div>
+                            <div><dt data-i18n="calibrationConfig.lightSource">Light source</dt><dd id="calibration-detail-light"></dd></div>
+                            <div><dt data-i18n="calibrationConfig.lens">Lens</dt><dd id="calibration-detail-lens"></dd></div>
+                            <div><dt data-i18n="calibrationConfig.references">References</dt><dd id="calibration-detail-reference-count"></dd></div>
+                        </dl>
+                        <div id="calibration-detail-warnings" class="calibration-detail-warnings hidden"></div>
+                        <section class="calibration-pipeline-section" aria-labelledby="calibration-pipeline-title">
+                            <div class="calibration-section-heading">
+                                <h3 id="calibration-pipeline-title" data-i18n="calibrationConfig.pipeline">Calibration pipeline</h3>
+                                <span data-i18n="calibrationConfig.configuredNotMeasured">Configured references are not Measured Density.</span>
+                            </div>
+                            <div id="calibration-pipeline" class="calibration-pipeline"></div>
+                        </section>
+                        <section class="calibration-reference-section" aria-labelledby="calibration-reference-title">
+                            <div class="calibration-section-heading">
+                                <h3 id="calibration-reference-title" data-i18n="calibrationConfig.referenceFiles">Reference files</h3>
+                            </div>
+                            <div id="calibration-detail-references" class="calibration-reference-list"></div>
+                        </section>
+                    </div>
+                </section>
             </div>
         </section>
 
@@ -521,6 +591,19 @@
                     <div class="flex gap-2">
                         <button id="btn-copy-settings" class="flex-1 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Copy Settings</button>
                         <button id="btn-paste-settings" class="flex-1 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Paste Settings</button>
+                    </div>
+
+                    <!-- Roll Calibration Config Profile -->
+                    <div id="inspector-calibration-profile" class="develop-calibration-profile control-group border-t border-[#28282c] pt-6">
+                        <div class="develop-profile-heading">
+                            <label for="develop-calibration-profile-select" data-i18n="calibrationConfig.profileLabel">Calibration Config Profile</label>
+                            <span id="develop-calibration-scope" data-i18n="calibrationConfig.rollScope">Current Roll</span>
+                        </div>
+                        <select id="develop-calibration-profile-select" disabled>
+                            <option value="" data-i18n="calibrationConfig.smartAuto">Smart Auto</option>
+                        </select>
+                        <div id="develop-calibration-status" class="develop-calibration-status" aria-live="polite"></div>
+                        <div id="develop-calibration-warning" class="develop-calibration-warning hidden"></div>
                     </div>
 
                     <!-- Auto Invert -->
@@ -1091,6 +1174,62 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Calibration Profile Editor -->
+    <div id="calibration-profile-modal" class="calibration-profile-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="calibration-profile-modal-title">
+        <form id="calibration-profile-form" class="calibration-profile-dialog">
+            <header class="calibration-profile-dialog-header">
+                <div>
+                    <h2 id="calibration-profile-modal-title" data-i18n="calibrationConfig.newProfile">New Profile</h2>
+                    <p data-i18n="calibrationConfig.editorSubtitle">One Profile can contain capture, density and film capabilities.</p>
+                </div>
+                <button id="btn-close-calibration-profile" type="button" class="calibration-dialog-close" data-i18n-title="actions.close" aria-label="Close" data-i18n-aria-label="actions.close">&times;</button>
+            </header>
+            <div class="calibration-profile-dialog-body custom-scrollbar">
+                <div class="calibration-form-grid">
+                    <label class="calibration-form-field calibration-form-field-wide">
+                        <span data-i18n="calibrationConfig.name">Profile name</span>
+                        <input id="calibration-profile-name" name="name" required maxlength="120" autocomplete="off">
+                    </label>
+                    <label class="calibration-form-field">
+                        <span data-i18n="calibrationConfig.camera">Camera</span>
+                        <input id="calibration-profile-camera" name="camera" maxlength="160" autocomplete="off">
+                    </label>
+                    <label class="calibration-form-field">
+                        <span data-i18n="calibrationConfig.lightSource">Light source</span>
+                        <input id="calibration-profile-light" name="lightSource" maxlength="160" autocomplete="off">
+                    </label>
+                    <label class="calibration-form-field">
+                        <span data-i18n="calibrationConfig.lens">Lens</span>
+                        <input id="calibration-profile-lens" name="lens" maxlength="160" autocomplete="off">
+                    </label>
+                    <label class="calibration-form-field">
+                        <span data-i18n="calibrationConfig.level">Calibration level</span>
+                        <select id="calibration-profile-level" name="calibrationLevel">
+                            <option value="smart_auto" data-i18n="calibrationConfig.levelSmartAuto">Smart Auto</option>
+                            <option value="calibrated" data-i18n="calibrationConfig.levelCalibrated">Calibrated workflow</option>
+                            <option value="spectral" data-i18n="calibrationConfig.levelSpectral">Spectral / research</option>
+                        </select>
+                    </label>
+                    <label class="calibration-form-field calibration-form-field-wide">
+                        <span data-i18n="calibrationConfig.notes">Notes</span>
+                        <textarea id="calibration-profile-notes" name="notes" rows="2" maxlength="1200"></textarea>
+                    </label>
+                </div>
+                <section class="calibration-editor-references" aria-labelledby="calibration-editor-references-title">
+                    <div class="calibration-section-heading">
+                        <h3 id="calibration-editor-references-title" data-i18n="calibrationConfig.referenceFiles">Reference files</h3>
+                        <span data-i18n="calibrationConfig.referenceHint">Files remain in place; NexFilm warns if they move or change.</span>
+                    </div>
+                    <div id="calibration-reference-editor" class="calibration-reference-editor"></div>
+                </section>
+            </div>
+            <footer class="calibration-profile-dialog-footer">
+                <button id="btn-cancel-calibration-profile" type="button" class="calibration-secondary-button" data-i18n="actions.cancel">Cancel</button>
+                <button id="btn-save-calibration-profile" type="submit" class="calibration-primary-button" data-i18n="actions.save">Save</button>
+            </footer>
+        </form>
     </div>
 
     <!-- Roll Density Calibration Modal -->

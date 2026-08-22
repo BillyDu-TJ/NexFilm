@@ -59,10 +59,49 @@ const toastContainer = document.getElementById('toast-container');
 const navHistory = document.getElementById('nav-history');
 const navLibrary = document.getElementById('nav-library');
 const navDevelop = document.getElementById('nav-develop');
+const navCalibration = document.getElementById('nav-calibration');
 const navSponsor = document.getElementById('nav-sponsor');
 const viewHistory = document.getElementById('view-history');
 const viewLibrary = document.getElementById('view-library');
 const viewDevelop = document.getElementById('view-develop');
+const viewCalibration = document.getElementById('view-calibration');
+
+// DOM: Calibration Config Profiles
+const calibrationProfileList = document.getElementById('calibration-profile-list');
+const calibrationProfileCount = document.getElementById('calibration-profile-count');
+const calibrationEmptyState = document.getElementById('calibration-empty-state');
+const calibrationProfileDetail = document.getElementById('calibration-profile-detail');
+const calibrationDetailLevel = document.getElementById('calibration-detail-level');
+const calibrationDetailAvailability = document.getElementById('calibration-detail-availability');
+const calibrationDetailName = document.getElementById('calibration-detail-name');
+const calibrationDetailCreated = document.getElementById('calibration-detail-created');
+const calibrationDetailCamera = document.getElementById('calibration-detail-camera');
+const calibrationDetailLight = document.getElementById('calibration-detail-light');
+const calibrationDetailLens = document.getElementById('calibration-detail-lens');
+const calibrationDetailReferenceCount = document.getElementById('calibration-detail-reference-count');
+const calibrationDetailWarnings = document.getElementById('calibration-detail-warnings');
+const calibrationPipeline = document.getElementById('calibration-pipeline');
+const calibrationDetailReferences = document.getElementById('calibration-detail-references');
+const calibrationProfileModal = document.getElementById('calibration-profile-modal');
+const calibrationProfileForm = document.getElementById('calibration-profile-form');
+const calibrationProfileModalTitle = document.getElementById('calibration-profile-modal-title');
+const calibrationProfileName = document.getElementById('calibration-profile-name');
+const calibrationProfileCamera = document.getElementById('calibration-profile-camera');
+const calibrationProfileLight = document.getElementById('calibration-profile-light');
+const calibrationProfileLens = document.getElementById('calibration-profile-lens');
+const calibrationProfileLevel = document.getElementById('calibration-profile-level');
+const calibrationProfileNotes = document.getElementById('calibration-profile-notes');
+const calibrationReferenceEditor = document.getElementById('calibration-reference-editor');
+const btnSaveCalibrationProfile = document.getElementById('btn-save-calibration-profile');
+const btnNewCalibrationProfile = document.getElementById('btn-new-calibration-profile');
+const btnEmptyNewCalibrationProfile = document.getElementById('btn-empty-new-calibration-profile');
+const btnEditCalibrationProfile = document.getElementById('btn-edit-calibration-profile');
+const btnDeleteCalibrationProfile = document.getElementById('btn-delete-calibration-profile');
+const btnCloseCalibrationProfile = document.getElementById('btn-close-calibration-profile');
+const btnCancelCalibrationProfile = document.getElementById('btn-cancel-calibration-profile');
+const developCalibrationProfileSelect = document.getElementById('develop-calibration-profile-select');
+const developCalibrationStatus = document.getElementById('develop-calibration-status');
+const developCalibrationWarning = document.getElementById('develop-calibration-warning');
 
 // DOM: Sponsor Modal
 const sponsorModal = document.getElementById('sponsor-modal');
@@ -806,6 +845,7 @@ btnConfirmDensityCalibration.addEventListener('click', async () => {
                 : 'smart_auto_prophoto_v11';
         }
         closeDensityCalibration();
+        void renderDevelopCalibrationProfile();
         showToast(i18nText('calibration.saved'), 'success');
     } catch (error) {
         showToast(i18nText('calibration.saveFailed', { error }), 'error');
@@ -823,7 +863,7 @@ densityCalibrationModal.addEventListener('keydown', event => {
 });
 
 // Routing
-let currentView = 'library'; // Tracks active view: 'library' | 'develop' | 'history'
+let currentView = 'library'; // library | develop | calibration | history
 
 function clearNativeSelection(event) {
     if (event) event.preventDefault();
@@ -921,7 +961,8 @@ function switchView(viewName) {
     const views = [
         { name: 'history', nav: navHistory, el: viewHistory },
         { name: 'library', nav: navLibrary, el: viewLibrary },
-        { name: 'develop', nav: navDevelop, el: viewDevelop }
+        { name: 'develop', nav: navDevelop, el: viewDevelop },
+        { name: 'calibration', nav: navCalibration, el: viewCalibration }
     ];
 
     views.forEach(v => {
@@ -968,6 +1009,10 @@ function switchView(viewName) {
             enableUI();
         }
         requestDevelopLayoutSync();
+        void renderDevelopCalibrationProfile();
+    } else if (viewName === 'calibration') {
+        renderCalibrationWorkspace();
+        disableUI();
     } else {
         // When leaving develop view, disable all tuning UI to prevent
         // orphaned slider event handlers from firing on stale state.
@@ -982,6 +1027,7 @@ navLibrary.addEventListener('click', () => {
     renderLibraryAndFilmstrip();
 });
 navDevelop.addEventListener('click', () => switchView('develop'));
+navCalibration?.addEventListener('click', () => switchView('calibration'));
 
 const moduleNavButtons = developModuleNav
     ? Array.from(developModuleNav.querySelectorAll('.module-nav-btn'))
@@ -3393,6 +3439,7 @@ function enableUI() {
     document.getElementById('btn-copy-settings').disabled = false;
     if (copiedSettings) document.getElementById('btn-paste-settings').disabled = false;
     document.getElementById('btn-wb-eyedropper').disabled = false;
+    void renderDevelopCalibrationProfile();
 
     canvasWrapper.style.display = 'block';
     // CSS containment: prevent layout reflow when WebGL canvas dimensions change
@@ -3429,9 +3476,15 @@ function disableUI() {
     document.getElementById('btn-copy-settings').disabled = true;
     document.getElementById('btn-paste-settings').disabled = true;
     document.getElementById('btn-wb-eyedropper').disabled = true;
+    developCalibrationProfileSelect.disabled = true;
 }
 
 let allRolls = [];
+let calibrationProfiles = [];
+let selectedCalibrationProfileId = null;
+let editingCalibrationProfileId = null;
+let calibrationProfileDraftReferences = [];
+let developCalibrationRequest = 0;
 let currentRollViewId = null;
 let historyRollViewId = null;
 let isRollEditing = false; // true only when Continue Editing (explicitly imported for editing), false for History preview
@@ -3449,6 +3502,431 @@ function isLooseImportRoll(roll) {
         || /^loose_/i.test(roll.roll_id || '');
 }
 
+const calibrationReferenceKinds = [
+    'dark_frame',
+    'open_gate',
+    'flat_field',
+    'transmission_target',
+    'film_base',
+    'full_exposure',
+    'spectral_capture',
+];
+
+const calibrationReferenceLabelKeys = {
+    dark_frame: 'calibrationConfig.reference.dark_frame',
+    open_gate: 'calibrationConfig.reference.open_gate',
+    flat_field: 'calibrationConfig.reference.flat_field',
+    transmission_target: 'calibrationConfig.reference.transmission_target',
+    film_base: 'calibrationConfig.reference.film_base',
+    full_exposure: 'calibrationConfig.reference.full_exposure',
+    spectral_capture: 'calibrationConfig.reference.spectral_capture',
+};
+
+const calibrationStatusLabelKeys = {
+    frame: 'calibrationConfig.status.frame',
+    base: 'calibrationConfig.status.base',
+    dmax: 'calibrationConfig.status.dmax',
+    calibration: 'calibrationConfig.status.calibration',
+    tone: 'calibrationConfig.status.tone',
+};
+
+const calibrationStatusValueKeys = {
+    frame: { set: 'calibrationConfig.status.frame.set', not_set: 'calibrationConfig.status.frame.not_set' },
+    base: { sampled: 'calibrationConfig.status.base.sampled', estimated: 'calibrationConfig.status.base.estimated' },
+    dmax: { full_exposure: 'calibrationConfig.status.dmax.full_exposure', film_profile: 'calibrationConfig.status.dmax.film_profile', unknown: 'calibrationConfig.status.dmax.unknown' },
+    calibration: { configured: 'calibrationConfig.status.calibration.configured', smart_auto: 'calibrationConfig.status.calibration.smart_auto', legacy: 'calibrationConfig.status.calibration.legacy' },
+    tone: { preserve: 'calibrationConfig.status.tone.preserve', full_tone: 'calibrationConfig.status.tone.full_tone', mixed: 'calibrationConfig.status.tone.mixed' },
+};
+
+function calibrationLevelLabel(level) {
+    const key = {
+        smart_auto: 'calibrationConfig.levelSmartAuto',
+        calibrated: 'calibrationConfig.levelCalibrated',
+        spectral: 'calibrationConfig.levelSpectral',
+    }[level] || 'calibrationConfig.levelSmartAuto';
+    return i18nText(key);
+}
+
+function calibrationAvailabilityLabel(availability) {
+    const key = {
+        available: 'calibrationConfig.available',
+        needs_attention: 'calibrationConfig.needsAttention',
+        unsupported: 'calibrationConfig.unsupported',
+    }[availability] || 'calibrationConfig.needsAttention';
+    return i18nText(key);
+}
+
+function calibrationReferenceKindLabel(kind) {
+    return i18nText(calibrationReferenceLabelKeys[kind] || 'calibrationConfig.notSelected');
+}
+
+function calibrationWarningText(warning) {
+    const parts = String(warning || '').split('|', 2);
+    const key = 'calibrationConfig.warning.' + parts[0];
+    const translated = i18nText(key, { file: parts[1] || '' });
+    return translated === key ? warning : translated;
+}
+
+function formatCalibrationDate(timestamp) {
+    if (!Number.isFinite(Number(timestamp)) || Number(timestamp) <= 0) return i18nText('common.unknown');
+    return new Intl.DateTimeFormat(i18n?.getLocale?.() || 'en', {
+        year: 'numeric', month: 'short', day: '2-digit'
+    }).format(new Date(Number(timestamp) * 1000));
+}
+
+function selectedCalibrationProfileView() {
+    return calibrationProfiles.find(view => view.profile.profile_id === selectedCalibrationProfileId) || null;
+}
+
+async function loadCalibrationProfiles({ preserveSelection = true } = {}) {
+    const previous = preserveSelection ? selectedCalibrationProfileId : null;
+    calibrationProfiles = await invoke('get_calibration_profiles');
+    selectedCalibrationProfileId = calibrationProfiles.some(view => view.profile.profile_id === previous)
+        ? previous
+        : (calibrationProfiles[0]?.profile.profile_id || null);
+    renderCalibrationWorkspace();
+    if (currentView === 'develop') await renderDevelopCalibrationProfile();
+    return calibrationProfiles;
+}
+
+function createCalibrationStage(stage) {
+    const row = document.createElement('div');
+    row.className = 'calibration-stage';
+    const dot = document.createElement('span');
+    dot.className = 'calibration-stage-dot' + (stage.configured ? ' is-configured' : '');
+    const copy = document.createElement('div');
+    const title = document.createElement('strong');
+    title.textContent = i18nText(stage.title);
+    const description = document.createElement('small');
+    description.textContent = i18nText(stage.description);
+    copy.append(title, description);
+    const status = document.createElement('span');
+    status.className = 'calibration-stage-status' + (stage.configured ? ' is-configured' : '');
+    status.textContent = i18nText(stage.configured
+        ? 'calibrationConfig.referenceReady'
+        : 'calibrationConfig.usingDefault');
+    row.append(dot, copy, status);
+    return row;
+}
+
+function renderCalibrationProfileDetail(view) {
+    const profile = view.profile;
+    calibrationEmptyState.classList.add('hidden');
+    calibrationProfileDetail.classList.remove('hidden');
+    calibrationDetailName.textContent = profile.name;
+    calibrationDetailCreated.textContent = i18nText('calibrationConfig.created', {
+        date: formatCalibrationDate(profile.created_at)
+    });
+    calibrationDetailLevel.textContent = calibrationLevelLabel(profile.calibration_level);
+    calibrationDetailAvailability.textContent = calibrationAvailabilityLabel(view.availability);
+    calibrationDetailAvailability.className = view.availability === 'available' ? 'is-available' : 'is-warning';
+    calibrationDetailCamera.textContent = profile.camera || i18nText('common.unknown');
+    calibrationDetailLight.textContent = profile.light_source || i18nText('common.unknown');
+    calibrationDetailLens.textContent = profile.lens || i18nText('common.unknown');
+    calibrationDetailReferenceCount.textContent = String(profile.references.length);
+
+    calibrationDetailWarnings.replaceChildren();
+    calibrationDetailWarnings.classList.toggle('hidden', view.warnings.length === 0);
+    view.warnings.forEach(warning => {
+        const paragraph = document.createElement('p');
+        paragraph.textContent = calibrationWarningText(warning);
+        calibrationDetailWarnings.appendChild(paragraph);
+    });
+
+    const kinds = new Set(profile.references.map(reference => reference.kind));
+    const stages = [
+        { title: 'calibrationConfig.stage.dark', description: 'calibrationConfig.stage.darkDescription', configured: kinds.has('dark_frame') },
+        { title: 'calibrationConfig.stage.openGate', description: 'calibrationConfig.stage.openGateDescription', configured: kinds.has('open_gate') },
+        { title: 'calibrationConfig.stage.flatField', description: 'calibrationConfig.stage.flatFieldDescription', configured: kinds.has('flat_field') },
+        { title: 'calibrationConfig.stage.captureSeparation', description: 'calibrationConfig.stage.captureSeparationDescription', configured: kinds.has('spectral_capture') },
+        { title: 'calibrationConfig.stage.densityReference', description: 'calibrationConfig.stage.densityReferenceDescription', configured: kinds.has('transmission_target') },
+        { title: 'calibrationConfig.stage.rollAnchors', description: 'calibrationConfig.stage.rollAnchorsDescription', configured: kinds.has('film_base') || kinds.has('full_exposure') },
+        { title: 'calibrationConfig.stage.filmReconstruction', description: 'calibrationConfig.stage.filmReconstructionDescription', configured: false },
+    ];
+    calibrationPipeline.replaceChildren(...stages.map(createCalibrationStage));
+
+    calibrationDetailReferences.replaceChildren();
+    if (profile.references.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'calibration-reference-empty';
+        empty.textContent = i18nText('calibrationConfig.noReferences');
+        calibrationDetailReferences.appendChild(empty);
+    } else {
+        profile.references.forEach(reference => {
+            const row = document.createElement('div');
+            row.className = 'calibration-reference-item';
+            const kind = document.createElement('strong');
+            kind.textContent = calibrationReferenceKindLabel(reference.kind);
+            const name = document.createElement('span');
+            name.textContent = reference.file_name;
+            name.title = reference.file_path;
+            row.append(kind, name);
+            calibrationDetailReferences.appendChild(row);
+        });
+    }
+}
+
+function renderCalibrationWorkspace() {
+    if (!calibrationProfileList) return;
+    calibrationProfileCount.textContent = String(calibrationProfiles.length);
+    calibrationProfileList.replaceChildren();
+    if (calibrationProfiles.length === 0) {
+        const message = document.createElement('div');
+        message.className = 'calibration-profile-list-empty';
+        message.textContent = i18nText('calibrationConfig.noProfiles');
+        calibrationProfileList.appendChild(message);
+        calibrationEmptyState.classList.remove('hidden');
+        calibrationProfileDetail.classList.add('hidden');
+        return;
+    }
+    calibrationProfiles.forEach(view => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'calibration-profile-item' + (view.profile.profile_id === selectedCalibrationProfileId ? ' is-active' : '');
+        const dot = document.createElement('span');
+        dot.className = 'calibration-profile-item-dot ' + (view.availability === 'available' ? 'is-available' : 'is-warning');
+        const copy = document.createElement('span');
+        const name = document.createElement('strong');
+        name.textContent = view.profile.name;
+        const detail = document.createElement('small');
+        detail.textContent = calibrationLevelLabel(view.profile.calibration_level) + ' · ' + calibrationAvailabilityLabel(view.availability);
+        copy.append(name, detail);
+        button.append(dot, copy);
+        button.addEventListener('click', () => {
+            selectedCalibrationProfileId = view.profile.profile_id;
+            renderCalibrationWorkspace();
+        });
+        calibrationProfileList.appendChild(button);
+    });
+    const selected = selectedCalibrationProfileView() || calibrationProfiles[0];
+    selectedCalibrationProfileId = selected.profile.profile_id;
+    renderCalibrationProfileDetail(selected);
+}
+
+function renderCalibrationReferenceEditor() {
+    calibrationReferenceEditor.replaceChildren();
+    calibrationReferenceKinds.forEach(kind => {
+        const reference = calibrationProfileDraftReferences.find(item => item.kind === kind);
+        const row = document.createElement('div');
+        row.className = 'calibration-reference-editor-row';
+        const copy = document.createElement('div');
+        const title = document.createElement('strong');
+        title.textContent = calibrationReferenceKindLabel(kind);
+        const file = document.createElement('small');
+        file.textContent = reference?.file_name || i18nText('calibrationConfig.notSelected');
+        file.title = reference?.file_path || '';
+        copy.append(title, file);
+        const actions = document.createElement('div');
+        actions.className = 'calibration-reference-actions';
+        const choose = document.createElement('button');
+        choose.type = 'button';
+        choose.textContent = i18nText(reference ? 'calibrationConfig.replace' : 'calibrationConfig.choose');
+        choose.addEventListener('click', async () => {
+            try {
+                const selected = await invoke('choose_calibration_reference', { kind });
+                if (!selected) return;
+                calibrationProfileDraftReferences = calibrationProfileDraftReferences.filter(item => item.kind !== kind);
+                calibrationProfileDraftReferences.push(selected);
+                renderCalibrationReferenceEditor();
+            } catch (error) {
+                showToast(i18nText('calibrationConfig.referenceFailed', { error }), 'error');
+            }
+        });
+        actions.appendChild(choose);
+        if (reference) {
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'is-remove';
+            remove.textContent = '×';
+            remove.title = i18nText('actions.delete');
+            remove.addEventListener('click', () => {
+                calibrationProfileDraftReferences = calibrationProfileDraftReferences.filter(item => item.reference_id !== reference.reference_id);
+                renderCalibrationReferenceEditor();
+            });
+            actions.appendChild(remove);
+        }
+        row.append(copy, actions);
+        calibrationReferenceEditor.appendChild(row);
+    });
+}
+
+function openCalibrationProfileEditor(view = null) {
+    const profile = view?.profile || null;
+    editingCalibrationProfileId = profile?.profile_id || null;
+    calibrationProfileName.value = profile?.name || '';
+    calibrationProfileCamera.value = profile?.camera || '';
+    calibrationProfileLight.value = profile?.light_source || '';
+    calibrationProfileLens.value = profile?.lens || '';
+    calibrationProfileLevel.value = profile?.calibration_level || 'smart_auto';
+    calibrationProfileNotes.value = profile?.notes || '';
+    calibrationProfileDraftReferences = (profile?.references || []).map(reference => ({ ...reference }));
+    calibrationProfileModalTitle.textContent = i18nText(profile
+        ? 'calibrationConfig.editProfile'
+        : 'calibrationConfig.newProfile');
+    renderCalibrationReferenceEditor();
+    calibrationProfileModal.classList.add('is-open');
+    calibrationProfileModal.setAttribute('aria-hidden', 'false');
+    requestAnimationFrame(() => calibrationProfileName.focus());
+}
+
+function closeCalibrationProfileEditor() {
+    calibrationProfileModal.classList.remove('is-open');
+    calibrationProfileModal.setAttribute('aria-hidden', 'true');
+    editingCalibrationProfileId = null;
+    calibrationProfileDraftReferences = [];
+}
+
+function calibrationStatusValue(group, value) {
+    return i18nText(calibrationStatusValueKeys[group]?.[value] || 'calibrationConfig.status.' + group);
+}
+
+function renderDevelopCalibrationStatus(status) {
+    const fields = [
+        ['frame', status.frame],
+        ['base', status.base],
+        ['dmax', status.dmax],
+        ['calibration', status.calibration],
+        ['tone', status.tone],
+    ];
+    developCalibrationStatus.replaceChildren(...fields.map(([group, value]) => {
+        const item = document.createElement('div');
+        const label = document.createElement('span');
+        const result = document.createElement('strong');
+        label.textContent = i18nText(calibrationStatusLabelKeys[group]);
+        result.textContent = calibrationStatusValue(group, value);
+        item.append(label, result);
+        return item;
+    }));
+    developCalibrationWarning.replaceChildren();
+    developCalibrationWarning.classList.toggle('hidden', status.warnings.length === 0);
+    status.warnings.forEach(warning => {
+        const paragraph = document.createElement('p');
+        paragraph.textContent = calibrationWarningText(warning);
+        developCalibrationWarning.appendChild(paragraph);
+    });
+}
+
+async function renderDevelopCalibrationProfile() {
+    if (!developCalibrationProfileSelect) return;
+    const request = ++developCalibrationRequest;
+    const rollId = getDevelopRollId();
+    const roll = allRolls.find(candidate => candidate.roll_id === rollId) || null;
+    const smartAuto = document.createElement('option');
+    smartAuto.value = '';
+    smartAuto.textContent = i18nText('calibrationConfig.smartAuto');
+    const options = [smartAuto];
+    calibrationProfiles.forEach(view => {
+        const option = document.createElement('option');
+        option.value = view.profile.profile_id;
+        option.textContent = view.profile.name + (view.availability === 'available'
+            ? ''
+            : ' (' + calibrationAvailabilityLabel(view.availability) + ')');
+        options.push(option);
+    });
+    if (roll?.calibration_profile_id
+        && !calibrationProfiles.some(view => view.profile.profile_id === roll.calibration_profile_id)) {
+        const missing = document.createElement('option');
+        missing.value = roll.calibration_profile_id;
+        missing.textContent = i18nText('calibrationConfig.missingProfile');
+        options.push(missing);
+    }
+    developCalibrationProfileSelect.replaceChildren(...options);
+    developCalibrationProfileSelect.value = roll?.calibration_profile_id || '';
+    developCalibrationStatus.replaceChildren();
+    developCalibrationWarning.classList.add('hidden');
+    developCalibrationWarning.replaceChildren();
+    if (!rollId || !roll) {
+        developCalibrationProfileSelect.disabled = true;
+        return;
+    }
+    const loose = isLooseImportRoll(roll);
+    developCalibrationProfileSelect.disabled = loose || !activeId;
+    try {
+        const status = await invoke('get_roll_calibration_status', {
+            rollId,
+            imageId: activeId || null,
+        });
+        if (request !== developCalibrationRequest || rollId !== getDevelopRollId()) return;
+        renderDevelopCalibrationStatus(status);
+    } catch (error) {
+        if (request !== developCalibrationRequest) return;
+        developCalibrationWarning.classList.remove('hidden');
+        developCalibrationWarning.textContent = i18nText('calibrationConfig.statusFailed', { error });
+    }
+}
+
+btnNewCalibrationProfile?.addEventListener('click', () => openCalibrationProfileEditor());
+btnEmptyNewCalibrationProfile?.addEventListener('click', () => openCalibrationProfileEditor());
+btnEditCalibrationProfile?.addEventListener('click', () => openCalibrationProfileEditor(selectedCalibrationProfileView()));
+btnCloseCalibrationProfile?.addEventListener('click', closeCalibrationProfileEditor);
+btnCancelCalibrationProfile?.addEventListener('click', closeCalibrationProfileEditor);
+calibrationProfileModal?.addEventListener('click', event => {
+    if (event.target === calibrationProfileModal) closeCalibrationProfileEditor();
+});
+calibrationProfileModal?.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeCalibrationProfileEditor();
+});
+calibrationProfileForm?.addEventListener('submit', async event => {
+    event.preventDefault();
+    btnSaveCalibrationProfile.disabled = true;
+    try {
+        const saved = await invoke('save_calibration_profile', {
+            input: {
+                profileId: editingCalibrationProfileId,
+                name: calibrationProfileName.value,
+                camera: calibrationProfileCamera.value,
+                lightSource: calibrationProfileLight.value,
+                lens: calibrationProfileLens.value,
+                calibrationLevel: calibrationProfileLevel.value,
+                notes: calibrationProfileNotes.value,
+                references: calibrationProfileDraftReferences,
+            },
+        });
+        selectedCalibrationProfileId = saved.profile.profile_id;
+        closeCalibrationProfileEditor();
+        await loadCalibrationProfiles();
+        showToast(i18nText('calibrationConfig.saved'), 'success');
+    } catch (error) {
+        showToast(i18nText('calibrationConfig.saveFailed', { error }), 'error');
+    } finally {
+        btnSaveCalibrationProfile.disabled = false;
+    }
+});
+btnDeleteCalibrationProfile?.addEventListener('click', async () => {
+    const selected = selectedCalibrationProfileView();
+    if (!selected || !window.confirm(i18nText('calibrationConfig.deleteConfirm', { name: selected.profile.name }))) return;
+    btnDeleteCalibrationProfile.disabled = true;
+    try {
+        await invoke('delete_calibration_profile', { profileId: selected.profile.profile_id });
+        selectedCalibrationProfileId = null;
+        await loadCalibrationProfiles({ preserveSelection: false });
+        showToast(i18nText('calibrationConfig.deleted'), 'success');
+    } catch (error) {
+        showToast(i18nText('calibrationConfig.deleteFailed', { error }), 'error');
+    } finally {
+        btnDeleteCalibrationProfile.disabled = false;
+    }
+});
+developCalibrationProfileSelect?.addEventListener('change', async () => {
+    const rollId = getDevelopRollId();
+    const roll = allRolls.find(candidate => candidate.roll_id === rollId);
+    if (!rollId || !roll) return;
+    const previous = roll.calibration_profile_id || '';
+    const profileId = developCalibrationProfileSelect.value || null;
+    developCalibrationProfileSelect.disabled = true;
+    try {
+        const status = await invoke('update_roll_calibration_profile', { rollId, profileId });
+        roll.calibration_profile_id = profileId;
+        renderDevelopCalibrationStatus(status);
+        showToast(i18nText('calibrationConfig.rollSelectionSaved'), 'success');
+    } catch (error) {
+        developCalibrationProfileSelect.value = previous;
+        showToast(i18nText('calibrationConfig.rollSelectionFailed', { error }), 'error');
+    } finally {
+        developCalibrationProfileSelect.disabled = isLooseImportRoll(roll) || !activeId;
+    }
+});
+
 function getVisibleArchiveRolls() {
     return allRolls.filter(roll => !isLooseImportRoll(roll));
 }
@@ -3462,6 +3940,7 @@ async function fetchRolls() {
     try {
         allRolls = await invoke('get_rolls');
         await updateFilterSidebar();
+        if (currentView === 'develop') void renderDevelopCalibrationProfile();
     } catch(e) {
         console.error("Fetch rolls error", e);
     }
@@ -7257,10 +7736,15 @@ window.addEventListener('DOMContentLoaded', async () => {
     document.body.appendChild(loadingOverlay);
 
     try {
-        allRolls = await invoke('get_rolls');
-        allLibraryItems = await invoke('get_filmstrip');
+        [allRolls, allLibraryItems, calibrationProfiles] = await Promise.all([
+            invoke('get_rolls'),
+            invoke('get_filmstrip'),
+            invoke('get_calibration_profiles'),
+        ]);
+        selectedCalibrationProfileId = calibrationProfiles[0]?.profile.profile_id || null;
         rememberItems(allLibraryItems);
         await updateFilterSidebar();
+        renderCalibrationWorkspace();
     } catch(e) { console.error("Init Error", e); }
 
     await renderLibraryAndFilmstrip();
@@ -7682,6 +8166,8 @@ if (i18n) {
         i18n.apply();
         updateLibrarySelectionUI();
         renderDensityCalibrationState();
+        renderCalibrationWorkspace();
+        void renderDevelopCalibrationProfile();
         updateExportDialogState();
         if (typeof renderLibraryAndFilmstrip === 'function') renderLibraryAndFilmstrip(true);
     });
@@ -7756,6 +8242,7 @@ document.getElementById('menu-view-library')?.addEventListener('click', () => {
     renderLibraryAndFilmstrip();
 });
 document.getElementById('menu-view-develop')?.addEventListener('click', () => switchView('develop'));
+document.getElementById('menu-view-calibration')?.addEventListener('click', () => switchView('calibration'));
 document.getElementById('menu-view-rolls')?.addEventListener('click', () => switchView('history'));
 document.getElementById('menu-view-reset')?.addEventListener('click', () => {
     resetDevelopViewTransform();

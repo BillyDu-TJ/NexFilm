@@ -1,8 +1,11 @@
 use crate::app_state::{
-    BaseColor, ContentRange, ContentRangeScope, DensityAnchor, DensityAnchorConfidence,
-    DensityAnchorScope, DensityAnchorSource, DensityAnchors, EngineState, FilmItem, FilmMode,
-    FilmstripItem, GeometryState, PipelineState, ProcessingContract, RenderMode, Roll,
-    TuningParams,
+    BaseColor, CalibrationConfigProfile, CalibrationLevel, CalibrationProfileAvailability,
+    CalibrationProfileView, CalibrationReference, CalibrationReferenceKind, ContentRange,
+    ContentRangeScope, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope,
+    DensityAnchorSource, DensityAnchors, EngineState, FilmItem, FilmMode, FilmstripItem,
+    GeometryState, PipelineState, ProcessingContract, RenderMode, Roll, RollBaseStatus,
+    RollCalibrationFormat, RollCalibrationMode, RollCalibrationStatus, RollDmaxStatus,
+    RollFrameStatus, RollToneStatus, TuningParams, CALIBRATION_PROFILE_SCHEMA_VERSION,
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
 use crate::color_science::{
@@ -17,7 +20,7 @@ use crate::core_math::{
 };
 use crate::persistence::{self, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use base64::{engine::general_purpose, Engine as _};
 use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
@@ -30,6 +33,7 @@ use rusqlite::OptionalExtension;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::sync::{MutexGuard, RwLockReadGuard, RwLockWriteGuard};
@@ -37,6 +41,7 @@ use tauri::State;
 use tauri::{Emitter, Manager};
 
 static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
+static NEXT_CALIBRATION_ID: AtomicUsize = AtomicUsize::new(1);
 static EXPORT_TEMP_ID: AtomicUsize = AtomicUsize::new(1);
 static RAYON_INIT: OnceLock<()> = OnceLock::new();
 static EXPORT_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -4209,6 +4214,7 @@ mod history_contract_tests {
             camera: String::new(),
             image_paths: vec!["first.dng".into(), "second.dng".into(), "third.dng".into()],
             density_anchors: Default::default(),
+            calibration_profile_id: None,
         };
         insert_history_item(&state, "first", "roll-a", "first.dng", None);
         insert_history_item(
@@ -4250,6 +4256,7 @@ mod history_contract_tests {
                 camera: String::new(),
                 image_paths: vec!["A\\First.DNG".into(), "A\\Second.DNG".into()],
                 density_anchors: Default::default(),
+                calibration_profile_id: None,
             },
             Roll {
                 roll_id: "roll-b".into(),
@@ -4259,6 +4266,7 @@ mod history_contract_tests {
                 camera: String::new(),
                 image_paths: vec!["A\\First.DNG".into()],
                 density_anchors: Default::default(),
+                calibration_profile_id: None,
             },
         ];
 
@@ -7010,6 +7018,232 @@ pub async fn get_rolls(state: State<'_, EngineState>) -> Result<Vec<Roll>, Strin
     Ok(rolls.clone())
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CalibrationProfileInput {
+    pub profile_id: Option<String>,
+    pub name: String,
+    #[serde(default)]
+    pub camera: String,
+    #[serde(default)]
+    pub light_source: String,
+    #[serde(default)]
+    pub lens: String,
+    #[serde(default)]
+    pub calibration_level: CalibrationLevel,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub references: Vec<CalibrationReference>,
+}
+
+fn timestamp_from_system_time(value: std::time::SystemTime) -> Option<i64> {
+    value
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs() as i64)
+}
+
+fn calibration_id(prefix: &str) -> String {
+    format!(
+        "{prefix}-{}-{}",
+        persistence::now_timestamp(),
+        NEXT_CALIBRATION_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn calibration_profile_view(profile: CalibrationConfigProfile) -> CalibrationProfileView {
+    let mut warnings = Vec::new();
+    let unsupported = profile.schema_version != CALIBRATION_PROFILE_SCHEMA_VERSION;
+    if unsupported {
+        warnings.push("profile_schema_unsupported".to_string());
+    }
+    if profile.calibration_level != CalibrationLevel::SmartAuto && profile.references.is_empty() {
+        warnings.push("profile_requires_reference".to_string());
+    }
+    for reference in &profile.references {
+        if reference.kind == CalibrationReferenceKind::Unknown {
+            warnings.push(format!(
+                "profile_reference_kind_unsupported|{}",
+                reference.file_name
+            ));
+        }
+        let path = Path::new(&reference.file_path);
+        let Ok(metadata) = std::fs::metadata(path) else {
+            warnings.push(format!("profile_reference_missing|{}", reference.file_name));
+            continue;
+        };
+        let current_modified = metadata
+            .modified()
+            .ok()
+            .and_then(timestamp_from_system_time);
+        if metadata.len() != reference.file_size || current_modified != reference.modified_at {
+            warnings.push(format!("profile_reference_changed|{}", reference.file_name));
+        }
+    }
+    let availability = if unsupported {
+        CalibrationProfileAvailability::Unsupported
+    } else if warnings.is_empty() {
+        CalibrationProfileAvailability::Available
+    } else {
+        CalibrationProfileAvailability::NeedsAttention
+    };
+    CalibrationProfileView {
+        profile,
+        availability,
+        warnings,
+    }
+}
+
+fn load_calibration_profile_views() -> Result<Vec<CalibrationProfileView>, String> {
+    let connection = persistence::open_connection()
+        .map_err(|error| format!("Failed to open calibration database: {error}"))?;
+    persistence::load_calibration_profiles(&connection)
+        .map_err(|error| format!("Failed to load calibration profiles: {error}"))
+        .map(|profiles| profiles.into_iter().map(calibration_profile_view).collect())
+}
+
+#[tauri::command]
+pub async fn get_calibration_profiles() -> Result<Vec<CalibrationProfileView>, String> {
+    tokio::task::spawn_blocking(load_calibration_profile_views)
+        .await
+        .map_err(|error| format!("Calibration profile worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn choose_calibration_reference(
+    kind: CalibrationReferenceKind,
+) -> Result<Option<CalibrationReference>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = FileDialog::new()
+            .set_title("Choose Calibration Reference")
+            .add_filter(
+                "Calibration Reference",
+                &[
+                    "dng", "nef", "nrw", "cr2", "cr3", "arw", "raf", "rw2", "orf", "srw", "pef",
+                    "3fr", "iiq", "raw", "tiff", "tif", "jpg", "jpeg", "png", "json", "csv",
+                ],
+            )
+            .pick_file();
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let metadata = std::fs::metadata(&path)
+            .map_err(|error| format!("Failed to read calibration reference: {error}"))?;
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("reference")
+            .to_string();
+        Ok(Some(CalibrationReference {
+            reference_id: calibration_id("cal-ref"),
+            kind,
+            file_path: path.to_string_lossy().to_string(),
+            file_name,
+            file_size: metadata.len(),
+            modified_at: metadata
+                .modified()
+                .ok()
+                .and_then(timestamp_from_system_time),
+            added_at: persistence::now_timestamp(),
+        }))
+    })
+    .await
+    .map_err(|error| format!("Calibration reference dialog failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn save_calibration_profile(
+    input: CalibrationProfileInput,
+) -> Result<CalibrationProfileView, String> {
+    tokio::task::spawn_blocking(move || {
+        let name = input.name.trim();
+        if name.is_empty() {
+            return Err("Calibration profile name is required.".to_string());
+        }
+        let mut connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open calibration database: {error}"))?;
+        let existing = persistence::load_calibration_profiles(&connection)
+            .map_err(|error| format!("Failed to load calibration profiles: {error}"))?;
+        let requested_id = input
+            .profile_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let existing_profile = requested_id.and_then(|profile_id| {
+            existing
+                .iter()
+                .find(|profile| profile.profile_id == profile_id)
+        });
+        if requested_id.is_some() && existing_profile.is_none() {
+            return Err("Calibration profile no longer exists.".to_string());
+        }
+        let now = persistence::now_timestamp();
+        let profile = CalibrationConfigProfile {
+            profile_id: requested_id
+                .map(str::to_string)
+                .unwrap_or_else(|| calibration_id("cal-profile")),
+            schema_version: CALIBRATION_PROFILE_SCHEMA_VERSION,
+            name: name.to_string(),
+            created_at: existing_profile
+                .map(|profile| profile.created_at)
+                .unwrap_or(now),
+            updated_at: now,
+            camera: input.camera.trim().to_string(),
+            light_source: input.light_source.trim().to_string(),
+            lens: input.lens.trim().to_string(),
+            calibration_level: input.calibration_level,
+            notes: input.notes.trim().to_string(),
+            references: input.references,
+        };
+        let mut reference_ids = HashSet::new();
+        for reference in &profile.references {
+            if reference.file_path.trim().is_empty()
+                || !reference_ids.insert(reference.reference_id.as_str())
+            {
+                return Err(
+                    "Calibration references must be unique and have a file path.".to_string(),
+                );
+            }
+        }
+        persistence::save_calibration_profile(&mut connection, &profile)
+            .map_err(|error| format!("Failed to save calibration profile: {error}"))?;
+        Ok(calibration_profile_view(profile))
+    })
+    .await
+    .map_err(|error| format!("Calibration profile worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn delete_calibration_profile(profile_id: String) -> Result<bool, String> {
+    tokio::task::spawn_blocking(move || {
+        let connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open calibration database: {error}"))?;
+        persistence::delete_calibration_profile(&connection, &profile_id)
+            .map_err(|error| format!("Failed to delete calibration profile: {error}"))
+    })
+    .await
+    .map_err(|error| format!("Calibration profile worker failed: {error}"))?
+}
+
+fn available_last_used_profile_id() -> Result<Option<String>, String> {
+    let connection = persistence::open_connection()
+        .map_err(|error| format!("Failed to open calibration database: {error}"))?;
+    let requested = persistence::get_last_used_calibration_profile(&connection)
+        .map_err(|error| format!("Failed to load last-used calibration profile: {error}"))?;
+    let Some(requested) = requested else {
+        return Ok(None);
+    };
+    let profile = persistence::load_calibration_profiles(&connection)
+        .map_err(|error| format!("Failed to load calibration profiles: {error}"))?
+        .into_iter()
+        .find(|profile| profile.profile_id == requested);
+    Ok(profile
+        .map(calibration_profile_view)
+        .filter(|view| view.availability == CalibrationProfileAvailability::Available)
+        .map(|view| view.profile.profile_id))
+}
+
 fn persist_roll_snapshot(rolls: &[Roll]) -> Result<(), String> {
     let mut connection = persistence::open_connection()
         .map_err(|error| format!("Failed to open roll database: {error}"))?;
@@ -7056,7 +7290,7 @@ fn remove_failed_roll_paths(
 
 #[tauri::command]
 pub async fn import_roll(
-    roll: Roll,
+    mut roll: Roll,
     paths: Vec<String>,
     state: State<'_, EngineState>,
     app_handle: tauri::AppHandle,
@@ -7070,8 +7304,16 @@ pub async fn import_roll(
             .iter_mut()
             .find(|existing| existing.roll_id == roll.roll_id)
         {
+            // Import metadata is not a Profile-selection action. Preserve the
+            // existing Roll binding even when an older client omits the field.
+            roll.calibration_profile_id = existing.calibration_profile_id.clone();
             *existing = roll;
         } else {
+            roll.calibration_profile_id = if is_loose_roll {
+                None
+            } else {
+                available_last_used_profile_id()?
+            };
             updated.push(roll);
         }
         let updated = persist_roll_snapshot_async(updated).await?;
@@ -7089,6 +7331,360 @@ pub async fn import_roll(
         app_handle,
     )
     .await
+}
+
+fn selected_roll_item_state(
+    state: &EngineState,
+    roll_id: &str,
+    image_id: Option<&str>,
+) -> Option<(PipelineState, bool)> {
+    let requested = image_id
+        .and_then(|id| state.items.get(id))
+        .and_then(|entry| {
+            let item = entry.value().read().ok()?;
+            (item.roll_id == roll_id).then(|| {
+                (
+                    item.pipeline_state.clone(),
+                    item.geom.calibration_points.is_some(),
+                )
+            })
+        });
+    requested.or_else(|| {
+        state.items.iter().find_map(|entry| {
+            let item = entry.value().read().ok()?;
+            (item.roll_id == roll_id).then(|| {
+                (
+                    item.pipeline_state.clone(),
+                    item.geom.calibration_points.is_some(),
+                )
+            })
+        })
+    })
+}
+
+fn roll_calibration_format(value: &str) -> RollCalibrationFormat {
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized == "135"
+        || normalized.starts_with("135 ")
+        || normalized == "35mm"
+        || normalized.starts_with("35 mm")
+    {
+        RollCalibrationFormat::Film135
+    } else if normalized == "120" || normalized.starts_with("120 ") || normalized == "medium format"
+    {
+        RollCalibrationFormat::Film120
+    } else if normalized == "loose" || normalized == "loose import" {
+        RollCalibrationFormat::Loose
+    } else {
+        RollCalibrationFormat::Other
+    }
+}
+
+fn build_roll_calibration_status(
+    roll: &Roll,
+    profiles: &[CalibrationProfileView],
+    selected_state: Option<(PipelineState, bool)>,
+) -> RollCalibrationStatus {
+    let format = roll_calibration_format(&roll.format);
+    let requested_profile_id = roll.calibration_profile_id.clone();
+    let requested_profile = requested_profile_id.as_deref().and_then(|profile_id| {
+        profiles
+            .iter()
+            .find(|view| view.profile.profile_id == profile_id)
+    });
+    let resolved_profile = requested_profile
+        .filter(|view| view.availability == CalibrationProfileAvailability::Available);
+    let fallback_to_smart_auto = requested_profile_id.is_some() && resolved_profile.is_none();
+    let (pipeline, frame_set) = selected_state
+        .map(|(pipeline, frame_set)| (Some(pipeline), frame_set))
+        .unwrap_or((None, false));
+    let legacy = pipeline
+        .as_ref()
+        .is_some_and(|pipeline| pipeline.contract == ProcessingContract::LegacyV1);
+    let tone = match pipeline
+        .as_ref()
+        .map(|pipeline| pipeline.render_mapping.mode)
+    {
+        Some(RenderMode::FullTone) => RollToneStatus::FullTone,
+        _ => RollToneStatus::Preserve,
+    };
+    let base = if roll.density_anchors.has_roll_base() {
+        RollBaseStatus::Sampled
+    } else {
+        RollBaseStatus::Estimated
+    };
+    let dmax = if roll.density_anchors.has_roll_full_exposure() {
+        RollDmaxStatus::FullExposure
+    } else {
+        RollDmaxStatus::Unknown
+    };
+    let calibration = if legacy {
+        RollCalibrationMode::Legacy
+    } else if resolved_profile
+        .is_some_and(|view| view.profile.calibration_level != CalibrationLevel::SmartAuto)
+    {
+        RollCalibrationMode::Configured
+    } else {
+        RollCalibrationMode::SmartAuto
+    };
+
+    let mut warnings = Vec::new();
+    if !frame_set {
+        warnings.push("film_frame_not_set".to_string());
+    }
+    if let Some(view) = requested_profile {
+        match view.availability {
+            CalibrationProfileAvailability::Unsupported => {
+                warnings.push("profile_unsupported_fallback".to_string())
+            }
+            CalibrationProfileAvailability::NeedsAttention => {
+                warnings.push("profile_needs_attention_fallback".to_string())
+            }
+            CalibrationProfileAvailability::Available => {}
+        }
+    } else if requested_profile_id.is_some() {
+        warnings.push("profile_missing_fallback".to_string());
+    }
+    if calibration == RollCalibrationMode::Configured {
+        warnings.push("profile_configured_not_measured".to_string());
+    }
+    if legacy {
+        warnings.push("legacy_contract_preserved".to_string());
+    }
+    match format {
+        RollCalibrationFormat::Film135 => match (
+            roll.density_anchors.has_roll_base(),
+            roll.density_anchors.has_roll_full_exposure(),
+        ) {
+            (false, false) => warnings.push("film135_references_missing".to_string()),
+            (false, true) => warnings.push("film_base_missing".to_string()),
+            (true, false) => warnings.push("full_exposure_missing".to_string()),
+            (true, true) => {}
+        },
+        RollCalibrationFormat::Film120 => match (
+            roll.density_anchors.has_roll_base(),
+            roll.density_anchors.has_roll_full_exposure(),
+        ) {
+            (false, false) => warnings.push("film120_external_reference_recommended".to_string()),
+            (false, true) => warnings.push("film120_base_missing".to_string()),
+            (true, false) => warnings.push("film120_dmax_unknown".to_string()),
+            (true, true) => {}
+        },
+        RollCalibrationFormat::Loose => warnings.push("loose_smart_auto".to_string()),
+        RollCalibrationFormat::Other => warnings.push("roll_format_unknown".to_string()),
+    }
+
+    RollCalibrationStatus {
+        roll_id: roll.roll_id.clone(),
+        format,
+        requested_profile_id,
+        resolved_profile_id: resolved_profile.map(|view| view.profile.profile_id.clone()),
+        profile_name: resolved_profile.map(|view| view.profile.name.clone()),
+        fallback_to_smart_auto,
+        frame: if frame_set {
+            RollFrameStatus::Set
+        } else {
+            RollFrameStatus::NotSet
+        },
+        base,
+        dmax,
+        calibration,
+        tone,
+        warnings,
+    }
+}
+
+#[tauri::command]
+pub async fn update_roll_calibration_profile(
+    roll_id: String,
+    profile_id: Option<String>,
+    state: State<'_, EngineState>,
+) -> Result<RollCalibrationStatus, String> {
+    let profile_id = profile_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let profiles = tokio::task::spawn_blocking(load_calibration_profile_views)
+        .await
+        .map_err(|error| format!("Calibration profile worker failed: {error}"))??;
+    if let Some(requested) = &profile_id {
+        if !profiles
+            .iter()
+            .any(|view| view.profile.profile_id == *requested)
+        {
+            return Err("Calibration profile no longer exists.".to_string());
+        }
+    }
+
+    let _mutation = state.roll_mutation.lock().await;
+    let mut updated_rolls = read_lock(&state.rolls).clone();
+    let roll = updated_rolls
+        .iter_mut()
+        .find(|roll| roll.roll_id == roll_id)
+        .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
+    if roll_calibration_format(&roll.format) == RollCalibrationFormat::Loose && profile_id.is_some()
+    {
+        return Err("Loose Import uses Smart Auto and cannot bind a Profile.".to_string());
+    }
+    roll.calibration_profile_id = profile_id.clone();
+    let updated_roll = roll.clone();
+    let persisted_rolls = updated_rolls.clone();
+    let persisted_profile_id = profile_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open calibration database: {error}"))?;
+        persistence::save_rolls_and_last_used_calibration_profile(
+            &mut connection,
+            &persisted_rolls,
+            persisted_profile_id.as_deref(),
+        )
+        .map_err(|error| format!("Failed to save Roll Profile selection: {error}"))?;
+        update_rolls_compatibility_mirror(&persisted_rolls);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|error| format!("Roll Profile worker failed: {error}"))??;
+    *write_lock(&state.rolls) = updated_rolls;
+    let selected_state = selected_roll_item_state(&state, &roll_id, None);
+    Ok(build_roll_calibration_status(
+        &updated_roll,
+        &profiles,
+        selected_state,
+    ))
+}
+
+#[tauri::command]
+pub async fn get_roll_calibration_status(
+    roll_id: String,
+    image_id: Option<String>,
+    state: State<'_, EngineState>,
+) -> Result<RollCalibrationStatus, String> {
+    let roll = read_lock(&state.rolls)
+        .iter()
+        .find(|roll| roll.roll_id == roll_id)
+        .cloned()
+        .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
+    let profiles = tokio::task::spawn_blocking(load_calibration_profile_views)
+        .await
+        .map_err(|error| format!("Calibration profile worker failed: {error}"))??;
+    let selected_state = selected_roll_item_state(&state, &roll_id, image_id.as_deref());
+    Ok(build_roll_calibration_status(
+        &roll,
+        &profiles,
+        selected_state,
+    ))
+}
+
+#[cfg(test)]
+mod calibration_profile_contract_tests {
+    use super::{build_roll_calibration_status, roll_calibration_format};
+    use crate::app_state::{
+        CalibrationConfigProfile, CalibrationLevel, CalibrationProfileAvailability,
+        CalibrationProfileView, DensityAnchors, PipelineState, Roll, RollBaseStatus,
+        RollCalibrationFormat, RollCalibrationMode, RollDmaxStatus,
+        CALIBRATION_PROFILE_SCHEMA_VERSION,
+    };
+
+    fn roll(format: &str, profile_id: Option<&str>) -> Roll {
+        Roll {
+            roll_id: "roll-a".to_string(),
+            date: String::new(),
+            format: format.to_string(),
+            film_stock: String::new(),
+            camera: String::new(),
+            image_paths: Vec::new(),
+            density_anchors: DensityAnchors::default(),
+            calibration_profile_id: profile_id.map(str::to_string),
+        }
+    }
+
+    fn profile(availability: CalibrationProfileAvailability) -> CalibrationProfileView {
+        CalibrationProfileView {
+            profile: CalibrationConfigProfile {
+                profile_id: "profile-a".to_string(),
+                schema_version: CALIBRATION_PROFILE_SCHEMA_VERSION,
+                name: "Profile A".to_string(),
+                created_at: 1,
+                updated_at: 1,
+                camera: String::new(),
+                light_source: String::new(),
+                lens: String::new(),
+                calibration_level: CalibrationLevel::Calibrated,
+                notes: String::new(),
+                references: Vec::new(),
+            },
+            availability,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn recognizes_135_and_120_subformats() {
+        assert_eq!(
+            roll_calibration_format("135 Half-frame"),
+            RollCalibrationFormat::Film135
+        );
+        assert_eq!(
+            roll_calibration_format("120 (6x7)"),
+            RollCalibrationFormat::Film120
+        );
+        assert_eq!(
+            roll_calibration_format("Loose"),
+            RollCalibrationFormat::Loose
+        );
+    }
+
+    #[test]
+    fn missing_profile_keeps_request_and_falls_back_to_smart_auto() {
+        let status = build_roll_calibration_status(
+            &roll("135", Some("missing-profile")),
+            &[],
+            Some((PipelineState::smart_auto(), true)),
+        );
+
+        assert_eq!(
+            status.requested_profile_id.as_deref(),
+            Some("missing-profile")
+        );
+        assert_eq!(status.resolved_profile_id, None);
+        assert!(status.fallback_to_smart_auto);
+        assert_eq!(status.calibration, RollCalibrationMode::SmartAuto);
+        assert!(status
+            .warnings
+            .iter()
+            .any(|warning| warning == "profile_missing_fallback"));
+    }
+
+    #[test]
+    fn available_profile_is_configured_but_does_not_claim_measured_density() {
+        let status = build_roll_calibration_status(
+            &roll("120 (6x6)", Some("profile-a")),
+            &[profile(CalibrationProfileAvailability::Available)],
+            Some((PipelineState::smart_auto(), true)),
+        );
+
+        assert_eq!(status.resolved_profile_id.as_deref(), Some("profile-a"));
+        assert!(!status.fallback_to_smart_auto);
+        assert_eq!(status.calibration, RollCalibrationMode::Configured);
+        assert_eq!(status.base, RollBaseStatus::Estimated);
+        assert_eq!(status.dmax, RollDmaxStatus::Unknown);
+        assert!(status
+            .warnings
+            .iter()
+            .any(|warning| warning == "profile_configured_not_measured"));
+    }
+
+    #[test]
+    fn unavailable_profile_falls_back_without_erasing_its_id() {
+        let status = build_roll_calibration_status(
+            &roll("135", Some("profile-a")),
+            &[profile(CalibrationProfileAvailability::NeedsAttention)],
+            Some((PipelineState::smart_auto(), true)),
+        );
+
+        assert_eq!(status.requested_profile_id.as_deref(), Some("profile-a"));
+        assert_eq!(status.resolved_profile_id, None);
+        assert!(status.fallback_to_smart_auto);
+    }
 }
 
 #[tauri::command]
@@ -8063,6 +8659,7 @@ fn migrate_legacy_loose_roll(
         camera: String::new(),
         image_paths: paths,
         density_anchors: Default::default(),
+        calibration_profile_id: None,
     });
     persistence::save_rolls(connection, rolls)
         .map_err(|error| format!("Failed to migrate legacy loose imports: {error}"))?;
@@ -9023,6 +9620,7 @@ mod import_contract_tests {
             camera: String::new(),
             image_paths: Vec::new(),
             density_anchors: anchors,
+            calibration_profile_id: None,
         }];
         assert_eq!(
             default_pipeline_state_for_import(true, "roll-a", &rolls).contract,
@@ -9641,6 +10239,7 @@ mod library_management_contract_tests {
             camera: "Test Camera".to_string(),
             image_paths: vec!["NEW.DNG".to_string()],
             density_anchors: Default::default(),
+            calibration_profile_id: None,
         };
 
         let activated = activate_library_roll(&state, &roll).unwrap();
@@ -9682,6 +10281,7 @@ mod library_management_contract_tests {
             camera: String::new(),
             image_paths: vec!["scan.tif".to_string()],
             density_anchors: Default::default(),
+            calibration_profile_id: None,
         };
 
         activate_library_roll(&state, &roll).unwrap();

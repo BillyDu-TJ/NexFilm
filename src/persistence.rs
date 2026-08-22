@@ -1,5 +1,6 @@
 use crate::app_state::{
-    BaseColor, GeometryState, PipelineState, ProcessingContract, Roll, TuningParams,
+    BaseColor, CalibrationConfigProfile, CalibrationLevel, CalibrationReference,
+    CalibrationReferenceKind, GeometryState, PipelineState, ProcessingContract, Roll, TuningParams,
 };
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
@@ -10,6 +11,7 @@ pub const DATABASE_PATH: &str = "nexfilm_user.db";
 pub const LEGACY_MATH_VERSION: i64 = 3;
 pub const MATH_VERSION: i64 = 4;
 pub const RAW_DECODE_VERSION: i64 = 8;
+pub const LAST_USED_CALIBRATION_PROFILE_KEY: &str = "last_used_calibration_profile_id";
 
 /// Development builds intentionally keep the database beside the repository so
 /// existing projects continue to open as before. Release builds use the normal
@@ -149,6 +151,40 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
         )",
         [],
     )?;
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS calibration_profiles (
+            profile_id TEXT PRIMARY KEY,
+            schema_version INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            camera TEXT NOT NULL DEFAULT '',
+            light_source TEXT NOT NULL DEFAULT '',
+            lens TEXT NOT NULL DEFAULT '',
+            calibration_level TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT ''
+        )",
+        [],
+    )?;
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS calibration_references (
+            reference_id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
+            reference_kind TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            file_name TEXT NOT NULL,
+            file_size INTEGER NOT NULL DEFAULT 0,
+            modified_at INTEGER,
+            added_at INTEGER NOT NULL,
+            FOREIGN KEY (profile_id) REFERENCES calibration_profiles(profile_id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS calibration_references_profile_idx
+         ON calibration_references(profile_id, added_at, reference_id)",
+        [],
+    )?;
 
     add_column_if_missing(connection, "embedded_thumb_base64", "TEXT")?;
     add_column_if_missing(connection, "rendered_thumb_base64", "TEXT")?;
@@ -161,6 +197,7 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
     add_column_if_missing(connection, "updated_at", "INTEGER NOT NULL DEFAULT 0")?;
     add_column_if_missing(connection, "pipeline_state", "TEXT NOT NULL DEFAULT '{}'")?;
     add_roll_column_if_missing(connection, "density_anchors", "TEXT NOT NULL DEFAULT '{}'")?;
+    add_roll_column_if_missing(connection, "calibration_profile_id", "TEXT")?;
     migrate_legacy_thumbnails(connection)?;
     migrate_raw_decode_settings(connection)?;
     migrate_density_contract(connection)?;
@@ -404,8 +441,8 @@ fn insert_roll(connection: &Connection, roll: &Roll, sort_order: usize) -> rusql
     connection.execute(
         "INSERT INTO rolls (
              roll_id, date, roll_format, film_stock, camera,
-             image_paths, density_anchors, sort_order, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+             image_paths, density_anchors, calibration_profile_id, sort_order, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
             roll.roll_id,
             roll.date,
@@ -414,6 +451,7 @@ fn insert_roll(connection: &Connection, roll: &Roll, sort_order: usize) -> rusql
             roll.camera,
             image_paths,
             density_anchors,
+            roll.calibration_profile_id,
             sort_order as i64,
             now_timestamp(),
         ],
@@ -463,7 +501,8 @@ pub fn save_rolls_and_pipeline_states(
 
 pub fn load_rolls(connection: &Connection) -> rusqlite::Result<Vec<Roll>> {
     let mut statement = connection.prepare(
-        "SELECT roll_id, date, roll_format, film_stock, camera, image_paths, density_anchors
+        "SELECT roll_id, date, roll_format, film_stock, camera, image_paths, density_anchors,
+                calibration_profile_id
          FROM rolls ORDER BY sort_order, roll_id",
     )?;
     let rows = statement.query_map([], |row| {
@@ -491,9 +530,221 @@ pub fn load_rolls(connection: &Connection) -> rusqlite::Result<Vec<Roll>> {
             camera: row.get(4)?,
             image_paths,
             density_anchors,
+            calibration_profile_id: row.get(7)?,
         })
     })?;
     rows.collect()
+}
+
+fn serialize_enum<T: serde::Serialize>(value: &T) -> rusqlite::Result<String> {
+    serde_json::to_string(value)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+}
+
+fn deserialize_enum<T: serde::de::DeserializeOwned>(
+    column: usize,
+    value: String,
+) -> rusqlite::Result<T> {
+    serde_json::from_str(&value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
+}
+
+fn insert_calibration_reference(
+    connection: &Connection,
+    profile_id: &str,
+    reference: &CalibrationReference,
+) -> rusqlite::Result<()> {
+    connection.execute(
+        "INSERT INTO calibration_references (
+             reference_id, profile_id, reference_kind, file_path, file_name,
+             file_size, modified_at, added_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            reference.reference_id,
+            profile_id,
+            serialize_enum(&reference.kind)?,
+            reference.file_path,
+            reference.file_name,
+            reference.file_size as i64,
+            reference.modified_at,
+            reference.added_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn save_calibration_profile(
+    connection: &mut Connection,
+    profile: &CalibrationConfigProfile,
+) -> rusqlite::Result<()> {
+    let transaction = connection.transaction()?;
+    transaction.execute(
+        "INSERT INTO calibration_profiles (
+             profile_id, schema_version, name, created_at, updated_at, camera,
+             light_source, lens, calibration_level, notes
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(profile_id) DO UPDATE SET
+             schema_version = excluded.schema_version,
+             name = excluded.name,
+             updated_at = excluded.updated_at,
+             camera = excluded.camera,
+             light_source = excluded.light_source,
+             lens = excluded.lens,
+             calibration_level = excluded.calibration_level,
+             notes = excluded.notes",
+        rusqlite::params![
+            profile.profile_id,
+            profile.schema_version as i64,
+            profile.name,
+            profile.created_at,
+            profile.updated_at,
+            profile.camera,
+            profile.light_source,
+            profile.lens,
+            serialize_enum(&profile.calibration_level)?,
+            profile.notes,
+        ],
+    )?;
+    transaction.execute(
+        "DELETE FROM calibration_references WHERE profile_id = ?1",
+        rusqlite::params![profile.profile_id],
+    )?;
+    for reference in &profile.references {
+        insert_calibration_reference(&transaction, &profile.profile_id, reference)?;
+    }
+    transaction.commit()
+}
+
+fn load_calibration_references(
+    connection: &Connection,
+    profile_id: &str,
+) -> rusqlite::Result<Vec<CalibrationReference>> {
+    let mut statement = connection.prepare(
+        "SELECT reference_id, reference_kind, file_path, file_name, file_size, modified_at, added_at
+         FROM calibration_references WHERE profile_id = ?1 ORDER BY added_at, reference_id",
+    )?;
+    let rows = statement.query_map(rusqlite::params![profile_id], |row| {
+        let kind = deserialize_enum::<CalibrationReferenceKind>(1, row.get(1)?)
+            .unwrap_or(CalibrationReferenceKind::Unknown);
+        let file_size: i64 = row.get(4)?;
+        Ok(CalibrationReference {
+            reference_id: row.get(0)?,
+            kind,
+            file_path: row.get(2)?,
+            file_name: row.get(3)?,
+            file_size: file_size.max(0) as u64,
+            modified_at: row.get(5)?,
+            added_at: row.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn load_calibration_profiles(
+    connection: &Connection,
+) -> rusqlite::Result<Vec<CalibrationConfigProfile>> {
+    let mut statement = connection.prepare(
+        "SELECT profile_id, schema_version, name, created_at, updated_at, camera,
+                light_source, lens, calibration_level, notes
+         FROM calibration_profiles ORDER BY updated_at DESC, name, profile_id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let schema_version: i64 = row.get(1)?;
+        let calibration_level = deserialize_enum::<CalibrationLevel>(8, row.get(8)?)
+            .unwrap_or(CalibrationLevel::SmartAuto);
+        let schema_version = if calibration_level == CalibrationLevel::SmartAuto {
+            // A literal Smart Auto row is valid. An invalid level is detected
+            // below from its serialized spelling so it can be isolated rather
+            // than failing the entire Profile library.
+            let raw_level: String = row.get(8)?;
+            if raw_level == "\"smart_auto\"" {
+                schema_version.max(0) as u32
+            } else if serde_json::from_str::<CalibrationLevel>(&raw_level).is_err() {
+                u32::MAX
+            } else {
+                schema_version.max(0) as u32
+            }
+        } else {
+            schema_version.max(0) as u32
+        };
+        Ok(CalibrationConfigProfile {
+            profile_id: row.get(0)?,
+            schema_version,
+            name: row.get(2)?,
+            created_at: row.get(3)?,
+            updated_at: row.get(4)?,
+            camera: row.get(5)?,
+            light_source: row.get(6)?,
+            lens: row.get(7)?,
+            calibration_level,
+            notes: row.get(9)?,
+            references: Vec::new(),
+        })
+    })?;
+    let mut profiles = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    for profile in &mut profiles {
+        profile.references = load_calibration_references(connection, &profile.profile_id)?;
+    }
+    Ok(profiles)
+}
+
+pub fn delete_calibration_profile(
+    connection: &Connection,
+    profile_id: &str,
+) -> rusqlite::Result<bool> {
+    let deleted = connection.execute(
+        "DELETE FROM calibration_profiles WHERE profile_id = ?1",
+        rusqlite::params![profile_id],
+    )? > 0;
+    if deleted {
+        connection.execute(
+            "UPDATE app_metadata SET value = '' WHERE key = ?1 AND value = ?2",
+            rusqlite::params![LAST_USED_CALIBRATION_PROFILE_KEY, profile_id],
+        )?;
+    }
+    Ok(deleted)
+}
+
+pub fn get_last_used_calibration_profile(
+    connection: &Connection,
+) -> rusqlite::Result<Option<String>> {
+    let value = connection
+        .query_row(
+            "SELECT value FROM app_metadata WHERE key = ?1",
+            rusqlite::params![LAST_USED_CALIBRATION_PROFILE_KEY],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(value.filter(|value| !value.is_empty()))
+}
+
+fn set_last_used_calibration_profile(
+    connection: &Connection,
+    profile_id: Option<&str>,
+) -> rusqlite::Result<()> {
+    connection.execute(
+        "INSERT INTO app_metadata (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![LAST_USED_CALIBRATION_PROFILE_KEY, profile_id.unwrap_or("")],
+    )?;
+    Ok(())
+}
+
+pub fn save_rolls_and_last_used_calibration_profile(
+    connection: &mut Connection,
+    rolls: &[Roll],
+    profile_id: Option<&str>,
+) -> rusqlite::Result<()> {
+    let transaction = connection.transaction()?;
+    replace_rolls(&transaction, rolls)?;
+    set_last_used_calibration_profile(&transaction, profile_id)?;
+    transaction.commit()
 }
 
 pub fn migrate_legacy_rolls_if_empty(
@@ -791,7 +1042,123 @@ mod tests {
             camera: "Test Camera".to_string(),
             image_paths: paths.iter().map(|path| path.to_string()).collect(),
             density_anchors: Default::default(),
+            calibration_profile_id: None,
         }
+    }
+
+    fn sample_calibration_profile(id: &str) -> CalibrationConfigProfile {
+        CalibrationConfigProfile {
+            profile_id: id.to_string(),
+            schema_version: crate::app_state::CALIBRATION_PROFILE_SCHEMA_VERSION,
+            name: "Fixed Copy Stand".to_string(),
+            created_at: 10,
+            updated_at: 20,
+            camera: "Test Camera".to_string(),
+            light_source: "Test Light".to_string(),
+            lens: "Test Lens".to_string(),
+            calibration_level: CalibrationLevel::Calibrated,
+            notes: "Reference set".to_string(),
+            references: vec![CalibrationReference {
+                reference_id: "ref-dark".to_string(),
+                kind: CalibrationReferenceKind::DarkFrame,
+                file_path: "dark.dng".to_string(),
+                file_name: "dark.dng".to_string(),
+                file_size: 1024,
+                modified_at: Some(15),
+                added_at: 12,
+            }],
+        }
+    }
+
+    #[test]
+    fn legacy_roll_schema_adds_a_nullable_profile_binding() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE rolls (
+                    roll_id TEXT PRIMARY KEY,
+                    date TEXT NOT NULL,
+                    roll_format TEXT NOT NULL,
+                    film_stock TEXT NOT NULL,
+                    camera TEXT NOT NULL,
+                    image_paths TEXT NOT NULL,
+                    density_anchors TEXT NOT NULL DEFAULT '{}',
+                    sort_order INTEGER NOT NULL,
+                    updated_at INTEGER NOT NULL DEFAULT 0
+                 );
+                 INSERT INTO rolls VALUES (
+                    'legacy-roll', '', '135', '', '', '[]', '{}', 0, 0
+                 );",
+            )
+            .unwrap();
+
+        init_schema(&connection).unwrap();
+
+        let rolls = load_rolls(&connection).unwrap();
+        assert_eq!(rolls.len(), 1);
+        assert_eq!(rolls[0].roll_id, "legacy-roll");
+        assert_eq!(rolls[0].calibration_profile_id, None);
+    }
+
+    #[test]
+    fn calibration_profile_and_references_round_trip() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let profile = sample_calibration_profile("profile-a");
+
+        save_calibration_profile(&mut connection, &profile).unwrap();
+
+        assert_eq!(
+            load_calibration_profiles(&connection).unwrap(),
+            vec![profile]
+        );
+    }
+
+    #[test]
+    fn roll_selection_and_last_used_are_saved_without_rebinding_older_rolls() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let mut first = sample_roll("roll-1", &["one.dng"]);
+        first.calibration_profile_id = Some("profile-a".to_string());
+        let mut ninth = sample_roll("roll-9", &["nine.dng"]);
+        ninth.calibration_profile_id = Some("profile-b".to_string());
+
+        save_rolls_and_last_used_calibration_profile(
+            &mut connection,
+            &[first.clone(), ninth.clone()],
+            Some("profile-b"),
+        )
+        .unwrap();
+
+        assert_eq!(load_rolls(&connection).unwrap(), vec![first, ninth]);
+        assert_eq!(
+            get_last_used_calibration_profile(&connection).unwrap(),
+            Some("profile-b".to_string())
+        );
+    }
+
+    #[test]
+    fn deleting_a_profile_keeps_historical_roll_binding_but_clears_the_default() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let profile = sample_calibration_profile("profile-a");
+        save_calibration_profile(&mut connection, &profile).unwrap();
+        let mut roll = sample_roll("roll-a", &["a.dng"]);
+        roll.calibration_profile_id = Some(profile.profile_id.clone());
+        save_rolls_and_last_used_calibration_profile(
+            &mut connection,
+            std::slice::from_ref(&roll),
+            Some(&profile.profile_id),
+        )
+        .unwrap();
+
+        assert!(delete_calibration_profile(&connection, &profile.profile_id).unwrap());
+
+        assert_eq!(load_rolls(&connection).unwrap(), vec![roll]);
+        assert_eq!(
+            get_last_used_calibration_profile(&connection).unwrap(),
+            None
+        );
     }
 
     #[test]
