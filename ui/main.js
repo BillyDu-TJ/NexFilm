@@ -75,9 +75,24 @@ const libraryEmpty = document.getElementById('library-empty');
 const btnSelectAll = document.getElementById('btn-select-all');
 const librarySelectionCount = document.getElementById('library-selection-count');
 const btnDeleteLibraryImages = document.getElementById('btn-delete-library-images');
+const btnCalibrateDensity = document.getElementById('btn-calibrate-density');
 const btnDeleteDevelopImage = document.getElementById('btn-delete-develop-image');
 const btnDeleteRollImages = document.getElementById('btn-delete-roll-images');
 const btnEditRoll = document.getElementById('btn-edit-roll');
+const densityCalibrationModal = document.getElementById('density-calibration-modal');
+const densityCalibrationContent = document.getElementById('density-calibration-content');
+const densityCalibrationPreview = document.getElementById('density-calibration-preview');
+const densityCalibrationImage = document.getElementById('density-calibration-image');
+const densityCalibrationHint = document.getElementById('density-calibration-hint');
+const densityBaseStatus = document.getElementById('density-base-status');
+const densityFullStatus = document.getElementById('density-full-status');
+const densityBaseMarker = document.getElementById('density-marker-base');
+const densityFullMarker = document.getElementById('density-marker-full');
+const btnSampleDensityBase = document.getElementById('btn-sample-density-base');
+const btnSampleDensityFull = document.getElementById('btn-sample-density-full');
+const btnConfirmDensityCalibration = document.getElementById('btn-confirm-density-calibration');
+const btnCancelDensityCalibration = document.getElementById('btn-cancel-density-calibration');
+const btnCloseDensityCalibration = document.getElementById('btn-close-density-calibration');
 
 // DOM: Develop View
 const filmstripContainer = document.getElementById('filmstrip-container');
@@ -244,6 +259,10 @@ let proxyWidth = 0;
 let proxyHeight = 0;
 let activeProxyIsFull = false;
 let hasProcessedActiveImage = false;
+// Roll density anchors are calibration metadata, not a request to display an
+// inverted image. Keep the visual processing state separate from that metadata
+// so a newly opened negative remains untouched until Auto Invert is clicked.
+let autoInvertAppliedActiveImage = false;
 
 let current_geom = NexFilmGeometry.normalizeGeometryState({});
 let isCropMode = false;
@@ -364,8 +383,15 @@ const liveThumbnailById = new Map();
 let selectedLibraryIds = new Set();
 let lastSelectedLibraryId = null;
 let lastSelectionScope = null;
+let isDensityReferenceSelectionMode = false;
+let densityCalibrationDraft = null;
+let activeDensitySampleKind = null;
 
 function updateImageSelection(targetId, event, orderedIds, scope) {
+    if (isDensityReferenceSelectionMode && scope === 'library') {
+        setSingleImageSelection(targetId, 'density-reference');
+        return;
+    }
     const sameScope = lastSelectionScope === scope;
     const result = updateRangeSelection({
         orderedIds,
@@ -594,6 +620,19 @@ function updateLibrarySelectionUI() {
     }
     
     btnDeleteLibraryImages.disabled = importInProgress || selectedTargets.length === 0;
+    const calibratableItems = allLibraryItems.filter(item => item.status !== 'importing' && !item.file_missing);
+    const selectedCalibrationItems = [...selectedLibraryIds]
+        .map(findKnownItem)
+        .filter(item => item && item.status !== 'importing' && !item.file_missing);
+    btnCalibrateDensity.textContent = i18nText(
+        isDensityReferenceSelectionMode ? 'calibration.confirmSelection' : 'calibration.action'
+    );
+    btnCalibrateDensity.disabled = importInProgress || (
+        isDensityReferenceSelectionMode
+            ? selectedCalibrationItems.length !== 1
+            : calibratableItems.length === 0
+    );
+    btnCalibrateDensity.classList.toggle('is-selecting', isDensityReferenceSelectionMode);
     btnDeleteRollImages.disabled = importInProgress || selectedTargets.length === 0;
     btnDeleteRollImages.textContent = selectedTargets.length > 0
         ? `${i18nText('actions.deleteSelected')} (${selectedTargets.length})`
@@ -629,10 +668,158 @@ function updateRollDeletionUI() {
 }
 
 btnSelectAll.addEventListener('click', () => {
+    if (isDensityReferenceSelectionMode) return;
     allLibraryItems.forEach(item => selectedLibraryIds.add(item.id));
     lastSelectedLibraryId = null;
     lastSelectionScope = 'library';
     updateLibrarySelectionUI();
+});
+
+function setDensityReferenceSelectionMode(enabled) {
+    isDensityReferenceSelectionMode = enabled;
+    selectedLibraryIds.clear();
+    lastSelectedLibraryId = null;
+    lastSelectionScope = enabled ? 'density-reference' : null;
+    viewLibrary.classList.toggle('density-reference-selection', enabled);
+    updateLibrarySelectionUI();
+}
+
+function densityReferenceStatus(anchor) {
+    return i18nText(anchor ? 'calibration.sampled' : 'calibration.notSampled');
+}
+
+function renderDensityCalibrationState() {
+    if (!densityCalibrationDraft) return;
+    densityBaseStatus.textContent = densityReferenceStatus(densityCalibrationDraft.base);
+    densityFullStatus.textContent = densityReferenceStatus(densityCalibrationDraft.full);
+    densityBaseStatus.classList.toggle('is-sampled', Boolean(densityCalibrationDraft.base));
+    densityFullStatus.classList.toggle('is-sampled', Boolean(densityCalibrationDraft.full));
+    btnSampleDensityBase.classList.toggle('is-active', activeDensitySampleKind === 'base');
+    btnSampleDensityFull.classList.toggle('is-active', activeDensitySampleKind === 'full');
+    densityCalibrationPreview.classList.toggle('is-sampling', Boolean(activeDensitySampleKind));
+    densityCalibrationHint.classList.toggle('hidden', !activeDensitySampleKind);
+    btnConfirmDensityCalibration.disabled = !densityCalibrationDraft.base && !densityCalibrationDraft.full;
+}
+
+function setDensitySampleMarker(kind, normalizedX, normalizedY) {
+    const marker = kind === 'base' ? densityBaseMarker : densityFullMarker;
+    const previewRect = densityCalibrationPreview.getBoundingClientRect();
+    const imageRect = densityCalibrationImage.getBoundingClientRect();
+    marker.style.left = `${imageRect.left - previewRect.left + normalizedX * imageRect.width}px`;
+    marker.style.top = `${imageRect.top - previewRect.top + normalizedY * imageRect.height}px`;
+    marker.classList.remove('hidden');
+}
+
+async function openDensityCalibration(item) {
+    const roll = allRolls.find(candidate => candidate.roll_id === item.roll_id);
+    const anchors = roll?.density_anchors || {};
+    densityCalibrationDraft = {
+        itemId: item.id,
+        rollId: item.roll_id,
+        base: anchors.d_min_base || null,
+        full: anchors.d_max_full_exposure || null,
+    };
+    activeDensitySampleKind = null;
+    densityBaseMarker.classList.add('hidden');
+    densityFullMarker.classList.add('hidden');
+    const embedded = item.embedded_thumbnail_base64 || await invoke('get_embedded_preview', { id: item.id });
+    densityCalibrationImage.src = embedded.startsWith('data:') ? embedded : `data:image/jpeg;base64,${embedded}`;
+    densityCalibrationModal.classList.add('is-open');
+    densityCalibrationModal.setAttribute('aria-hidden', 'false');
+    renderDensityCalibrationState();
+    requestAnimationFrame(() => densityCalibrationContent.focus());
+}
+
+function closeDensityCalibration() {
+    densityCalibrationModal.classList.remove('is-open');
+    densityCalibrationModal.setAttribute('aria-hidden', 'true');
+    activeDensitySampleKind = null;
+    densityCalibrationDraft = null;
+}
+
+btnCalibrateDensity.addEventListener('click', async () => {
+    if (!isDensityReferenceSelectionMode) {
+        setDensityReferenceSelectionMode(true);
+        return;
+    }
+    const item = findKnownItem([...selectedLibraryIds][0]);
+    if (!item) return;
+    isDensityReferenceSelectionMode = false;
+    viewLibrary.classList.remove('density-reference-selection');
+    updateLibrarySelectionUI();
+    try {
+        await openDensityCalibration(item);
+    } catch (error) {
+        showToast(i18nText('calibration.openFailed', { error }), 'error');
+    }
+});
+
+[btnSampleDensityBase, btnSampleDensityFull].forEach(button => {
+    button.addEventListener('click', () => {
+        activeDensitySampleKind = activeDensitySampleKind === button.dataset.kind ? null : button.dataset.kind;
+        renderDensityCalibrationState();
+    });
+});
+
+densityCalibrationImage.addEventListener('click', async event => {
+    if (!activeDensitySampleKind || !densityCalibrationDraft) return;
+    const kind = activeDensitySampleKind;
+    const rect = densityCalibrationImage.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+    const button = kind === 'base' ? btnSampleDensityBase : btnSampleDensityFull;
+    button.disabled = true;
+    const status = kind === 'base' ? densityBaseStatus : densityFullStatus;
+    status.textContent = i18nText('calibration.sampling');
+    try {
+        const anchor = await invoke('sample_roll_density_reference', {
+            id: densityCalibrationDraft.itemId, kind, x, y
+        });
+        densityCalibrationDraft[kind] = anchor;
+        setDensitySampleMarker(kind, x, y);
+        activeDensitySampleKind = null;
+    } catch (error) {
+        showToast(i18nText('calibration.sampleFailed', { error }), 'error');
+    } finally {
+        button.disabled = false;
+        renderDensityCalibrationState();
+    }
+});
+
+btnConfirmDensityCalibration.addEventListener('click', async () => {
+    if (!densityCalibrationDraft) return;
+    btnConfirmDensityCalibration.disabled = true;
+    try {
+        const anchors = await invoke('update_roll_density_anchors', {
+            rollId: densityCalibrationDraft.rollId,
+            base: densityCalibrationDraft.base,
+            fullExposure: densityCalibrationDraft.full,
+        });
+        const roll = allRolls.find(candidate => candidate.roll_id === densityCalibrationDraft.rollId);
+        if (roll) roll.density_anchors = anchors;
+        for (const [id, cached] of imageStates.entries()) {
+            if (findKnownItem(id)?.roll_id !== densityCalibrationDraft.rollId) continue;
+            cached.pipeline_state = cached.pipeline_state || {};
+            cached.pipeline_state.density_anchors = JSON.parse(JSON.stringify(anchors));
+            cached.pipeline_state.contract = anchors.d_min_base
+                ? (anchors.d_max_full_exposure ? 'roll_anchored_prophoto_v11' : 'roll_base_prophoto_v11')
+                : 'smart_auto_prophoto_v11';
+        }
+        closeDensityCalibration();
+        showToast(i18nText('calibration.saved'), 'success');
+    } catch (error) {
+        showToast(i18nText('calibration.saveFailed', { error }), 'error');
+        renderDensityCalibrationState();
+    }
+});
+
+btnCancelDensityCalibration.addEventListener('click', closeDensityCalibration);
+btnCloseDensityCalibration.addEventListener('click', closeDensityCalibration);
+densityCalibrationModal.addEventListener('click', event => {
+    if (event.target === densityCalibrationModal) closeDensityCalibration();
+});
+densityCalibrationModal.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeDensityCalibration();
 });
 
 // Routing
@@ -704,6 +891,7 @@ function resetWorkingLibrary() {
     activeId = null;
     activeProxyIsFull = false;
     hasProcessedActiveImage = false;
+    autoInvertAppliedActiveImage = false;
     proxyPixels = null;
     proxyWidth = 0;
     proxyHeight = 0;
@@ -1441,7 +1629,11 @@ function saveCurrentState() {
         sprocket_tolerance: currentSprocketTolerance,
         sprocket_feather: currentSprocketFeather
     };
-    imageStates.set(activeId, { params, geom: JSON.parse(JSON.stringify(current_geom)) });
+    imageStates.set(activeId, {
+        params,
+        geom: JSON.parse(JSON.stringify(current_geom)),
+        pipeline_state: JSON.parse(JSON.stringify(currentPipelineState)),
+    });
     return params;
 }
 
@@ -1501,6 +1693,7 @@ let u_temperature_loc;
 let u_tint_loc;
 let u_mode_loc;
 let u_invert_enabled_loc;
+let u_legacy_pipeline_loc;
 let u_geometry_uv_loc;
 let u_highlights_loc;
 let u_shadows_loc;
@@ -1526,6 +1719,25 @@ let u_baseline_pass_loc;
 
 let currentBaseDensity = [0, 0, 0];
 let proxyHasAnalyzedBase = false;
+let currentPipelineState = { contract: 'legacy_v1', density_anchors: {} };
+let currentPipelineContract = 'legacy_v1';
+
+function pipelineHasCompleteRollAnchors(state = currentPipelineState) {
+    const anchors = state?.density_anchors || {};
+    return anchors.d_min_base?.scope === 'roll'
+        && anchors.d_max_full_exposure?.scope === 'roll';
+}
+
+function pipelineRequiresFilmArea(state = currentPipelineState) {
+    return !pipelineHasCompleteRollAnchors(state);
+}
+
+function updatePipelineStatus() {}
+
+function updateAutoInvertAvailability() {
+    btnAutoColor.disabled = isCalibrationMode
+        || (pipelineRequiresFilmArea() && !current_geom?.calibration_points);
+}
 // Base analysis belongs to an image, not to the currently displayed buffer.
 // Keep it while a proxy is reloaded after Auto Invert.
 const proxyAnalyzedBaseIds = new Set();
@@ -1572,6 +1784,7 @@ function initWebGL() {
     uniform float u_tint;
     uniform int u_mode;
     uniform int u_invert_enabled;
+    uniform int u_legacy_pipeline;
     
     uniform float u_highlights;
     uniform float u_shadows;
@@ -1599,6 +1812,21 @@ function initWebGL() {
         0.0317, 0.8933, -0.0011,
         0.0091, 0.0521, 0.9712
     );
+
+    // Standard ROMM RGB (D50) to linear sRGB (D65), including Bradford
+    // chromatic adaptation. GLSL mat3 constructors are column-major.
+    const mat3 PROPHOTO_TO_LINEAR_SRGB = mat3(
+        2.034367530, -0.228826765, -0.008558454,
+       -0.727634698,  1.231753528, -0.153268253,
+       -0.306732842, -0.002926716,  1.161826647
+    );
+    const float PROPHOTO_TRANSPORT_MIN = -1.0;
+    const float PROPHOTO_TRANSPORT_MAX = 3.0;
+
+    vec3 decodeProPhotoTransport(vec3 encoded) {
+        return encoded * (PROPHOTO_TRANSPORT_MAX - PROPHOTO_TRANSPORT_MIN)
+            + PROPHOTO_TRANSPORT_MIN;
+    }
 
     float getLuma(vec3 c) {
         return dot(c, vec3(0.2126, 0.7152, 0.0722));
@@ -1702,12 +1930,19 @@ function initWebGL() {
             vec2 sprocket_source_uv = mapOrientedToSource(u_sprocket_uv);
             vec3 raw_color = vec3(texture(u_image, warped_uv).rgb) / 65535.0;
             vec3 raw_target = vec3(texture(u_image, sprocket_source_uv).rgb) / 65535.0;
+            if (u_legacy_pipeline == 0) {
+                raw_color = decodeProPhotoTransport(raw_color);
+                raw_target = decodeProPhotoTransport(raw_target);
+            }
             float luma_diff = abs(getLuma(raw_color) - getLuma(raw_target));
             mask = pow(1.0 - smoothstep(u_sprocket_tolerance, u_sprocket_tolerance + u_sprocket_feather + 0.0001, luma_diff), 3.0);
         }
 
         uvec4 texel = texture(u_image, warped_uv);
         vec3 raw_rgb = vec3(texel.rgb) / 65535.0;
+        if (u_legacy_pipeline == 0) {
+            raw_rgb = decodeProPhotoTransport(raw_rgb);
+        }
 
         // Develop staging view: keep the linear sensor output visibly
         // negative until the user explicitly confirms the film area and runs
@@ -1717,6 +1952,8 @@ function initWebGL() {
             vec3 staged = clamp(raw_rgb * exp2(u_exposure), 0.0, 1.0);
             if (u_mode != 0) {
                 staged = vec3(getLuma(staged));
+            } else if (u_legacy_pipeline == 0) {
+                staged = PROPHOTO_TO_LINEAR_SRGB * staged;
             }
             float safe_gamma = max(u_gamma, 1e-6);
             outColor = vec4(linearSrgbToDisplay(pow(staged, vec3(1.0 / safe_gamma))), 1.0);
@@ -1724,14 +1961,15 @@ function initWebGL() {
         }
         
         float epsilon = 1e-6;
-        float t_r = max(float(texel.r) / 65535.0, epsilon);
-        float t_g = max(float(texel.g) / 65535.0, epsilon);
-        float t_b = max(float(texel.b) / 65535.0, epsilon);
+        float t_r = max(raw_rgb.r, epsilon);
+        float t_g = max(raw_rgb.g, epsilon);
+        float t_b = max(raw_rgb.b, epsilon);
         
         vec3 density = vec3(-log(t_r) / log(10.0), -log(t_g) / log(10.0), -log(t_b) / log(10.0));
         
         if (u_mode == 0) {
-            density = STATUS_M * (density - u_base_density);
+            vec3 delta = density - u_base_density;
+            density = u_legacy_pipeline != 0 ? STATUS_M * delta : delta;
         } else {
             density = density - u_base_density;
             float gray = getLuma(density);
@@ -1757,11 +1995,15 @@ function initWebGL() {
         vec3 safe_range = mix(vec3(1.0), density_range, valid_range);
         vec3 norm = mix(vec3(0.0), (density - effective_dmin) / safe_range, valid_range);
         
+        vec3 positive_linear = clamp(norm, 0.0, 1.0);
+        if (u_mode == 0 && u_legacy_pipeline == 0) {
+            positive_linear = PROPHOTO_TO_LINEAR_SRGB * positive_linear;
+        }
         float safe_gamma = max(u_gamma, 1e-6);
         vec3 final_rgb = vec3(
-            pow(clamp(norm.r, 0.0, 1.0), 1.0 / safe_gamma),
-            pow(clamp(norm.g, 0.0, 1.0), 1.0 / safe_gamma),
-            pow(clamp(norm.b, 0.0, 1.0), 1.0 / safe_gamma)
+            pow(clamp(positive_linear.r, 0.0, 1.0), 1.0 / safe_gamma),
+            pow(clamp(positive_linear.g, 0.0, 1.0), 1.0 / safe_gamma),
+            pow(clamp(positive_linear.b, 0.0, 1.0), 1.0 / safe_gamma)
         );
         final_rgb = applyPostGammaAdjustments(final_rgb);
         if (u_has_lut == 1) {
@@ -1867,6 +2109,7 @@ function initWebGL() {
     u_tint_loc = gl.getUniformLocation(shaderProgram, "u_tint");
     u_mode_loc = gl.getUniformLocation(shaderProgram, "u_mode");
     u_invert_enabled_loc = gl.getUniformLocation(shaderProgram, "u_invert_enabled");
+    u_legacy_pipeline_loc = gl.getUniformLocation(shaderProgram, "u_legacy_pipeline");
     u_geometry_uv_loc = gl.getUniformLocation(shaderProgram, "u_geometry_uv");
     u_highlights_loc = gl.getUniformLocation(shaderProgram, "u_highlights");
     u_shadows_loc = gl.getUniformLocation(shaderProgram, "u_shadows");
@@ -2491,6 +2734,7 @@ function renderWebGL() {
     gl.uniform1f(u_tint_loc, parseFloat(sliders.tint.el.value));
     gl.uniform1i(u_mode_loc, mode);
     gl.uniform1i(u_invert_enabled_loc, proxyHasAnalyzedBase ? 1 : 0);
+    gl.uniform1i(u_legacy_pipeline_loc, currentPipelineContract === 'legacy_v1' ? 1 : 0);
     
     gl.uniform1f(u_highlights_loc, parseFloat(sliders.highlights.el.value));
     gl.uniform1f(u_shadows_loc, parseFloat(sliders.shadows.el.value));
@@ -2739,8 +2983,9 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         currentBaseDensity[1] = dataView.getFloat32(12, true);
         currentBaseDensity[2] = dataView.getFloat32(16, true);
         
+        const flags = dataView.byteLength >= 28 ? dataView.getUint32(24, true) : 0;
         const baseAnalyzed = dataView.byteLength >= 28
-            ? dataView.getUint32(24, true) === 1
+            ? (flags & 1) !== 0
             : proxyAnalyzedBaseIds.has(requestedId);
         const pixels = new Uint16Array(arrayBuffer, byteOffset + (dataView.byteLength >= 28 ? 28 : 24), width * height * 4);
         const nextTexture = gl.createTexture();
@@ -2776,7 +3021,7 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         // A proxy is a clear, linear negative until Auto Invert explicitly
         // computes and persists the film-base estimate. Do not clear the
         // per-image state when the same proxy is reloaded after analysis.
-        proxyHasAnalyzedBase = baseAnalyzed;
+        proxyHasAnalyzedBase = baseAnalyzed && autoInvertAppliedActiveImage;
         readyProxyIds.add(requestedId);
         if (Math.max(width, height) <= PREVIEW_PROXY_BASE_LONG_EDGE) {
             addToCache(requestedId, arrayBuffer, requestedGeom);
@@ -3137,7 +3382,7 @@ function enableUI() {
     btnAutoArea.disabled = false;
     setBatchApplyDisabled(false);
     btnResetCrop.disabled = false;
-    btnAutoColor.disabled = !current_geom?.calibration_points || isCalibrationMode;
+    updateAutoInvertAvailability();
     btnSprocketPicker.disabled = false;
     btnResetColor.disabled = false;
     btnRotateLeft.disabled = false;
@@ -3428,6 +3673,7 @@ function createLibraryItemElement(item, orderedIds) {
     };
     libDiv.ondblclick = event => {
         clearNativeSelection(event);
+        if (isDensityReferenceSelectionMode) return;
         if (item.status === 'importing') return;
         setSingleImageSelection(item.id, 'library');
         currentImportSessionPaths = null;
@@ -4158,8 +4404,12 @@ async function selectImage(id) {
             }
             imageStates.set(id, {
                 params: state.params,
-                geom: state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0, calibration_points: null, calibration_confirmed: false }
+                geom: state.geom || { crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0.0, flip_h: false, flip_v: false, rotate_90_count: 0, calibration_points: null, calibration_confirmed: false },
+                pipeline_state: state.pipeline_state || { contract: 'legacy_v1', density_anchors: {} },
             });
+            currentPipelineState = state.pipeline_state || { contract: 'legacy_v1', density_anchors: {} };
+            currentPipelineContract = currentPipelineState.contract || 'legacy_v1';
+            updatePipelineStatus();
             if (state.base_analyzed) {
                 proxyAnalyzedBaseIds.add(id);
             } else {
@@ -4196,16 +4446,17 @@ async function selectImage(id) {
         btnDeleteDevelopImage.disabled = getImageDeletionTargets([activeId]).length === 0;
         activeProxyIsFull = false;
         hasProcessedActiveImage = false;
+        autoInvertAppliedActiveImage = hasRenderedPreview;
         proxyPixels = null;
         proxyWidth = 0;
         proxyHeight = 0;
         readyProxyIds.delete(id);
-        enableUI();
         current_geom = NexFilmGeometry.normalizeGeometryState(state.geom);
         const needsFilmAreaConfirmation = NexFilmGeometry.needsFilmAreaConfirmation(current_geom);
         if (needsFilmAreaConfirmation) {
             current_geom.calibration_points = null;
         }
+        enableUI();
         calibrationRevision++;
         setBatchApplyDisabled(false);
         updateUIFromParams(state.params, current_geom);
@@ -4259,13 +4510,13 @@ async function selectImage(id) {
 
         canvasWrapper.style.display = 'block';
         updateCanvasTransform();
-        if (needsFilmAreaConfirmation) {
+        if (needsFilmAreaConfirmation && pipelineRequiresFilmArea()) {
             // First-time setup starts at the full frame. Border detection is
             // only requested by the explicit Auto Area action.
             enterCalibrationMode();
             btnAutoColor.disabled = true;
         } else {
-            btnAutoColor.disabled = !current_geom.calibration_points;
+            updateAutoInvertAvailability();
         }
 
 
@@ -4374,7 +4625,7 @@ const doImportRoll = async () => {
         if (paths.length > 0) {
             initImportToast(paths.length);
             const roll_id = `roll_${Date.now()}_${Math.floor(Math.random()*1000)}`;
-            const roll = { roll_id, date, format, film_stock: film, camera, image_paths: paths };
+            const roll = { roll_id, date, format, film_stock: film, camera, image_paths: paths, density_anchors: {} };
             await beginWorkingImport(roll_id, paths);
             const tempItems = paths.map((p, idx) => ({
                 id: 'temp_import_' + Date.now() + '_' + idx,
@@ -5382,11 +5633,17 @@ btnFlipV.addEventListener('click', () => {
 
 async function doAutoColor(targetId = activeId, generation = developOperationRevision) {
     if (!targetId || targetId !== activeId || !gl) return false;
-    // Auto Color reads canonical 16-bit capture data on the Rust side. This
-    // keeps the histogram independent of the current display controls and
-    // avoids quantizing density through an 8-bit sRGB framebuffer.
+    // The backend selects the capture representation from the versioned
+    // contract: legacy u16 or the v1.1 ProPhoto f32 scientific proxy.
     const limits = await invoke('analyze_proxy_density_limits', { id: targetId });
     if (targetId !== activeId || generation !== developOperationRevision) return false;
+    if (limits.pipeline_state) {
+        currentPipelineState = limits.pipeline_state;
+        currentPipelineContract = currentPipelineState.contract || 'legacy_v1';
+        const cached = imageStates.get(targetId);
+        if (cached) cached.pipeline_state = JSON.parse(JSON.stringify(currentPipelineState));
+        updatePipelineStatus();
+    }
     const batchState = {
         dmin: limits.d_min,
         dmax: limits.d_max,
@@ -5668,6 +5925,7 @@ async function runAutoInvert() {
         await invoke('analyze_proxy_base_color', { id: targetId, generation });
         if (generation !== developOperationRevision || targetId !== activeId) return;
         proxyAnalyzedBaseIds.add(targetId);
+        autoInvertAppliedActiveImage = true;
         proxyHasAnalyzedBase = true;
         const pendingDisplay = proxyDisplayPromises.get(targetId);
         if (pendingDisplay) await pendingDisplay;
@@ -5694,7 +5952,7 @@ async function runAutoInvert() {
         }
     } finally {
         if (targetId === activeId && generation === developOperationRevision) {
-            btnAutoColor.disabled = !current_geom?.calibration_points || isCalibrationMode;
+            updateAutoInvertAvailability();
         }
     }
 }
@@ -6010,19 +6268,33 @@ btnResetColor.addEventListener('click', async () => {
     btnResetColor.disabled = true;
     btnAutoColor.disabled = true;
     try {
-        await invoke('reset_image_development', { id: targetId, params, generation });
+        const resetPipeline = await invoke('reset_image_development', { id: targetId, params, generation });
         if (targetId !== activeId || generation !== developOperationRevision) return;
-        proxyAnalyzedBaseIds.delete(targetId);
-        proxyHasAnalyzedBase = false;
-        currentBaseDensity = [0, 0, 0];
+        currentPipelineState = resetPipeline || { contract: 'legacy_v1', density_anchors: {} };
+        currentPipelineContract = currentPipelineState.contract || 'legacy_v1';
+        const retainedBase = currentPipelineState.density_anchors?.d_min_base?.density;
+        autoInvertAppliedActiveImage = false;
+        if (retainedBase) {
+            proxyAnalyzedBaseIds.add(targetId);
+            // Reset keeps calibration metadata, but the image must remain a
+            // negative until the user explicitly runs Auto Invert again.
+            proxyHasAnalyzedBase = false;
+            currentBaseDensity = retainedBase.slice();
+        } else {
+            proxyAnalyzedBaseIds.delete(targetId);
+            proxyHasAnalyzedBase = false;
+            currentBaseDensity = [0, 0, 0];
+        }
+        updatePipelineStatus();
         const item = findKnownItem(targetId);
         if (item) {
-            item.base_analyzed = false;
+            item.base_analyzed = Boolean(retainedBase);
             publishThumbnailUpdate(targetId, item.embedded_thumbnail_base64, { rendered: false });
         }
         imageStates.set(targetId, {
             params,
             geom: JSON.parse(JSON.stringify(current_geom)),
+            pipeline_state: JSON.parse(JSON.stringify(currentPipelineState)),
         });
         requestRender();
         showToast("Color adjustments and inversion reset.", "success");
@@ -6033,7 +6305,7 @@ btnResetColor.addEventListener('click', async () => {
     } finally {
         if (targetId === activeId && generation === developOperationRevision) {
             btnResetColor.disabled = false;
-            btnAutoColor.disabled = !current_geom?.calibration_points || isCalibrationMode;
+            updateAutoInvertAvailability();
         }
     }
 });
@@ -7409,6 +7681,7 @@ if (i18n) {
     i18n.onChange(() => {
         i18n.apply();
         updateLibrarySelectionUI();
+        renderDensityCalibrationState();
         updateExportDialogState();
         if (typeof renderLibraryAndFilmstrip === 'function') renderLibraryAndFilmstrip(true);
     });

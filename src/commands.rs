@@ -1,5 +1,8 @@
 use crate::app_state::{
-    BaseColor, EngineState, FilmItem, FilmMode, FilmstripItem, GeometryState, Roll, TuningParams,
+    BaseColor, ContentRange, ContentRangeScope, DensityAnchor, DensityAnchorConfidence,
+    DensityAnchorScope, DensityAnchorSource, DensityAnchors, EngineState, FilmItem, FilmMode,
+    FilmstripItem, GeometryState, PipelineState, ProcessingContract, RenderMode, Roll,
+    TuningParams,
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
 use crate::color_science::{
@@ -12,7 +15,7 @@ use crate::core_math::{
     apply_post_gamma_adjustments_with_luma, density_luma, neutral_density_bounds,
     normalize_density_channel, shader_homography, sprocket_white_mask, DENSITY_LUMA_COEFFICIENTS,
 };
-use crate::persistence::{self, MATH_VERSION, RAW_DECODE_VERSION};
+use crate::persistence::{self, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
 use serde::Serialize;
 
@@ -46,6 +49,10 @@ const FALLBACK_THUMB: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADU
 const IMPORT_PREVIEW_LONG_EDGE: u32 = 1024;
 const PROXY_LONG_EDGE: f32 = 2560.0;
 const MAX_PREVIEW_PROXY_LONG_EDGE: u32 = 4096;
+// The WebGL proxy is a compact transport cache, not the scientific working buffer.
+// Preserve a useful signed ProPhoto range instead of clipping it to display RGB.
+const PROPHOTO_TRANSPORT_MIN: f32 = -1.0;
+const PROPHOTO_TRANSPORT_MAX: f32 = 3.0;
 
 fn claim_development_generation(
     state: &EngineState,
@@ -1673,6 +1680,44 @@ fn build_response_buffer_from_proxy(
     )
 }
 
+fn build_response_buffer_from_proxy_with_state(
+    proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+    base_color: &BaseColor,
+    pipeline_state: &PipelineState,
+    is_full_proxy: bool,
+) -> Vec<u8> {
+    let (width, height) = proxy.dimensions();
+    let base_density = pipeline_base_density(pipeline_state, base_color);
+    let base_analyzed = pipeline_has_base(pipeline_state, base_color);
+    let flags = u32::from(base_analyzed)
+        | if pipeline_state.contract == ProcessingContract::LegacyV1 {
+            0
+        } else {
+            2
+        };
+    let mut out = vec![0u8; (width * height * 8) as usize + 28];
+    out[0..4].copy_from_slice(&width.to_le_bytes());
+    out[4..8].copy_from_slice(&height.to_le_bytes());
+    for channel in 0..3 {
+        let start = 8 + channel * 4;
+        out[start..start + 4].copy_from_slice(&base_density[channel].to_le_bytes());
+    }
+    out[20..24].copy_from_slice(&u32::from(is_full_proxy).to_le_bytes());
+    out[24..28].copy_from_slice(&flags.to_le_bytes());
+    proxy
+        .as_raw()
+        .par_chunks_exact(3)
+        .zip(out[28..].par_chunks_exact_mut(8))
+        .for_each(|(pixel, target)| {
+            for channel in 0..3 {
+                let start = channel * 2;
+                target[start..start + 2].copy_from_slice(&pixel[channel].to_le_bytes());
+            }
+            target[6..8].copy_from_slice(&u16::MAX.to_le_bytes());
+        });
+    out
+}
+
 fn lock_mutex<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -1743,36 +1788,276 @@ fn compute_auto_base(proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> BaseColor {
     }
 }
 
+fn compute_auto_base_f32(proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>) -> [f32; 3] {
+    let mut values = [Vec::new(), Vec::new(), Vec::new()];
+    for pixel in proxy.as_raw().chunks_exact(3) {
+        for channel in 0..3 {
+            let value = pixel[channel].max(1e-6);
+            if value.is_finite() {
+                values[channel].push(value);
+            }
+        }
+    }
+    values.map(|mut channel| {
+        if channel.is_empty() {
+            return 0.0;
+        }
+        let index = ((channel.len() as f32 * 0.99).ceil() as usize)
+            .saturating_sub(1)
+            .min(channel.len() - 1);
+        channel.select_nth_unstable_by(index, |left, right| left.total_cmp(right));
+        -channel[index].log10()
+    })
+}
+
+fn density_anchor_from_f32(density: [f32; 3]) -> DensityAnchor {
+    DensityAnchor {
+        density,
+        source: DensityAnchorSource::EstimatedFromContent,
+        scope: DensityAnchorScope::Frame,
+        confidence: DensityAnchorConfidence::Estimated,
+        reference_id: None,
+    }
+}
+
+fn base_color_from_density(density: [f32; 3]) -> BaseColor {
+    let rgb = density.map(|value| (10.0_f32.powf(-value).clamp(0.0, 1.0) * 65535.0).round() as u16);
+    BaseColor {
+        base_r: rgb[0],
+        base_g: rgb[1],
+        base_b: rgb[2],
+    }
+}
+
+fn scientific_to_transport_proxy(
+    scientific: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    let mut transport =
+        ImageBuffer::<Rgb<u16>, Vec<u16>>::new(scientific.width(), scientific.height());
+    let span = PROPHOTO_TRANSPORT_MAX - PROPHOTO_TRANSPORT_MIN;
+    transport
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(scientific.as_raw().par_chunks_exact(3))
+        .for_each(|(target, source)| {
+            for channel in 0..3 {
+                let encoded = (source[channel] - PROPHOTO_TRANSPORT_MIN) / span;
+                target[channel] = (encoded.clamp(0.0, 1.0) * 65535.0).round() as u16;
+            }
+        });
+    transport
+}
+
+fn linear_srgb_u16_to_prophoto_f32(
+    source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+    let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
+    let mut converted = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(source.width(), source.height());
+    converted
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(source.as_raw().par_chunks_exact(3))
+        .for_each(|(target, pixel)| {
+            target.copy_from_slice(&apply_linear_matrix(
+                [
+                    pixel[0] as f32 / 65535.0,
+                    pixel[1] as f32 / 65535.0,
+                    pixel[2] as f32 / 65535.0,
+                ],
+                matrix,
+            ));
+        });
+    converted
+}
+
+fn compute_content_limits_f32(
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    geom: &GeometryState,
+    base_density: [f32; 3],
+) -> Result<AutoColorLimits, String> {
+    const SAMPLE_EDGE: u32 = 512;
+    let (source_width, source_height) = proxy.dimensions();
+    let longest = source_width.max(source_height).max(1);
+    let sample_width = ((source_width as f64 / longest as f64) * SAMPLE_EDGE as f64)
+        .round()
+        .max(2.0) as u32;
+    let sample_height = ((source_height as f64 / longest as f64) * SAMPLE_EDGE as f64)
+        .round()
+        .max(2.0) as u32;
+    let points =
+        geom.calibration_points
+            .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+    let min_x = points
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::INFINITY, f32::min);
+    let max_x = points
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::INFINITY, f32::min);
+    let max_y = points
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let homography = shader_homography(points);
+    let collect = |inside_calibration_only: bool| {
+        let mut samples = Vec::new();
+        for y in 0..sample_height {
+            for x in 0..sample_width {
+                let base_uv = [
+                    x as f32 / (sample_width - 1) as f32,
+                    y as f32 / (sample_height - 1) as f32,
+                ];
+                let crop_uv = [
+                    geom.crop_rect.x + base_uv[0] * geom.crop_rect.width,
+                    geom.crop_rect.y + base_uv[1] * geom.crop_rect.height,
+                ];
+                if inside_calibration_only
+                    && (crop_uv[0] < min_x
+                        || crop_uv[0] > max_x
+                        || crop_uv[1] < min_y
+                        || crop_uv[1] > max_y)
+                {
+                    continue;
+                }
+                let Some(perspective_uv) = apply_perspective_uv(
+                    crop_uv,
+                    geom.perspective_vertical,
+                    geom.perspective_horizontal,
+                    geom.perspective_aspect,
+                    geom.perspective_scale,
+                ) else {
+                    continue;
+                };
+                let Some(oriented_uv) = apply_homography(&homography, perspective_uv) else {
+                    continue;
+                };
+                let Some(oriented_uv) = apply_lens_distortion_uv(oriented_uv, geom.lens_distortion)
+                else {
+                    continue;
+                };
+                let source_uv =
+                    map_oriented_uv_to_source(oriented_uv, source_width, source_height, geom);
+                let Some(raw) = sample_rgb32_nearest(proxy, source_uv) else {
+                    continue;
+                };
+                let density = raw.map(|value| -value.max(1e-6).log10());
+                let density = [
+                    density[0] - base_density[0],
+                    density[1] - base_density[1],
+                    density[2] - base_density[2],
+                ];
+                if density.iter().all(|value| value.is_finite()) {
+                    samples.push(density);
+                }
+            }
+        }
+        samples
+    };
+
+    let mut samples = collect(true);
+    if samples.len() < 64 {
+        samples = collect(false);
+    }
+    if samples.len() < 64 {
+        return Err("The selected film area contains too little image data.".to_string());
+    }
+    let (low, high) = co_sited_density_extremes(samples)
+        .ok_or_else(|| "The selected film area has no usable density range.".to_string())?;
+    Ok(AutoColorLimits {
+        d_min: low,
+        d_max: high,
+        pipeline_state: None,
+    })
+}
+
+fn pipeline_base_density(state: &PipelineState, base_color: &BaseColor) -> [f32; 3] {
+    state
+        .density_anchors
+        .d_min_base
+        .as_ref()
+        .map(|anchor| anchor.density)
+        .unwrap_or_else(|| {
+            [base_color.base_r, base_color.base_g, base_color.base_b]
+                .map(|value| -(value as f32 / 65535.0).max(1e-6).log10())
+        })
+}
+
+fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
+    if state.contract == ProcessingContract::LegacyV1 {
+        *base_color != BaseColor::default()
+    } else {
+        state.density_anchors.d_min_base.is_some()
+    }
+}
+
+fn apply_roll_density_anchor_limits(
+    limits: &mut AutoColorLimits,
+    anchors: &DensityAnchors,
+    base_density: [f32; 3],
+) {
+    if anchors.has_roll_base() {
+        // Net density is measured relative to the sampled film base. The
+        // Film Area estimate may describe content, but it must not move D-Min.
+        limits.d_min = [0.0; 3];
+    }
+    if let Some(full_exposure) = anchors
+        .d_max_full_exposure
+        .as_ref()
+        .filter(|anchor| anchor.scope == DensityAnchorScope::Roll)
+    {
+        // Likewise a sampled leader fixes D-Max while the missing endpoint,
+        // if any, remains an estimate derived from Film Area.
+        limits.d_max = [
+            full_exposure.density[0] - base_density[0],
+            full_exposure.density[1] - base_density[1],
+            full_exposure.density[2] - base_density[2],
+        ];
+    }
+}
+
 fn compute_pristine_proxy(
     proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+    scientific_proxy: Option<&ImageBuffer<Rgb<f32>, Vec<f32>>>,
     base_color: &BaseColor,
+    pipeline_state: &PipelineState,
     mode: FilmMode,
 ) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
-    let pipeline = FilmPipeline::new(
-        [base_color.base_r, base_color.base_g, base_color.base_b],
-        [0.0, 0.0, 0.0],
-        mode,
-    );
+    let pipeline = FilmPipeline::from_state(pipeline_state, base_color, [0.0, 0.0, 0.0], mode);
     let (width, height) = proxy.dimensions();
     let mut pristine = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(width, height);
 
-    let raw_pixels: &[u16] = proxy.as_raw().as_slice();
     let out_pixels: &mut [f32] = pristine.as_mut();
 
-    raw_pixels
-        .par_chunks(3)
-        .zip(out_pixels.par_chunks_mut(3))
-        .for_each(|(in_px, out_px)| {
-            let linear_rgb = [
-                (in_px[0] as f32) / 65535.0,
-                (in_px[1] as f32) / 65535.0,
-                (in_px[2] as f32) / 65535.0,
-            ];
-            let true_density = pipeline.compute_true_density(&linear_rgb);
-            out_px[0] = true_density[0];
-            out_px[1] = true_density[1];
-            out_px[2] = true_density[2];
-        });
+    if let Some(scientific) =
+        scientific_proxy.filter(|image| image.dimensions() == proxy.dimensions())
+    {
+        scientific
+            .as_raw()
+            .par_chunks_exact(3)
+            .zip(out_pixels.par_chunks_exact_mut(3))
+            .for_each(|(in_px, out_px)| {
+                out_px.copy_from_slice(
+                    &pipeline.compute_true_density(&[in_px[0], in_px[1], in_px[2]]),
+                );
+            });
+    } else {
+        proxy
+            .as_raw()
+            .par_chunks_exact(3)
+            .zip(out_pixels.par_chunks_exact_mut(3))
+            .for_each(|(in_px, out_px)| {
+                out_px.copy_from_slice(&pipeline.compute_true_density(&[
+                    in_px[0] as f32 / 65535.0,
+                    in_px[1] as f32 / 65535.0,
+                    in_px[2] as f32 / 65535.0,
+                ]));
+            });
+    }
 
     pristine
 }
@@ -1781,6 +2066,8 @@ fn compute_pristine_proxy(
 pub struct AutoColorLimits {
     pub d_min: [f32; 3],
     pub d_max: [f32; 3],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pipeline_state: Option<PipelineState>,
 }
 
 #[inline]
@@ -2046,7 +2333,11 @@ fn compute_auto_color_limits(
             d_max[channel] = high as f32 / 65535.0 * 4.0 - 1.0;
         }
     }
-    Ok(AutoColorLimits { d_min, d_max })
+    Ok(AutoColorLimits {
+        d_min,
+        d_max,
+        pipeline_state: None,
+    })
 }
 
 #[tauri::command]
@@ -2281,6 +2572,42 @@ fn rgb16_image_from_bytes(
     Ok(image_buffer)
 }
 
+fn rgb32_pixels_from_bytes(
+    width: u32,
+    height: u32,
+    colors: usize,
+    bits: u16,
+    bytes: &[u8],
+) -> Result<(u32, u32, Vec<f32>), String> {
+    if colors < 3 || bits != 16 {
+        return Err(format!(
+            "Unexpected LibRaw output: {colors} channels at {bits} bits"
+        ));
+    }
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| "LibRaw image dimensions overflowed".to_string())?;
+    let required_bytes = pixel_count
+        .checked_mul(colors)
+        .and_then(|samples| samples.checked_mul(std::mem::size_of::<u16>()))
+        .ok_or_else(|| "LibRaw image buffer size overflowed".to_string())?;
+    if bytes.len() < required_bytes {
+        return Err("LibRaw returned a truncated image buffer".to_string());
+    }
+    let mut pixels = vec![0.0f32; pixel_count * 3];
+    pixels
+        .par_chunks_exact_mut(3)
+        .enumerate()
+        .for_each(|(index, pixel)| {
+            let source = index * colors * std::mem::size_of::<u16>();
+            for (channel, value) in pixel.iter_mut().enumerate() {
+                let offset = source + channel * std::mem::size_of::<u16>();
+                *value = u16::from_ne_bytes([bytes[offset], bytes[offset + 1]]) as f32 / 65535.0;
+            }
+        });
+    Ok((width, height, pixels))
+}
+
 fn raw_decode_failure_hint(path: &str) -> Option<&'static str> {
     let extension = std::path::Path::new(path)
         .extension()
@@ -2415,6 +2742,237 @@ fn decode_image_buffer(
     Ok(converted)
 }
 
+/// Decode the v1.1 scientific proxy without applying the legacy display-gamut
+/// compression or quantizing the camera matrix result before density math.
+/// Direct/scanner inputs reuse the existing linear decoder, while RAW inputs
+/// keep the matrix result in f32 and convert it directly to ProPhoto RGB.
+fn decode_scientific_image_buffer(
+    path: &str,
+    mode: DecodeMode,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    if !is_raw_extension(path) {
+        let source = decode_image_buffer(path, mode)?;
+        let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
+        let mut converted = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(source.width(), source.height());
+        converted
+            .as_mut()
+            .par_chunks_exact_mut(3)
+            .zip(source.as_raw().par_chunks_exact(3))
+            .for_each(|(target, pixel)| {
+                let rgb = apply_linear_matrix(
+                    [
+                        pixel[0] as f32 / 65535.0,
+                        pixel[1] as f32 / 65535.0,
+                        pixel[2] as f32 / 65535.0,
+                    ],
+                    matrix,
+                );
+                target.copy_from_slice(&rgb);
+            });
+        return Ok(converted);
+    }
+
+    let options = crate::raw_backend::DecodeOptions {
+        half_size: mode == DecodeMode::DevelopProxy,
+        demosaic_quality: 3,
+        output_bps: 16,
+        no_auto_bright: true,
+        output_color: 0,
+        linear_gamma: true,
+        use_camera_wb: true,
+    };
+    let decoded = crate::raw_backend::extract_camera_rgb_with_options(path, &options)
+        .map_err(|error| libraw_decode_error_message(path, error))?;
+    let (width, height, camera_pixels) = rgb32_pixels_from_bytes(
+        decoded.width as u32,
+        decoded.height as u32,
+        decoded.colors as usize,
+        decoded.bits,
+        &decoded.data,
+    )?;
+    let srgb_to_prophoto = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
+    let mut converted = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(width, height, camera_pixels)
+        .ok_or_else(|| "Failed to allocate scientific RAW image".to_string())?;
+    converted
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .for_each(|pixel| {
+            let camera = [pixel[0], pixel[1], pixel[2]];
+            let srgb = apply_linear_matrix(camera, decoded.camera_to_srgb);
+            pixel.copy_from_slice(&apply_linear_matrix(srgb, srgb_to_prophoto));
+        });
+    Ok(converted)
+}
+
+fn reference_density_extreme(
+    image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    source: DensityAnchorSource,
+) -> Result<[f32; 3], String> {
+    const MAX_REFERENCE_SAMPLES: usize = 1_000_000;
+    let pixel_count = image.as_raw().len() / 3;
+    if pixel_count == 0 {
+        return Err("The reference image contains no pixels.".to_string());
+    }
+    let stride = (pixel_count / MAX_REFERENCE_SAMPLES).max(1);
+    let sample_capacity = pixel_count.div_ceil(stride);
+    let mut densities = [
+        Vec::with_capacity(sample_capacity),
+        Vec::with_capacity(sample_capacity),
+        Vec::with_capacity(sample_capacity),
+    ];
+    for pixel in image.as_raw().chunks_exact(3).step_by(stride) {
+        for channel in 0..3 {
+            let transmission = pixel[channel];
+            if transmission.is_finite() {
+                densities[channel].push(-transmission.max(1e-6).log10());
+            }
+        }
+    }
+    let mut result = [0.0; 3];
+    for channel in 0..3 {
+        if densities[channel].is_empty() {
+            return Err(format!(
+                "The reference image has no finite samples in channel {channel}."
+            ));
+        }
+        densities[channel].sort_unstable_by(|left, right| left.total_cmp(right));
+        let index = match source {
+            // Clear film base is the high-transmission / low-density tail.
+            DensityAnchorSource::SampledFilmBase => {
+                ((densities[channel].len() as f32 * 0.01).ceil() as usize)
+                    .saturating_sub(1)
+                    .min(densities[channel].len() - 1)
+            }
+            // Full exposure is the low-transmission / high-density tail.
+            DensityAnchorSource::SampledFullExposure => ((densities[channel].len() as f32 * 0.99)
+                .ceil() as usize)
+                .saturating_sub(1)
+                .min(densities[channel].len() - 1),
+            _ => densities[channel].len() / 2,
+        };
+        result[channel] = densities[channel][index];
+    }
+    Ok(result)
+}
+
+fn sampled_roll_anchor(path: &str, source: DensityAnchorSource) -> Result<DensityAnchor, String> {
+    let image = decode_scientific_image_buffer(path, DecodeMode::DevelopProxy)?;
+    Ok(DensityAnchor {
+        density: reference_density_extreme(&image, source)?,
+        source,
+        scope: DensityAnchorScope::Roll,
+        confidence: DensityAnchorConfidence::UserSampled,
+        reference_id: Some(path.to_string()),
+    })
+}
+
+#[tauri::command]
+pub async fn analyze_roll_density_references(
+    base_path: Option<String>,
+    full_exposure_path: Option<String>,
+) -> Result<crate::app_state::DensityAnchors, String> {
+    if base_path.is_none() && full_exposure_path.is_none() {
+        return Ok(Default::default());
+    }
+    let base_path = base_path.ok_or_else(|| {
+        "A film-base reference is required before adding a full-exposure reference.".to_string()
+    })?;
+    tokio::task::spawn_blocking(move || {
+        let base = sampled_roll_anchor(&base_path, DensityAnchorSource::SampledFilmBase)?;
+        let full_exposure = full_exposure_path
+            .as_deref()
+            .map(|path| sampled_roll_anchor(path, DensityAnchorSource::SampledFullExposure))
+            .transpose()?;
+        if let Some(full) = full_exposure.as_ref() {
+            if (0..3).any(|channel| full.density[channel] <= base.density[channel] + 1e-4) {
+                return Err(
+                    "The full-exposure reference must be denser than the film-base reference in every channel."
+                        .to_string(),
+                );
+            }
+        }
+        Ok(crate::app_state::DensityAnchors {
+            d_min_base: Some(base),
+            d_max_full_exposure: full_exposure,
+        })
+    })
+    .await
+    .map_err(|error| format!("Reference analysis worker failed: {error}"))?
+}
+
+fn averaged_reference_density(
+    image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    normalized_x: f32,
+    normalized_y: f32,
+) -> Result<[f32; 3], String> {
+    if !normalized_x.is_finite() || !normalized_y.is_finite() {
+        return Err("The sample position is invalid.".to_string());
+    }
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        return Err("The reference image contains no pixels.".to_string());
+    }
+    let center_x = (normalized_x.clamp(0.0, 1.0) * width.saturating_sub(1) as f32).round() as i32;
+    let center_y = (normalized_y.clamp(0.0, 1.0) * height.saturating_sub(1) as f32).round() as i32;
+    // A roughly 3% window contains enough pixels to average film grain while
+    // remaining local on both thumbnails and full-resolution scans.
+    let radius = ((width.min(height) as f32 * 0.015).round() as i32).clamp(6, 48);
+    let mut channels = [Vec::new(), Vec::new(), Vec::new()];
+    for y in (center_y - radius).max(0)..=(center_y + radius).min(height as i32 - 1) {
+        for x in (center_x - radius).max(0)..=(center_x + radius).min(width as i32 - 1) {
+            let pixel = image.get_pixel(x as u32, y as u32).0;
+            for channel in 0..3 {
+                if pixel[channel].is_finite() && pixel[channel] > 0.0 {
+                    channels[channel].push(-pixel[channel].max(1e-6).log10());
+                }
+            }
+        }
+    }
+    let mut result = [0.0; 3];
+    for channel in 0..3 {
+        if channels[channel].len() < 16 {
+            return Err("The selected area contains too few usable pixels.".to_string());
+        }
+        channels[channel].sort_unstable_by(|left, right| left.total_cmp(right));
+        let trim = (channels[channel].len() / 10).max(1);
+        let kept = &channels[channel][trim..channels[channel].len() - trim];
+        result[channel] = kept.iter().sum::<f32>() / kept.len() as f32;
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn sample_roll_density_reference(
+    id: String,
+    kind: String,
+    x: f32,
+    y: f32,
+    state: State<'_, EngineState>,
+) -> Result<DensityAnchor, String> {
+    let (path, roll_id) = {
+        let item = state.items.get(&id).ok_or("Image ID not found")?;
+        let item = read_lock(item.value());
+        (item.file_path.clone(), item.roll_id.clone())
+    };
+    let source = match kind.as_str() {
+        "base" => DensityAnchorSource::SampledFilmBase,
+        "full" => DensityAnchorSource::SampledFullExposure,
+        _ => return Err("Unknown density reference kind.".to_string()),
+    };
+    tokio::task::spawn_blocking(move || {
+        let image = decode_scientific_image_buffer(&path, DecodeMode::DevelopProxy)?;
+        Ok(DensityAnchor {
+            density: averaged_reference_density(&image, x, y)?,
+            source,
+            scope: DensityAnchorScope::Roll,
+            confidence: DensityAnchorConfidence::UserSampled,
+            reference_id: Some(format!("{roll_id}:{path}")),
+        })
+    })
+    .await
+    .map_err(|error| format!("Density sampling worker failed: {error}"))?
+}
+
 fn decode_export_source(path: &str) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
     // Use the same direct source decoder as Develop for large scanner files.
     // This keeps preview/export colors aligned and avoids LibRaw's additional
@@ -2444,14 +3002,16 @@ fn persist_import_batch(
             .map_err(|error| format!("Failed to serialize geometry state: {error}"))?;
         let base_color_str = serde_json::to_string(&item.base_color)
             .map_err(|error| format!("Failed to serialize base color: {error}"))?;
+        let pipeline_state_str = serde_json::to_string(&item.pipeline_state)
+            .map_err(|error| format!("Failed to serialize pipeline state: {error}"))?;
         transaction
             .execute(
                 "INSERT INTO image_states (
                      roll_id, file_path, thumbnail_base64, embedded_thumb_base64,
-                     rendered_thumb_base64, params, geom, base_color,
+                     rendered_thumb_base64, params, geom, base_color, pipeline_state,
                      math_version, raw_decode_version, updated_at
                  )
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
                  ON CONFLICT(roll_id, file_path) DO UPDATE SET
                  thumbnail_base64=excluded.thumbnail_base64,
                  embedded_thumb_base64=excluded.embedded_thumb_base64,
@@ -2459,6 +3019,7 @@ fn persist_import_batch(
                  params=excluded.params,
                  geom=excluded.geom,
                  base_color=excluded.base_color,
+                 pipeline_state=excluded.pipeline_state,
                  math_version=excluded.math_version,
                  raw_decode_version=excluded.raw_decode_version,
                  updated_at=excluded.updated_at",
@@ -2471,7 +3032,8 @@ fn persist_import_batch(
                     params_str,
                     geom_str,
                     base_color_str,
-                    MATH_VERSION,
+                    pipeline_state_str,
+                    persistence::math_version_for_contract(item.pipeline_state.contract),
                     RAW_DECODE_VERSION,
                     persistence::now_timestamp(),
                 ],
@@ -2483,6 +3045,23 @@ fn persist_import_batch(
     transaction
         .commit()
         .map_err(|error| format!("Failed to commit imported images: {error}"))
+}
+
+fn default_pipeline_state_for_import(
+    loose: bool,
+    target_roll: &str,
+    rolls: &[Roll],
+) -> PipelineState {
+    if loose {
+        // Loose Import has no capture, film-stock, or roll-reference metadata.
+        // The lowest v1.1 contract guarantees output without reintroducing Status M.
+        return PipelineState::smart_auto();
+    }
+    rolls
+        .iter()
+        .find(|roll| roll.roll_id == target_roll)
+        .map(|roll| PipelineState::from_roll_anchors(roll.density_anchors.clone()))
+        .unwrap_or_else(PipelineState::smart_auto)
 }
 
 #[tauri::command]
@@ -2505,6 +3084,10 @@ pub async fn import_images(
         .unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
     let loose = is_loose.unwrap_or(false);
     let in_lib = in_library.unwrap_or(true);
+    let default_pipeline_state = {
+        let rolls = read_lock(&state.rolls);
+        default_pipeline_state_for_import(loose, &target_roll, &rolls)
+    };
     let historical = is_historical.unwrap_or(false);
     if historical {
         return Err(
@@ -2815,6 +3398,7 @@ pub async fn import_images(
                 TuningParams,
                 crate::app_state::GeometryState,
                 BaseColor,
+                PipelineState,
             ),
         > = {
             let mut cache = std::collections::HashMap::new();
@@ -2824,7 +3408,7 @@ pub async fn import_images(
                     "SELECT file_path,
                             COALESCE(embedded_thumb_base64, thumbnail_base64),
                             rendered_thumb_base64,
-                            params, geom, base_color
+                            params, geom, base_color, pipeline_state
                      FROM image_states WHERE roll_id = ?1",
                 ) {
                     if let Ok(rows) =
@@ -2836,20 +3420,36 @@ pub async fn import_images(
                                 row.get::<_, String>(3)?,
                                 row.get::<_, String>(4)?,
                                 row.get::<_, String>(5)?,
+                                row.get::<_, String>(6)?,
                             ))
                         })
                     {
                         for row in rows.flatten() {
-                            let (fp, embedded_thumb, rendered_thumb, params_str, geom_str, bc_str) =
-                                row;
-                            if let (Ok(params), Ok(geom), Ok(bc)) = (
+                            let (
+                                fp,
+                                embedded_thumb,
+                                rendered_thumb,
+                                params_str,
+                                geom_str,
+                                bc_str,
+                                pipeline_state_str,
+                            ) = row;
+                            if let (Ok(params), Ok(geom), Ok(bc), Ok(pipeline_state)) = (
                                 serde_json::from_str(&params_str),
                                 serde_json::from_str(&geom_str),
                                 serde_json::from_str(&bc_str),
+                                serde_json::from_str(&pipeline_state_str),
                             ) {
                                 cache.insert(
                                     fp.replace("\\", "/").to_lowercase(),
-                                    (embedded_thumb, rendered_thumb, params, geom, bc),
+                                    (
+                                        embedded_thumb,
+                                        rendered_thumb,
+                                        params,
+                                        geom,
+                                        bc,
+                                        pipeline_state,
+                                    ),
                                 );
                             }
                         }
@@ -2865,8 +3465,14 @@ pub async fn import_images(
         let process_path: Arc<dyn Fn(&String) -> Result<FilmItem, String> + Send + Sync> =
             Arc::new(move |path: &String| -> Result<FilmItem, String> {
                 // ── Fast path: hit the DB cache (no libraw decoding needed) ──
-                if let Some((embedded_thumb, rendered_thumb, params, geom, base_color)) =
-                    db_cache.get(&path.replace("\\", "/").to_lowercase())
+                if let Some((
+                    embedded_thumb,
+                    rendered_thumb,
+                    params,
+                    geom,
+                    base_color,
+                    pipeline_state,
+                )) = db_cache.get(&path.replace("\\", "/").to_lowercase())
                 {
                     let id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
                     std::fs::File::open(path)
@@ -2879,8 +3485,10 @@ pub async fn import_images(
                         rendered_thumbnail_base64: rendered_thumb.clone(),
                         original_proxy: None,
                         proxy_image: None,
+                        scientific_proxy: None,
                         pristine_proxy: None,
                         base_color: base_color.clone(),
+                        pipeline_state: pipeline_state.clone(),
                         params: params.clone(),
                         geom: normalize_persisted_geometry_for_rendered_image(
                             geom.clone(),
@@ -2907,8 +3515,10 @@ pub async fn import_images(
                     rendered_thumbnail_base64: None,
                     original_proxy: None,
                     proxy_image: None,
+                    scientific_proxy: None,
                     pristine_proxy: None,
                     base_color: BaseColor::default(),
+                    pipeline_state: default_pipeline_state.clone(),
                     params,
                     geom,
                     is_loose: loose,
@@ -2995,7 +3605,7 @@ fn filmstrip_item(item: &FilmItem) -> FilmstripItem {
         embedded_thumbnail_base64: item.embedded_thumbnail_base64.clone(),
         rendered_thumbnail_base64: item.rendered_thumbnail_base64.clone(),
         thumbnail_kind: item.thumbnail_kind().to_string(),
-        base_analyzed: item.base_color != BaseColor::default(),
+        base_analyzed: pipeline_has_base(&item.pipeline_state, &item.base_color),
         state_available: true,
         file_missing,
     }
@@ -3576,8 +4186,10 @@ mod history_contract_tests {
                 rendered_thumbnail_base64: rendered_thumbnail.map(str::to_string),
                 original_proxy: None,
                 proxy_image: None,
+                scientific_proxy: None,
                 pristine_proxy: None,
                 base_color: BaseColor::default(),
+                pipeline_state: PipelineState::default(),
                 params: TuningParams::default(),
                 geom: GeometryState::default(),
                 is_loose: false,
@@ -3596,6 +4208,7 @@ mod history_contract_tests {
             film_stock: String::new(),
             camera: String::new(),
             image_paths: vec!["first.dng".into(), "second.dng".into(), "third.dng".into()],
+            density_anchors: Default::default(),
         };
         insert_history_item(&state, "first", "roll-a", "first.dng", None);
         insert_history_item(
@@ -3636,6 +4249,7 @@ mod history_contract_tests {
                 film_stock: String::new(),
                 camera: String::new(),
                 image_paths: vec!["A\\First.DNG".into(), "A\\Second.DNG".into()],
+                density_anchors: Default::default(),
             },
             Roll {
                 roll_id: "roll-b".into(),
@@ -3644,6 +4258,7 @@ mod history_contract_tests {
                 film_stock: String::new(),
                 camera: String::new(),
                 image_paths: vec!["A\\First.DNG".into()],
+                density_anchors: Default::default(),
             },
         ];
 
@@ -3704,6 +4319,7 @@ pub struct ActiveImageState {
     pub params: TuningParams,
     pub geom: crate::app_state::GeometryState,
     pub base_analyzed: bool,
+    pub pipeline_state: PipelineState,
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -3729,6 +4345,7 @@ fn evict_proxy_if_needed(state: &EngineState) {
                 let mut item = write_lock(&item_arc);
                 item.original_proxy = None;
                 item.proxy_image = None;
+                item.scientific_proxy = None;
                 item.pristine_proxy = None;
             }
         }
@@ -3780,7 +4397,7 @@ pub async fn switch_active_image(
     .await
     .map_err(|error| format!("State-loading worker failed: {error}"))??;
 
-    let (_, params, geom, base_color) = persisted;
+    let (_, params, geom, base_color, pipeline_state) = persisted;
     ensure_current_development_generation(&epoch, generation)?;
     let mut item = item_arc.write().map_err(|error| error.to_string())?;
     ensure_current_development_generation(&epoch, generation)?;
@@ -3790,12 +4407,14 @@ pub async fn switch_active_image(
     item.params = params;
     item.geom = geom;
     item.base_color = base_color;
+    item.pipeline_state = pipeline_state;
 
     *state.active_id.write().map_err(|e| e.to_string())? = Some(id.clone());
     Ok(ActiveImageState {
         params: item.params.clone(),
         geom: item.geom.clone(),
-        base_analyzed: item.base_color != BaseColor::default(),
+        base_analyzed: pipeline_has_base(&item.pipeline_state, &item.base_color),
+        pipeline_state: item.pipeline_state.clone(),
     })
 }
 
@@ -3807,7 +4426,7 @@ pub async fn prepare_proxy(
 ) -> Result<u32, String> {
     let target_long_edge = preview_proxy_target_long_edge(target_long_edge);
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
-    let (file_path, current_long_edge) = {
+    let (file_path, current_long_edge, contract) = {
         let item = read_lock(&item_arc);
         if std::fs::File::open(&item.file_path).is_err() {
             return Err("FILE_MISSING".into());
@@ -3817,7 +4436,11 @@ pub async fn prepare_proxy(
             .as_ref()
             .map(|image| image.width().max(image.height()))
             .unwrap_or(0);
-        (item.file_path.clone(), current_long_edge)
+        (
+            item.file_path.clone(),
+            current_long_edge,
+            item.pipeline_state.contract,
+        )
     };
 
     if current_long_edge >= target_long_edge {
@@ -3825,47 +4448,56 @@ pub async fn prepare_proxy(
         return Ok(current_long_edge);
     }
 
-    let loaded = tokio::task::spawn_blocking(move || -> Result<_, String> {
+    let (loaded, scientific_proxy) = tokio::task::spawn_blocking(move || -> Result<_, String> {
+        let decode_mode = preview_proxy_decode_mode(target_long_edge);
+        if contract != ProcessingContract::LegacyV1 {
+            let mut scientific = if is_dng_extension(&file_path) {
+                let linear = decode_reduced_dng_for_working_space(&file_path, target_long_edge)
+                    .or_else(|_| decode_image_buffer(&file_path, decode_mode))?;
+                linear_srgb_u16_to_prophoto_f32(&linear)
+            } else if is_tiff_extension(&file_path) || is_scanner_fff_tiff(&file_path) {
+                let linear = decode_reduced_tiff_for_working_space(&file_path, target_long_edge)
+                    .or_else(|_| decode_image_buffer(&file_path, decode_mode))?;
+                linear_srgb_u16_to_prophoto_f32(&linear)
+            } else {
+                decode_scientific_image_buffer(&file_path, decode_mode)?
+            };
+            let (width, height) = scientific.dimensions();
+            let ratio = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
+            if ratio < 0.999 {
+                scientific = image::imageops::resize(
+                    &scientific,
+                    (width as f32 * ratio).max(1.0) as u32,
+                    (height as f32 * ratio).max(1.0) as u32,
+                    FilterType::Lanczos3,
+                );
+            }
+            let transport = scientific_to_transport_proxy(&scientific);
+            return Ok((transport, Some(scientific)));
+        }
+
         let img_buffer = if is_dng_extension(&file_path) {
-            decode_reduced_dng_for_working_space(&file_path, target_long_edge).or_else(
-                |stream_error| {
-                    if std::fs::metadata(&file_path)
-                        .is_ok_and(|metadata| metadata.len() > 512 * 1024 * 1024)
-                    {
-                        return Err(format!(
-                            "Large LinearRaw DNG cannot use the bounded-memory decoder: {stream_error}"
-                        ));
-                    }
-                    let decode_mode = preview_proxy_decode_mode(target_long_edge);
-                    decode_image_buffer(&file_path, decode_mode)
-                },
-            )?
+            decode_reduced_dng_for_working_space(&file_path, target_long_edge)
+                .or_else(|_| decode_image_buffer(&file_path, decode_mode))?
         } else if is_tiff_extension(&file_path) || is_scanner_fff_tiff(&file_path) {
             decode_reduced_tiff_for_working_space(&file_path, target_long_edge)
-                .or_else(|stream_error| {
-                    if std::fs::metadata(&file_path)
-                        .is_ok_and(|metadata| metadata.len() > 128 * 1024 * 1024)
-                    {
-                        return Err(format!(
-                            "Large TIFF cannot use the bounded-memory decoder: {stream_error}"
-                        ));
-                    }
-                    let decode_mode = preview_proxy_decode_mode(target_long_edge);
-                    decode_image_buffer(&file_path, decode_mode)
-                })?
+                .or_else(|_| decode_image_buffer(&file_path, decode_mode))?
         } else {
-            let decode_mode = preview_proxy_decode_mode(target_long_edge);
             decode_image_buffer(&file_path, decode_mode)?
         };
         let (width, height) = img_buffer.dimensions();
-        let ratio_proxy = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
-        let proxy_width = (width as f32 * ratio_proxy).max(1.0) as u32;
-        let proxy_height = (height as f32 * ratio_proxy).max(1.0) as u32;
-        Ok(if ratio_proxy < 0.999 {
-            image::imageops::resize(&img_buffer, proxy_width, proxy_height, FilterType::Lanczos3)
+        let ratio = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
+        let display = if ratio < 0.999 {
+            image::imageops::resize(
+                &img_buffer,
+                (width as f32 * ratio).max(1.0) as u32,
+                (height as f32 * ratio).max(1.0) as u32,
+                FilterType::Lanczos3,
+            )
         } else {
             img_buffer
-        })
+        };
+        Ok((display, None))
     })
     .await
     .map_err(|e| e.to_string())??;
@@ -3873,8 +4505,8 @@ pub async fn prepare_proxy(
     let loaded_long_edge = loaded.width().max(loaded.height());
     let retained_long_edge = {
         let mut item = write_lock(&item_arc);
-        // The Develop proxy is always unmodified linear-sRGB capture data.
-        // Geometry, inversion, and tone operations belong to the renderer.
+        // Legacy keeps linear-sRGB u16. v1.1 keeps ProPhoto f32 for scientific
+        // work and a separate u16 ProPhoto transport texture for the GPU.
         let retained_long_edge = item
             .proxy_image
             .as_ref()
@@ -3883,6 +4515,7 @@ pub async fn prepare_proxy(
         if loaded_long_edge > retained_long_edge {
             item.original_proxy = None;
             item.proxy_image = Some(loaded);
+            item.scientific_proxy = scientific_proxy;
             item.pristine_proxy = None;
             loaded_long_edge
         } else {
@@ -3904,25 +4537,45 @@ pub async fn analyze_proxy_base_color(
 
     tokio::task::spawn_blocking(move || {
         ensure_current_development_generation(&epoch, generation)?;
-        let base_color = {
+        let (base_color, pipeline_state) = {
             let item = read_lock(&item_arc);
-            if item.base_color != BaseColor::default() {
+            if pipeline_has_base(&item.pipeline_state, &item.base_color) {
                 return Ok(());
             }
-            let proxy = item
-                .proxy_image
-                .as_ref()
-                .ok_or_else(|| "PROXY_NOT_READY".to_string())?;
-            compute_auto_base(proxy)
+            if item.pipeline_state.contract == ProcessingContract::LegacyV1 {
+                let proxy = item
+                    .proxy_image
+                    .as_ref()
+                    .ok_or_else(|| "PROXY_NOT_READY".to_string())?;
+                (compute_auto_base(proxy), item.pipeline_state.clone())
+            } else {
+                let scientific = item
+                    .scientific_proxy
+                    .as_ref()
+                    .ok_or_else(|| "PROXY_NOT_READY".to_string())?;
+                let density = if item.pipeline_state.density_anchors.has_roll_full_exposure() {
+                    // A sampled leader fixes D-max. Its missing base endpoint
+                    // must be inferred from the confirmed Film Area, not from
+                    // unrelated border and sprocket pixels in the full scan.
+                    compute_content_limits_f32(scientific, &item.geom, [0.0; 3])?.d_min
+                } else {
+                    compute_auto_base_f32(scientific)
+                };
+                let mut state = item.pipeline_state.clone();
+                state.density_anchors.d_min_base = Some(density_anchor_from_f32(density));
+                state.contract = state.density_anchors.prophoto_contract();
+                (base_color_from_density(density), state)
+            }
         };
 
         let mut item = write_lock(&item_arc);
         ensure_current_development_generation(&epoch, generation)?;
-        if item.base_color != BaseColor::default() {
+        if pipeline_has_base(&item.pipeline_state, &item.base_color) {
             return Ok(());
         }
-        persist_base_color(&item.roll_id, &item.file_path, &base_color)?;
+        persist_base_and_pipeline(&item.roll_id, &item.file_path, &base_color, &pipeline_state)?;
         item.base_color = base_color;
+        item.pipeline_state = pipeline_state;
         item.pristine_proxy = None;
         Ok(())
     })
@@ -3937,22 +4590,91 @@ pub async fn analyze_proxy_density_limits(
 ) -> Result<AutoColorLimits, String> {
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
     tokio::task::spawn_blocking(move || {
-        let (proxy, geom, base_color, mode, linked_color_limits) = {
+        let (
+            legacy_proxy,
+            scientific,
+            geom,
+            base_color,
+            mode,
+            linked_color_limits,
+            mut pipeline_state,
+        ) = {
             let item = read_lock(&item_arc);
-            if item.base_color == BaseColor::default() {
+            if !pipeline_has_base(&item.pipeline_state, &item.base_color) {
                 return Err("BASE_COLOR_NOT_ANALYZED".to_string());
             }
             (
-                item.proxy_image
-                    .clone()
-                    .ok_or_else(|| "PROXY_NOT_READY".to_string())?,
+                item.proxy_image.clone(),
+                item.scientific_proxy.clone(),
                 item.geom.clone(),
                 item.base_color.clone(),
                 item.params.film_mode.clone(),
                 is_noritsu_rendered_image(&item.file_path),
+                item.pipeline_state.clone(),
             )
         };
-        compute_auto_color_limits(&proxy, &geom, &base_color, mode, linked_color_limits)
+        let mut limits = if pipeline_state.contract == ProcessingContract::LegacyV1 {
+            compute_auto_color_limits(
+                &legacy_proxy.ok_or_else(|| "PROXY_NOT_READY".to_string())?,
+                &geom,
+                &base_color,
+                mode,
+                linked_color_limits,
+            )?
+        } else {
+            let base = pipeline_base_density(&pipeline_state, &base_color);
+            if pipeline_state.density_anchors.is_fully_anchored() {
+                let full_exposure = pipeline_state
+                    .density_anchors
+                    .d_max_full_exposure
+                    .as_ref()
+                    .expect("complete anchors include full exposure");
+                AutoColorLimits {
+                    d_min: [0.0; 3],
+                    d_max: [
+                        full_exposure.density[0] - base[0],
+                        full_exposure.density[1] - base[1],
+                        full_exposure.density[2] - base[2],
+                    ],
+                    pipeline_state: None,
+                }
+            } else {
+                let mut estimated = compute_content_limits_f32(
+                    &scientific.ok_or_else(|| "PROXY_NOT_READY".to_string())?,
+                    &geom,
+                    base,
+                )?;
+                apply_roll_density_anchor_limits(
+                    &mut estimated,
+                    &pipeline_state.density_anchors,
+                    base,
+                );
+                estimated
+            }
+        };
+        if pipeline_state.contract != ProcessingContract::LegacyV1 {
+            if !pipeline_state.density_anchors.is_fully_anchored() {
+                pipeline_state.content_range = Some(ContentRange {
+                    low: limits.d_min,
+                    high: limits.d_max,
+                    source_scope: if geom.calibration_points.is_some() {
+                        ContentRangeScope::FilmArea
+                    } else {
+                        ContentRangeScope::FullFrame
+                    },
+                    percentile_method: "co_sited_2pct_v1".to_string(),
+                });
+            }
+            pipeline_state.render_mapping.mode = RenderMode::PreserveTone;
+            pipeline_state.render_mapping.density_low = limits.d_min;
+            pipeline_state.render_mapping.density_high = limits.d_max;
+            let item = read_lock(&item_arc);
+            persist_pipeline_state(&item.roll_id, &item.file_path, &pipeline_state)?;
+            drop(item);
+            write_lock(&item_arc).pipeline_state = pipeline_state.clone();
+            limits.pipeline_state = Some(pipeline_state);
+        }
+        Ok(limits)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -3964,7 +4686,7 @@ pub async fn reset_image_development(
     mut params: TuningParams,
     generation: u64,
     state: State<'_, EngineState>,
-) -> Result<(), String> {
+) -> Result<PipelineState, String> {
     let epoch = claim_development_generation(&state, &id, generation)?;
     params.raw_decode.working_colorspace = DENSITY_CAPTURE_WORKING_SPACE.to_string();
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
@@ -3973,21 +4695,47 @@ pub async fn reset_image_development(
         let mut item = write_lock(&item_arc);
         ensure_current_development_generation(&epoch, generation)?;
         let default_base = BaseColor::default();
+        let mut reset_pipeline = if item.pipeline_state.contract == ProcessingContract::LegacyV1 {
+            PipelineState::default()
+        } else {
+            let mut pipeline = item.pipeline_state.clone();
+            pipeline.density_anchors.d_min_base = pipeline
+                .density_anchors
+                .d_min_base
+                .filter(|anchor| anchor.scope == DensityAnchorScope::Roll);
+            pipeline.density_anchors.d_max_full_exposure = pipeline
+                .density_anchors
+                .d_max_full_exposure
+                .filter(|anchor| anchor.scope == DensityAnchorScope::Roll);
+            pipeline.contract = pipeline.density_anchors.prophoto_contract();
+            pipeline.content_range = None;
+            pipeline.render_mapping = Default::default();
+            pipeline
+        };
+        if reset_pipeline.density_anchors.d_min_base.is_none() {
+            reset_pipeline.contract = match reset_pipeline.contract {
+                ProcessingContract::LegacyV1 => ProcessingContract::LegacyV1,
+                _ => ProcessingContract::SmartAutoProPhotoV11,
+            };
+        }
         let params_json = serde_json::to_string(&params)
             .map_err(|error| format!("Failed to serialize reset parameters: {error}"))?;
         let base_json = serde_json::to_string(&default_base)
             .map_err(|error| format!("Failed to serialize reset base color: {error}"))?;
+        let pipeline_json = serde_json::to_string(&reset_pipeline)
+            .map_err(|error| format!("Failed to serialize reset pipeline: {error}"))?;
         let connection = persistence::open_connection()
             .map_err(|error| format!("Failed to open image database: {error}"))?;
         let changed = connection
             .execute(
                 "UPDATE image_states
-                 SET params = ?1, base_color = ?2, rendered_thumb_base64 = NULL,
-                     thumbnail_base64 = ?3, updated_at = ?4
-                 WHERE roll_id = ?5 AND file_path = ?6",
+                 SET params = ?1, base_color = ?2, pipeline_state = ?3,
+                     rendered_thumb_base64 = NULL, thumbnail_base64 = ?4, updated_at = ?5
+                 WHERE roll_id = ?6 AND file_path = ?7",
                 rusqlite::params![
                     params_json,
                     base_json,
+                    pipeline_json,
                     item.embedded_thumbnail_base64,
                     persistence::now_timestamp(),
                     item.roll_id,
@@ -4004,9 +4752,10 @@ pub async fn reset_image_development(
 
         item.params = params;
         item.base_color = default_base;
+        item.pipeline_state = reset_pipeline;
         item.rendered_thumbnail_base64 = None;
         item.pristine_proxy = None;
-        Ok(())
+        Ok(item.pipeline_state.clone())
     })
     .await
     .map_err(|error| format!("Reset worker failed: {error}"))?
@@ -4028,7 +4777,9 @@ pub async fn sync_thumbnail_buffer(
                 if let Some(proxy) = item.proxy_image.as_ref() {
                     item.pristine_proxy = Some(compute_pristine_proxy(
                         proxy,
+                        item.scientific_proxy.as_ref(),
                         &item.base_color,
+                        &item.pipeline_state,
                         item.params.film_mode.clone(),
                     ));
                 }
@@ -4046,6 +4797,9 @@ pub async fn sync_thumbnail_buffer(
         ensure_current_development_generation(&epoch, generation)?;
         persist_rendered_thumbnail(&item.roll_id, &item.file_path, &new_thumbnail)?;
         item.rendered_thumbnail_base64 = Some(new_thumbnail);
+        if item.pipeline_state.contract != ProcessingContract::LegacyV1 {
+            item.pristine_proxy = None;
+        }
         Ok(())
     })
     .await
@@ -4324,16 +5078,10 @@ pub async fn batch_copy_settings(
 }
 
 /// Standalone geometry application — does NOT require a write lock on FilmItem.
-/// Returns (proxy_image, pristine_proxy) for the caller to assign under lock.
-fn compute_geometry_and_pristine(
+fn compute_geometry_proxy(
     original_proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>,
     geom: &crate::app_state::GeometryState,
-    base_color: &BaseColor,
-    film_mode: FilmMode,
-) -> (
-    ImageBuffer<Rgb<u16>, Vec<u16>>,
-    ImageBuffer<Rgb<f32>, Vec<f32>>,
-) {
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
     let mut current = original_proxy.clone();
 
     if geom.angle.abs() > 0.01 {
@@ -4378,8 +5126,7 @@ fn compute_geometry_and_pristine(
         current = image::imageops::flip_vertical(&current);
     }
 
-    let pristine = compute_pristine_proxy(&current, base_color, film_mode);
-    (current, pristine)
+    current
 }
 
 #[tauri::command]
@@ -4403,13 +5150,7 @@ pub async fn geometry_auto_align(
             let item = read_lock(&item_arc);
             let mut geom = item.geom.clone();
             geom.angle = first_result.angle;
-            compute_geometry_and_pristine(
-                &original_proxy,
-                &geom,
-                &item.base_color,
-                item.params.film_mode.clone(),
-            )
-            .0
+            compute_geometry_proxy(&original_proxy, &geom)
         };
 
         let second_result = crate::geometry::auto_crop_rect(&proxy_image)?;
@@ -4431,11 +5172,11 @@ pub fn get_proxy_response_buffer(state: &EngineState, id: &str) -> Result<Vec<u8
         let item_arc = state.items.get(id).ok_or("Image ID not found")?;
         let item = read_lock(&item_arc);
         if let Some(proxy) = item.proxy_image.as_ref() {
-            build_response_buffer_from_proxy(
+            build_response_buffer_from_proxy_with_state(
                 proxy,
                 &item.base_color,
+                &item.pipeline_state,
                 true,
-                item.base_color != BaseColor::default(),
             )
         } else {
             return Err("PROXY_NOT_READY".into());
@@ -4590,14 +5331,34 @@ fn sample_rgb16_nearest(image: &ImageBuffer<Rgb<u16>, Vec<u16>>, uv: [f32; 2]) -
     Some([pixel[0], pixel[1], pixel[2]])
 }
 
-fn render_shader_equivalent(
-    source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+#[inline]
+fn sample_rgb32_nearest(image: &ImageBuffer<Rgb<f32>, Vec<f32>>, uv: [f32; 2]) -> Option<[f32; 3]> {
+    if !uv[0].is_finite()
+        || !uv[1].is_finite()
+        || uv[0] < 0.0
+        || uv[0] > 1.0
+        || uv[1] < 0.0
+        || uv[1] > 1.0
+    {
+        return None;
+    }
+    let (width, height) = image.dimensions();
+    let x = (uv[0] * width as f32).floor().min((width - 1) as f32) as u32;
+    let y = (uv[1] * height as f32).floor().min((height - 1) as f32) as u32;
+    let pixel = image.get_pixel(x, y);
+    Some([pixel[0], pixel[1], pixel[2]])
+}
+
+fn render_shader_equivalent_core(
+    source_width: u32,
+    source_height: u32,
+    sample: impl Fn([f32; 2]) -> Option<[f32; 3]> + Sync,
     params: &TuningParams,
     geom: &crate::app_state::GeometryState,
     base_color: &BaseColor,
+    pipeline_state: &PipelineState,
     lut: Option<&ParsedLut>,
 ) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
-    let (source_width, source_height) = source.dimensions();
     let crop = &geom.crop_rect;
     let output_width = (source_width as f32 * crop.width.clamp(0.0, 1.0))
         .round()
@@ -4631,7 +5392,7 @@ fn render_shader_equivalent(
         .as_deref()
         .filter(|uv| uv.len() >= 2 && uv[0] >= 0.0)
         .map(|uv| [uv[0], uv[1]]);
-    let sprocket_target = sprocket_uv.and_then(|uv| sample_rgb16_nearest(source, uv));
+    let sprocket_target = sprocket_uv.and_then(|uv| sample(uv));
     let tolerance = params.sprocket.sprocket_tolerance.unwrap_or(0.10);
     let feather = params.sprocket.sprocket_feather.unwrap_or(0.05);
     let lut_opacity = params.lut.lut_opacity.clamp(0.0, 1.0) * LUT_CONTROL_SCALE;
@@ -4645,11 +5406,15 @@ fn render_shader_equivalent(
             params.exposure.exposure + params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
         ]
     };
-    let pipeline = FilmPipeline::new(
-        [base_color.base_r, base_color.base_g, base_color.base_b],
+    let pipeline = FilmPipeline::from_state(
+        pipeline_state,
+        base_color,
         exposure_offsets,
         params.film_mode.clone(),
     );
+    let positive_to_display = (pipeline_state.contract != ProcessingContract::LegacyV1
+        && params.film_mode == FilmMode::Color)
+        .then(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb));
     let (bw_dmin, bw_dmax) = neutral_density_bounds(params.density.d_min, params.density.d_max);
 
     let mut output = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(output_width, output_height);
@@ -4679,46 +5444,34 @@ fn render_shader_equivalent(
             let Some(warped_uv) = apply_lens_distortion_uv(warped_uv, geom.lens_distortion) else {
                 return;
             };
-            let Some(raw) = sample_rgb16_nearest(source, warped_uv) else {
+            let Some(raw) = sample(warped_uv) else {
                 return;
             };
-            let linear_rgb = [
-                raw[0] as f32 / 65535.0,
-                raw[1] as f32 / 65535.0,
-                raw[2] as f32 / 65535.0,
-            ];
-            let density = pipeline.process_pixel(&linear_rgb);
+            let density = pipeline.process_pixel(&raw);
             let (d_min, d_max) = if params.film_mode == FilmMode::BW {
                 ([bw_dmin; 3], [bw_dmax; 3])
             } else {
                 (params.density.d_min, params.density.d_max)
             };
-            let normalized = [
-                normalize_density_channel(
-                    density[0],
-                    d_min[0],
-                    d_max[0],
-                    0.0,
-                    0.0,
-                    params.density.gamma,
-                ),
-                normalize_density_channel(
-                    density[1],
-                    d_min[1],
-                    d_max[1],
-                    0.0,
-                    0.0,
-                    params.density.gamma,
-                ),
-                normalize_density_channel(
-                    density[2],
-                    d_min[2],
-                    d_max[2],
-                    0.0,
-                    0.0,
-                    params.density.gamma,
-                ),
+            let working_gamma = if positive_to_display.is_some() {
+                1.0
+            } else {
+                params.density.gamma
+            };
+            let normalized_working = [
+                normalize_density_channel(density[0], d_min[0], d_max[0], 0.0, 0.0, working_gamma),
+                normalize_density_channel(density[1], d_min[1], d_max[1], 0.0, 0.0, working_gamma),
+                normalize_density_channel(density[2], d_min[2], d_max[2], 0.0, 0.0, working_gamma),
             ];
+            let normalized = positive_to_display
+                .map(|matrix| {
+                    apply_linear_matrix(normalized_working, matrix).map(|value| {
+                        value
+                            .clamp(0.0, 1.0)
+                            .powf(1.0 / params.density.gamma.max(1e-6))
+                    })
+                })
+                .unwrap_or(normalized_working);
             let (saturation, temperature, tint) = if params.film_mode == FilmMode::Color {
                 (
                     params.tone.saturation,
@@ -4757,20 +5510,16 @@ fn render_shader_equivalent(
             }
 
             if let Some(target) = sprocket_target {
-                let raw_luma = linear_rgb
+                let raw_luma = raw
                     .iter()
                     .zip(luma_coefficients)
                     .map(|(value, coefficient)| value * coefficient)
                     .sum::<f32>();
-                let target_luma = ([
-                    target[0] as f32 / 65535.0,
-                    target[1] as f32 / 65535.0,
-                    target[2] as f32 / 65535.0,
-                ])
-                .iter()
-                .zip(luma_coefficients)
-                .map(|(value, coefficient)| value * coefficient)
-                .sum::<f32>();
+                let target_luma = target
+                    .iter()
+                    .zip(luma_coefficients)
+                    .map(|(value, coefficient)| value * coefficient)
+                    .sum::<f32>();
                 if should_apply_sprocket_mask(
                     crop_uv,
                     [min_x, min_y, max_x, max_y],
@@ -4790,6 +5539,82 @@ fn render_shader_equivalent(
     output
 }
 
+fn render_shader_equivalent(
+    source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+    params: &TuningParams,
+    geom: &crate::app_state::GeometryState,
+    base_color: &BaseColor,
+    lut: Option<&ParsedLut>,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    let state = PipelineState::default();
+    render_shader_equivalent_core(
+        source.width(),
+        source.height(),
+        |uv| {
+            sample_rgb16_nearest(source, uv).map(|pixel| {
+                [
+                    pixel[0] as f32 / 65535.0,
+                    pixel[1] as f32 / 65535.0,
+                    pixel[2] as f32 / 65535.0,
+                ]
+            })
+        },
+        params,
+        geom,
+        base_color,
+        &state,
+        lut,
+    )
+}
+
+fn render_shader_equivalent_with_state(
+    source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+    params: &TuningParams,
+    geom: &crate::app_state::GeometryState,
+    base_color: &BaseColor,
+    pipeline_state: &PipelineState,
+    lut: Option<&ParsedLut>,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    render_shader_equivalent_core(
+        source.width(),
+        source.height(),
+        |uv| {
+            sample_rgb16_nearest(source, uv).map(|pixel| {
+                [
+                    pixel[0] as f32 / 65535.0,
+                    pixel[1] as f32 / 65535.0,
+                    pixel[2] as f32 / 65535.0,
+                ]
+            })
+        },
+        params,
+        geom,
+        base_color,
+        pipeline_state,
+        lut,
+    )
+}
+
+fn render_scientific_shader_equivalent(
+    source: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    params: &TuningParams,
+    geom: &crate::app_state::GeometryState,
+    base_color: &BaseColor,
+    pipeline_state: &PipelineState,
+    lut: Option<&ParsedLut>,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    render_shader_equivalent_core(
+        source.width(),
+        source.height(),
+        |uv| sample_rgb32_nearest(source, uv),
+        params,
+        geom,
+        base_color,
+        pipeline_state,
+        lut,
+    )
+}
+
 #[derive(Clone)]
 struct ExportItemSnapshot {
     id: String,
@@ -4798,6 +5623,7 @@ struct ExportItemSnapshot {
     params: TuningParams,
     geom: GeometryState,
     base_color: BaseColor,
+    pipeline_state: PipelineState,
     output_path: std::path::PathBuf,
     export_metadata: Option<ExportMetadata>,
 }
@@ -5850,9 +6676,11 @@ pub async fn batch_export_images(
         let mut snapshots = Vec::with_capacity(identities.len());
 
         for (id, file_path, roll_id) in identities {
-            let (params, geom, base_color) =
+            let (params, geom, base_color, pipeline_state) =
                 load_image_state_from_connection(&transaction, &roll_id, &file_path)?
-                    .map(|(_, params, geom, base_color)| (params, geom, base_color))
+                    .map(|(_, params, geom, base_color, pipeline_state)| {
+                        (params, geom, base_color, pipeline_state)
+                    })
                     .ok_or_else(|| {
                         format!(
                             "Persisted edit state is missing for {} image {}",
@@ -5866,6 +6694,7 @@ pub async fn batch_export_images(
                 params,
                 geom,
                 base_color,
+                pipeline_state,
                 output_path: std::path::PathBuf::new(),
                 export_metadata: None,
             });
@@ -5949,10 +6778,67 @@ pub async fn batch_export_images(
             let params_owned = snapshot.params.clone();
             let geom_owned = snapshot.geom.clone();
             let base_color_owned = snapshot.base_color.clone();
-            match decode_export_source(&file_path) {
+            let decoded = if snapshot.pipeline_state.contract == ProcessingContract::LegacyV1 {
+                decode_export_source(&file_path)
+            } else {
+                // The v1.1 branch decodes directly into ProPhoto f32 below.
+                // Avoid allocating and retaining a second full-size legacy image.
+                Ok(ImageBuffer::<Rgb<u16>, Vec<u16>>::new(1, 1))
+            };
+            match decoded {
                 Ok(original) => {
                     let params = &params_owned;
                     let base_color = &base_color_owned;
+                    if snapshot.pipeline_state.contract != ProcessingContract::LegacyV1 {
+                        let scientific = match decode_scientific_image_buffer(&file_path, DecodeMode::ExportFull) {
+                            Ok(image) => image,
+                            Err(error) => {
+                                lock_mutex(&failures).push(format!("Failed to decode {}: {error}", file_path));
+                                return;
+                            }
+                        };
+                        let rendered_display = render_scientific_shader_equivalent(
+                            &scientific,
+                            params,
+                            &geom_owned,
+                            base_color,
+                            &snapshot.pipeline_state,
+                            params.lut.lut_path.as_deref().and_then(|path| parsed_luts.get(path)),
+                        );
+                        let mut out_buffer = rendered_display;
+                        let (width, height) = out_buffer.dimensions();
+                        let (target_width, target_height) = match export_dimensions(
+                            width, height, &resize_mode, long_edge, allow_upscale,
+                        ) {
+                            Ok(dimensions) => dimensions,
+                            Err(error) => {
+                                lock_mutex(&failures).push(format!("Invalid export dimensions for {}: {error}", file_path));
+                                return;
+                            }
+                        };
+                        if (target_width, target_height) != (width, height) {
+                            out_buffer = image::imageops::resize(&out_buffer, target_width, target_height, image::imageops::FilterType::Lanczos3);
+                        }
+                        if let Some((sigma, amount)) = sharpening {
+                            apply_usm(&mut out_buffer, sigma, amount);
+                        }
+                        let out_buffer = match encode_export_buffer(out_buffer, output_space) {
+                            Ok(buffer) => buffer,
+                            Err(error) => {
+                                lock_mutex(&failures).push(format!("Failed to convert {} to {}: {error}", file_path, color_space));
+                                return;
+                            }
+                        };
+                        let profile = export_profile_for_output(export_format, output_space);
+                        match write_export_image_with_profile(
+                            out_buffer, &snapshot.output_path, export_format, quality,
+                            snapshot.export_metadata.as_ref(), profile.as_deref(),
+                        ) {
+                            Ok(()) => { success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+                            Err(error) => lock_mutex(&failures).push(error),
+                        }
+                        return;
+                    }
 
                     let mut transformed = original;
 
@@ -6575,6 +7461,77 @@ pub async fn update_roll_metadata(
 }
 
 #[tauri::command]
+pub async fn update_roll_density_anchors(
+    roll_id: String,
+    base: Option<DensityAnchor>,
+    full_exposure: Option<DensityAnchor>,
+    state: State<'_, EngineState>,
+) -> Result<DensityAnchors, String> {
+    if base.is_none() && full_exposure.is_none() {
+        return Err("Sample a film-base or film-leader reference first.".to_string());
+    }
+    if let (Some(base), Some(full)) = (&base, &full_exposure) {
+        if (0..3).any(|channel| full.density[channel] <= base.density[channel] + 1e-4) {
+            return Err(
+                "The film-leader sample must be denser than the film-base sample.".to_string(),
+            );
+        }
+    }
+    let anchors = DensityAnchors {
+        d_min_base: base,
+        d_max_full_exposure: full_exposure,
+    };
+    let _mutation = state.roll_mutation.lock().await;
+    let mut updated_rolls = read_lock(&state.rolls).clone();
+    let roll = updated_rolls
+        .iter_mut()
+        .find(|roll| roll.roll_id == roll_id)
+        .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
+    roll.density_anchors = anchors.clone();
+
+    let affected = state
+        .items
+        .iter()
+        .filter_map(|entry| {
+            let item = entry.value().read().ok()?;
+            (item.roll_id == roll_id).then(|| {
+                let mut pipeline = item.pipeline_state.clone();
+                pipeline.density_anchors = anchors.clone();
+                pipeline.contract = anchors.prophoto_contract();
+                (entry.key().clone(), item.file_path.clone(), pipeline)
+            })
+        })
+        .collect::<Vec<_>>();
+    let persisted_rolls = updated_rolls.clone();
+    let persisted_states = affected
+        .iter()
+        .map(|(_, path, pipeline)| (roll_id.clone(), path.clone(), pipeline.clone()))
+        .collect::<Vec<_>>();
+    tokio::task::spawn_blocking(move || {
+        let mut connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open calibration database: {error}"))?;
+        persistence::save_rolls_and_pipeline_states(
+            &mut connection,
+            &persisted_rolls,
+            &persisted_states,
+        )
+        .map_err(|error| format!("Failed to save density references: {error}"))?;
+        update_rolls_compatibility_mirror(&persisted_rolls);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|error| format!("Calibration persistence worker failed: {error}"))??;
+
+    *write_lock(&state.rolls) = updated_rolls;
+    for (id, _, pipeline) in affected {
+        if let Some(item) = state.items.get(&id) {
+            write_lock(item.value()).pipeline_state = pipeline;
+        }
+    }
+    Ok(anchors)
+}
+
+#[tauri::command]
 pub async fn promote_roll(roll_id: String, state: State<'_, EngineState>) -> Result<(), String> {
     let roll = state
         .rolls
@@ -6748,14 +7705,16 @@ pub fn save_image_state_to_db(item: &crate::app_state::FilmItem) -> Result<(), S
     let params_str = serde_json::to_string(&item.params).map_err(|e| e.to_string())?;
     let geom_str = serde_json::to_string(&item.geom).map_err(|e| e.to_string())?;
     let base_color_str = serde_json::to_string(&item.base_color).map_err(|e| e.to_string())?;
+    let pipeline_state_str =
+        serde_json::to_string(&item.pipeline_state).map_err(|e| e.to_string())?;
 
     conn.execute(
         "INSERT INTO image_states (
              roll_id, file_path, thumbnail_base64, embedded_thumb_base64,
              rendered_thumb_base64, params, geom, base_color,
-             math_version, raw_decode_version, updated_at
+             pipeline_state, math_version, raw_decode_version, updated_at
          )
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(roll_id, file_path) DO UPDATE SET 
          thumbnail_base64=excluded.thumbnail_base64,
          embedded_thumb_base64=excluded.embedded_thumb_base64,
@@ -6763,6 +7722,7 @@ pub fn save_image_state_to_db(item: &crate::app_state::FilmItem) -> Result<(), S
          params=excluded.params,
          geom=excluded.geom,
          base_color=excluded.base_color,
+         pipeline_state=excluded.pipeline_state,
          math_version=excluded.math_version,
          raw_decode_version=excluded.raw_decode_version,
          updated_at=excluded.updated_at",
@@ -6775,7 +7735,8 @@ pub fn save_image_state_to_db(item: &crate::app_state::FilmItem) -> Result<(), S
             params_str,
             geom_str,
             base_color_str,
-            MATH_VERSION,
+            pipeline_state_str,
+            persistence::math_version_for_contract(item.pipeline_state.contract),
             RAW_DECODE_VERSION,
             persistence::now_timestamp(),
         ],
@@ -6846,6 +7807,55 @@ fn persist_base_color(
     )
 }
 
+fn persist_base_and_pipeline(
+    roll_id: &str,
+    file_path: &str,
+    base_color: &BaseColor,
+    pipeline_state: &PipelineState,
+) -> Result<(), String> {
+    let connection = persistence::open_connection()
+        .map_err(|error| format!("Failed to open image database: {error}"))?;
+    let base = serde_json::to_string(base_color)
+        .map_err(|error| format!("Failed to serialize base color: {error}"))?;
+    let pipeline = serde_json::to_string(pipeline_state)
+        .map_err(|error| format!("Failed to serialize pipeline state: {error}"))?;
+    let changed = connection
+        .execute(
+            "UPDATE image_states
+             SET base_color = ?1, pipeline_state = ?2, math_version = ?3, updated_at = ?4
+             WHERE roll_id = ?5 AND file_path = ?6",
+            rusqlite::params![
+                base,
+                pipeline,
+                persistence::math_version_for_contract(pipeline_state.contract),
+                persistence::now_timestamp(),
+                roll_id,
+                file_path,
+            ],
+        )
+        .map_err(|error| format!("Failed to persist pipeline analysis: {error}"))?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(format!("Persisted image state was not found: {file_path}"))
+    }
+}
+
+fn persist_pipeline_state(
+    roll_id: &str,
+    file_path: &str,
+    pipeline_state: &PipelineState,
+) -> Result<(), String> {
+    let serialized = serde_json::to_string(pipeline_state)
+        .map_err(|error| format!("Failed to serialize pipeline state: {error}"))?;
+    persist_single_image_update(
+        roll_id,
+        file_path,
+        "UPDATE image_states SET pipeline_state = ?1, updated_at = ?2 WHERE roll_id = ?3 AND file_path = ?4",
+        serialized,
+    )
+}
+
 fn persist_rendered_thumbnail(
     roll_id: &str,
     file_path: &str,
@@ -6864,6 +7874,7 @@ type PersistedImageState = (
     crate::app_state::TuningParams,
     crate::app_state::GeometryState,
     crate::app_state::BaseColor,
+    PipelineState,
 );
 
 fn load_image_state_from_connection(
@@ -6874,7 +7885,7 @@ fn load_image_state_from_connection(
     let mut stmt = connection
         .prepare(
             "SELECT COALESCE(rendered_thumb_base64, embedded_thumb_base64, thumbnail_base64),
-                COALESCE(length(rendered_thumb_base64), 0) > 0, params, geom, base_color
+                COALESCE(length(rendered_thumb_base64), 0) > 0, params, geom, base_color, pipeline_state
          FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
         )
         .map_err(|error| format!("Failed to prepare image-state read: {error}"))?;
@@ -6891,6 +7902,7 @@ fn load_image_state_from_connection(
         let params_str: String = row.get(2).map_err(|error| error.to_string())?;
         let geom_str: String = row.get(3).map_err(|error| error.to_string())?;
         let base_color_str: String = row.get(4).map_err(|error| error.to_string())?;
+        let pipeline_state_str: String = row.get(5).map_err(|error| error.to_string())?;
 
         let params = serde_json::from_str(&params_str)
             .map_err(|error| format!("Invalid persisted tuning parameters: {error}"))?;
@@ -6898,12 +7910,15 @@ fn load_image_state_from_connection(
             .map_err(|error| format!("Invalid persisted geometry: {error}"))?;
         let base_color = serde_json::from_str(&base_color_str)
             .map_err(|error| format!("Invalid persisted base color: {error}"))?;
+        let pipeline_state = serde_json::from_str(&pipeline_state_str)
+            .map_err(|error| format!("Invalid persisted pipeline state: {error}"))?;
 
         return Ok(Some((
             thumb,
             params,
             normalize_persisted_geometry_for_rendered_image(geom, has_rendered_thumbnail),
             base_color,
+            pipeline_state,
         )));
     }
     Ok(None)
@@ -6928,7 +7943,7 @@ fn load_all_image_states_from_connection(
             "SELECT roll_id, file_path,
                     COALESCE(embedded_thumb_base64, thumbnail_base64),
                     rendered_thumb_base64,
-                    params, geom, base_color
+                    params, geom, base_color, pipeline_state
              FROM image_states",
         )
         .map_err(|error| format!("Failed to prepare image-state restore: {error}"))?;
@@ -6942,13 +7957,23 @@ fn load_all_image_states_from_connection(
                 row.get::<_, String>(4)?,
                 row.get::<_, String>(5)?,
                 row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
             ))
         })
         .map_err(|error| format!("Failed to query image-state restore: {error}"))?;
     let mut restored = Vec::new();
     for row in rows {
         let row = row.map_err(|error| format!("Failed to read image-state row: {error}"))?;
-        let (roll_id, file_path, embedded_thumb, rendered_thumb, params, geom, base_color) = row;
+        let (
+            roll_id,
+            file_path,
+            embedded_thumb,
+            rendered_thumb,
+            params,
+            geom,
+            base_color,
+            pipeline_state_str,
+        ) = row;
         let img_id = format!("img_{}", NEXT_ID.fetch_add(1, Ordering::SeqCst));
         let params = serde_json::from_str(&params)
             .map_err(|error| format!("Invalid tuning parameters for {file_path}: {error}"))?;
@@ -6964,6 +7989,8 @@ fn load_all_image_states_from_connection(
             .map_err(|error| format!("Invalid geometry for {file_path}: {error}"))?;
         let base_color = serde_json::from_str(&base_color)
             .map_err(|error| format!("Invalid base color for {file_path}: {error}"))?;
+        let pipeline_state = serde_json::from_str(&pipeline_state_str)
+            .map_err(|error| format!("Invalid pipeline state for {file_path}: {error}"))?;
         let item = FilmItem {
             id: img_id.clone(),
             is_loose: roll_id == "LOOSE_DEFAULT",
@@ -6973,8 +8000,10 @@ fn load_all_image_states_from_connection(
             rendered_thumbnail_base64: rendered_thumb,
             original_proxy: None,
             proxy_image: None,
+            scientific_proxy: None,
             pristine_proxy: None,
             base_color,
+            pipeline_state,
             params,
             geom,
             // Restored records belong to Rolls. A working Library is created
@@ -7033,6 +8062,7 @@ fn migrate_legacy_loose_roll(
         film_stock: "Loose Import".to_string(),
         camera: String::new(),
         image_paths: paths,
+        density_anchors: Default::default(),
     });
     persistence::save_rolls(connection, rolls)
         .map_err(|error| format!("Failed to migrate legacy loose imports: {error}"))?;
@@ -7150,8 +8180,9 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             params.exposure.exposure + params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
         ]
     };
-    let pipeline = FilmPipeline::new(
-        [base_color.base_r, base_color.base_g, base_color.base_b],
+    let pipeline = FilmPipeline::from_state(
+        &item.pipeline_state,
+        base_color,
         exposure_offsets,
         params.film_mode.clone(),
     );
@@ -7179,6 +8210,9 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
         (0.0, 0.0, 0.0)
     };
     let luma_coefficients = DENSITY_LUMA_COEFFICIENTS;
+    let prophoto_to_srgb = (item.pipeline_state.contract != ProcessingContract::LegacyV1
+        && params.film_mode == FilmMode::Color)
+        .then(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb));
 
     pristine_pixels
         .par_chunks(3)
@@ -7192,14 +8226,19 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             } else {
                 (d_min, d_max)
             };
-            let gamma_corrected = [
+            let working_gamma = if prophoto_to_srgb.is_some() {
+                1.0
+            } else {
+                gamma
+            };
+            let normalized = [
                 normalize_density_channel(
                     density[0],
                     effective_dmin[0],
                     effective_dmax[0],
                     highlights,
                     shadows,
-                    gamma,
+                    working_gamma,
                 ),
                 normalize_density_channel(
                     density[1],
@@ -7207,7 +8246,7 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
                     effective_dmax[1],
                     highlights,
                     shadows,
-                    gamma,
+                    working_gamma,
                 ),
                 normalize_density_channel(
                     density[2],
@@ -7215,9 +8254,15 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
                     effective_dmax[2],
                     highlights,
                     shadows,
-                    gamma,
+                    working_gamma,
                 ),
             ];
+            let gamma_corrected = if let Some(matrix) = prophoto_to_srgb {
+                apply_linear_matrix(normalized, matrix)
+                    .map(|value| value.clamp(0.0, 1.0).powf(1.0 / gamma.max(1e-6)))
+            } else {
+                normalized
+            };
             let mut final_rgb = apply_post_gamma_adjustments_with_luma(
                 gamma_corrected,
                 0.0,
@@ -7283,20 +8328,27 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 #[cfg(test)]
 mod import_contract_tests {
     use super::{
-        compute_auto_base, compute_auto_color_limits, decode_image_buffer,
-        decode_import_preview_base64, decode_reduced_dng_for_working_space,
-        decode_reduced_tiff_for_working_space, is_better_preview_edge,
-        is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
-        is_scanner_fff_tiff, is_tiff_extension, libraw_decode_error_message, linearize_scanner_fff,
-        persist_import_batch, raw_decode_failure_hint, render_shader_equivalent,
-        rgb16_image_from_bytes, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
+        apply_roll_density_anchor_limits, compute_auto_base, compute_auto_color_limits,
+        decode_image_buffer, decode_import_preview_base64, decode_reduced_dng_for_working_space,
+        decode_reduced_tiff_for_working_space, default_pipeline_state_for_import,
+        is_better_preview_edge, is_lightweight_direct_preview, is_noritsu_rendered_image,
+        is_raw_extension, is_scanner_fff_tiff, is_tiff_extension, libraw_decode_error_message,
+        linearize_scanner_fff, persist_import_batch, raw_decode_failure_hint,
+        reference_density_extreme, render_shader_equivalent, rgb16_image_from_bytes,
+        scientific_to_transport_proxy, AutoColorLimits, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
+        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
     };
-    use crate::app_state::{BaseColor, FilmItem, FilmMode, GeometryState, TuningParams};
+    use crate::app_state::{
+        BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
+        DensityAnchors, FilmItem, FilmMode, GeometryState, PipelineState, ProcessingContract, Roll,
+        TuningParams,
+    };
     use crate::color_science::{
         apply_linear_matrix, compress_linear_srgb_for_density, linear_conversion_matrix,
         ColorSpaceId, DENSITY_CAPTURE_PROFILE,
     };
     use base64::Engine as _;
+    use image::ImageBuffer;
     use rayon::prelude::*;
 
     #[test]
@@ -7915,6 +8967,173 @@ mod import_contract_tests {
     }
 
     #[test]
+    fn scientific_transport_preserves_signed_prophoto_values_within_cache_range() {
+        let source = ImageBuffer::from_raw(2, 1, vec![-1.0, 0.0, 1.0, 2.0, 2.5, 3.0]).unwrap();
+        let transport = scientific_to_transport_proxy(&source);
+        let span = PROPHOTO_TRANSPORT_MAX - PROPHOTO_TRANSPORT_MIN;
+        for (encoded, original) in transport.as_raw().iter().zip(source.as_raw().iter()) {
+            let decoded = *encoded as f32 / 65535.0 * span + PROPHOTO_TRANSPORT_MIN;
+            assert!((decoded - original).abs() <= span / 65535.0 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn roll_reference_extremes_use_opposite_density_tails() {
+        let image = ImageBuffer::from_raw(
+            100,
+            1,
+            (0..100)
+                .flat_map(|index| {
+                    let transmission = 0.01 + index as f32 * 0.0099;
+                    [transmission; 3]
+                })
+                .collect(),
+        )
+        .unwrap();
+        let base = reference_density_extreme(&image, DensityAnchorSource::SampledFilmBase).unwrap();
+        let full =
+            reference_density_extreme(&image, DensityAnchorSource::SampledFullExposure).unwrap();
+        assert!(base.iter().all(|value| value < &full[0]));
+        assert!(full.iter().all(|value| *value > 1.0));
+    }
+
+    #[test]
+    fn import_contract_defaults_follow_loose_and_roll_anchor_rules() {
+        let anchors = DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: [0.1; 3],
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("base.tif".into()),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: [2.0; 3],
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("full.tif".into()),
+            }),
+        };
+        let rolls = vec![Roll {
+            roll_id: "roll-a".into(),
+            date: String::new(),
+            format: "35mm".into(),
+            film_stock: String::new(),
+            camera: String::new(),
+            image_paths: Vec::new(),
+            density_anchors: anchors,
+        }];
+        assert_eq!(
+            default_pipeline_state_for_import(true, "roll-a", &rolls).contract,
+            ProcessingContract::SmartAutoProPhotoV11
+        );
+        assert_eq!(
+            default_pipeline_state_for_import(false, "roll-a", &rolls).contract,
+            ProcessingContract::RollAnchoredProPhotoV11
+        );
+    }
+
+    #[test]
+    fn only_two_roll_samples_form_complete_density_anchors() {
+        let sampled = |source| DensityAnchor {
+            density: [0.2; 3],
+            source,
+            scope: DensityAnchorScope::Roll,
+            confidence: DensityAnchorConfidence::UserSampled,
+            reference_id: None,
+        };
+        let estimated_base = DensityAnchor {
+            density: [0.1; 3],
+            source: DensityAnchorSource::EstimatedFromContent,
+            scope: DensityAnchorScope::Frame,
+            confidence: DensityAnchorConfidence::Estimated,
+            reference_id: None,
+        };
+        let full_only = DensityAnchors {
+            d_min_base: None,
+            d_max_full_exposure: Some(sampled(DensityAnchorSource::SampledFullExposure)),
+        };
+        assert!(!full_only.is_fully_anchored());
+        assert_eq!(
+            full_only.prophoto_contract(),
+            ProcessingContract::SmartAutoProPhotoV11
+        );
+
+        let estimated_and_full = DensityAnchors {
+            d_min_base: Some(estimated_base),
+            d_max_full_exposure: full_only.d_max_full_exposure.clone(),
+        };
+        assert!(!estimated_and_full.is_fully_anchored());
+        assert_eq!(
+            estimated_and_full.prophoto_contract(),
+            ProcessingContract::SmartAutoProPhotoV11
+        );
+
+        let complete = DensityAnchors {
+            d_min_base: Some(sampled(DensityAnchorSource::SampledFilmBase)),
+            d_max_full_exposure: full_only.d_max_full_exposure,
+        };
+        assert!(complete.is_fully_anchored());
+        assert_eq!(
+            complete.prophoto_contract(),
+            ProcessingContract::RollAnchoredProPhotoV11
+        );
+    }
+
+    #[test]
+    fn partial_roll_anchor_fixes_only_its_own_density_endpoint() {
+        let base = DensityAnchor {
+            density: [0.2, 0.3, 0.4],
+            source: DensityAnchorSource::SampledFilmBase,
+            scope: DensityAnchorScope::Roll,
+            confidence: DensityAnchorConfidence::UserSampled,
+            reference_id: None,
+        };
+        let full = DensityAnchor {
+            density: [2.2, 2.4, 2.6],
+            source: DensityAnchorSource::SampledFullExposure,
+            scope: DensityAnchorScope::Roll,
+            confidence: DensityAnchorConfidence::UserSampled,
+            reference_id: None,
+        };
+        let mut base_only_limits = AutoColorLimits {
+            d_min: [0.12, 0.13, 0.14],
+            d_max: [1.7, 1.8, 1.9],
+            pipeline_state: None,
+        };
+        apply_roll_density_anchor_limits(
+            &mut base_only_limits,
+            &DensityAnchors {
+                d_min_base: Some(base.clone()),
+                d_max_full_exposure: None,
+            },
+            base.density,
+        );
+        assert_eq!(base_only_limits.d_min, [0.0; 3]);
+        assert_eq!(base_only_limits.d_max, [1.7, 1.8, 1.9]);
+
+        let mut full_only_limits = AutoColorLimits {
+            d_min: [0.12, 0.13, 0.14],
+            d_max: [1.7, 1.8, 1.9],
+            pipeline_state: None,
+        };
+        let estimated_base = [0.1, 0.2, 0.3];
+        apply_roll_density_anchor_limits(
+            &mut full_only_limits,
+            &DensityAnchors {
+                d_min_base: None,
+                d_max_full_exposure: Some(full),
+            },
+            estimated_base,
+        );
+        assert_eq!(full_only_limits.d_min, [0.12, 0.13, 0.14]);
+        for (actual, expected) in full_only_limits.d_max.iter().zip([2.1, 2.2, 2.3]) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
     fn nikon_nef_decode_errors_include_high_efficiency_guidance() {
         assert!(raw_decode_failure_hint("frame.NEF")
             .unwrap()
@@ -8299,8 +9518,10 @@ mod import_contract_tests {
             rendered_thumbnail_base64: None,
             original_proxy: None,
             proxy_image: None,
+            scientific_proxy: None,
             pristine_proxy: None,
             base_color: BaseColor::default(),
+            pipeline_state: PipelineState::smart_auto(),
             params: TuningParams::default(),
             geom: GeometryState::default(),
             is_loose: true,
@@ -8319,7 +9540,9 @@ mod library_management_contract_tests {
         migrate_legacy_loose_roll, normalize_path, persist_import_batch, process_source_paths,
         DeleteRollsResult,
     };
-    use crate::app_state::{BaseColor, EngineState, FilmItem, GeometryState, Roll, TuningParams};
+    use crate::app_state::{
+        BaseColor, EngineState, FilmItem, GeometryState, PipelineState, Roll, TuningParams,
+    };
     use std::sync::{Arc, RwLock};
 
     fn item(id: &str, roll_id: &str, path: &str, in_library: bool) -> FilmItem {
@@ -8331,8 +9554,10 @@ mod library_management_contract_tests {
             rendered_thumbnail_base64: None,
             original_proxy: None,
             proxy_image: None,
+            scientific_proxy: None,
             pristine_proxy: None,
             base_color: BaseColor::default(),
+            pipeline_state: PipelineState::default(),
             params: TuningParams::default(),
             geom: GeometryState::default(),
             is_loose: false,
@@ -8415,6 +9640,7 @@ mod library_management_contract_tests {
             film_stock: "Test Film".to_string(),
             camera: "Test Camera".to_string(),
             image_paths: vec!["NEW.DNG".to_string()],
+            density_anchors: Default::default(),
         };
 
         let activated = activate_library_roll(&state, &roll).unwrap();
@@ -8455,6 +9681,7 @@ mod library_management_contract_tests {
             film_stock: "Loose Import".to_string(),
             camera: String::new(),
             image_paths: vec!["scan.tif".to_string()],
+            density_anchors: Default::default(),
         };
 
         activate_library_roll(&state, &roll).unwrap();

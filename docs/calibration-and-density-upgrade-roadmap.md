@@ -1,0 +1,315 @@
+# NexFilm 校准、密度锚点与管线升级路线图
+
+## 1. 目标与核心原则
+
+本路线图合并两项工作：硬件校准与三段式色彩管线升级，以及 D-Min/D-Max、片基与全曝光参考的密度标定。它们必须一起设计：硬件校准决定透射率是否可信，片基和全曝光参考决定密度坐标锚点，Auto Invert 再利用这些信息生成正片。
+
+最终原则：
+
+> Film Frame 决定照片在哪里；Base Reference 决定 D-Min；Full-Exposure Reference 或 Film Profile 决定 D-Max；Content Range 描述照片实际使用的影调；Auto Invert 负责组合这些信息。
+
+## 2. 目标管线
+
+~~~text
+RAW mosaic / Scanner RGB
+  -> dark / open-gate / flat correction
+  -> linear Camera Native f32
+  -> Capture Separation Profile
+  -> positive Density Input RGB transmission T
+  -> -log10(T)
+  -> measured or profiled base subtraction
+  -> calibrated density / Status M / printing-density transform
+  -> Film Profile reconstruction
+  -> Linear ProPhoto RGB positive working image
+  -> Auto render, creative controls, LUT, display and export
+~~~
+
+~~~mermaid
+flowchart TD
+    A[RAW / Scanner RGB] --> B[暗场、无片场、平场]
+    B --> C[线性 f32 透射率]
+    C --> D[Density Input RGB]
+    D --> E[-log10]
+    E --> F[物理片基 D-min 扣除]
+    F --> G[校准密度 / Status M / 数字 mask]
+    G --> H[照片内容密度范围分析]
+    H --> I[Auto Invert 显示映射]
+    I --> J[正片调色与输出]
+
+    K[135 片头/片尾] -.提供片基参考.-> F
+    L[120 边缘/片基区域] -.提供片基参考.-> F
+    M[Loose Import 用户标记或估计] -.提供片基参考.-> F
+    N[Film Profile / 控制条] -.提供可靠 D-max 或曲线.-> H
+~~~
+
+```mermaid
+flowchart LR
+    C["Calibration\n建立校正配置文件"] --> P["Calibration Config Profiles\n统一管理内部校正层"]
+    P --> S["Develop\n为当前 Roll 选择"]
+    S -->|"已选择且可用"| M["Profile Pipeline"]
+    S -->|"Smart Auto 或配置不可用"| A["Smart Auto"]
+    M --> V["Auto Invert\n片基、曝光与显示渲染"]
+    A --> V
+    V --> D["Develop\n继续审美调整"]
+```
+
+### 2.1 透射率域：log 之前
+
+目标是得到具有明确设备含义的正值线性透射率：
+
+~~~text
+T = (sample - dark) / (open-gate - dark)
+~~~
+
+暗场、无片光源、平场、曝光归一化、CFA/解马赛克、固定通道增益和采集分离矩阵都属于这一域。普通 DCP、LibRaw 相机矩阵和标准 ACES Input Transform 也位于这一域，但目标通常是 XYZ、ACES 相对曝光或工作 RGB，不自动等同于胶片透射率的 Density Input RGB。
+
+必须遵守：
+
+~~~text
+-log10(Ax) != A[-log10(x)]
+~~~
+
+不能把普通 RGB 色彩矩阵直接搬到密度域，也不能因为 ProPhoto 色域较大就把它当成密度测量基底。
+
+### 2.2 密度域：log 之后
+
+~~~text
+D_raw = -log10(max(T, epsilon))
+D_net = D_raw - D_base
+~~~
+
+片基扣除、Status M 参考密度对齐、printing-density 转换和胶片相关数字 mask 都属于这一域。D-Min 与 D-Max 是密度参考锚点，不应由当前照片的直方图端点自动定义。
+
+### 2.3 正片与输出域
+
+校准密度仍然不是场景线性 RGB。胶片型号、乳剂、曝光和冲洗条件相关的特性曲线或 Film Profile 必须参与重建。Linear ProPhoto RGB 是正片重建后的统一工作空间；LUT、审美控制、显示 OETF、ICC 和输出量化只能在后续阶段发生。
+
+## 3. 当前问题与 v1.0.2 边界
+
+v1.0.2 已在 LibRaw camera-to-sRGB 矩阵阶段使用 f32，避免中间直接写入 u16 导致逐通道截断。但当前路径仍有以下限制：
+
+- 解马赛克后的 Camera RGB 仍以 u16 代理传递。
+- 相机矩阵后使用 compress_linear_srgb_for_density() 进行正值域 gamut compression，再量化回 u16。
+- 当前密度计算仍绑定固定 linear-sRGB capture domain。
+- LibRaw 使用相机白平衡，通道增益与翻拍灯板未完全解耦。
+- 暗场、无片光源和平场参考尚未成为正式校准输入。
+- 当前片基主要由图像统计估计。
+- status_m_crosstalk_matrix() 没有设备、灯板、胶片、测量标准和误差报告，只能视为 Legacy Estimate。
+- compute_auto_color_limits() 在 Film Area 内采样照片密度低/高尾部；Film Area 是否包含片基会改变估计 d_min/d_max，从而改变整张照片的显示动态范围。
+- 当前 D-Min/D-Max 归一化更接近显示参考反相，不是胶片 D-Min/D-Max 的物理标定。
+
+这些问题的根因是密度锚点、照片范围和显示映射没有分层。
+
+## 4. 统一数据模型
+
+### 4.1 Film Frame
+
+Film Frame 是照片的几何区域，负责透视、旋转、镜头畸变、裁切，以及排除齿孔、边框、片基外区域和无效边缘。Film Frame 不负责定义 D-Min/D-Max。当前代码中的 calibration_points 用户语义应迁移为 film_area_points，以避免与硬件 Calibration 混淆。
+
+### 4.2 Density Anchors
+
+~~~text
+DensityAnchors {
+    d_min_base: [f32; 3]
+    d_max_full_exposure: Option<[f32; 3]>
+    source: measured | film_profile | sampled | estimated | legacy
+    scope: frame | roll | profile
+    confidence: unknown | estimated | verified
+    reference_id: Option<String>
+}
+~~~
+
+片基/未曝光参考提供 d_min_base；片头全曝光、控制条或独立参考帧提供 d_max_full_exposure。只有片基而没有全曝光参考时，d_max 必须保持未知，不能用照片最暗像素冒充物理 D-Max。
+
+### 4.3 Content Range 与 Render Mapping
+
+~~~text
+ContentRange { low, high, percentile_method, source_scope = film_frame }
+RenderMapping { mode = preserve_tone | full_tone, exposure, gamma, white_balance }
+~~~
+
+ContentRange 只描述当前照片使用的密度区间；RenderMapping 决定如何显示。两者都不能覆盖 DensityAnchors。
+
+### 4.4 统一的校正配置文件
+
+用户只接触一种产品对象：**校正配置文件（Calibration Config Profile）**。不同校准等级都保存为相同对象、出现在同一列表，并通过 Develop 中同一个下拉框应用。校准等级只决定 Profile 内有哪些能力以及能做出何种科学承诺，不产生三套互不兼容的用户工作流。
+
+内部仍保持三个可选层，以遵守各变换所在的物理域：
+
+~~~text
+CalibrationConfigProfile {
+    capture:  hardware metadata + dark/open-gate/flat + separation transform
+    density:  optional Status M / printing-density transform + validation
+    film:     optional film/process curves + digital mask + reconstruction
+    references + provenance + capability + validation report
+}
+~~~
+
+`capture` 在 log 前定义设备如何读取透射率；`density` 在 log 后定义采集密度如何对应参考密度标准；`film` 负责由胶片密度重建正片。Density 层依赖 Capture 层的输入定义，胶片相关的 printing-density mask 与特性曲线必须绑定 Film 层。Profile 缺少某一层时，管线在该处明确显示 `Default` 或 `Smart Auto`，不得伪装成已校准。
+
+Profile 的相机、灯板、镜头和参考目标元数据只用于追溯与展示，不参与自动匹配。
+
+## 5. D-Min/D-Max 标定策略
+
+### 5.1 135 或带片头/片尾的扫描
+
+片基/未曝光区域提供 D-Min；片头全曝光区域或控制条高密度区域提供 D-Max。密度标尺独立于照片内容建立。Film Frame 仍然需要，但只承担照片几何范围；它不必包含片基。标定结果统一保存为 Roll 级 DensityAnchors，不提供单帧覆盖。采集条件变化时必须重新验证或拒绝复用。
+
+### 5.2 120 胶卷
+
+不能假设 120 有可自动发现的片头。支持三种路径：
+
+1. 导入独立的同设备、同胶片、同冲洗参考帧，提供片基和全曝光锚点。
+2. 在当前扫描中手动标记片基，生成 Base-only；D-Max 从匹配 Film Profile 或控制条获得。
+3. 完全没有参考时退回 Estimated Base 和 Preserve Tone，不声明物理 D-Max。
+
+边缘自动检测可以作为建议，但不能自动生成 verified D-Max。
+
+### 5.3 Loose Import
+
+Loose Import 默认使用 Smart Auto/Estimated Anchors。没有全曝光参考时，不以照片最高密度定义 D-Max；默认 Preserve Tone，用户主动选择 Full Tone 后才允许把内容范围映射到显示端点。若用户从代表帧采样片基或片头，结果仍作为该 Loose Roll 的 Roll 级锚点保存。
+
+## 6. Auto Invert 设计
+
+Auto Invert 内部固定执行：
+
+~~~text
+resolve_density_anchors()
+  -> analyze_content_range()
+  -> solve_auto_render()
+~~~
+
+锚点优先级：Roll anchors > Roll 绑定 Profile > estimated frame endpoint > Legacy Estimate。已验证锚点不能被当前照片极值覆盖。若 Roll 只有片基或片头中的一个锚点，则固定已知端点，仅对缺失端点逐帧统计；两端都有时不再用逐帧极值覆盖它们；两端都没有时逐帧分析。ContentRange 只在 Film Frame 内用稳健分位数统计，并排除片基采样区和无效样本。默认调整曝光、白平衡和 gamma 以保留短调；Full Tone 是显式显示选项，不改变密度锚点。
+
+## 7. 三类用户方案
+
+### 7.1 Smart Auto
+
+无校准文件的用户使用：
+
+~~~text
+RAW f32 -> relative transmission estimate -> estimated base
+-> density -> content range -> preserve-tone render
+~~~
+
+它承诺快速、平滑、减少溢出和动态范围误拉伸，不承诺 Status M 或跨设备绝对密度一致性。
+
+### 7.2 Calibrated Workflow
+
+固定翻拍架和白光板用户使用暗场、无片场、平场和透射目标建立一个 Calibration Config Profile；Capture 与 Density 只是其中的内部能力层。v1.1 正式版再支持参考密度目标拟合 3x3 + offset，并报告独立验证误差。IT8 的 Lab 参考只能生成色度 ICC 或端到端色彩配置，不直接命名为胶片密度标定。
+
+### 7.3 Spectral / Research Workflow
+
+RGB 窄谱 LED 分时或多光谱用户记录 SPD，在同一个 Calibration Config Profile 内拟合 Capture Separation，再进入可选的 Status M/printing-density 与 Film Reconstruction 层。三色窄谱是可追溯的窄谱三通道测量，不等于完整连续光谱；多波段和连续光谱属于后续版本。
+
+## 8. Calibration 页面与用户流程
+
+顶层导航增加 Calibration，用于校正配置文件管理和一次性校准，不是每张照片都要操作的面板。页面延续现有 NexFilm 的安静、工作型视觉风格，并采用双栏结构：
+
+- 左侧圆角面板列出已有的 Calibration Config Profiles。
+- 右侧圆角详情面板顶部显示名称、创建时间、相机、灯板、镜头和校准等级；右上角提供 New Calibration Config Profile。
+- 没有 Profile 时，右侧使用与空 Library 一致的空状态，中央显示“添加您的硬件校正文件”。
+- 选中 Profile 后，右侧以一条纵向 Pipeline 展示校准位置。每个节点对应 Capture、Density、Film Reconstruction 等理想校准点；Profile 已包含的层显示绿色状态点和 `Calibrated`，缺失的层显示中性状态点和 `Using default`。
+- 状态必须区分 Profile 的能力与可用性，例如 Smart Auto、Configured、Measured、Spectral、Legacy、Needs attention。只有具有参考密度和验证报告的层才能显示 Measured。
+
+向导根据参考资料分流：No reference 建立 Smart Auto 预设；Transmission target 执行暗场、无片场、平场、目标采集、检测、拟合与验证；External reference 导入片基/全曝光参考；RGB / multispectral light 进入高级采集。矩阵、条件数和残差放入折叠的 Technical Report。
+
+Develop 增加 `Calibration Config Profile / 校正配置文件` 下拉框，选择作用域始终为当前 Roll，不提供单帧 Profile。旁边只显示最小状态：
+
+~~~text
+Frame: set
+Base: measured / sampled / estimated
+D-max: full exposure / film profile / unknown
+Calibration: measured / legacy / smart auto
+Tone: preserve / full tone
+~~~
+
+Profile 选择与记忆规则固定为：
+
+1. 当前 Roll 保存自己的 `calibration_profile_id`，已存在 Roll 永不因全局默认变化而被追溯修改。
+2. 用户在 Develop 为当前 Roll 选择 Profile 后，同时将该选择保存为 `last_used_calibration_profile_id`。
+3. 以后新建或新导入的 Roll 在创建时复制 last-used 值，随后拥有独立绑定。
+4. 用户在某个后续 Roll 改选 Profile，只影响该 Roll 和未来新 Roll；之前的 Roll 保持原绑定。
+5. `Smart Auto` 是下拉框中的显式选项，也可以成为 last-used 默认。
+6. Profile 丢失、损坏或版本不受支持时保留原 ID 以便恢复，本次处理显示警告并回退 Smart Auto，不能静默改写 Roll 绑定。
+7. 不根据相机、灯板、ISO、镜头或光圈自动匹配 Profile；这些元数据只用于追溯和 UI 展示。
+
+## 9. 数据结构、迁移与兼容
+
+增加版本化的 `calibration_profiles`、`calibration_references`、`calibration_sessions`、`density_anchor_sets` 和应用设置。Roll 状态增加 `calibration_profile_id`；应用设置保存 `last_used_calibration_profile_id`；Image/Roll 状态继续保存 ContentRange、RenderMapping、anchor source 和 confidence。内部可将 Profile 的 capture/density/film 层拆表或作为版本化负载存储，但不得暴露成三套用户 Profile。旧 `calibration_points` 在兼容期继续反序列化并仅表示 Film Area；旧 `base_color` 与 d_min/d_max 保留但标记为 estimated/legacy。旧项目默认保持外观，不自动切换新科学路径；Profile 不可用时警告并临时退回 Smart Auto。
+
+## 10. 版本升级路线
+
+### Phase 0：规格与回归夹具
+
+固化字段和状态机，收集 135、120、Loose Import 样本，建立“包含/不包含片基”“雾天短调”“不同灯板”和曝光异常回归基线。
+
+### Phase 1：v1.1-alpha，管线与密度语义
+
+解马赛克到 log 前全程 f32；移除科学路径中的显示 gamut compression 和中间 u16；引入 DensityAnchors、ContentRange、RenderMapping；Smart Auto 默认 Preserve Tone；拆分 Film Frame 与参考采样。
+
+验收：已固定锚点不随 Film Area 是否包含片基而改变。
+
+Alpha 已完成 Roll 级片基/片头采样和三种缺失端点规则：两个锚点都存在时整卷固定；只有一个时逐帧估计另一端；两个都没有时逐帧分析。Loose Import 已强制 Smart Auto。
+
+### Phase 2：v1.1-beta，Calibration 基础产品
+
+增加 Calibration 双栏页面、统一的 Calibration Config Profile 存储与参考帧管理；Develop 提供 Roll 级 Profile 下拉选择；保存每个 Roll 的独立绑定和 last-used 新 Roll 默认值；Profile 不可用时保留绑定、显示警告并临时回退 Smart Auto。补齐 135、120、Loose Import 的 Base/D-max/Calibration/Tone 状态和诚实警告。Beta 不拟合或宣称 Status M，不改变已完成的 Roll 锚点计算合同。
+
+### Phase 3：v1.1 正式版，Measured Density
+
+在统一 Profile 内消费暗场、无片场、平场和透射目标，支持 3x3 + offset 参考密度拟合、独立验证和误差报告；Auto Invert 自动消费当前 Roll 已选择的 Profile。只有通过验证的 Density 层才能标记为 Measured。
+
+### Phase 4：v1.1.x，Roll 级效率与稳定性
+
+扩充 Profile 导入导出、分享与重验证；支持批量复制 Film Frame、DensityAnchors 与 RenderMapping；增加校准漂移和 RAW 解码版本警告；导出写入完整追溯元数据。
+
+### Phase 5：v1.2，窄谱硬件校准
+
+支持 RGB LED 分时采集、SPD 管理、Capture Separation、噪声放大和条件数诊断，以及胶片专用 Status-M-to-printing-density 数字 mask。
+
+### Phase 6：v1.3，Film Profile 与高级重建
+
+支持曝光阶梯、H-D 曲线、趾部/肩部、display-referred 与 scene-relative 输出、多波段和连续光谱数据。
+
+## 11. 验收标准
+
+### 11.1 密度与影调
+
+- 已测量 Base Reference 时，Film Frame 是否包含片基不改变 D-Min。
+- 已绑定 Full-Exposure Reference 或 Film Profile 时，照片最高密度不覆盖 D-Max。
+- 没有 D-Max 时，不把照片内容最大值宣称为物理 D-Max。
+- Preserve Tone 保持非全长调照片的短调特征；Full Tone 仅改变显示映射。
+
+### 11.2 校准质量
+
+报告每通道密度 RMSE、最大残差、独立验证集误差、矩阵条件数、噪声放大、饱和和 epsilon 替代比例，以及有效密度范围。范围外不得标记为 verified。
+
+### 11.3 产品行为
+
+- 普通用户仍然只需 Film Frame -> Auto Invert。
+- Calibration 复杂性封装在向导和 Profile 管理中。
+- 120 不依赖自动发现片头；Loose Import 有诚实的估计模式。
+- 旧项目保持可复现，Legacy 算法不会被静默替换。
+
+## 12. 最终原则
+
+NexFilm 的校准系统不是一个万能去色罩矩阵，而是一个用户可见的 Calibration Config Profile，其中包含三层可选能力：
+
+~~~text
+Capture layer：校准硬件如何在 log 前读取透射率
+Density layer：校准密度如何在 log 后对应参考密度标准
+Film layer：校准胶片密度如何重建正片
+~~~
+
+当前非 Legacy 路径在没有经过验证的 Density 层时使用 log 后 identity 三通道相对密度，不套用旧 linear-sRGB Status M 经验矩阵。旧矩阵只允许用于 Legacy 外观复现。日常 Auto Invert 消费当前 Roll 已选择的统一 Profile；缺少能力或 Profile 不可用时诚实退化到 Smart Auto；高级用户提供窄谱或多光谱硬件时逐步提升测量可追溯性。Linear ProPhoto RGB 是当前 Smart Auto 的 f32 估计载体和正片工作空间，不得因此被宣称为物理 Density Input RGB；正式 Measured 路径必须由 Profile 明确定义 log 前输入域。
+
+---
+
+> 附：实施约束摘要
+
+- Calibration 负责建立、检查和管理统一的 Calibration Config Profile；日常 Develop 只选择当前 Roll 的 Profile 并继续使用 Auto Invert。
+- UI 使用左侧 Profile 列表、右侧详情/空状态与纵向 Pipeline；已校准层显示绿色状态，缺失层明确显示默认行为。
+- Profile 不做设备自动匹配，不提供单帧覆盖。每个 Roll 独立保存选择，last-used 只作为未来新 Roll 的创建默认值。
+- Smart Auto 使用 log 后 identity 三通道相对密度；未经参考密度验证不得称为 Status M 或 Measured。旧 Status M 经验矩阵仅保留在 Legacy 路径。
+- log 前的暗场、无片场、平场与 Capture Separation 可以和 log 后三通道对齐共存；未来 Film layer 再使用胶片特性曲线重建曝光与正片。

@@ -1,11 +1,14 @@
-use crate::app_state::{BaseColor, GeometryState, Roll, TuningParams};
+use crate::app_state::{
+    BaseColor, GeometryState, PipelineState, ProcessingContract, Roll, TuningParams,
+};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DATABASE_PATH: &str = "nexfilm_user.db";
-pub const MATH_VERSION: i64 = 3;
+pub const LEGACY_MATH_VERSION: i64 = 3;
+pub const MATH_VERSION: i64 = 4;
 pub const RAW_DECODE_VERSION: i64 = 8;
 
 /// Development builds intentionally keep the database beside the repository so
@@ -117,6 +120,7 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
             params TEXT,
             geom TEXT,
             base_color TEXT,
+            pipeline_state TEXT NOT NULL DEFAULT '{}',
             math_version INTEGER NOT NULL DEFAULT 3,
             raw_decode_version INTEGER NOT NULL DEFAULT 6,
             updated_at INTEGER NOT NULL DEFAULT 0,
@@ -132,6 +136,7 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
             film_stock TEXT NOT NULL,
             camera TEXT NOT NULL,
             image_paths TEXT NOT NULL,
+            density_anchors TEXT NOT NULL DEFAULT '{}',
             sort_order INTEGER NOT NULL,
             updated_at INTEGER NOT NULL DEFAULT 0
         )",
@@ -154,6 +159,8 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
         "INTEGER NOT NULL DEFAULT 1",
     )?;
     add_column_if_missing(connection, "updated_at", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(connection, "pipeline_state", "TEXT NOT NULL DEFAULT '{}'")?;
+    add_roll_column_if_missing(connection, "density_anchors", "TEXT NOT NULL DEFAULT '{}'")?;
     migrate_legacy_thumbnails(connection)?;
     migrate_raw_decode_settings(connection)?;
     migrate_density_contract(connection)?;
@@ -162,6 +169,12 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
 
 fn image_state_columns(connection: &Connection) -> rusqlite::Result<HashSet<String>> {
     let mut statement = connection.prepare("PRAGMA table_info(image_states)")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    rows.collect()
+}
+
+fn roll_columns(connection: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let mut statement = connection.prepare("PRAGMA table_info(rolls)")?;
     let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
     rows.collect()
 }
@@ -176,6 +189,21 @@ fn add_column_if_missing(
     }
     connection.execute(
         &format!("ALTER TABLE image_states ADD COLUMN {name} {declaration}"),
+        [],
+    )?;
+    Ok(())
+}
+
+fn add_roll_column_if_missing(
+    connection: &Connection,
+    name: &str,
+    declaration: &str,
+) -> rusqlite::Result<()> {
+    if roll_columns(connection)?.contains(name) {
+        return Ok(());
+    }
+    connection.execute(
+        &format!("ALTER TABLE rolls ADD COLUMN {name} {declaration}"),
         [],
     )?;
     Ok(())
@@ -290,13 +318,16 @@ fn migrate_density_contract(connection: &Connection) -> rusqlite::Result<()> {
         "SELECT rowid, math_version, raw_decode_version FROM image_states
          WHERE math_version < ?1 OR raw_decode_version < ?2",
     )?;
-    let rows = statement.query_map(rusqlite::params![MATH_VERSION, RAW_DECODE_VERSION], |row| {
-        Ok((
-            row.get::<_, i64>(0)?,
-            row.get::<_, i64>(1)?,
-            row.get::<_, i64>(2)?,
-        ))
-    })?;
+    let rows = statement.query_map(
+        rusqlite::params![LEGACY_MATH_VERSION, RAW_DECODE_VERSION],
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        },
+    )?;
     let row_ids = rows.collect::<rusqlite::Result<Vec<_>>>()?;
     drop(statement);
 
@@ -313,7 +344,7 @@ fn migrate_density_contract(connection: &Connection) -> rusqlite::Result<()> {
              WHERE rowid = ?5",
             rusqlite::params![
                 default_base,
-                MATH_VERSION,
+                LEGACY_MATH_VERSION,
                 RAW_DECODE_VERSION,
                 now_timestamp(),
                 row_id
@@ -321,6 +352,13 @@ fn migrate_density_contract(connection: &Connection) -> rusqlite::Result<()> {
         )?;
     }
     Ok(())
+}
+
+pub fn math_version_for_contract(contract: ProcessingContract) -> i64 {
+    match contract {
+        ProcessingContract::LegacyV1 => LEGACY_MATH_VERSION,
+        _ => MATH_VERSION,
+    }
 }
 
 pub fn now_timestamp() -> i64 {
@@ -361,11 +399,13 @@ pub fn relocate_image_state(
 fn insert_roll(connection: &Connection, roll: &Roll, sort_order: usize) -> rusqlite::Result<()> {
     let image_paths = serde_json::to_string(&roll.image_paths)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    let density_anchors = serde_json::to_string(&roll.density_anchors)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     connection.execute(
         "INSERT INTO rolls (
              roll_id, date, roll_format, film_stock, camera,
-             image_paths, sort_order, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+             image_paths, density_anchors, sort_order, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             roll.roll_id,
             roll.date,
@@ -373,6 +413,7 @@ fn insert_roll(connection: &Connection, roll: &Roll, sort_order: usize) -> rusql
             roll.film_stock,
             roll.camera,
             image_paths,
+            density_anchors,
             sort_order as i64,
             now_timestamp(),
         ],
@@ -394,9 +435,35 @@ pub fn save_rolls(connection: &mut Connection, rolls: &[Roll]) -> rusqlite::Resu
     transaction.commit()
 }
 
+pub fn save_rolls_and_pipeline_states(
+    connection: &mut Connection,
+    rolls: &[Roll],
+    pipeline_states: &[(String, String, PipelineState)],
+) -> rusqlite::Result<()> {
+    let transaction = connection.transaction()?;
+    replace_rolls(&transaction, rolls)?;
+    for (roll_id, file_path, pipeline_state) in pipeline_states {
+        let serialized = serde_json::to_string(pipeline_state)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        transaction.execute(
+            "UPDATE image_states
+             SET pipeline_state = ?1, math_version = ?2, updated_at = ?3
+             WHERE roll_id = ?4 AND file_path = ?5",
+            rusqlite::params![
+                serialized,
+                math_version_for_contract(pipeline_state.contract),
+                now_timestamp(),
+                roll_id,
+                file_path,
+            ],
+        )?;
+    }
+    transaction.commit()
+}
+
 pub fn load_rolls(connection: &Connection) -> rusqlite::Result<Vec<Roll>> {
     let mut statement = connection.prepare(
-        "SELECT roll_id, date, roll_format, film_stock, camera, image_paths
+        "SELECT roll_id, date, roll_format, film_stock, camera, image_paths, density_anchors
          FROM rolls ORDER BY sort_order, roll_id",
     )?;
     let rows = statement.query_map([], |row| {
@@ -408,6 +475,14 @@ pub fn load_rolls(connection: &Connection) -> rusqlite::Result<Vec<Roll>> {
                 Box::new(error),
             )
         })?;
+        let density_anchors_json: String = row.get(6)?;
+        let density_anchors = serde_json::from_str(&density_anchors_json).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
         Ok(Roll {
             roll_id: row.get(0)?,
             date: row.get(1)?,
@@ -415,6 +490,7 @@ pub fn load_rolls(connection: &Connection) -> rusqlite::Result<Vec<Roll>> {
             film_stock: row.get(3)?,
             camera: row.get(4)?,
             image_paths,
+            density_anchors,
         })
     })?;
     rows.collect()
@@ -674,7 +750,7 @@ mod tests {
         assert_eq!(stored_params.exposure.exposure, 0.375);
         assert_eq!(stored_base, BaseColor::default());
         assert_eq!(rendered, None);
-        assert_eq!(math_version, MATH_VERSION);
+        assert_eq!(math_version, LEGACY_MATH_VERSION);
         assert_eq!(raw_version, RAW_DECODE_VERSION);
     }
 
@@ -714,6 +790,7 @@ mod tests {
             film_stock: "Test Film".to_string(),
             camera: "Test Camera".to_string(),
             image_paths: paths.iter().map(|path| path.to_string()).collect(),
+            density_anchors: Default::default(),
         }
     }
 

@@ -1,7 +1,7 @@
 use crate::core_math::{density_luma, status_m_crosstalk_matrix};
 use nalgebra::{Matrix3, Vector3};
 
-use crate::app_state::FilmMode;
+use crate::app_state::{BaseColor, FilmMode, PipelineState, ProcessingContract};
 
 /// 胶片物理处理管线状态对象。
 /// 封装了色彩变换矩阵与下限阈值，片基密度 (D_min) 以及通道偏移补偿。
@@ -17,6 +17,7 @@ pub struct FilmPipeline {
     exposure_offset: Vector3<f32>,
     /// 色彩模式 (Color / B&W)
     mode: FilmMode,
+    contract: ProcessingContract,
 }
 
 impl Default for FilmPipeline {
@@ -43,7 +44,60 @@ impl FilmPipeline {
             base_density,
             exposure_offset: Vector3::new(exp_offset[0], exp_offset[1], exp_offset[2]),
             mode,
+            contract: ProcessingContract::LegacyV1,
         }
+    }
+
+    /// v1.1 scientific path: ProPhoto RGB is the shared linear basis and no
+    /// Status M matrix is applied at this lowest contract level. Density
+    /// channel alignment is therefore the explicit base subtraction itself.
+    pub fn new_prophoto(
+        base_density: [f32; 3],
+        exp_offset: [f32; 3],
+        mode: FilmMode,
+        contract: ProcessingContract,
+    ) -> Self {
+        debug_assert!(contract != ProcessingContract::LegacyV1);
+        Self {
+            crosstalk_matrix: Matrix3::identity(),
+            epsilon: 1e-6_f32,
+            base_density: Vector3::new(base_density[0], base_density[1], base_density[2]),
+            exposure_offset: Vector3::new(exp_offset[0], exp_offset[1], exp_offset[2]),
+            mode,
+            contract,
+        }
+    }
+
+    pub fn from_state(
+        state: &PipelineState,
+        base_color: &BaseColor,
+        exp_offset: [f32; 3],
+        mode: FilmMode,
+    ) -> Self {
+        if state.contract == ProcessingContract::LegacyV1 {
+            return Self::new(
+                [base_color.base_r, base_color.base_g, base_color.base_b],
+                exp_offset,
+                mode,
+            );
+        }
+        let base_density = state
+            .density_anchors
+            .d_min_base
+            .as_ref()
+            .map(|anchor| anchor.density)
+            .unwrap_or_else(|| {
+                [
+                    density_from_u16(base_color.base_r),
+                    density_from_u16(base_color.base_g),
+                    density_from_u16(base_color.base_b),
+                ]
+            });
+        Self::new_prophoto(base_density, exp_offset, mode, state.contract)
+    }
+
+    pub fn contract(&self) -> ProcessingContract {
+        self.contract
     }
 
     /// 第一性原理线性处理管线 - Phase 3 白平衡与曝光偏移
@@ -66,8 +120,12 @@ impl FilmPipeline {
 
         match self.mode {
             FilmMode::Color => {
-                let true_density_vec = self.crosstalk_matrix * delta_d;
-                [true_density_vec.x, true_density_vec.y, true_density_vec.z]
+                if self.contract == ProcessingContract::LegacyV1 {
+                    let true_density_vec = self.crosstalk_matrix * delta_d;
+                    [true_density_vec.x, true_density_vec.y, true_density_vec.z]
+                } else {
+                    [delta_d.x, delta_d.y, delta_d.z]
+                }
             }
             FilmMode::BW => {
                 // Monochrome density is measured in the fixed linear-sRGB
@@ -104,10 +162,17 @@ impl FilmPipeline {
     }
 }
 
+#[inline]
+fn density_from_u16(value: u16) -> f32 {
+    -(value as f32 / 65535.0).max(1e-6).log10()
+}
+
 #[cfg(test)]
 mod tests {
     use super::FilmPipeline;
-    use crate::app_state::FilmMode;
+    use crate::app_state::{
+        BaseColor, DensityAnchors, FilmMode, PipelineState, ProcessingContract,
+    };
 
     #[test]
     fn monochrome_density_uses_green_heavy_capture_luminance() {
@@ -116,5 +181,40 @@ mod tests {
         assert!((density[0] - 0.7152).abs() < 1e-4);
         assert_eq!(density[0], density[1]);
         assert_eq!(density[1], density[2]);
+    }
+
+    #[test]
+    fn prophoto_contract_does_not_apply_status_m() {
+        let pipeline = FilmPipeline::new_prophoto(
+            [0.1, 0.2, 0.3],
+            [0.0; 3],
+            FilmMode::Color,
+            ProcessingContract::SmartAutoProPhotoV11,
+        );
+        let density = pipeline.compute_true_density(&[0.2, 0.2, 0.2]);
+        let expected = -0.2f32.log10();
+        assert!((density[0] - (expected - 0.1)).abs() < 1e-6);
+        assert!((density[1] - (expected - 0.2)).abs() < 1e-6);
+        assert!((density[2] - (expected - 0.3)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn state_uses_roll_base_anchor_for_prophoto_density() {
+        let mut state = PipelineState::smart_auto();
+        state.density_anchors = DensityAnchors {
+            d_min_base: Some(crate::app_state::DensityAnchor {
+                density: [0.11, 0.22, 0.33],
+                source: crate::app_state::DensityAnchorSource::SampledFilmBase,
+                scope: crate::app_state::DensityAnchorScope::Roll,
+                confidence: crate::app_state::DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+            }),
+            d_max_full_exposure: None,
+        };
+        state.contract = ProcessingContract::RollBaseProPhotoV11;
+        let pipeline =
+            FilmPipeline::from_state(&state, &BaseColor::default(), [0.0; 3], FilmMode::Color);
+        let density = pipeline.compute_true_density(&[0.5, 0.5, 0.5]);
+        assert!((density[0] - (-0.5f32.log10() - 0.11)).abs() < 1e-6);
     }
 }

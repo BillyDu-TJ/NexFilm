@@ -33,3 +33,5 @@ test_picture/
 *.svg
 !ui/assets/design-reference/nexfilm-logo.svg
 !ui/assets/design-reference/nexfilm-logo-dark.svg
+
+reference_v777.md

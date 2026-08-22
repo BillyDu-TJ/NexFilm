@@ -203,8 +203,9 @@
                 <h1 id="library-view-title" data-i18n="library.allFrames" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">All Frames</h1>
                 <div class="library-toolbar-actions flex items-center gap-4">
                     <span id="library-selection-count" class="text-[11px] text-zinc-400 font-medium">0 selected</span>
-                    <button id="btn-select-all" type="button" class="text-[10px] font-bold tracking-widest text-zinc-400 hover:text-zinc-100 uppercase transition-colors">Select All</button>
-                    <button id="btn-delete-library-images" type="button" class="text-[10px] font-bold tracking-widest uppercase transition-colors disabled:cursor-not-allowed" disabled>Delete Selected</button>
+                    <button id="btn-select-all" type="button" class="library-toolbar-button" data-i18n="actions.selectAll">Select All</button>
+                    <button id="btn-delete-library-images" type="button" class="library-toolbar-button library-toolbar-button-danger" data-i18n="actions.deleteSelected" disabled>Delete Selected</button>
+                    <button id="btn-calibrate-density" type="button" class="library-toolbar-button library-toolbar-button-primary" data-i18n="calibration.action" disabled>Calibrate Film</button>
                 </div>
             </div>
             <div class="view-content library-content flex-1 p-8 overflow-y-auto custom-scrollbar">
@@ -1090,6 +1091,53 @@
                 </div>
             </div>
         </div>
+    </div>
+
+    <!-- Roll Density Calibration Modal -->
+    <div id="density-calibration-modal" class="density-calibration-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="density-calibration-title">
+        <section id="density-calibration-content" class="density-calibration-dialog" tabindex="-1">
+            <header class="density-calibration-header">
+                <div>
+                    <h2 id="density-calibration-title" data-i18n="calibration.title">Film Calibration</h2>
+                    <p data-i18n="calibration.subtitle">Sample clear film base and fully exposed leader from this scan.</p>
+                </div>
+                <button id="btn-close-density-calibration" type="button" class="density-calibration-close" data-i18n-title="actions.close" aria-label="Close" data-i18n-aria-label="actions.close">
+                    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+                </button>
+            </header>
+            <div class="density-calibration-body">
+                <div id="density-calibration-preview" class="density-calibration-preview">
+                    <img id="density-calibration-image" alt="" draggable="false">
+                    <span id="density-marker-base" class="density-sample-marker density-sample-marker-base hidden"></span>
+                    <span id="density-marker-full" class="density-sample-marker density-sample-marker-full hidden"></span>
+                    <div id="density-calibration-hint" class="density-calibration-hint hidden" data-i18n="calibration.clickHint">Click the image to sample an averaged area</div>
+                </div>
+                <div class="density-calibration-controls">
+                    <div class="density-reference-row">
+                        <div>
+                            <strong data-i18n="calibration.filmBase">Film Base</strong>
+                            <span id="density-base-status" data-i18n="calibration.notSampled">Not sampled</span>
+                        </div>
+                        <button id="btn-sample-density-base" type="button" class="density-eyedropper" data-kind="base" data-i18n-title="calibration.sampleBase" aria-label="Sample film base" data-i18n-aria-label="calibration.sampleBase">
+                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m19 3 2 2-9.5 9.5-3-3L18 2a1.4 1.4 0 0 1 1 1Z"/><path d="m8.5 11.5-5 5V21h4.5l5-5"/><path d="m14 6 4 4"/></svg>
+                        </button>
+                    </div>
+                    <div class="density-reference-row">
+                        <div>
+                            <strong data-i18n="calibration.fullExposure">Film Leader</strong>
+                            <span id="density-full-status" data-i18n="calibration.notSampled">Not sampled</span>
+                        </div>
+                        <button id="btn-sample-density-full" type="button" class="density-eyedropper" data-kind="full" data-i18n-title="calibration.sampleFull" aria-label="Sample film leader" data-i18n-aria-label="calibration.sampleFull">
+                            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m19 3 2 2-9.5 9.5-3-3L18 2a1.4 1.4 0 0 1 1 1Z"/><path d="m8.5 11.5-5 5V21h4.5l5-5"/><path d="m14 6 4 4"/></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <footer class="density-calibration-footer">
+                <button id="btn-cancel-density-calibration" type="button" class="density-calibration-secondary" data-i18n="actions.cancel">Cancel</button>
+                <button id="btn-confirm-density-calibration" type="button" class="density-calibration-primary" data-i18n="actions.confirm" disabled>Confirm</button>
+            </footer>
+        </section>
     </div>
 
     <!-- Batch Apply Modal -->

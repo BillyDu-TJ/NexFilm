@@ -93,6 +93,19 @@ assert.match(main, /function enterCalibrationMode\(\)[\s\S]*?setDevelopInspector
 assert.match(main, /btn-confirm-calibration[\s\S]*?setDevelopInspectorCalibrationLocked\(false\)/);
 assert.match(main, /invoke\('update_roll_metadata'/);
 assert.match(main, /if \(importInProgress\)[\s\S]*?Wait for the current import to finish/);
+assert.match(
+    main,
+    /function pipelineRequiresFilmArea\(state = currentPipelineState\) \{\s*return !pipelineHasCompleteRollAnchors\(state\);\s*\}/,
+    'Film Area may only be skipped when both roll density anchors are present',
+);
+const pipelineRequiresFilmArea = main.match(
+    /function pipelineRequiresFilmArea\(state = currentPipelineState\) \{[\s\S]*?\n\}/,
+)?.[0] || '';
+assert.doesNotMatch(
+    pipelineRequiresFilmArea,
+    /isLooseImportRoll/,
+    'Loose imports must not bypass Film Area when a density endpoint is missing',
+);
 
 assert.match(main, /libDiv\.onmousedown = event =>[\s\S]*?clearNativeSelection\(event\)/);
 assert.match(main, /libDiv\.ondblclick = event =>[\s\S]*?clearNativeSelection\(event\)/);

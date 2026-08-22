@@ -3,9 +3,204 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::sync::RwLock;
 
-/// Hard limit: at most 4 high-res proxy images kept in memory.
+/// v1.1 keeps a compact display proxy plus an f32 scientific proxy for the
+/// active working set, so the cache is deliberately smaller than v1.0.
 /// Exceeding this triggers physical drop of the oldest proxy data.
-pub const MAX_PROXY_CACHE: usize = 4;
+pub const MAX_PROXY_CACHE: usize = 2;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProcessingContract {
+    /// Exact v1.0.2 compatibility path: linear-sRGB transport, gamut
+    /// compression, u16 proxy, and the historical density matrix.
+    LegacyV1,
+    /// v1.1 display estimate in linear ProPhoto RGB. This path deliberately
+    /// does not claim Status M or measured density calibration.
+    SmartAutoProPhotoV11,
+    /// v1.1 ProPhoto estimate with a roll-level film-base reference.
+    RollBaseProPhotoV11,
+    /// v1.1 ProPhoto estimate with roll-level film-base and full-exposure
+    /// references. Per-frame density analysis is unnecessary in this mode.
+    RollAnchoredProPhotoV11,
+    /// Reserved for a later measured workflow. Alpha never selects this
+    /// contract automatically.
+    MeasuredV11,
+}
+
+impl Default for ProcessingContract {
+    fn default() -> Self {
+        Self::LegacyV1
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DensityAnchorSource {
+    SampledFilmBase,
+    SampledFullExposure,
+    EstimatedFromContent,
+    LegacyEstimate,
+    MeasuredProfile,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DensityAnchorScope {
+    Frame,
+    Roll,
+    Profile,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DensityAnchorConfidence {
+    Estimated,
+    UserSampled,
+    Verified,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DensityAnchor {
+    /// Raw channel density before film-base subtraction.
+    pub density: [f32; 3],
+    pub source: DensityAnchorSource,
+    pub scope: DensityAnchorScope,
+    pub confidence: DensityAnchorConfidence,
+    #[serde(default)]
+    pub reference_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct DensityAnchors {
+    #[serde(default)]
+    pub d_min_base: Option<DensityAnchor>,
+    #[serde(default)]
+    pub d_max_full_exposure: Option<DensityAnchor>,
+}
+
+impl DensityAnchors {
+    pub fn has_base(&self) -> bool {
+        self.d_min_base.is_some()
+    }
+
+    pub fn has_roll_base(&self) -> bool {
+        self.d_min_base
+            .as_ref()
+            .is_some_and(|anchor| anchor.scope == DensityAnchorScope::Roll)
+    }
+
+    pub fn has_roll_full_exposure(&self) -> bool {
+        self.d_max_full_exposure
+            .as_ref()
+            .is_some_and(|anchor| anchor.scope == DensityAnchorScope::Roll)
+    }
+
+    pub fn is_fully_anchored(&self) -> bool {
+        self.has_roll_base() && self.has_roll_full_exposure()
+    }
+
+    pub fn prophoto_contract(&self) -> ProcessingContract {
+        if self.is_fully_anchored() {
+            ProcessingContract::RollAnchoredProPhotoV11
+        } else if self.has_roll_base() {
+            ProcessingContract::RollBaseProPhotoV11
+        } else {
+            ProcessingContract::SmartAutoProPhotoV11
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentRangeScope {
+    FilmArea,
+    FullFrame,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContentRange {
+    pub low: [f32; 3],
+    pub high: [f32; 3],
+    pub source_scope: ContentRangeScope,
+    /// A stable algorithm identifier, not a user-facing label.
+    pub percentile_method: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderMode {
+    PreserveTone,
+    FullTone,
+}
+
+impl Default for RenderMode {
+    fn default() -> Self {
+        Self::PreserveTone
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RenderMapping {
+    pub mode: RenderMode,
+    pub density_low: [f32; 3],
+    pub density_high: [f32; 3],
+    pub exposure: f32,
+    pub gamma: f32,
+    pub channel_offsets: [f32; 3],
+}
+
+impl Default for RenderMapping {
+    fn default() -> Self {
+        Self {
+            mode: RenderMode::PreserveTone,
+            density_low: [0.1; 3],
+            density_high: [2.0; 3],
+            exposure: 0.0,
+            gamma: 1.0,
+            channel_offsets: [0.0; 3],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PipelineState {
+    #[serde(default)]
+    pub contract: ProcessingContract,
+    #[serde(default)]
+    pub density_anchors: DensityAnchors,
+    #[serde(default)]
+    pub content_range: Option<ContentRange>,
+    #[serde(default)]
+    pub render_mapping: RenderMapping,
+}
+
+impl Default for PipelineState {
+    fn default() -> Self {
+        Self {
+            contract: ProcessingContract::LegacyV1,
+            density_anchors: DensityAnchors::default(),
+            content_range: None,
+            render_mapping: RenderMapping::default(),
+        }
+    }
+}
+
+impl PipelineState {
+    pub fn smart_auto() -> Self {
+        Self {
+            contract: ProcessingContract::SmartAutoProPhotoV11,
+            ..Self::default()
+        }
+    }
+
+    pub fn from_roll_anchors(anchors: DensityAnchors) -> Self {
+        Self {
+            contract: anchors.prophoto_contract(),
+            density_anchors: anchors,
+            ..Self::default()
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum FilmMode {
@@ -224,8 +419,12 @@ pub struct FilmItem {
     pub rendered_thumbnail_base64: Option<String>,
     pub original_proxy: Option<ImageBuffer<Rgb<u16>, Vec<u16>>>,
     pub proxy_image: Option<ImageBuffer<Rgb<u16>, Vec<u16>>>,
+    /// Linear ProPhoto RGB transmission retained as f32 for v1.1 contracts.
+    /// LegacyV1 leaves this empty and continues to use the u16 proxy above.
+    pub scientific_proxy: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
     pub pristine_proxy: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
     pub base_color: BaseColor,
+    pub pipeline_state: PipelineState,
     pub params: TuningParams,
     pub geom: GeometryState,
     pub is_loose: bool,
@@ -344,7 +543,7 @@ pub struct FilmstripItem {
     pub file_missing: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Roll {
     pub roll_id: String,
     pub date: String,
@@ -352,6 +551,8 @@ pub struct Roll {
     pub film_stock: String,
     pub camera: String,
     pub image_paths: Vec<String>,
+    #[serde(default)]
+    pub density_anchors: DensityAnchors,
 }
 
 pub struct EngineState {

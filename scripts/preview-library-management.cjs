@@ -29,15 +29,30 @@ const mock = `
         flip_h: false, flip_v: false, rotate_90_count: 0,
         calibration_points: null, calibration_confirmed: false
     };
+    const rollAnchoredPipeline = {
+        contract: 'roll_anchored_prophoto_v11',
+        density_anchors: {
+            d_min_base: { density: [0.12, 0.13, 0.14], source: 'sampled_film_base', scope: 'roll', confidence: 'user_sampled', reference_id: 'film-base.tif' },
+            d_max_full_exposure: { density: [2.1, 2.2, 2.3], source: 'sampled_full_exposure', scope: 'roll', confidence: 'user_sampled', reference_id: 'full-exposure.tif' }
+        },
+        content_range: null,
+        render_mapping: { mode: 'preserve_tone', density_low: [0.1, 0.1, 0.1], density_high: [2, 2, 2] }
+    };
+    const loosePipeline = {
+        contract: 'smart_auto_prophoto_v11',
+        density_anchors: {},
+        content_range: null,
+        render_mapping: { mode: 'preserve_tone', density_low: [0.1, 0.1, 0.1], density_high: [2, 2, 2] }
+    };
     let rolls = [
-        { roll_id: 'roll-a', date: '2026-07-12', format: '135', film_stock: 'Kodak Gold 200', camera: 'Nikon F3', image_paths: ['mock/a-1.dng', 'mock/a-2.dng'] },
-        { roll_id: 'loose-b', date: '2026-07-29', format: 'Loose', film_stock: 'Loose Import', camera: '', image_paths: ['mock/b-1.tif', 'mock/b-2.tif'] }
+        { roll_id: 'roll-a', date: '2026-07-12', format: '135', film_stock: 'Kodak Gold 200', camera: 'Nikon F3', image_paths: ['mock/a-1.dng', 'mock/a-2.dng'], density_anchors: rollAnchoredPipeline.density_anchors },
+        { roll_id: 'loose-b', date: '2026-07-29', format: 'Loose', film_stock: 'Loose Import', camera: '', image_paths: ['mock/b-1.tif', 'mock/b-2.tif'], density_anchors: {} }
     ];
     let items = [
-        { id: 'a-1', roll_id: 'roll-a', file_path: 'mock/a-1.dng', thumbnail_base64: thumb('Frame 01', '#50666a'), embedded_thumbnail_base64: thumb('Frame 01', '#50666a'), rendered_thumbnail_base64: null, thumbnail_kind: 'embedded', state_available: true, file_missing: false },
-        { id: 'a-2', roll_id: 'roll-a', file_path: 'mock/a-2.dng', thumbnail_base64: thumb('Frame 02', '#9a6d4f'), embedded_thumbnail_base64: thumb('Frame 02', '#9a6d4f'), rendered_thumbnail_base64: null, thumbnail_kind: 'embedded', state_available: true, file_missing: false },
-        { id: 'b-1', roll_id: 'loose-b', file_path: 'mock/b-1.tif', thumbnail_base64: thumb('Loose 01', '#54647e'), embedded_thumbnail_base64: thumb('Loose 01', '#54647e'), rendered_thumbnail_base64: null, thumbnail_kind: 'embedded', state_available: true, file_missing: false },
-        { id: 'b-2', roll_id: 'loose-b', file_path: 'mock/b-2.tif', thumbnail_base64: thumb('Loose 02', '#6e7651'), embedded_thumbnail_base64: thumb('Loose 02', '#6e7651'), rendered_thumbnail_base64: null, thumbnail_kind: 'embedded', state_available: true, file_missing: false }
+        { id: 'a-1', roll_id: 'roll-a', file_path: 'mock/a-1.dng', thumbnail_base64: thumb('Frame 01', '#50666a'), embedded_thumbnail_base64: thumb('Frame 01', '#50666a'), rendered_thumbnail_base64: null, thumbnail_kind: 'embedded', state_available: true, file_missing: false, pipeline_state: rollAnchoredPipeline },
+        { id: 'a-2', roll_id: 'roll-a', file_path: 'mock/a-2.dng', thumbnail_base64: thumb('Frame 02', '#9a6d4f'), embedded_thumbnail_base64: thumb('Frame 02', '#9a6d4f'), rendered_thumbnail_base64: null, thumbnail_kind: 'embedded', state_available: true, file_missing: false, pipeline_state: rollAnchoredPipeline },
+        { id: 'b-1', roll_id: 'loose-b', file_path: 'mock/b-1.tif', thumbnail_base64: thumb('Loose 01', '#54647e'), embedded_thumbnail_base64: thumb('Loose 01', '#54647e'), rendered_thumbnail_base64: null, thumbnail_kind: 'embedded', state_available: true, file_missing: false, pipeline_state: loosePipeline },
+        { id: 'b-2', roll_id: 'loose-b', file_path: 'mock/b-2.tif', thumbnail_base64: thumb('Loose 02', '#6e7651'), embedded_thumbnail_base64: thumb('Loose 02', '#6e7651'), rendered_thumbnail_base64: null, thumbnail_kind: 'embedded', state_available: true, file_missing: false, pipeline_state: loosePipeline }
     ];
     let libraryRollId = null;
     const clone = value => structuredClone(value);
@@ -63,9 +78,42 @@ const mock = `
             Object.assign(roll, { date: args.date, format: args.format, film_stock: args.filmStock, camera: args.camera });
             return clone(roll);
         }
-        if (command === 'switch_active_image') return { params: clone(params), geom: clone(geom), base_analyzed: false };
+        if (command === 'switch_active_image') {
+            const item = items.find(candidate => candidate.id === args.id);
+            return { params: clone(params), geom: clone(geom), base_analyzed: item?.roll_id === 'roll-a', pipeline_state: clone(item?.pipeline_state || loosePipeline) };
+        }
         if (command === 'get_embedded_preview') return items.find(item => item.id === args.id)?.thumbnail_base64 || '';
+        if (command === 'sample_roll_density_reference') {
+            return {
+                density: args.kind === 'base' ? [0.12, 0.13, 0.14] : [2.1, 2.2, 2.3],
+                source: args.kind === 'base' ? 'sampled_film_base' : 'sampled_full_exposure',
+                scope: 'roll',
+                confidence: 'user_sampled',
+                reference_id: args.id + ':' + args.x.toFixed(3) + ':' + args.y.toFixed(3)
+            };
+        }
+        if (command === 'update_roll_density_anchors') {
+            const anchors = { d_min_base: args.base || null, d_max_full_exposure: args.fullExposure || null };
+            const item = items.find(candidate => candidate.id === args.id);
+            const rollId = args.rollId || item?.roll_id;
+            const roll = rolls.find(candidate => candidate.roll_id === rollId);
+            if (roll) roll.density_anchors = clone(anchors);
+            items.filter(candidate => candidate.roll_id === rollId).forEach(candidate => {
+                candidate.pipeline_state.density_anchors = clone(anchors);
+            });
+            return clone(anchors);
+        }
         if (command === 'prepare_proxy') return true;
+        if (command === 'analyze_proxy_base_color') return null;
+        if (command === 'analyze_proxy_density_limits') {
+            const item = items.find(candidate => candidate.id === args.id);
+            const state = clone(item?.pipeline_state || loosePipeline);
+            if (state.contract === 'smart_auto_prophoto_v11') {
+                state.density_anchors = { d_min_base: { density: [0.1, 0.1, 0.1], source: 'estimated_from_content', scope: 'frame', confidence: 'estimated' } };
+                state.contract = 'roll_base_prophoto_v11';
+            }
+            return { d_min: [0.1, 0.1, 0.1], d_max: [1.8, 1.8, 1.8], pipeline_state: state };
+        }
         if (command === 'get_proxy_image_data') throw 'PROXY_NOT_READY';
         if (command === 'auto_detect_film_border') return { confidence: 0, used_fallback: true, points: null };
         if (command === 'open_file_dialog') return [];
