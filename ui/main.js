@@ -98,6 +98,11 @@ const btnEditCalibrationProfile = document.getElementById('btn-edit-calibration-
 const btnDeleteCalibrationProfile = document.getElementById('btn-delete-calibration-profile');
 const btnCloseCalibrationProfile = document.getElementById('btn-close-calibration-profile');
 const btnCancelCalibrationProfile = document.getElementById('btn-cancel-calibration-profile');
+const calibrationDeleteModal = document.getElementById('calibration-delete-modal');
+const calibrationDeleteMessage = document.getElementById('calibration-delete-message');
+const btnCloseCalibrationDelete = document.getElementById('btn-close-calibration-delete');
+const btnCancelCalibrationDelete = document.getElementById('btn-cancel-calibration-delete');
+const btnConfirmCalibrationDelete = document.getElementById('btn-confirm-calibration-delete');
 const developCalibrationProfileSelect = document.getElementById('develop-calibration-profile-select');
 const developCalibrationStatus = document.getElementById('develop-calibration-status');
 const developCalibrationWarning = document.getElementById('develop-calibration-warning');
@@ -3573,6 +3578,34 @@ function selectedCalibrationProfileView() {
     return calibrationProfiles.find(view => view.profile.profile_id === selectedCalibrationProfileId) || null;
 }
 
+let resolveCalibrationDeleteConfirmation = null;
+
+function closeCalibrationDeleteConfirmation(confirmed = false) {
+    calibrationDeleteModal?.classList.remove('is-open');
+    calibrationDeleteModal?.setAttribute('aria-hidden', 'true');
+    const resolve = resolveCalibrationDeleteConfirmation;
+    resolveCalibrationDeleteConfirmation = null;
+    resolve?.(confirmed);
+}
+
+function confirmCalibrationProfileDeletion(profileName) {
+    if (!calibrationDeleteModal || !calibrationDeleteMessage) return Promise.resolve(false);
+    calibrationDeleteMessage.textContent = i18nText('calibrationConfig.deleteConfirm', { name: profileName });
+    calibrationDeleteModal.classList.add('is-open');
+    calibrationDeleteModal.setAttribute('aria-hidden', 'false');
+    requestAnimationFrame(() => btnConfirmCalibrationDelete?.focus());
+    return new Promise(resolve => {
+        resolveCalibrationDeleteConfirmation = resolve;
+    });
+}
+
+btnCloseCalibrationDelete?.addEventListener('click', () => closeCalibrationDeleteConfirmation(false));
+btnCancelCalibrationDelete?.addEventListener('click', () => closeCalibrationDeleteConfirmation(false));
+btnConfirmCalibrationDelete?.addEventListener('click', () => closeCalibrationDeleteConfirmation(true));
+calibrationDeleteModal?.addEventListener('click', event => {
+    if (event.target === calibrationDeleteModal) closeCalibrationDeleteConfirmation(false);
+});
+
 async function loadCalibrationProfiles({ preserveSelection = true } = {}) {
     const previous = preserveSelection ? selectedCalibrationProfileId : null;
     calibrationProfiles = await invoke('get_calibration_profiles');
@@ -3890,7 +3923,7 @@ calibrationProfileForm?.addEventListener('submit', async event => {
 });
 btnDeleteCalibrationProfile?.addEventListener('click', async () => {
     const selected = selectedCalibrationProfileView();
-    if (!selected || !window.confirm(i18nText('calibrationConfig.deleteConfirm', { name: selected.profile.name }))) return;
+    if (!selected || !(await confirmCalibrationProfileDeletion(selected.profile.name))) return;
     btnDeleteCalibrationProfile.disabled = true;
     try {
         await invoke('delete_calibration_profile', { profileId: selected.profile.profile_id });

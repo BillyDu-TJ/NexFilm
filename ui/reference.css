@@ -2695,6 +2695,24 @@ body[data-theme="dark"] .import-choice-art {
     background: transparent !important;
 }
 
+/* Shared command typography across top-level work surfaces. */
+:is(
+    body > header .export-actions > button,
+    .library-toolbar .library-toolbar-button,
+    #view-history .history-toolbar button:not(#btn-history-back),
+    #view-calibration .calibration-primary-button,
+    #view-calibration .calibration-secondary-button,
+    .calibration-profile-modal .calibration-primary-button,
+    .calibration-profile-modal .calibration-secondary-button
+) {
+    font-family: Montserrat, "Noto Sans SC", "Segoe UI", sans-serif !important;
+    font-size: 12px !important;
+    font-weight: 700 !important;
+    line-height: 1 !important;
+    letter-spacing: 0 !important;
+    text-transform: none !important;
+}
+
 body[data-theme] #view-develop > #develop-inspector {
     width: 100% !important;
     min-width: 0 !important;

@@ -17,6 +17,9 @@ assert.match(html, /id="nav-history"[\s\S]*?id="nav-calibration"[\s\S]*?id="nav-
 assert.match(html, /data-i18n="nav.calibration"[\s\S]*?Hardware Calibration/, 'Navigation must use the Hardware Calibration label');
 assert.doesNotMatch(html, /id="calibration-profile-level"/, 'Calibration level must not be user-selectable');
 assert.doesNotMatch(main, /calibrationProfileLevel/, 'Profile save must not accept a user-selected level');
+assert.doesNotMatch(main, /window\.confirm/, 'Profile deletion must not use the blocked native confirm dialog');
+assert.match(html, /id="calibration-delete-modal"/, 'Profile deletion must use an in-app confirmation dialog');
+assert.match(main, /await confirmCalibrationProfileDeletion/, 'Profile deletion must await the in-app confirmation');
 assert.doesNotMatch(main, /calibrationReferenceKinds[\s\S]*?'film_base'/, 'Film base must stay in Roll calibration');
 assert.doesNotMatch(main, /calibrationReferenceKinds[\s\S]*?'full_exposure'/, 'Full exposure must stay in Roll calibration');
 assert.match(main, /calibrationProfiles\.unshift\(saved\)/, 'Saved Profile must immediately enter the visible list');
@@ -30,5 +33,6 @@ assert.match(styleCss, /\.calibration-stage:not\(:last-child\)::before[\s\S]*?wi
 assert.match(referenceCss, /#view-calibration > \.calibration-toolbar[\s\S]*?border-radius: var\(--ui-radius\)/, 'Calibration toolbar must keep the shared rounded geometry');
 assert.match(referenceCss, /body :where\(\*\):not\(input\):not\(textarea\):not\(select\)[\s\S]*?user-select: none/, 'UI copy must not be selectable');
 assert.match(referenceCss, /input,[\s\S]*?user-select: text/, 'Form controls must remain text-selectable');
+assert.match(referenceCss, /Shared command typography[\s\S]*?font-size: 12px !important;[\s\S]*?font-weight: 700 !important;/, 'Top-level command buttons must share one typography contract');
 
 console.log('Calibration Profile UI contract verified.');

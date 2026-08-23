@@ -1221,6 +1221,25 @@
         </form>
     </div>
 
+    <!-- Calibration Profile Delete Confirmation -->
+    <div id="calibration-delete-modal" class="calibration-profile-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="calibration-delete-title">
+        <section class="calibration-profile-dialog calibration-confirm-dialog">
+            <header class="calibration-profile-dialog-header">
+                <div>
+                    <h2 id="calibration-delete-title" data-i18n="calibrationConfig.deleteProfile">Delete Profile</h2>
+                </div>
+                <button id="btn-close-calibration-delete" type="button" class="calibration-dialog-close" data-i18n-title="actions.close" aria-label="Close" data-i18n-aria-label="actions.close">&times;</button>
+            </header>
+            <div class="calibration-confirm-body">
+                <p id="calibration-delete-message"></p>
+            </div>
+            <footer class="calibration-profile-dialog-footer">
+                <button id="btn-cancel-calibration-delete" type="button" class="calibration-secondary-button" data-i18n="actions.cancel">Cancel</button>
+                <button id="btn-confirm-calibration-delete" type="button" class="calibration-primary-button calibration-delete-confirm" data-i18n="actions.delete">Delete</button>
+            </footer>
+        </section>
+    </div>
+
     <!-- Roll Density Calibration Modal -->
     <div id="density-calibration-modal" class="density-calibration-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="density-calibration-title">
         <section id="density-calibration-content" class="density-calibration-dialog" tabindex="-1">

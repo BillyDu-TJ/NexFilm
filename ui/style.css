@@ -2963,6 +2963,23 @@ body[data-theme="light"] .scope-channel-tabs { background: rgba(42, 42, 44, .72)
     color: var(--text);
     box-shadow: 0 24px 70px rgba(0, 0, 0, .42);
 }
+.calibration-confirm-dialog {
+    width: min(480px, calc(100vw - 48px));
+}
+.calibration-confirm-body {
+    padding: 20px 19px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.65;
+}
+.calibration-confirm-body p { margin: 0; }
+.calibration-delete-confirm {
+    border-color: var(--danger);
+    background: var(--danger);
+}
+.calibration-delete-confirm:hover {
+    background: color-mix(in srgb, var(--danger) 86%, #000);
+}
 .calibration-profile-dialog-header,
 .calibration-profile-dialog-footer {
     display: flex;
