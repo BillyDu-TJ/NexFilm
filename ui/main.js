@@ -89,7 +89,6 @@ const calibrationProfileName = document.getElementById('calibration-profile-name
 const calibrationProfileCamera = document.getElementById('calibration-profile-camera');
 const calibrationProfileLight = document.getElementById('calibration-profile-light');
 const calibrationProfileLens = document.getElementById('calibration-profile-lens');
-const calibrationProfileLevel = document.getElementById('calibration-profile-level');
 const calibrationProfileNotes = document.getElementById('calibration-profile-notes');
 const calibrationReferenceEditor = document.getElementById('calibration-reference-editor');
 const btnSaveCalibrationProfile = document.getElementById('btn-save-calibration-profile');
@@ -3507,8 +3506,6 @@ const calibrationReferenceKinds = [
     'open_gate',
     'flat_field',
     'transmission_target',
-    'film_base',
-    'full_exposure',
     'spectral_capture',
 ];
 
@@ -3517,8 +3514,6 @@ const calibrationReferenceLabelKeys = {
     open_gate: 'calibrationConfig.reference.open_gate',
     flat_field: 'calibrationConfig.reference.flat_field',
     transmission_target: 'calibrationConfig.reference.transmission_target',
-    film_base: 'calibrationConfig.reference.film_base',
-    full_exposure: 'calibrationConfig.reference.full_exposure',
     spectral_capture: 'calibrationConfig.reference.spectral_capture',
 };
 
@@ -3640,7 +3635,6 @@ function renderCalibrationProfileDetail(view) {
         { title: 'calibrationConfig.stage.flatField', description: 'calibrationConfig.stage.flatFieldDescription', configured: kinds.has('flat_field') },
         { title: 'calibrationConfig.stage.captureSeparation', description: 'calibrationConfig.stage.captureSeparationDescription', configured: kinds.has('spectral_capture') },
         { title: 'calibrationConfig.stage.densityReference', description: 'calibrationConfig.stage.densityReferenceDescription', configured: kinds.has('transmission_target') },
-        { title: 'calibrationConfig.stage.rollAnchors', description: 'calibrationConfig.stage.rollAnchorsDescription', configured: kinds.has('film_base') || kinds.has('full_exposure') },
         { title: 'calibrationConfig.stage.filmReconstruction', description: 'calibrationConfig.stage.filmReconstructionDescription', configured: false },
     ];
     calibrationPipeline.replaceChildren(...stages.map(createCalibrationStage));
@@ -3757,7 +3751,6 @@ function openCalibrationProfileEditor(view = null) {
     calibrationProfileCamera.value = profile?.camera || '';
     calibrationProfileLight.value = profile?.light_source || '';
     calibrationProfileLens.value = profile?.lens || '';
-    calibrationProfileLevel.value = profile?.calibration_level || 'smart_auto';
     calibrationProfileNotes.value = profile?.notes || '';
     calibrationProfileDraftReferences = (profile?.references || []).map(reference => ({ ...reference }));
     calibrationProfileModalTitle.textContent = i18nText(profile
@@ -3877,13 +3870,16 @@ calibrationProfileForm?.addEventListener('submit', async event => {
                 camera: calibrationProfileCamera.value,
                 lightSource: calibrationProfileLight.value,
                 lens: calibrationProfileLens.value,
-                calibrationLevel: calibrationProfileLevel.value,
                 notes: calibrationProfileNotes.value,
                 references: calibrationProfileDraftReferences,
             },
         });
         selectedCalibrationProfileId = saved.profile.profile_id;
         closeCalibrationProfileEditor();
+        const savedIndex = calibrationProfiles.findIndex(view => view.profile.profile_id === saved.profile.profile_id);
+        if (savedIndex >= 0) calibrationProfiles.splice(savedIndex, 1, saved);
+        else calibrationProfiles.unshift(saved);
+        renderCalibrationWorkspace();
         await loadCalibrationProfiles();
         showToast(i18nText('calibrationConfig.saved'), 'success');
     } catch (error) {

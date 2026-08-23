@@ -229,11 +229,8 @@
         <!-- VIEW: CALIBRATION              -->
         <!-- ============================== -->
         <section id="view-calibration" class="calibration-workspace transition-opacity duration-300 z-10" style="display: none;" aria-hidden="true" aria-labelledby="calibration-view-title">
-            <div class="calibration-toolbar">
-                <div>
-                    <h1 id="calibration-view-title" data-i18n="calibrationConfig.title">Calibration Config Profiles</h1>
-                    <p data-i18n="calibrationConfig.subtitle">Manage capture references and the configuration used by each roll.</p>
-                </div>
+            <div class="view-toolbar calibration-toolbar">
+                <h1 id="calibration-view-title" data-i18n="calibrationConfig.title">Calibration Config Profiles</h1>
                 <button id="btn-new-calibration-profile" type="button" class="calibration-primary-button" data-i18n="calibrationConfig.newProfile">New Profile</button>
             </div>
             <div class="calibration-layout">
@@ -1182,7 +1179,7 @@
             <header class="calibration-profile-dialog-header">
                 <div>
                     <h2 id="calibration-profile-modal-title" data-i18n="calibrationConfig.newProfile">New Profile</h2>
-                    <p data-i18n="calibrationConfig.editorSubtitle">One Profile can contain capture, density and film capabilities.</p>
+                    <p data-i18n="calibrationConfig.editorSubtitle">One Profile can contain calibration references for a fixed copy setup.</p>
                 </div>
                 <button id="btn-close-calibration-profile" type="button" class="calibration-dialog-close" data-i18n-title="actions.close" aria-label="Close" data-i18n-aria-label="actions.close">&times;</button>
             </header>
@@ -1203,14 +1200,6 @@
                     <label class="calibration-form-field">
                         <span data-i18n="calibrationConfig.lens">Lens</span>
                         <input id="calibration-profile-lens" name="lens" maxlength="160" autocomplete="off">
-                    </label>
-                    <label class="calibration-form-field">
-                        <span data-i18n="calibrationConfig.level">Calibration level</span>
-                        <select id="calibration-profile-level" name="calibrationLevel">
-                            <option value="smart_auto" data-i18n="calibrationConfig.levelSmartAuto">Smart Auto</option>
-                            <option value="calibrated" data-i18n="calibrationConfig.levelCalibrated">Calibrated workflow</option>
-                            <option value="spectral" data-i18n="calibrationConfig.levelSpectral">Spectral / research</option>
-                        </select>
                     </label>
                     <label class="calibration-form-field calibration-form-field-wide">
                         <span data-i18n="calibrationConfig.notes">Notes</span>

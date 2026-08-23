@@ -2649,6 +2649,37 @@ body[data-theme="dark"] .import-choice-art {
     max-width: none !important;
 }
 
+/* Calibration uses the same page-toolbar rhythm as Library and Rolls. */
+#view-calibration {
+    gap: var(--ui-gap);
+    overflow: visible !important;
+    background: transparent !important;
+}
+
+#view-calibration > .calibration-toolbar {
+    width: 100% !important;
+    min-height: 52px !important;
+    padding: 6px clamp(12px, 1.25vw, 18px) !important;
+    border: 0 !important;
+    border-radius: var(--ui-radius) !important;
+    background: var(--ui-surface-soft) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+#view-calibration > .calibration-toolbar > h1 {
+    margin: 0;
+    color: var(--ui-brand) !important;
+    font-size: 18px !important;
+    font-weight: 800 !important;
+    letter-spacing: 0 !important;
+}
+
+#view-calibration > .calibration-layout {
+    padding: 0 !important;
+    gap: var(--ui-gap) !important;
+    background: transparent !important;
+}
+
 body[data-theme] #view-develop > #develop-inspector {
     width: 100% !important;
     min-width: 0 !important;

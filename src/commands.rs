@@ -7030,11 +7030,22 @@ pub struct CalibrationProfileInput {
     #[serde(default)]
     pub lens: String,
     #[serde(default)]
-    pub calibration_level: CalibrationLevel,
-    #[serde(default)]
     pub notes: String,
     #[serde(default)]
     pub references: Vec<CalibrationReference>,
+}
+
+fn calibration_level_from_references(references: &[CalibrationReference]) -> CalibrationLevel {
+    if references
+        .iter()
+        .any(|reference| reference.kind == CalibrationReferenceKind::SpectralCapture)
+    {
+        CalibrationLevel::Spectral
+    } else if references.is_empty() {
+        CalibrationLevel::SmartAuto
+    } else {
+        CalibrationLevel::Calibrated
+    }
 }
 
 fn timestamp_from_system_time(value: std::time::SystemTime) -> Option<i64> {
@@ -7052,14 +7063,21 @@ fn calibration_id(prefix: &str) -> String {
     )
 }
 
-fn calibration_profile_view(profile: CalibrationConfigProfile) -> CalibrationProfileView {
+fn calibration_profile_view(mut profile: CalibrationConfigProfile) -> CalibrationProfileView {
+    // Roll density anchors are owned by Library/Roll calibration. Older beta
+    // builds could store them as Profile references, so isolate them here
+    // without making the rest of the Profile unusable.
+    profile.references.retain(|reference| {
+        !matches!(
+            reference.kind,
+            CalibrationReferenceKind::FilmBase | CalibrationReferenceKind::FullExposure
+        )
+    });
+    profile.calibration_level = calibration_level_from_references(&profile.references);
     let mut warnings = Vec::new();
     let unsupported = profile.schema_version != CALIBRATION_PROFILE_SCHEMA_VERSION;
     if unsupported {
         warnings.push("profile_schema_unsupported".to_string());
-    }
-    if profile.calibration_level != CalibrationLevel::SmartAuto && profile.references.is_empty() {
-        warnings.push("profile_requires_reference".to_string());
     }
     for reference in &profile.references {
         if reference.kind == CalibrationReferenceKind::Unknown {
@@ -7179,6 +7197,17 @@ pub async fn save_calibration_profile(
             return Err("Calibration profile no longer exists.".to_string());
         }
         let now = persistence::now_timestamp();
+        let references = input
+            .references
+            .into_iter()
+            .filter(|reference| {
+                !matches!(
+                    reference.kind,
+                    CalibrationReferenceKind::FilmBase | CalibrationReferenceKind::FullExposure
+                )
+            })
+            .collect::<Vec<_>>();
+        let calibration_level = calibration_level_from_references(&references);
         let profile = CalibrationConfigProfile {
             profile_id: requested_id
                 .map(str::to_string)
@@ -7192,9 +7221,9 @@ pub async fn save_calibration_profile(
             camera: input.camera.trim().to_string(),
             light_source: input.light_source.trim().to_string(),
             lens: input.lens.trim().to_string(),
-            calibration_level: input.calibration_level,
+            calibration_level,
             notes: input.notes.trim().to_string(),
-            references: input.references,
+            references,
         };
         let mut reference_ids = HashSet::new();
         for reference in &profile.references {
@@ -7576,12 +7605,15 @@ pub async fn get_roll_calibration_status(
 
 #[cfg(test)]
 mod calibration_profile_contract_tests {
-    use super::{build_roll_calibration_status, roll_calibration_format};
+    use super::{
+        build_roll_calibration_status, calibration_level_from_references, calibration_profile_view,
+        roll_calibration_format,
+    };
     use crate::app_state::{
         CalibrationConfigProfile, CalibrationLevel, CalibrationProfileAvailability,
-        CalibrationProfileView, DensityAnchors, PipelineState, Roll, RollBaseStatus,
-        RollCalibrationFormat, RollCalibrationMode, RollDmaxStatus,
-        CALIBRATION_PROFILE_SCHEMA_VERSION,
+        CalibrationProfileView, CalibrationReference, CalibrationReferenceKind, DensityAnchors,
+        PipelineState, Roll, RollBaseStatus, RollCalibrationFormat, RollCalibrationMode,
+        RollDmaxStatus, CALIBRATION_PROFILE_SCHEMA_VERSION,
     };
 
     fn roll(format: &str, profile_id: Option<&str>) -> Roll {
@@ -7615,6 +7647,55 @@ mod calibration_profile_contract_tests {
             availability,
             warnings: Vec::new(),
         }
+    }
+
+    fn reference(kind: CalibrationReferenceKind) -> CalibrationReference {
+        CalibrationReference {
+            reference_id: format!("reference-{kind:?}"),
+            kind,
+            file_path: std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+            file_name: "reference.raw".to_string(),
+            file_size: 0,
+            modified_at: None,
+            added_at: 1,
+        }
+    }
+
+    #[test]
+    fn calibration_level_is_derived_from_profile_capabilities() {
+        assert_eq!(
+            calibration_level_from_references(&[]),
+            CalibrationLevel::SmartAuto
+        );
+        assert_eq!(
+            calibration_level_from_references(&[reference(CalibrationReferenceKind::DarkFrame)]),
+            CalibrationLevel::Calibrated
+        );
+        assert_eq!(
+            calibration_level_from_references(&[reference(
+                CalibrationReferenceKind::SpectralCapture
+            )]),
+            CalibrationLevel::Spectral
+        );
+    }
+
+    #[test]
+    fn legacy_profile_roll_anchors_are_hidden_and_do_not_set_the_level() {
+        let mut view = profile(CalibrationProfileAvailability::Available);
+        view.profile.references = vec![
+            reference(CalibrationReferenceKind::FilmBase),
+            reference(CalibrationReferenceKind::FullExposure),
+        ];
+        let normalized = calibration_profile_view(view.profile);
+
+        assert!(normalized.profile.references.is_empty());
+        assert_eq!(
+            normalized.profile.calibration_level,
+            CalibrationLevel::SmartAuto
+        );
     }
 
     #[test]

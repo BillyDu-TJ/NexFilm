@@ -132,7 +132,7 @@ ContentRange 只描述当前照片使用的密度区间；RenderMapping 决定�
 
 ### 4.4 统一的校正配置文件
 
-用户只接触一种产品对象：**校正配置文件（Calibration Config Profile）**。不同校准等级都保存为相同对象、出现在同一列表，并通过 Develop 中同一个下拉框应用。校准等级只决定 Profile 内有哪些能力以及能做出何种科学承诺，不产生三套互不兼容的用户工作流。
+用户只接触一种产品对象：**校正配置文件（Calibration Config Profile）**。不同校准等级都保存为相同对象、出现在同一列表，并通过 Develop 中同一个下拉框应用。校准等级由 NexFilm 根据 Profile 已具备且通过检查的参考与能力自动划分，不允许用户手动选择；它只决定 Profile 能做出何种科学承诺，不产生三套互不兼容的用户工作流。
 
 内部仍保持三个可选层，以遵守各变换所在的物理域：
 
@@ -148,6 +148,8 @@ CalibrationConfigProfile {
 `capture` 在 log 前定义设备如何读取透射率；`density` 在 log 后定义采集密度如何对应参考密度标准；`film` 负责由胶片密度重建正片。Density 层依赖 Capture 层的输入定义，胶片相关的 printing-density mask 与特性曲线必须绑定 Film 层。Profile 缺少某一层时，管线在该处明确显示 `Default` 或 `Smart Auto`，不得伪装成已校准。
 
 Profile 的相机、灯板、镜头和参考目标元数据只用于追溯与展示，不参与自动匹配。
+
+片基与全曝光片头不属于 Calibration Config Profile 的硬件参考，也不在 Calibration 页面采集。它们始终在 Library 中从代表帧采样，并作为当前 Roll 的 DensityAnchors 保存。
 
 ## 5. D-Min/D-Max 标定策略
 
@@ -254,7 +256,7 @@ Alpha 已完成 Roll 级片基/片头采样和三种缺失端点规则：两个�
 
 ### Phase 2：v1.1-beta，Calibration 基础产品
 
-增加 Calibration 双栏页面、统一的 Calibration Config Profile 存储与参考帧管理；Develop 提供 Roll 级 Profile 下拉选择；保存每个 Roll 的独立绑定和 last-used 新 Roll 默认值；Profile 不可用时保留绑定、显示警告并临时回退 Smart Auto。补齐 135、120、Loose Import 的 Base/D-max/Calibration/Tone 状态和诚实警告。Beta 不拟合或宣称 Status M，不改变已完成的 Roll 锚点计算合同。
+增加 Calibration 双栏页面、统一的 Calibration Config Profile 存储与硬件参考帧管理；Profile 等级由系统根据已有能力自动划分，不由用户选择；片基/片头继续只在 Library 中按 Roll 标定。Develop 提供 Roll 级 Profile 下拉选择；保存每个 Roll 的独立绑定和 last-used 新 Roll 默认值；Profile 不可用时保留绑定、显示警告并临时回退 Smart Auto。补齐 135、120、Loose Import 的 Base/D-max/Calibration/Tone 状态和诚实警告。Beta 不拟合或宣称 Status M，不改变已完成的 Roll 锚点计算合同。
 
 ### Phase 3：v1.1 正式版，Measured Density
 
