@@ -13,6 +13,8 @@ assert.match(html, /class="calibration-profile-panel"/, 'Profile list must remai
 assert.match(html, /class="calibration-detail-panel"/, 'Profile detail must remain in its own panel');
 assert.match(html, /class="calibration-metadata-grid"/, 'Profile detail must expose metadata');
 assert.match(html, /id="calibration-pipeline" class="calibration-pipeline"/, 'Profile detail must expose the pipeline');
+assert.match(html, /id="nav-history"[\s\S]*?id="nav-calibration"[\s\S]*?id="nav-sponsor"/, 'Hardware Calibration must sit between Rolls and Sponsor');
+assert.match(html, /data-i18n="nav.calibration"[\s\S]*?Hardware Calibration/, 'Navigation must use the Hardware Calibration label');
 assert.doesNotMatch(html, /id="calibration-profile-level"/, 'Calibration level must not be user-selectable');
 assert.doesNotMatch(main, /calibrationProfileLevel/, 'Profile save must not accept a user-selected level');
 assert.doesNotMatch(main, /calibrationReferenceKinds[\s\S]*?'film_base'/, 'Film base must stay in Roll calibration');
@@ -22,7 +24,11 @@ assert.match(main, /renderCalibrationWorkspace\(\);[\s\S]*?await loadCalibration
 assert.match(main, /selectedCalibrationProfileId = saved\.profile\.profile_id/, 'Saved Profile must become the selected detail');
 assert.match(main, /calibrationPipeline\.replaceChildren/, 'Selected Profile must render pipeline stages');
 assert.match(styleCss, /\.calibration-profile-panel,[\s\S]*?\.calibration-detail-panel[\s\S]*?border-radius:/, 'Both workspace panels must be rounded cards');
+assert.match(styleCss, /\.calibration-empty-state\.hidden,[\s\S]*?display: none/, 'Empty state must be hideable after selecting a Profile');
+assert.match(styleCss, /\.calibration-profile-detail\.hidden[\s\S]*?display: none/, 'Profile detail must honor the hidden state');
 assert.match(styleCss, /\.calibration-stage:not\(:last-child\)::before[\s\S]*?width: 1px/, 'Profile pipeline must retain its vertical guide');
 assert.match(referenceCss, /#view-calibration > \.calibration-toolbar[\s\S]*?border-radius: var\(--ui-radius\)/, 'Calibration toolbar must keep the shared rounded geometry');
+assert.match(referenceCss, /body :where\(\*\):not\(input\):not\(textarea\):not\(select\)[\s\S]*?user-select: none/, 'UI copy must not be selectable');
+assert.match(referenceCss, /input,[\s\S]*?user-select: text/, 'Form controls must remain text-selectable');
 
 console.log('Calibration Profile UI contract verified.');

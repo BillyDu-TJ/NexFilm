@@ -47,6 +47,21 @@ body {
     overflow: hidden;
 }
 
+/* UI copy is presentation, not a text-editing surface. */
+body :where(*):not(input):not(textarea):not(select):not(option):not([contenteditable="true"]) {
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+input,
+textarea,
+select,
+option,
+[contenteditable="true"] {
+    -webkit-user-select: text;
+    user-select: text;
+}
+
 body {
     display: grid !important;
     grid-template-rows: auto auto minmax(0, 1fr);

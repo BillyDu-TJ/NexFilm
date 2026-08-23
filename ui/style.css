@@ -2788,6 +2788,10 @@ body[data-theme="light"] .scope-channel-tabs { background: rgba(42, 42, 44, .72)
     color: var(--subtle);
     text-align: center;
 }
+.calibration-empty-state.hidden,
+.calibration-profile-detail.hidden {
+    display: none;
+}
 .calibration-empty-icon {
     width: 46px;
     height: 46px;
