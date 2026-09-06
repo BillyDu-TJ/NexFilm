@@ -21,6 +21,8 @@ pub struct ResolverProfile {
     pub payload_digest: String,
     pub available: bool,
     pub capture_validation_error: Option<String>,
+    pub fit_validation_error: Option<String>,
+    pub capture_separation_fitted: bool,
     pub has_dark: bool,
     pub has_open_gate: bool,
     pub has_flat: bool,
@@ -262,6 +264,13 @@ pub fn resolve_pipeline(input: &PipelineResolverInput) -> PipelineResolution {
             format!("capture_payload_invalid|{reason}"),
         );
     }
+    if let Some(reason) = &profile.fit_validation_error {
+        return fallback_resolution(
+            input,
+            requested_path,
+            format!("capture_fit_invalid|{reason}"),
+        );
+    }
     if !profile.has_dark || !profile.has_open_gate {
         return fallback_resolution(
             input,
@@ -307,6 +316,16 @@ pub fn resolve_pipeline(input: &PipelineResolverInput) -> PipelineResolution {
         input.raw_decode_version,
     );
     let mut report = PipelineProcessingReport::capture_corrected(profile.has_flat);
+    if profile.capture_separation_fitted {
+        if let Some(stage) = report
+            .stages
+            .iter_mut()
+            .find(|stage| stage.stage == "capture_separation")
+        {
+            stage.status = PipelineStageStatus::Used;
+            stage.detail = "CaptureSeparation3x3_user_measurement_fit".to_string();
+        }
+    }
     report.fallback_reasons.extend(rejected.iter().cloned());
     PipelineResolution {
         requested_path,
@@ -378,6 +397,8 @@ mod tests {
             payload_digest: "payload-a".to_string(),
             available: true,
             capture_validation_error: None,
+            fit_validation_error: None,
+            capture_separation_fitted: false,
             has_dark: true,
             has_open_gate: true,
             has_flat: false,
@@ -408,6 +429,21 @@ mod tests {
         );
         assert!(result.usable_density_anchors.d_min_base.is_none());
         assert!(result.rejected_anchor_reasons[0].contains("anchor_input_domain_mismatch"));
+    }
+
+    #[test]
+    fn fitted_capture_separation_is_reported_as_used() {
+        let mut profile = profile();
+        profile.capture_separation_fitted = true;
+        let result = resolve_pipeline(&input(Some(profile)));
+        let stage = result
+            .processing_report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "capture_separation")
+            .expect("capture separation stage");
+        assert_eq!(stage.status, PipelineStageStatus::Used);
+        assert_eq!(stage.detail, "CaptureSeparation3x3_user_measurement_fit");
     }
 
     #[test]
@@ -494,5 +530,21 @@ mod tests {
             resolve_pipeline(&valid).resolved_path,
             ProcessingContract::CaptureCorrectedV11
         );
+    }
+
+    #[test]
+    fn invalid_capture_fit_falls_back_with_explicit_reason() {
+        let mut prof = profile();
+        prof.fit_validation_error = Some("capture_fit_model_invalid".to_string());
+        let result = resolve_pipeline(&input(Some(prof)));
+        assert_eq!(
+            result.resolved_path,
+            ProcessingContract::SmartAutoProPhotoV11
+        );
+        assert!(result
+            .processing_report
+            .fallback_reasons
+            .iter()
+            .any(|reason| { reason.contains("capture_fit_invalid|capture_fit_model_invalid") }));
     }
 }

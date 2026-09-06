@@ -876,14 +876,22 @@ btnConfirmDensityCalibration.addEventListener('click', async () => {
         if (roll) roll.density_anchors = anchors;
         for (const [id, cached] of imageStates.entries()) {
             if (findKnownItem(id)?.roll_id !== densityCalibrationDraft.rollId) continue;
-            cached.pipeline_state = cached.pipeline_state || {};
-            cached.pipeline_state.density_anchors = JSON.parse(JSON.stringify(anchors));
-            cached.pipeline_state.contract = anchors.d_min_base
-                ? (anchors.d_max_full_exposure ? 'roll_anchored_prophoto_v11' : 'roll_base_prophoto_v11')
-                : 'smart_auto_prophoto_v11';
+            // The backend resolver owns the effective contract. Clear stale
+            // state instead of inferring a ProPhoto/Capture contract locally.
+            cached.pipeline_state = null;
+        }
+        allRolls = await invoke('get_rolls');
+        for (const item of allLibraryItems) {
+            if (item.roll_id === densityCalibrationDraft.rollId) {
+                proxyCache.delete(item.id);
+                readyProxyIds.delete(item.id);
+            }
         }
         closeDensityCalibration();
-        void renderDevelopCalibrationProfile();
+        if (activeId && findKnownItem(activeId)?.roll_id === densityCalibrationDraft.rollId) {
+            await selectImage(activeId, { force: true });
+        }
+        await renderDevelopCalibrationProfile();
         showToast(i18nText('calibration.saved'), 'success');
     } catch (error) {
         showToast(i18nText('calibration.saveFailed', { error }), 'error');
@@ -3580,6 +3588,11 @@ const calibrationReferenceLabelKeys = {
 function calibrationLevelLabel(level) {
     const key = {
         smart_auto: 'calibrationConfig.levelSmartAuto',
+        capture_corrected_experimental: 'calibrationConfig.levelCaptureExperimental',
+        capture_characterized: 'calibrationConfig.levelCaptureCharacterized',
+        density_calibrated: 'calibrationConfig.levelDensityCalibrated',
+        scanner_input_estimate: 'calibrationConfig.levelScannerEstimate',
+        scanner_input_characterized: 'calibrationConfig.levelScannerCharacterized',
         calibrated: 'calibrationConfig.levelCalibrated',
         spectral: 'calibrationConfig.levelSpectral',
     }[level] || 'calibrationConfig.levelSmartAuto';
@@ -3714,7 +3727,7 @@ function renderCalibrationProfileDetail(view) {
         { title: 'calibrationConfig.stage.dark', description: 'calibrationConfig.stage.darkDescription', configured: kinds.has('dark_frame') },
         { title: 'calibrationConfig.stage.openGate', description: 'calibrationConfig.stage.openGateDescription', configured: kinds.has('open_gate') },
         { title: 'calibrationConfig.stage.flatField', description: 'calibrationConfig.stage.flatFieldDescription', configured: kinds.has('flat_field') },
-        { title: 'calibrationConfig.stage.captureSeparation', description: 'calibrationConfig.stage.captureSeparationDescription', configured: kinds.has('spectral_capture') },
+        { title: 'calibrationConfig.stage.captureSeparation', description: 'calibrationConfig.stage.captureSeparationDescription', configured: Boolean(profile.payload?.fit_model) || kinds.has('spectral_capture') },
         { title: 'calibrationConfig.stage.densityReference', description: 'calibrationConfig.stage.densityReferenceDescription', configured: kinds.has('transmission_target') },
         { title: 'calibrationConfig.stage.filmReconstruction', description: 'calibrationConfig.stage.filmReconstructionDescription', configured: false },
     ];

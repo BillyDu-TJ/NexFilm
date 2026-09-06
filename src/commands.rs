@@ -12,6 +12,7 @@ use crate::app_state::{
     CALIBRATION_PROFILE_PAYLOAD_VERSION, CALIBRATION_PROFILE_SCHEMA_VERSION,
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
+use crate::calibration_fit::{fit_capture_separation, CalibrationMeasurementSet, FitOptions};
 use crate::capability_resolver::{
     resolve_pipeline, PipelineImageKind, PipelineResolution, PipelineResolverInput, ResolverProfile,
 };
@@ -27,6 +28,7 @@ use crate::core_math::{
 };
 use crate::persistence::{self, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
+use crate::scanner_profile::{import_local_profile, record_is_current, ScannerProfileRecord};
 use serde::{Deserialize, Serialize};
 
 use base64::{engine::general_purpose, Engine as _};
@@ -2023,6 +2025,29 @@ fn decode_capture_corrected_image_buffer(
         Some(&open),
         &bad_pixels,
     )?;
+    if let Some(model) = profile.payload.fit_model.as_ref() {
+        for (index, pixel) in capture_corrected
+            .transmission
+            .chunks_exact_mut(3)
+            .enumerate()
+        {
+            if !capture_corrected.quality.valid[index] {
+                continue;
+            }
+            let input = [pixel[0], pixel[1], pixel[2]];
+            let Some(output) = crate::calibration_fit::apply_capture_separation(model, input)
+            else {
+                capture_corrected
+                    .quality
+                    .invalidate(index, crate::raw_backend::QualityFlag::OutOfRange);
+                pixel.fill(f32::NAN);
+                continue;
+            };
+            pixel.copy_from_slice(&output);
+        }
+        capture_corrected.capture_separation =
+            "CaptureSeparation3x3_user_measurement_fit".to_string();
+    }
     let range = profile
         .payload
         .valid_range
@@ -2282,6 +2307,7 @@ fn pipeline_base_density(state: &PipelineState, base_color: &BaseColor) -> [f32;
         .density_anchors
         .d_min_base
         .as_ref()
+        .filter(|anchor| anchor_matches_resolved_contract(anchor, state))
         .map(|anchor| anchor.density)
         .unwrap_or_else(|| {
             [base_color.base_r, base_color.base_g, base_color.base_b]
@@ -2293,7 +2319,36 @@ fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
     if state.contract == ProcessingContract::LegacyV1 {
         *base_color != BaseColor::default()
     } else {
-        state.density_anchors.d_min_base.is_some()
+        state
+            .density_anchors
+            .d_min_base
+            .as_ref()
+            .is_some_and(|anchor| anchor_matches_resolved_contract(anchor, state))
+    }
+}
+
+fn anchor_matches_resolved_contract(anchor: &DensityAnchor, state: &PipelineState) -> bool {
+    if anchor.provenance.input_domain != state.contract.input_domain()
+        || anchor.provenance.legacy
+        || anchor.density.iter().any(|value| !value.is_finite())
+    {
+        return false;
+    }
+    if state.contract == ProcessingContract::CaptureCorrectedV11 {
+        anchor
+            .provenance
+            .calibration_profile_id
+            .as_ref()
+            .is_some_and(|id| !id.trim().is_empty())
+            && anchor
+                .provenance
+                .calibration_payload_digest
+                .as_ref()
+                .is_some_and(|digest| !digest.trim().is_empty())
+            && anchor.provenance.raw_decode_version == Some(RAW_DECODE_VERSION)
+    } else {
+        anchor.provenance.calibration_profile_id.is_none()
+            && anchor.provenance.calibration_payload_digest.is_none()
     }
 }
 
@@ -3301,6 +3356,9 @@ pub async fn sample_roll_density_reference(
     y: f32,
     state: State<'_, EngineState>,
 ) -> Result<DensityAnchor, String> {
+    if !x.is_finite() || !y.is_finite() || !(0.0..=1.0).contains(&x) || !(0.0..=1.0).contains(&y) {
+        return Err("Density sample coordinates must be finite and within the image.".into());
+    }
     let (path, roll_id, input, provenance) = {
         let item = state.items.get(&id).ok_or("Image ID not found")?;
         let item = read_lock(item.value());
@@ -3347,8 +3405,12 @@ pub async fn sample_roll_density_reference(
         if image.width() == 0 || image.height() == 0 {
             image = decode_prophoto_estimate_image_buffer(&path, DecodeMode::DevelopProxy)?;
         }
+        let density = averaged_reference_density(&image, quality.as_ref(), x, y)?;
+        if density.iter().any(|value| !value.is_finite()) {
+            return Err("Density sample produced a non-finite value.".into());
+        }
         Ok(DensityAnchor {
-            density: averaged_reference_density(&image, quality.as_ref(), x, y)?,
+            density,
             source,
             scope: DensityAnchorScope::Roll,
             confidence: DensityAnchorConfidence::UserSampled,
@@ -3470,6 +3532,13 @@ fn resolver_profile(view: &CalibrationProfileView) -> ResolverProfile {
             .payload
             .capture_validation_error(RAW_DECODE_VERSION)
             .map(str::to_string),
+        fit_validation_error: view
+            .profile
+            .payload
+            .fit_validation_error()
+            .map(str::to_string),
+        capture_separation_fitted: view.profile.payload.fit_model.is_some()
+            && view.profile.payload.fit_validation_error().is_none(),
         has_dark: has_reference(CalibrationReferenceKind::DarkFrame),
         has_open_gate: has_reference(CalibrationReferenceKind::OpenGate),
         has_flat: view
@@ -4168,7 +4237,7 @@ fn filmstrip_item(item: &FilmItem) -> FilmstripItem {
         embedded_thumbnail_base64: item.embedded_thumbnail_base64.clone(),
         rendered_thumbnail_base64: item.rendered_thumbnail_base64.clone(),
         thumbnail_kind: item.thumbnail_kind().to_string(),
-        base_analyzed: pipeline_has_base(&item.pipeline_state, &item.base_color),
+        base_analyzed: pipeline_has_base(item.effective_pipeline_state(), &item.base_color),
         state_available: true,
         file_missing,
     }
@@ -5012,12 +5081,31 @@ pub async fn switch_active_image(
     item.base_color = base_color;
     item.pipeline_state = pipeline_state;
 
+    // Return the current resolved capability, not the persisted request. This
+    // keeps UI caches and every processing entry point on the resolver's
+    // authoritative contract after a Profile or density-anchor change.
+    let profiles = load_calibration_profile_views().unwrap_or_default();
+    let roll = state
+        .rolls
+        .read()
+        .ok()
+        .and_then(|rolls| rolls.iter().find(|roll| roll.roll_id == roll_id).cloned());
+    let resolution = resolve_image_pipeline(
+        &item.pipeline_state,
+        roll.as_ref(),
+        &profiles,
+        &item.file_path,
+        None,
+    );
+    let resolved_state = state_from_resolution(&item.pipeline_state, &resolution);
+    item.runtime_pipeline_state = Some(resolved_state.clone());
+
     *state.active_id.write().map_err(|e| e.to_string())? = Some(id.clone());
     Ok(ActiveImageState {
         params: item.params.clone(),
         geom: item.geom.clone(),
-        base_analyzed: pipeline_has_base(&item.pipeline_state, &item.base_color),
-        pipeline_state: item.pipeline_state.clone(),
+        base_analyzed: pipeline_has_base(&resolved_state, &item.base_color),
+        pipeline_state: resolved_state,
     })
 }
 
@@ -7954,6 +8042,15 @@ pub struct CalibrationProfileInput {
     pub notes: String,
     #[serde(default)]
     pub references: Vec<CalibrationReference>,
+    /// Optional target-patch measurements. Supplying this field runs the
+    /// measurement-backed pre-log fit and stores its coefficients.
+    #[serde(default)]
+    pub fit_measurements: Option<CalibrationMeasurementSet>,
+    /// Optional fit configuration. Offsets are disabled by default and, when
+    /// requested, are accepted only if the affine model stays positive over
+    /// the normalized transmission cube.
+    #[serde(default)]
+    pub fit_options: Option<FitOptions>,
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
@@ -8046,13 +8143,10 @@ fn capture_hardware_fingerprint(
 fn calibration_level_from_profile(payload: &CalibrationProfilePayload) -> CalibrationLevel {
     if !payload.capture_is_verified(RAW_DECODE_VERSION) {
         CalibrationLevel::SmartAuto
-    } else if payload
-        .capabilities
-        .contains(&CalibrationCapability::SpectralCapture)
-    {
-        CalibrationLevel::Spectral
+    } else if payload.fit_model.is_some() && payload.fit_validation_error().is_none() {
+        CalibrationLevel::CaptureCharacterized
     } else {
-        CalibrationLevel::Calibrated
+        CalibrationLevel::CaptureCorrectedExperimental
     }
 }
 
@@ -8092,10 +8186,15 @@ fn calibration_profile_view(mut profile: CalibrationConfigProfile) -> Calibratio
     }
     let capture_payload_present = !profile.payload.capabilities.is_empty()
         || profile.payload.capture_parameters.is_some()
-        || profile.payload.validation_report.is_some();
+        || profile.payload.validation_report.is_some()
+        || profile.payload.fit_model.is_some();
     if !unsupported && capture_payload_present {
         if let Some(reason) = profile.payload.capture_validation_error(RAW_DECODE_VERSION) {
             warnings.push(format!("profile_capture_invalid|{reason}"));
+            blocking_warning = true;
+        }
+        if let Some(reason) = profile.payload.fit_validation_error() {
+            warnings.push(format!("profile_capture_fit_invalid|{reason}"));
             blocking_warning = true;
         }
     }
@@ -8182,6 +8281,73 @@ pub async fn get_calibration_profiles() -> Result<Vec<CalibrationProfileView>, S
         .map_err(|error| format!("Calibration profile worker failed: {error}"))?
 }
 
+/// Import a local scanner input profile. Scanner provenance is persisted
+/// independently from Capture Calibration and never upgrades a film-density
+/// capability.
+#[tauri::command]
+pub async fn import_scanner_profile(path: String) -> Result<ScannerProfileRecord, String> {
+    tokio::task::spawn_blocking(move || {
+        let (mut profile, digest) = import_local_profile(&path)?;
+        if profile.profile_id.trim().is_empty() {
+            profile.profile_id = format!("scanner-{digest}");
+        }
+        profile.validate()?;
+        let record = ScannerProfileRecord {
+            profile,
+            source_digest: digest,
+            source_path: path,
+        };
+        let mut connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open scanner profile database: {error}"))?;
+        persistence::save_scanner_profile(&mut connection, &record)
+            .map_err(|error| format!("Failed to save scanner profile: {error}"))?;
+        Ok(record)
+    })
+    .await
+    .map_err(|error| format!("Scanner profile worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn get_scanner_profiles() -> Result<Vec<ScannerProfileRecord>, String> {
+    tokio::task::spawn_blocking(|| {
+        let connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open scanner profile database: {error}"))?;
+        let profiles = persistence::load_scanner_profiles(&connection)
+            .map_err(|error| format!("Failed to load scanner profiles: {error}"))?;
+        let mut valid = Vec::new();
+        for record in profiles {
+            if record_is_current(&record) {
+                valid.push(record);
+            }
+        }
+        Ok(valid)
+    })
+    .await
+    .map_err(|error| format!("Scanner profile worker failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn apply_scanner_profile(
+    profile_id: String,
+    input: [f32; 3],
+) -> Result<[f32; 3], String> {
+    tokio::task::spawn_blocking(move || {
+        let connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open scanner profile database: {error}"))?;
+        let profile = persistence::load_scanner_profiles(&connection)
+            .map_err(|error| format!("Failed to load scanner profiles: {error}"))?
+            .into_iter()
+            .find(|record| record.profile.profile_id == profile_id)
+            .ok_or_else(|| "Scanner profile not found.".to_string())?;
+        if !record_is_current(&profile) {
+            return Err("Scanner profile source digest changed; re-import is required.".into());
+        }
+        profile.profile.apply_linear_rgb(input)
+    })
+    .await
+    .map_err(|error| format!("Scanner profile worker failed: {error}"))?
+}
+
 #[tauri::command]
 pub async fn choose_calibration_reference(
     kind: CalibrationReferenceKind,
@@ -8222,6 +8388,19 @@ pub async fn choose_calibration_reference(
     })
     .await
     .map_err(|error| format!("Calibration reference dialog failed: {error}"))?
+}
+
+#[tauri::command]
+pub async fn choose_scanner_profile_file() -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(FileDialog::new()
+            .set_title("Choose Scanner Input Profile")
+            .add_filter("Scanner Profile Configuration", &["json"])
+            .pick_file()
+            .map(|path| path.to_string_lossy().to_string()))
+    })
+    .await
+    .map_err(|error| format!("Scanner profile dialog failed: {error}"))?
 }
 
 #[tauri::command]
@@ -8275,13 +8454,19 @@ pub async fn save_calibration_profile(
         });
         let references_unchanged =
             existing_profile.is_some_and(|profile| profile.references == references);
-        let payload = if references_unchanged && existing_hardware == Some(input_hardware) {
+        let mut payload = if references_unchanged && existing_hardware == Some(input_hardware) {
             existing_profile
                 .map(|profile| profile.payload.clone())
                 .unwrap_or_default()
         } else {
             CalibrationProfilePayload::default()
         };
+        if let Some(measurements) = input.fit_measurements {
+            let model =
+                fit_capture_separation(&measurements, input.fit_options.unwrap_or_default())
+                    .map_err(|error| format!("Calibration fit failed: {error}"))?;
+            payload.fit_model = Some(model);
+        }
         let calibration_level = calibration_level_from_profile(&payload);
         let profile = CalibrationConfigProfile {
             profile_id: requested_id
@@ -8472,6 +8657,9 @@ fn build_capture_calibration_payload(
         }),
         ..CalibrationProfilePayload::default()
     };
+    // Preserve an already fitted target model while refreshing capture-frame
+    // provenance. The fit is part of the same payload digest and session.
+    payload.fit_model = profile.payload.fit_model.clone();
     payload.payload_digest = payload.canonical_digest()?;
     Ok(payload)
 }
@@ -8499,19 +8687,18 @@ pub async fn run_capture_calibration_session(
             .and_then(|report| report.checked_at)
             .unwrap_or_else(persistence::now_timestamp);
         profile.payload = payload;
-        profile.calibration_level = CalibrationLevel::Calibrated;
+        profile.calibration_level = calibration_level_from_profile(&profile.payload);
         profile.updated_at = checked_at;
-        persistence::save_calibration_profile(&mut connection, &profile)
-            .map_err(|error| format!("Failed to save calibrated profile: {error}"))?;
-        persistence::save_calibration_session(
-            &connection,
+        persistence::save_calibration_profile_and_session(
+            &mut connection,
+            &profile,
             &session_id,
-            &profile.profile_id,
             checked_at,
             "passed",
-            &profile.payload,
         )
-        .map_err(|error| format!("Failed to save calibration session: {error}"))?;
+        .map_err(|error| {
+            format!("Failed to save calibrated profile/session atomically: {error}")
+        })?;
         Ok(calibration_profile_view(profile))
     })
     .await
@@ -9689,6 +9876,83 @@ pub async fn update_roll_density_anchors(
     if base.is_none() && full_exposure.is_none() {
         return Err("Sample a film-base or film-leader reference first.".to_string());
     }
+    let profiles = tokio::task::spawn_blocking(load_calibration_profile_views)
+        .await
+        .map_err(|error| format!("Calibration profile worker failed: {error}"))??;
+    let requested_profile_id = state
+        .rolls
+        .read()
+        .map_err(|error| error.to_string())?
+        .iter()
+        .find(|roll| roll.roll_id == roll_id)
+        .and_then(|roll| roll.calibration_profile_id.clone());
+    let requested_profile = requested_profile_id
+        .as_deref()
+        .and_then(|id| profiles.iter().find(|view| view.profile.profile_id == id));
+    if requested_profile_id.is_some() && requested_profile.is_none() {
+        return Err("Cannot save density anchors: bound Capture Profile is missing.".into());
+    }
+    if let Some(view) = requested_profile {
+        if view.availability != CalibrationProfileAvailability::Available
+            || !view.profile.payload.capture_is_verified(RAW_DECODE_VERSION)
+        {
+            return Err(format!(
+                "Cannot save density anchors: bound Capture Profile is unavailable ({})",
+                view.warnings.join(",")
+            ));
+        }
+    }
+    let validate_anchor = |anchor: &DensityAnchor,
+                           expected_source: DensityAnchorSource|
+     -> Result<(), String> {
+        if anchor.source != expected_source {
+            return Err(format!(
+                "density_anchor_source_mismatch|expected={expected_source:?}"
+            ));
+        }
+        if anchor.scope != DensityAnchorScope::Roll {
+            return Err("density_anchor_scope_must_be_roll".into());
+        }
+        if anchor.confidence == DensityAnchorConfidence::Estimated {
+            return Err("density_anchor_confidence_must_be_user_sampled_or_verified".into());
+        }
+        if anchor.density.iter().any(|value| !value.is_finite()) {
+            return Err("density_anchor_values_must_be_finite".into());
+        }
+        if anchor.provenance.algorithm_version != crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION
+            || anchor.provenance.legacy
+            || anchor
+                .reference_id
+                .as_deref()
+                .is_none_or(|id| !id.starts_with(&(roll_id.clone() + ":")))
+        {
+            return Err("density_anchor_provenance_invalid".into());
+        }
+        if let Some(view) = requested_profile {
+            if anchor.provenance.input_domain
+                != crate::app_state::DataDomain::RelativeTransmissionRgb
+                || anchor.provenance.calibration_profile_id.as_deref()
+                    != Some(view.profile.profile_id.as_str())
+                || anchor.provenance.calibration_payload_digest.as_deref()
+                    != Some(view.profile.payload.payload_digest.as_str())
+                || anchor.provenance.raw_decode_version != Some(RAW_DECODE_VERSION)
+            {
+                return Err("density_anchor_capture_profile_provenance_mismatch".into());
+            }
+        } else if anchor.provenance.input_domain != crate::app_state::DataDomain::ProPhotoEstimate
+            || anchor.provenance.calibration_profile_id.is_some()
+            || anchor.provenance.calibration_payload_digest.is_some()
+        {
+            return Err("density_anchor_prophoto_provenance_invalid".into());
+        }
+        Ok(())
+    };
+    if let Some(anchor) = &base {
+        validate_anchor(anchor, DensityAnchorSource::SampledFilmBase)?;
+    }
+    if let Some(anchor) = &full_exposure {
+        validate_anchor(anchor, DensityAnchorSource::SampledFullExposure)?;
+    }
     if let (Some(base), Some(full)) = (&base, &full_exposure) {
         if (0..3).any(|channel| full.density[channel] <= base.density[channel] + 1e-4) {
             return Err(
@@ -9711,6 +9975,18 @@ pub async fn update_roll_density_anchors(
             if !anchors.retained_records.contains(&previous) {
                 anchors.retained_records.push(previous);
             }
+        }
+    }
+    if let (Some(base), Some(full)) = (
+        anchors.d_min_base.as_ref(),
+        anchors.d_max_full_exposure.as_ref(),
+    ) {
+        if (0..3).any(|channel| {
+            !base.density[channel].is_finite()
+                || !full.density[channel].is_finite()
+                || full.density[channel] <= base.density[channel]
+        }) {
+            return Err("density_anchor_dmax_must_exceed_dmin".into());
         }
     }
     roll.density_anchors = anchors.clone();

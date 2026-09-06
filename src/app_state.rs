@@ -40,7 +40,14 @@ pub enum DataDomain {
 #[serde(rename_all = "snake_case")]
 pub enum CalibrationLevel {
     SmartAuto,
+    CaptureCorrectedExperimental,
+    CaptureCharacterized,
+    DensityCalibrated,
+    ScannerInputEstimate,
+    ScannerInputCharacterized,
+    #[serde(alias = "calibrated")]
     Calibrated,
+    #[serde(alias = "spectral")]
     Spectral,
 }
 
@@ -205,6 +212,10 @@ pub struct CalibrationProfilePayload {
     pub capabilities: Vec<CalibrationCapability>,
     #[serde(default)]
     pub validation_report: Option<CalibrationValidationReport>,
+    /// Optional user-measurement-backed pre-log Capture Separation fit.
+    /// Absence means the profile only provides capture normalization.
+    #[serde(default)]
+    pub fit_model: Option<crate::calibration_fit::CalibrationFitModel>,
 }
 
 impl Default for CalibrationProfilePayload {
@@ -224,6 +235,7 @@ impl Default for CalibrationProfilePayload {
             valid_range: None,
             capabilities: Vec::new(),
             validation_report: None,
+            fit_model: None,
         }
     }
 }
@@ -347,12 +359,46 @@ impl CalibrationProfilePayload {
         {
             return Some("capture_valid_range_invalid");
         }
+        if let Some(reason) = self.fit_validation_error() {
+            return Some(reason);
+        }
         None
     }
 
     pub fn capture_is_verified(&self, current_raw_decode_version: i64) -> bool {
         self.capture_validation_error(current_raw_decode_version)
             .is_none()
+    }
+
+    pub fn fit_validation_error(&self) -> Option<&'static str> {
+        let Some(model) = &self.fit_model else {
+            return None;
+        };
+        if model.source_domain
+            != crate::calibration_fit::ReferenceDomain::CameraNativeTransmissionRgb
+            || model.target_domain != crate::calibration_fit::ReferenceDomain::TransmissionRgb
+            || model.pipeline_order != "capture_correction->capture_separation->log10"
+            || model.measurement_digest.trim().is_empty()
+            || model.matrix.iter().flatten().any(|v| !v.is_finite())
+            || model.offset.iter().any(|v| !v.is_finite())
+            || model.diagnostics.rank < 3
+            || !model.diagnostics.condition_number.is_finite()
+            || model.diagnostics.condition_number > 1.0e5
+            || model.diagnostics.training_patch_count < 4
+            || model.diagnostics.validation_patch_count == 0
+            || !model.diagnostics.training_rmse.is_finite()
+            || !model.diagnostics.validation_rmse.is_finite()
+            || model.diagnostics.validation_rmse > 0.08
+            || model
+                .diagnostics
+                .channel_rmse
+                .iter()
+                .any(|v| !v.is_finite())
+            || !crate::calibration_fit::preserves_positive_unit_transmission(model)
+        {
+            return Some("capture_fit_model_invalid");
+        }
+        None
     }
 }
 

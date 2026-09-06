@@ -1,5 +1,7 @@
 # NexFilm 数据处理与硬件校准管线
 
+> **实现状态（当前版本）**：Smart Auto = ProPhoto Estimate；Capture Corrected = 已验证 dark/open 的相对传输率实验路径；Capture Characterized = 在此基础上使用用户目标 patch 拟合并实际应用 `CaptureSeparation3x3`；Scanner Input Estimate/Characterized 是独立输入能力。当前没有 Density Calibrated、数字 mask、胶片 H-D 曲线或新的 Status M 矩阵。
+
 ## 文档状态
 
 本文是 v1.1 的目标架构、理论说明和实施计划。它取代此前以输入格式和工作色域为主线的设计草案。
@@ -135,7 +137,7 @@ LibRaw Camera RGB u16
 - 压缩结果在 `-log10` 前重新量化为 `u16`。
 - Camera Native 到 linear-sRGB 的普通色度矩阵不保证输出通道是适合密度计算的物理基底。
 - LibRaw 相机白平衡仍会把通道增益、灯板颜色和设备校准耦合在一起。
-- 当前没有暗场、无片光源和平场参考。
+- 旧版路径没有暗场、无片光源和平场参考；当前 Capture Corrected 路径已支持并验证暗场、无片场、可选平场和质量掩码。
 - 当前片基主要通过画面统计估计，不等同于同批胶片的实测未曝光片基。
 - 当前 `status_m_crosstalk_matrix()` 没有附带参考测量、适用胶片、硬件条件或误差报告，必须视为 **Legacy Estimate**。
 - 当前正片是显示参考结果，不是经过胶片特性曲线反演得到的场景线性数据。
@@ -437,9 +439,9 @@ positive reconstruction
 
 这是 NexFilm 高级硬件校准的首选方向。
 
-### 6.3 v1.1 最适合落地：认证透射目标到 Status M 的密度拟合
+### 6.3 后续版本：认证透射目标到 Status M 的密度拟合
 
-使用普通稳定灯板、暗场、无片场和平场，扫描具有 Status M 参考值的透射目标，在密度域拟合 `A * D + b`。
+在当前 `CaptureSeparation3x3` 基础之上，后续版本可使用普通稳定灯板、暗场、无片场和平场，扫描具有 Status M 参考值的透射目标，在密度域拟合 `A * D + b`。该密度拟合当前尚未实现。
 
 优点：
 
@@ -556,38 +558,41 @@ validation_metrics
 
 ## 8. v1.1 实施计划
 
-### Phase 1：测量基础与端到端 f32（v1.1 必做）
+### Phase 1：测量基础与端到端 f32（基础能力已落地，端到端 f32 仍是后续工作）
 
-1. 新建 `f32` Camera Native / Density Input RGB 图像缓冲，不在 `-log10` 前量化回 `u16`。
+1. Capture Corrected 已在校正和拟合阶段使用 `f32` Camera Native / Relative Transmission RGB；解码代理和完整端到端无 `u16` transport 仍待后续替换。
 2. 把显示用 gamut compression 从科学密度分支移除；只允许在明确的预览/显示路径使用。
 3. 为科学路径关闭自动白平衡，保存固定相机增益和 RAW 黑/白电平。
-4. 支持暗场、无片光源和平场参考，并明确参考帧的设备与曝光绑定。
+4. 暗场、无片场和可选平场参考已支持，并与 Profile 的设备、曝光和几何元数据绑定。
 5. 为每个阶段增加饱和、负值、非有限值、epsilon 替代和有效密度范围诊断。
 6. 保证 Develop 预览、Auto Invert、直方图和全分辨率导出使用同一校准数学合同。
 7. 保留 v1.0.2 Legacy 路径，以项目版本或处理模式显式选择。
 
-### Phase 2：配置架构与基础 UI（v1.1 必做）
+### Phase 2：配置架构与基础 UI（基础版本已落地，扩展导入导出仍在路线中）
 
 1. 实现 Capture Profile、Density Profile、Film Profile 的版本化存储与导入导出。
 2. UI 将 `Input Space`、`Density Calibration`、`Film Reconstruction`、`Working Space` 分开显示。
-3. 提供三种清晰状态：
-   - `Uncalibrated / Identity`
-   - `Legacy Estimate`
-   - `Measured Calibration`
+3. 提供清晰的能力状态：
+   - `Smart Auto / ProPhoto Estimate`
+   - `Capture Corrected Experimental`
+   - `Capture Characterized`
+   - `Density Calibrated`（当前未实现）
+   - `Scanner Input Estimate`
+   - `Scanner Input Characterized`
 4. 配置不匹配相机、灯板、曝光或胶片时发出警告，不静默套用。
 5. DCP/ICC 仅作为输入特性配置；DCP Look Table、Tone Curve 不进入密度路径。
 
-### Phase 3：Status M 实用校准向导（v1.1 正式功能）
+### Phase 3：Capture Separation 实用校准向导（当前 Calibration Fit Foundation）
 
 1. 用户选择或拍摄暗场、无片场、平场和认证透射目标。
 2. 自动检测色块/阶梯区域，并允许人工修正。
 3. 排除饱和、低信噪比、边缘污染和异常样本。
-4. 拟合 `D_status_m = A * D_capture + b`；默认从 affine `3x3 + offset` 开始。
+4. 对明确的 Transmission RGB 或 Density RGB 参考拟合 `CaptureSeparation3x3`；模型作用于 `log10` 前，不等同于 Status M 或数字 mask。
 5. 按目标设计划分训练集和独立验证集，不能只报告训练误差。
 6. 保存原始参考值、拟合参数、设备元数据和验证报告。
 7. 若验证残差显示明显密度相关或材料相关误差，将配置标记为近似，不自动升级为高阶模型。
 
-### Phase 4：RGB 窄谱灯板高级模式（v1.1 实验功能）
+### Phase 4：RGB 窄谱灯板高级模式（后续实验功能）
 
 1. 支持 R/G/B 三次独立采集及其暗场、无片场和曝光元数据。
 2. 记录每路 LED 的峰值、带宽和实测/厂商 SPD。

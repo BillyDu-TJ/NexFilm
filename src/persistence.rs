@@ -3,6 +3,7 @@ use crate::app_state::{
     CalibrationReference, CalibrationReferenceKind, GeometryState, PipelineState,
     ProcessingContract, Roll, TuningParams,
 };
+use crate::scanner_profile::{ScannerInputProfile, ScannerProfileRecord};
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -195,6 +196,16 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
             validation_status TEXT NOT NULL,
             payload TEXT NOT NULL,
             FOREIGN KEY (profile_id) REFERENCES calibration_profiles(profile_id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS scanner_profiles (
+            profile_id TEXT PRIMARY KEY,
+            source_path TEXT NOT NULL,
+            source_digest TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            updated_at INTEGER NOT NULL DEFAULT 0
         )",
         [],
     )?;
@@ -740,6 +751,125 @@ pub fn save_calibration_session(
     Ok(())
 }
 
+/// Atomically replaces a Profile and records the validating Session. This is
+/// used after a calibration run so a digest-bearing Profile can never be left
+/// without its matching passed Session (or vice versa).
+pub fn save_calibration_profile_and_session(
+    connection: &mut Connection,
+    profile: &CalibrationConfigProfile,
+    session_id: &str,
+    created_at: i64,
+    validation_status: &str,
+) -> rusqlite::Result<()> {
+    let transaction = connection.transaction()?;
+    transaction.execute(
+        "INSERT INTO calibration_profiles (
+             profile_id, schema_version, name, created_at, updated_at, camera,
+             light_source, lens, calibration_level, notes, payload
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT(profile_id) DO UPDATE SET
+             schema_version = excluded.schema_version,
+             name = excluded.name,
+             updated_at = excluded.updated_at,
+             camera = excluded.camera,
+             light_source = excluded.light_source,
+             lens = excluded.lens,
+             calibration_level = excluded.calibration_level,
+             notes = excluded.notes,
+             payload = excluded.payload",
+        rusqlite::params![
+            profile.profile_id,
+            profile.schema_version as i64,
+            profile.name,
+            profile.created_at,
+            profile.updated_at,
+            profile.camera,
+            profile.light_source,
+            profile.lens,
+            serialize_enum(&profile.calibration_level)?,
+            profile.notes,
+            serde_json::to_string(&profile.payload)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
+        ],
+    )?;
+    transaction.execute(
+        "DELETE FROM calibration_references WHERE profile_id = ?1",
+        rusqlite::params![profile.profile_id],
+    )?;
+    for reference in &profile.references {
+        insert_calibration_reference(&transaction, &profile.profile_id, reference)?;
+    }
+    let session_payload = serde_json::to_string(&profile.payload)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    transaction.execute(
+        "INSERT INTO calibration_sessions (
+             session_id, profile_id, created_at, validation_status, payload
+         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            session_id,
+            profile.profile_id,
+            created_at,
+            validation_status,
+            session_payload,
+        ],
+    )?;
+    transaction.commit()
+}
+
+pub fn save_scanner_profile(
+    connection: &mut Connection,
+    record: &ScannerProfileRecord,
+) -> rusqlite::Result<()> {
+    let transaction = connection.transaction()?;
+    let profile = record.profile.clone();
+    if profile.profile_id.trim().is_empty() {
+        return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "scanner profile id missing",
+            ),
+        )));
+    }
+    let payload = serde_json::to_string(&profile)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    transaction.execute(
+        "INSERT INTO scanner_profiles (profile_id, source_path, source_digest, payload, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(profile_id) DO UPDATE SET source_path=excluded.source_path,
+         source_digest=excluded.source_digest, payload=excluded.payload, updated_at=excluded.updated_at",
+        rusqlite::params![profile.profile_id, record.source_path, record.source_digest, payload, now_timestamp()],
+    )?;
+    transaction.commit()
+}
+
+pub fn load_scanner_profiles(
+    connection: &Connection,
+) -> rusqlite::Result<Vec<ScannerProfileRecord>> {
+    let mut statement = connection.prepare(
+        "SELECT profile_id, source_path, source_digest, payload FROM scanner_profiles ORDER BY updated_at DESC, profile_id",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let profile_id: String = row.get(0)?;
+        let source_path: String = row.get(1)?;
+        let source_digest: String = row.get(2)?;
+        let mut profile: ScannerInputProfile = serde_json::from_str(&row.get::<_, String>(3)?)
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+        profile.profile_id = profile_id;
+        Ok(ScannerProfileRecord {
+            profile,
+            source_digest,
+            source_path,
+        })
+    })?;
+    rows.collect()
+}
+
 pub fn calibration_session_matches(
     connection: &Connection,
     session_id: &str,
@@ -760,6 +890,7 @@ pub fn calibration_session_matches(
             payload.payload_digest == payload_digest
                 && payload.canonical_digest().ok().as_deref() == Some(payload_digest)
                 && payload.capture_is_verified(RAW_DECODE_VERSION)
+                && payload.fit_validation_error().is_none()
         }))
 }
 
@@ -1391,6 +1522,47 @@ mod tests {
             &payload.payload_digest
         )
         .unwrap());
+    }
+
+    #[test]
+    fn calibration_profile_and_session_commit_atomically() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let payload = verified_session_payload();
+        let mut profile = sample_calibration_profile("atomic-profile");
+        profile.payload = payload.clone();
+        profile.calibration_level = CalibrationLevel::CaptureCorrectedExperimental;
+
+        save_calibration_profile_and_session(
+            &mut connection,
+            &profile,
+            "atomic-session",
+            42,
+            "passed",
+        )
+        .unwrap();
+        assert!(calibration_session_matches(
+            &connection,
+            "atomic-session",
+            &profile.profile_id,
+            &payload.payload_digest
+        )
+        .unwrap());
+
+        let mut changed = profile.clone();
+        changed.name = "must-roll-back".to_string();
+        assert!(save_calibration_profile_and_session(
+            &mut connection,
+            &changed,
+            "atomic-session",
+            43,
+            "passed",
+        )
+        .is_err());
+        assert_eq!(
+            load_calibration_profiles(&connection).unwrap()[0].name,
+            profile.name
+        );
     }
 
     #[test]

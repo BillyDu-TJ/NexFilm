@@ -1,5 +1,7 @@
 # NexFilm 校准、密度锚点与管线升级路线图
 
+> **当前实现基线（本阶段）**：Smart Auto 是 ProPhoto Estimate；暗场/无片场完成并通过验证的 Capture Profile 是 Capture Corrected Experimental；带有效用户目标素材、3x3 拟合系数、独立验证误差和 digest 的 Profile 是 Capture Characterized。只有明确的密度参考域、密度模型和验证报告才能进入 Density Calibrated；本版本尚未实现该等级。扫描仪输入 Profile 独立显示为 Scanner Input Estimate 或 Scanner Input Characterized，不能提升 Capture 或 Density 等级。数字 mask、胶片 H-D 曲线和新的 Status M 矩阵仍未实现。
+
 ## 1. 目标与核心原则
 
 本路线图合并两项工作：硬件校准与三段式色彩管线升级，以及 D-Min/D-Max、片基与全曝光参考的密度标定。它们必须一起设计：硬件校准决定透射率是否可信，片基和全曝光参考决定密度坐标锚点，Auto Invert 再利用这些信息生成正片。
@@ -11,7 +13,7 @@
 推进时必须保持两条清晰的产品路径：
 
 - Smart Auto 继续使用 LibRaw 的显影后 RGB，定位为快速、兼容性优先的 ProPhoto Estimate，不宣称物理密度或 Status M。
-- Measured Calibration 继续使用 LibRaw，但只消费 libraw_unpack 后的原始 CFA 与元数据，由 NexFilm 控制暗场、无片场/平场、解马赛克、Capture Separation、密度和胶片模型。
+- Capture Corrected Experimental 使用 LibRaw unpack 后的原始 CFA 与元数据，由 NexFilm 控制暗场、无片场、解马赛克和相对传输率；Capture Characterized 另外消费用户目标素材拟合的 Capture Separation。两者都不宣称 Status M 或胶片密度。
 
 16-bit 容器本身不是科学性问题。12/14-bit RAW 装入 u16 可以无损保存；真正的问题是 dcraw_process 之后的数值已经经过黑电平、通道增益、白平衡、解马赛克和相机色彩矩阵，不能再被当作原始传感器响应。
 
@@ -123,7 +125,7 @@ v1.0.2 已在 LibRaw camera-to-sRGB 矩阵阶段使用 f32，避免中间直接�
 - 相机矩阵后使用 compress_linear_srgb_for_density() 进行正值域 gamut compression，再量化回 u16。
 - 当前密度计算仍绑定固定 linear-sRGB capture domain。
 - LibRaw 使用相机白平衡，通道增益与翻拍灯板未完全解耦。
-- 暗场、无片光源和平场参考尚未成为正式校准输入。
+- 旧版 ProPhoto 路径没有暗场、无片光源和平场参考；当前 Capture Corrected Profile 已将暗场、无片场、可选平场和质量掩码纳入正式输入。
 - 当前片基主要由图像统计估计。
 - status_m_crosstalk_matrix() 没有设备、灯板、胶片、测量标准和误差报告，只能视为 Legacy Estimate。
 - compute_auto_color_limits() 在 Film Area 内采样照片密度低/高尾部；Film Area 是否包含片基会改变估计 d_min/d_max，从而改变整张照片的显示动态范围。
@@ -147,14 +149,16 @@ v1.0.2 已在 LibRaw camera-to-sRGB 矩阵阶段使用 f32，避免中间直接�
 - 非 Legacy 的三通道对齐目前主要是 D_raw - D_base 与渲染阶段的逐通道归一化，只能处理 offset/尺度，不能校正染料串扰。
 - Preserve Tone 已有状态名，但最终渲染仍使用 d_min/d_max 归一化；必须用短调回归样本证明它不会隐式拉伸内容范围。
 
-尚未完成或目前只是产品外壳的部分：
+本阶段已经完成的校准基础：
 
-- 暗场、无片场、平场和 Capture Separation 尚未参与实际像素计算。
-- Profile 没有矩阵、offset、曲线、适用范围、质量掩码、算法版本或验证报告；选择 Profile 目前主要改变 ID 和 UI 状态。
-- 未来的 MeasuredDensityV11 尚未被定义或选择；没有 3x3 + offset 密度拟合、独立验证、条件数和残差报告。
+- 暗场、无片场、质量掩码、固定解马赛克已经参与 Capture Corrected 像素计算；可选的用户目标 3x3 Capture Separation 拟合系数也在 `log10` 前实际应用。
+- Profile 保存矩阵、offset、输入/目标域、pipeline order、测量 digest、条件数、rank、训练/验证 RMSE 和异常样本统计，并在加载时重新校验。
+- 当前拟合模型是 `CaptureSeparation3x3`，不是 DensityAffineTransform；它建立 Capture Characterized，不等于 Density Calibrated。
+
+仍未完成且保持明确边界的部分：
 - 没有数字 mask，也没有具体胶片/冲洗条件的 H-D 特性曲线反演。
 
-因此当前最准确的产品定位是“可追溯的相对密度 Auto Invert 骨架 + Calibration 配置管理”，不是完整的实测硬件校准。
+因此当前最准确的产品定位是“可追溯的 Smart Auto / Capture Corrected / Capture Characterized 管线 + 独立 Scanner Input Profile 边界”，不是完整的真实胶片密度校准。
 
 ## 4. 统一数据模型
 
@@ -270,7 +274,7 @@ RawMosaic 至少携带 CFA 类型、每通道/每区域 black level、white leve
 
 ### 7.2 Calibrated Workflow
 
-固定翻拍架和白光板用户使用暗场、无片场、平场和透射目标建立一个 Calibration Config Profile；Capture 与 Density 只是其中的内部能力层。v1.1 正式版再支持参考密度目标拟合 3x3 + offset，并报告独立验证误差。IT8 的 Lab 参考只能生成色度 ICC 或端到端色彩配置，不直接命名为胶片密度标定。
+固定翻拍架和白光板用户使用暗场、无片场、平场和透射目标建立一个 Calibration Config Profile；Capture 与 Density 只是其中的内部能力层。当前 Calibration Fit Foundation 已支持明确 Transmission/Density 参考的 `CaptureSeparation3x3` 和独立验证误差；这仍然不等于胶片密度标定。IT8 的 Lab 参考只能生成色度 ICC 或端到端色彩配置，不直接命名为胶片密度标定。
 
 三通道对齐与数字 mask 必须分开：
 
@@ -297,7 +301,7 @@ RGB 窄谱 LED 分时或多光谱用户记录 SPD，在同一个 Calibration Con
 - 右侧圆角详情面板顶部显示名称、创建时间、相机、灯板、镜头和校准等级；右上角提供 New Calibration Config Profile。
 - 没有 Profile 时，右侧使用与空 Library 一致的空状态，中央显示“添加您的硬件校正文件”。
 - 选中 Profile 后，右侧以一条纵向 Pipeline 展示校准位置。每个节点对应 Capture、Density、Film Reconstruction 等理想校准点；Profile 已包含的层显示绿色状态点和 `Calibrated`，缺失的层显示中性状态点和 `Using default`。
-- 状态必须区分 Profile 的能力与可用性，例如 Smart Auto、Configured、Measured、Spectral、Legacy、Needs attention。只有具有参考密度和验证报告的层才能显示 Measured。
+- 状态必须区分 Profile 的能力与可用性，例如 Smart Auto、Capture Corrected Experimental、Capture Characterized、Density Calibrated、Scanner Input Estimate、Scanner Input Characterized、Legacy、Needs attention。只有具有明确密度参考和验证报告的层才能显示 Density Calibrated。
 
 向导根据参考资料分流：No reference 建立 Smart Auto 预设；Transmission target 执行暗场、无片场、平场、目标采集、检测、拟合与验证；External reference 导入片基/全曝光参考；RGB / multispectral light 进入高级采集。矩阵、条件数和残差放入折叠的 Technical Report。
 
@@ -341,11 +345,15 @@ Alpha 已完成 Roll 级片基/片头采样和三种缺失端点规则：两个�
 
 ### Phase 2：v1.1-beta，Calibration 基础产品
 
-增加 Calibration 双栏页面、统一的 Calibration Config Profile 存储与硬件参考帧管理；Profile 等级由系统根据已有能力自动划分，不由用户选择；片基/片头继续只在 Library 中按 Roll 标定。Develop 提供 Roll 级 Profile 下拉选择；保存每个 Roll 的独立绑定和 last-used 新 Roll 默认值；Profile 不可用时保留绑定、显示警告并临时回退 Smart Auto。补齐 135、120、Loose Import 的 Base/D-max/Calibration/Tone 状态和诚实警告。Beta 不拟合或宣称 Status M，不改变已完成的 Roll 锚点计算合同。
+增加 Calibration 双栏页面、统一的 Calibration Config Profile 存储与硬件参考帧管理；Profile 等级由系统根据已有能力自动划分，不由用户选择；片基/片头继续只在 Library 中按 Roll 标定。Develop 提供 Roll 级 Profile 下拉选择；保存每个 Roll 的独立绑定和 last-used 新 Roll 默认值；Profile 不可用时保留绑定、显示警告并临时回退 Smart Auto。补齐 135、120、Loose Import 的 Base/D-max/Calibration/Tone 状态和诚实警告。Beta 可以拟合并应用 `CaptureSeparation3x3`，但不宣称 Status M 或 Density Calibrated，也不改变已完成的 Roll 锚点计算合同。
 
-### Phase 3：v1.1 正式版，Measured Density
+### Phase 3：本阶段，Calibration Fit Foundation
 
-在统一 Profile 内消费暗场、无片场、平场和透射目标，支持 3x3 + offset 参考密度拟合、独立验证和误差报告；Auto Invert 自动消费当前 Roll 已选择的 Profile。只有通过验证的 Density 层才能标记为 Measured。
+在统一 Profile 内消费暗场、无片场、可选平场和实际目标 patch，支持明确域的 3x3 Capture Separation 拟合、独立验证和误差报告；Auto Invert、preview、analysis、thumbnail、render、export 使用同一组实际系数。该阶段只产生 Capture Characterized，不产生 Density Calibrated。
+
+### Phase 3.1：Scanner Input Profile 边界
+
+支持本地 JSON 配置的 digest（可记录关联 ICC digest）、厂商/型号、驱动、分辨率、位深、正负片模式、红外/多曝光、灯源/片夹、transfer curve、geometry、输入编码、来源、许可、置信度和兼容胶片类。Profile 可被显式应用到线性 RGB，但输入域不明时拒绝套用，也不能被当成数字 mask、Status M 或胶片密度。
 
 ### Phase 4：v1.1.x，Roll 级效率与稳定性
 
@@ -389,7 +397,7 @@ Alpha 已完成 Roll 级片基/片头采样和三种缺失端点规则：两个�
 
 验收：灯板不均匀性、镜头暗角和黑电平误差在参考帧报告中下降；参考文件变化、硬件变化或版本不兼容会触发重验证。
 
-### P3：Measured Density 与数字 mask（v1.2）
+### P3：Measured Density 与数字 mask（后续版本）
 
 - 导入 IT8、阶梯、已知 Status M 或 printing-density 目标，并明确目标密度域。
 - 在已验证 Density Input 上拟合受约束 3x3 + offset；三通道对齐只作为对角 offset/尺度步骤，不冒充数字 mask。

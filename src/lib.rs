@@ -1,5 +1,6 @@
 pub mod app_state;
 pub mod batch_settings;
+pub mod calibration_fit;
 pub mod capability_resolver;
 pub mod color_science;
 pub mod commands;
@@ -10,6 +11,7 @@ pub mod io_processor;
 pub mod persistence;
 pub mod pipeline;
 pub(crate) mod raw_backend;
+pub mod scanner_profile;
 
 #[cfg(test)]
 mod tests {
