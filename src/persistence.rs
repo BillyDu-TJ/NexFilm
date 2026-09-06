@@ -1,6 +1,7 @@
 use crate::app_state::{
-    BaseColor, CalibrationConfigProfile, CalibrationLevel, CalibrationReference,
-    CalibrationReferenceKind, GeometryState, PipelineState, ProcessingContract, Roll, TuningParams,
+    BaseColor, CalibrationConfigProfile, CalibrationLevel, CalibrationProfilePayload,
+    CalibrationReference, CalibrationReferenceKind, GeometryState, PipelineState,
+    ProcessingContract, Roll, TuningParams,
 };
 use rusqlite::{Connection, OptionalExtension};
 use std::collections::HashSet;
@@ -9,8 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DATABASE_PATH: &str = "nexfilm_user.db";
 pub const LEGACY_MATH_VERSION: i64 = 3;
-pub const MATH_VERSION: i64 = 4;
-pub const RAW_DECODE_VERSION: i64 = 8;
+pub const MATH_VERSION: i64 = 5;
+pub const RAW_DECODE_VERSION: i64 = 9;
 pub const LAST_USED_CALIBRATION_PROFILE_KEY: &str = "last_used_calibration_profile_id";
 
 /// Development builds intentionally keep the database beside the repository so
@@ -162,7 +163,8 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
             light_source TEXT NOT NULL DEFAULT '',
             lens TEXT NOT NULL DEFAULT '',
             calibration_level TEXT NOT NULL,
-            notes TEXT NOT NULL DEFAULT ''
+            notes TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL DEFAULT '{}'
         )",
         [],
     )?;
@@ -185,6 +187,17 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
          ON calibration_references(profile_id, added_at, reference_id)",
         [],
     )?;
+    connection.execute(
+        "CREATE TABLE IF NOT EXISTS calibration_sessions (
+            session_id TEXT PRIMARY KEY,
+            profile_id TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            validation_status TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            FOREIGN KEY (profile_id) REFERENCES calibration_profiles(profile_id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
 
     add_column_if_missing(connection, "embedded_thumb_base64", "TEXT")?;
     add_column_if_missing(connection, "rendered_thumb_base64", "TEXT")?;
@@ -198,9 +211,67 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
     add_column_if_missing(connection, "pipeline_state", "TEXT NOT NULL DEFAULT '{}'")?;
     add_roll_column_if_missing(connection, "density_anchors", "TEXT NOT NULL DEFAULT '{}'")?;
     add_roll_column_if_missing(connection, "calibration_profile_id", "TEXT")?;
+    add_calibration_profile_column_if_missing(connection, "payload", "TEXT NOT NULL DEFAULT '{}'")?;
     migrate_legacy_thumbnails(connection)?;
     migrate_raw_decode_settings(connection)?;
     migrate_density_contract(connection)?;
+    migrate_p11_calibration_contract(connection)?;
+    Ok(())
+}
+
+fn migrate_p11_calibration_contract(connection: &Connection) -> rusqlite::Result<()> {
+    let default_payload = serde_json::to_string(&CalibrationProfilePayload::default())
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    connection.execute(
+        "UPDATE calibration_profiles
+         SET schema_version = ?1, payload = ?2, calibration_level = ?3, updated_at = ?4
+         WHERE schema_version = 1",
+        rusqlite::params![
+            crate::app_state::CALIBRATION_PROFILE_SCHEMA_VERSION as i64,
+            default_payload,
+            serialize_enum(&CalibrationLevel::SmartAuto)?,
+            now_timestamp(),
+        ],
+    )?;
+
+    for (table, key_column) in [("rolls", "roll_id"), ("image_states", "rowid")] {
+        let column = if table == "rolls" {
+            "density_anchors"
+        } else {
+            "pipeline_state"
+        };
+        let mut statement =
+            connection.prepare(&format!("SELECT {key_column}, {column} FROM {table}"))?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, rusqlite::types::Value>(0)?,
+                row.get::<_, String>(1)?,
+            ))
+        })?;
+        let mut normalized = Vec::new();
+        for row in rows {
+            let (key, original) = row?;
+            let value = if table == "rolls" {
+                serde_json::from_str::<crate::app_state::DensityAnchors>(&original)
+                    .ok()
+                    .and_then(|value| serde_json::to_string(&value).ok())
+            } else {
+                serde_json::from_str::<PipelineState>(&original)
+                    .ok()
+                    .and_then(|value| serde_json::to_string(&value).ok())
+            };
+            if let Some(value) = value.filter(|value| value != &original) {
+                normalized.push((key, value));
+            }
+        }
+        drop(statement);
+        for (key, value) in normalized {
+            connection.execute(
+                &format!("UPDATE {table} SET {column} = ?1 WHERE {key_column} = ?2"),
+                rusqlite::params![value, key],
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -212,6 +283,12 @@ fn image_state_columns(connection: &Connection) -> rusqlite::Result<HashSet<Stri
 
 fn roll_columns(connection: &Connection) -> rusqlite::Result<HashSet<String>> {
     let mut statement = connection.prepare("PRAGMA table_info(rolls)")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    rows.collect()
+}
+
+fn calibration_profile_columns(connection: &Connection) -> rusqlite::Result<HashSet<String>> {
+    let mut statement = connection.prepare("PRAGMA table_info(calibration_profiles)")?;
     let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
     rows.collect()
 }
@@ -241,6 +318,21 @@ fn add_roll_column_if_missing(
     }
     connection.execute(
         &format!("ALTER TABLE rolls ADD COLUMN {name} {declaration}"),
+        [],
+    )?;
+    Ok(())
+}
+
+fn add_calibration_profile_column_if_missing(
+    connection: &Connection,
+    name: &str,
+    declaration: &str,
+) -> rusqlite::Result<()> {
+    if calibration_profile_columns(connection)?.contains(name) {
+        return Ok(());
+    }
+    connection.execute(
+        &format!("ALTER TABLE calibration_profiles ADD COLUMN {name} {declaration}"),
         [],
     )?;
     Ok(())
@@ -586,8 +678,8 @@ pub fn save_calibration_profile(
     transaction.execute(
         "INSERT INTO calibration_profiles (
              profile_id, schema_version, name, created_at, updated_at, camera,
-             light_source, lens, calibration_level, notes
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             light_source, lens, calibration_level, notes, payload
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(profile_id) DO UPDATE SET
              schema_version = excluded.schema_version,
              name = excluded.name,
@@ -596,7 +688,8 @@ pub fn save_calibration_profile(
              light_source = excluded.light_source,
              lens = excluded.lens,
              calibration_level = excluded.calibration_level,
-             notes = excluded.notes",
+             notes = excluded.notes,
+             payload = excluded.payload",
         rusqlite::params![
             profile.profile_id,
             profile.schema_version as i64,
@@ -608,6 +701,8 @@ pub fn save_calibration_profile(
             profile.lens,
             serialize_enum(&profile.calibration_level)?,
             profile.notes,
+            serde_json::to_string(&profile.payload)
+                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?,
         ],
     )?;
     transaction.execute(
@@ -618,6 +713,54 @@ pub fn save_calibration_profile(
         insert_calibration_reference(&transaction, &profile.profile_id, reference)?;
     }
     transaction.commit()
+}
+
+pub fn save_calibration_session(
+    connection: &Connection,
+    session_id: &str,
+    profile_id: &str,
+    created_at: i64,
+    validation_status: &str,
+    payload: &CalibrationProfilePayload,
+) -> rusqlite::Result<()> {
+    let payload = serde_json::to_string(payload)
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    connection.execute(
+        "INSERT INTO calibration_sessions (
+             session_id, profile_id, created_at, validation_status, payload
+         ) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            session_id,
+            profile_id,
+            created_at,
+            validation_status,
+            payload
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn calibration_session_matches(
+    connection: &Connection,
+    session_id: &str,
+    profile_id: &str,
+    payload_digest: &str,
+) -> rusqlite::Result<bool> {
+    let payload = connection
+        .query_row(
+            "SELECT payload FROM calibration_sessions
+             WHERE session_id = ?1 AND profile_id = ?2 AND validation_status = 'passed'",
+            rusqlite::params![session_id, profile_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(payload
+        .and_then(|payload| serde_json::from_str::<CalibrationProfilePayload>(&payload).ok())
+        .is_some_and(|payload| {
+            payload.payload_digest == payload_digest
+                && payload.canonical_digest().ok().as_deref() == Some(payload_digest)
+                && payload.capture_is_verified(RAW_DECODE_VERSION)
+        }))
 }
 
 fn load_calibration_references(
@@ -650,7 +793,7 @@ pub fn load_calibration_profiles(
 ) -> rusqlite::Result<Vec<CalibrationConfigProfile>> {
     let mut statement = connection.prepare(
         "SELECT profile_id, schema_version, name, created_at, updated_at, camera,
-                light_source, lens, calibration_level, notes
+                light_source, lens, calibration_level, notes, payload
          FROM calibration_profiles ORDER BY updated_at DESC, name, profile_id",
     )?;
     let rows = statement.query_map([], |row| {
@@ -672,6 +815,13 @@ pub fn load_calibration_profiles(
         } else {
             schema_version.max(0) as u32
         };
+        let raw_payload: String = row.get(10)?;
+        let payload = serde_json::from_str::<CalibrationProfilePayload>(&raw_payload)
+            .unwrap_or_else(|_| {
+                let mut payload = CalibrationProfilePayload::default();
+                payload.payload_version = u32::MAX;
+                payload
+            });
         Ok(CalibrationConfigProfile {
             profile_id: row.get(0)?,
             schema_version,
@@ -684,6 +834,7 @@ pub fn load_calibration_profiles(
             calibration_level,
             notes: row.get(9)?,
             references: Vec::new(),
+            payload,
         })
     })?;
     let mut profiles = rows.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -744,6 +895,34 @@ pub fn save_rolls_and_last_used_calibration_profile(
     let transaction = connection.transaction()?;
     replace_rolls(&transaction, rolls)?;
     set_last_used_calibration_profile(&transaction, profile_id)?;
+    transaction.commit()
+}
+
+pub fn save_rolls_profile_selection_and_pipeline_states(
+    connection: &mut Connection,
+    rolls: &[Roll],
+    profile_id: Option<&str>,
+    pipeline_states: &[(String, String, PipelineState)],
+) -> rusqlite::Result<()> {
+    let transaction = connection.transaction()?;
+    replace_rolls(&transaction, rolls)?;
+    set_last_used_calibration_profile(&transaction, profile_id)?;
+    for (roll_id, file_path, pipeline_state) in pipeline_states {
+        let serialized = serde_json::to_string(pipeline_state)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        transaction.execute(
+            "UPDATE image_states
+             SET pipeline_state = ?1, math_version = ?2, updated_at = ?3
+             WHERE roll_id = ?4 AND file_path = ?5",
+            rusqlite::params![
+                serialized,
+                math_version_for_contract(pipeline_state.contract),
+                now_timestamp(),
+                roll_id,
+                file_path,
+            ],
+        )?;
+    }
     transaction.commit()
 }
 
@@ -837,6 +1016,67 @@ pub fn write_rolls_compatibility_mirror(rolls: &[Roll]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose, Engine as _};
+    use sha2::{Digest, Sha256};
+
+    fn verified_session_payload() -> CalibrationProfilePayload {
+        let mask_bytes = [0u8];
+        let mut payload = CalibrationProfilePayload {
+            issuer: crate::app_state::CalibrationPayloadIssuer::BackendCalibrationSession,
+            calibration_session_id: Some("session-test".to_string()),
+            hardware_fingerprint: "hardware-test".to_string(),
+            raw_decode_version: Some(RAW_DECODE_VERSION),
+            libraw_version: "0.22-test".to_string(),
+            reference_frames: vec![
+                crate::app_state::CalibrationReferenceSummary {
+                    reference_id: "dark".to_string(),
+                    kind: CalibrationReferenceKind::DarkFrame,
+                    content_digest: "dark-content".to_string(),
+                    raw_metadata_digest: "dark-metadata".to_string(),
+                },
+                crate::app_state::CalibrationReferenceSummary {
+                    reference_id: "open".to_string(),
+                    kind: CalibrationReferenceKind::OpenGate,
+                    content_digest: "open-content".to_string(),
+                    raw_metadata_digest: "open-metadata".to_string(),
+                },
+            ],
+            capture_parameters: Some(crate::app_state::CaptureCalibrationParameters {
+                correction_algorithm: crate::app_state::CAPTURE_CORRECTION_ALGORITHM_VERSION
+                    .to_string(),
+                demosaic_algorithm: crate::app_state::CAPTURE_DEMOSAIC_ALGORITHM_VERSION
+                    .to_string(),
+                epsilon: 1.0e-6,
+                light_source_id: "light-test".to_string(),
+                geometry_fingerprint: "geometry-test".to_string(),
+            }),
+            quality_mask: Some(crate::app_state::CalibrationQualityMaskSummary {
+                total_samples: 1,
+                valid_samples: 1,
+                mask_artifact_digest: format!("{:x}", Sha256::digest(mask_bytes)),
+                ..Default::default()
+            }),
+            mask_artifact: Some(crate::app_state::CalibrationQualityMaskArtifact {
+                encoding: "invalid_bitset_le_v1".to_string(),
+                sample_count: 1,
+                data_base64: general_purpose::STANDARD.encode(mask_bytes),
+            }),
+            valid_range: Some(crate::app_state::CalibrationValidRange {
+                minimum_transmission: [1.0e-6; 3],
+                maximum_transmission: [1.0 + 1.0e-6; 3],
+            }),
+            capabilities: vec![crate::app_state::CalibrationCapability::CaptureCorrected],
+            validation_report: Some(crate::app_state::CalibrationValidationReport {
+                status: crate::app_state::CalibrationValidationStatus::Passed,
+                checked_at: Some(1),
+                checks: vec!["synthetic".to_string()],
+                warnings: Vec::new(),
+            }),
+            ..Default::default()
+        };
+        payload.payload_digest = payload.canonical_digest().unwrap();
+        payload
+    }
 
     #[test]
     fn migrates_legacy_thumbnails_without_marking_unedited_frames_rendered() {
@@ -1067,6 +1307,7 @@ mod tests {
                 modified_at: Some(15),
                 added_at: 12,
             }],
+            payload: CalibrationProfilePayload::default(),
         }
     }
 
@@ -1112,6 +1353,88 @@ mod tests {
             load_calibration_profiles(&connection).unwrap(),
             vec![profile]
         );
+    }
+
+    #[test]
+    fn calibration_session_round_trip_and_tamper_invalidation() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let profile = sample_calibration_profile("session-profile");
+        save_calibration_profile(&mut connection, &profile).unwrap();
+        let payload = verified_session_payload();
+        save_calibration_session(
+            &connection,
+            "session-test",
+            &profile.profile_id,
+            1,
+            "passed",
+            &payload,
+        )
+        .unwrap();
+        assert!(calibration_session_matches(
+            &connection,
+            "session-test",
+            &profile.profile_id,
+            &payload.payload_digest
+        )
+        .unwrap());
+        connection
+            .execute(
+                "UPDATE calibration_sessions SET payload = ?1 WHERE session_id = 'session-test'",
+                rusqlite::params!["{}"],
+            )
+            .unwrap();
+        assert!(!calibration_session_matches(
+            &connection,
+            "session-test",
+            &profile.profile_id,
+            &payload.payload_digest
+        )
+        .unwrap());
+    }
+
+    #[test]
+    fn p11_migration_marks_legacy_profiles_and_anchors_unverified() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let legacy_anchor = serde_json::json!({
+            "density": [0.1, 0.2, 0.3],
+            "source": "sampled_film_base",
+            "scope": "roll",
+            "confidence": "user_sampled",
+            "reference_id": "legacy-anchor"
+        });
+        connection
+            .execute(
+                "INSERT INTO rolls (roll_id, date, roll_format, film_stock, camera, image_paths, density_anchors, sort_order, updated_at)
+                 VALUES ('legacy-p11', '', '135', '', '', '[]', ?1, 0, 0)",
+                rusqlite::params![serde_json::json!({"d_min_base": legacy_anchor}).to_string()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO calibration_profiles (profile_id, schema_version, name, created_at, updated_at, calibration_level, payload)
+                 VALUES ('legacy-profile', 1, 'Legacy', 1, 1, 'calibrated', '{}')",
+                [],
+            )
+            .unwrap();
+        migrate_p11_calibration_contract(&connection).unwrap();
+        let rolls = load_rolls(&connection).unwrap();
+        let anchor = rolls[0].density_anchors.d_min_base.as_ref().unwrap();
+        assert!(anchor.provenance.legacy);
+        assert_eq!(
+            anchor.provenance.input_domain,
+            crate::app_state::DataDomain::ProPhotoEstimate
+        );
+        let profile = load_calibration_profiles(&connection)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(
+            profile.payload.issuer,
+            crate::app_state::CalibrationPayloadIssuer::LegacyUnverified
+        );
+        assert_eq!(profile.calibration_level, CalibrationLevel::SmartAuto);
     }
 
     #[test]

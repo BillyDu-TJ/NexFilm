@@ -110,5 +110,35 @@ assert.doesNotMatch(
 assert.match(main, /libDiv\.onmousedown = event =>[\s\S]*?clearNativeSelection\(event\)/);
 assert.match(main, /libDiv\.ondblclick = event =>[\s\S]*?clearNativeSelection\(event\)/);
 assert.match(css, /\.library-item, \.film-item, \.roll-row[\s\S]*?user-select:\s*none/);
+assert.match(
+    css,
+    /\.density-calibration-preview img\s*\{[\s\S]*?width:\s*100%[\s\S]*?height:\s*100%[\s\S]*?object-fit:\s*contain/,
+    'Density calibration preview must show the complete frame without stretching',
+);
+assert.match(
+    main,
+    /function densityCalibrationContainGeometry\(\)[\s\S]*?Math\.min\(previewRect\.width \/ sourceWidth, previewRect\.height \/ sourceHeight\)/,
+    'Density calibration sampling must account for contain letterboxing',
+);
+assert.match(
+    main,
+    /function densityCalibrationSourcePoint\(clientX, clientY\)[\s\S]*?geometry\.offsetX[\s\S]*?geometry\.renderedWidth/,
+    'Density calibration clicks must map back to source coordinates',
+);
+assert.match(
+    main,
+    /const preview = await invoke\('get_density_calibration_preview', \{ id: item\.id \}\)/,
+    'Density calibration must request its dedicated full-decode preview',
+);
+assert.doesNotMatch(
+    css,
+    /\.density-reference-selection \.library-item\s*\{[^}]*cursor:\s*crosshair/,
+    'Selecting the calibration source image must not imply pixel sampling',
+);
+assert.match(
+    css,
+    /\.density-calibration-preview\.is-sampling img\s*\{[^}]*cursor:\s*crosshair/,
+    'The crosshair must be limited to active sampling inside the calibration modal',
+);
 
 console.log('Library and roll management contract verified.');

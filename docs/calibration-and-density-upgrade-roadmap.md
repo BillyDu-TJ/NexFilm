@@ -8,6 +8,13 @@
 
 > Film Frame 决定照片在哪里；Base Reference 决定 D-Min；Full-Exposure Reference 或 Film Profile 决定 D-Max；Content Range 描述照片实际使用的影调；Auto Invert 负责组合这些信息。
 
+推进时必须保持两条清晰的产品路径：
+
+- Smart Auto 继续使用 LibRaw 的显影后 RGB，定位为快速、兼容性优先的 ProPhoto Estimate，不宣称物理密度或 Status M。
+- Measured Calibration 继续使用 LibRaw，但只消费 libraw_unpack 后的原始 CFA 与元数据，由 NexFilm 控制暗场、无片场/平场、解马赛克、Capture Separation、密度和胶片模型。
+
+16-bit 容器本身不是科学性问题。12/14-bit RAW 装入 u16 可以无损保存；真正的问题是 dcraw_process 之后的数值已经经过黑电平、通道增益、白平衡、解马赛克和相机色彩矩阵，不能再被当作原始传感器响应。
+
 ## 2. 目标管线
 
 ~~~text
@@ -84,6 +91,30 @@ D_net = D_raw - D_base
 
 校准密度仍然不是场景线性 RGB。胶片型号、乳剂、曝光和冲洗条件相关的特性曲线或 Film Profile 必须参与重建。Linear ProPhoto RGB 是正片重建后的统一工作空间；LUT、审美控制、显示 OETF、ICC 和输出量化只能在后续阶段发生。
 
+### 2.4 两条实现路径
+
+Smart Auto：
+
+~~~text
+RAW -> LibRaw dcraw_process -> Camera RGB estimate
+    -> f32 ProPhoto transport -> relative density estimate
+    -> roll/estimated base -> content range -> Preserve Tone render
+~~~
+
+Measured Calibration：
+
+~~~text
+LibRaw unpack -> RawMosaic + RawMetadata -> f32 sensor signal
+  -> 同构 dark/open-gate/flat 校正
+  -> 固定解马赛克 -> Camera Native RGB f32
+  -> Capture Separation -> 正值 Density Input RGB T
+  -> -log10 -> D-base -> 三通道对齐
+  -> 已验证的 Status M/printing-density/digital mask
+  -> Film Profile（可选） -> Positive Linear ProPhoto RGB
+~~~
+
+Measured 路径中不能自动应用相机白平衡或 camera-to-sRGB。Smart Auto 保留现有 LibRaw processed RGB 作为兼容路径，避免把 RAW 格式解压和科学测量数学混成同一个模块。
+
 ## 3. 当前问题与 v1.0.2 边界
 
 v1.0.2 已在 LibRaw camera-to-sRGB 矩阵阶段使用 f32，避免中间直接写入 u16 导致逐通道截断。但当前路径仍有以下限制：
@@ -99,6 +130,31 @@ v1.0.2 已在 LibRaw camera-to-sRGB 矩阵阶段使用 f32，避免中间直接�
 - 当前 D-Min/D-Max 归一化更接近显示参考反相，不是胶片 D-Min/D-Max 的物理标定。
 
 这些问题的根因是密度锚点、照片范围和显示映射没有分层。
+
+### 3.1 v1.1-alpha/beta 完成度审计
+
+已完成并已进入像素处理或状态合同的部分：
+
+- Roll 级片基/全曝光锚点、单端锚点和缺失端点规则。
+- Legacy、Smart Auto、Roll Base、Roll Anchored 的处理合同；旧 Status M 仅保留在 Legacy。
+- Film Area 与 Density Anchors 的语义分离，以及 Preserve Tone/Full Tone 的状态模型。
+- Calibration Profile 的创建、保存、删除、参考文件变更警告、Roll 绑定和 last-used 规则。
+
+部分完成但不能作科学承诺的部分：
+
+- RAW scientific proxy 仍来自 LibRaw processed RGB；它是 f32 ProPhoto 估计，不是原始 Camera Native 或 Density Input。
+- 直接/扫描输入仍经现有 u16 解码再转 ProPhoto；GPU transport 的 u16 代理适合显示，但不能当作测量数据。
+- 非 Legacy 的三通道对齐目前主要是 D_raw - D_base 与渲染阶段的逐通道归一化，只能处理 offset/尺度，不能校正染料串扰。
+- Preserve Tone 已有状态名，但最终渲染仍使用 d_min/d_max 归一化；必须用短调回归样本证明它不会隐式拉伸内容范围。
+
+尚未完成或目前只是产品外壳的部分：
+
+- 暗场、无片场、平场和 Capture Separation 尚未参与实际像素计算。
+- Profile 没有矩阵、offset、曲线、适用范围、质量掩码、算法版本或验证报告；选择 Profile 目前主要改变 ID 和 UI 状态。
+- 未来的 MeasuredDensityV11 尚未被定义或选择；没有 3x3 + offset 密度拟合、独立验证、条件数和残差报告。
+- 没有数字 mask，也没有具体胶片/冲洗条件的 H-D 特性曲线反演。
+
+因此当前最准确的产品定位是“可追溯的相对密度 Auto Invert 骨架 + Calibration 配置管理”，不是完整的实测硬件校准。
 
 ## 4. 统一数据模型
 
@@ -149,6 +205,8 @@ CalibrationConfigProfile {
 
 Profile 的相机、灯板、镜头和参考目标元数据只用于追溯与展示，不参与自动匹配。
 
+Profile 必须保存输入域、目标域、校准会话、RAW/解码版本、参考帧摘要、有效密度范围、矩阵条件数、每通道 RMSE/最大残差、噪声放大、饱和比例和质量掩码。仅保存文件路径或“有参考文件”不能使 Profile 进入 Measured。
+
 片基与全曝光片头不属于 Calibration Config Profile 的硬件参考，也不在 Calibration 页面采集。它们始终在 Library 中从代表帧采样，并作为当前 Roll 的 DensityAnchors 保存。
 
 ## 5. D-Min/D-Max 标定策略
@@ -196,13 +254,40 @@ RAW f32 -> relative transmission estimate -> estimated base
 
 它承诺快速、平滑、减少溢出和动态范围误拉伸，不承诺 Status M 或跨设备绝对密度一致性。
 
+### 7.1.1 RAW backend 边界
+
+不建议替换 LibRaw，也不建议自行编写完整 RAW 解码器。LibRaw 继续负责厂商格式识别、解压、CFA、活动区域、黑/白电平、ISO/曝光、相机标识和缩略图；NexFilm 只接管科学路径所需的数学过程。
+
+现有的 extract_camera_rgb_with_options 应逐步拆成：
+
+~~~text
+decode_raw_mosaic()       -> RawMosaic + RawMetadata
+decode_smart_auto_rgb()   -> CameraRgbEstimate
+decode_capture_corrected_input() -> RelativeTransmissionRgbF32
+~~~
+
+RawMosaic 至少携带 CFA 类型、每通道/每区域 black level、white level、active area、masked pixels、方向、ISO/曝光、相机标识和 LibRaw 版本。Measured 路径禁用自动白平衡和 camera-to-sRGB。RawSpeed、rawler 等只能作为可插拔补充 backend，并通过相同 RAW 数值、CFA、黑白电平和曝光一致性测试后才可启用。
+
 ### 7.2 Calibrated Workflow
 
 固定翻拍架和白光板用户使用暗场、无片场、平场和透射目标建立一个 Calibration Config Profile；Capture 与 Density 只是其中的内部能力层。v1.1 正式版再支持参考密度目标拟合 3x3 + offset，并报告独立验证误差。IT8 的 Lab 参考只能生成色度 ICC 或端到端色彩配置，不直接命名为胶片密度标定。
 
+三通道对齐与数字 mask 必须分开：
+
+~~~text
+D_aligned = A_diag * (D_raw - D_base)
+D_target  = M_film * D_aligned + b_film
+~~~
+
+片基和全曝光只能约束端点，不能识别非对角串扰。数字 mask 必须绑定胶片、冲洗、采集设备和目标密度标准，并用多个跨通道、非共线样本拟合，保留独立验证和有效范围。Status M 是测量条件/参考标准，不是通用去色罩矩阵。
+
 ### 7.3 Spectral / Research Workflow
 
 RGB 窄谱 LED 分时或多光谱用户记录 SPD，在同一个 Calibration Config Profile 内拟合 Capture Separation，再进入可选的 Status M/printing-density 与 Film Reconstruction 层。三色窄谱是可追溯的窄谱三通道测量，不等于完整连续光谱；多波段和连续光谱属于后续版本。
+
+### 7.4 Film Profile
+
+具体胶片的 H-D 曲线反演可以开始设计，但不能由片基和全曝光两个端点拟合完成。需要同胶片、同冲洗、同硬件下的曝光阶梯或 sensitometric wedge，拟合单调逐通道曲线并用留出曝光档验证。数字 mask/密度分离应先于逐层曲线逆变换；显示 S 曲线必须与 Film Profile 分离。
 
 ## 8. Calibration 页面与用户流程
 
@@ -274,6 +359,61 @@ Alpha 已完成 Roll 级片基/片头采样和三种缺失端点规则：两个�
 
 支持曝光阶梯、H-D 曲线、趾部/肩部、display-referred 与 scene-relative 输出、多波段和连续光谱数据。
 
+## 10.1 下一步执行顺序（替代旧 Phase 3-6 的宽泛描述）
+
+路线必须按依赖关系推进：先定义数据域和回归样本，再实现原始 CFA 的 Capture 校准，之后才拟合 Density 目标和数字 mask，最后做 Film Profile。不要先为现有 ProPhoto 估计路径增加更多经验矩阵。
+
+### P0：规格与回归夹具（立即）
+
+- 将 ProPhoto Estimate、Capture Native RGB、Density Input RGB、Density 和 Positive ProPhoto 分成明确的数据类型或至少明确命名。
+- 固化 Measured 路径的正值、单位、参考平面、epsilon、饱和和无效样本策略。
+- 建立 135、120、Loose Import、雾天短调、片基是否进入 Film Area、不同灯板和曝光异常的回归样本。
+- 修正 Preserve Tone，使其不再隐式使用当前照片极值完成全长调归一化。
+
+验收：同一张短调照片不因 Film Area 是否包含片基而改变物理 D-min；Smart Auto 明确标注为估计路径。
+
+### P1：RAW CFA 测量路径（v1.1.x 第一优先级）
+
+- 从 LibRaw unpack 暴露 RawMosaic 与 RawMetadata，至少包含 CFA、active area、black/white level、masked pixels、方向、ISO/曝光、相机标识和 LibRaw 版本。
+- 在 CFA 域实现同构参考的（sample - dark）/（open - dark）校正、空间平场、坏点/饱和/无效分母质量掩码。
+- 实现固定、可复现的解马赛克到 Camera Native RGB f32；Measured 路径禁用自动白平衡和 camera-to-sRGB。
+- 保留现有 dcraw_process 作为 Smart Auto backend，不替换 LibRaw，不自行维护厂商 RAW 解压器。
+
+验收：相同硬件下重复采集的透射率误差、空间均匀性、饱和比例和无效样本比例都有报告；不存在静默 epsilon 样本。
+
+### P2：Capture Calibration Profile（v1.1.x）
+
+- Profile 保存硬件指纹、参考帧摘要、算法/解码版本、Capture 参数、质量掩码和验证报告。
+- Calibration 向导完成 dark、open-gate、flat 检查，并自动分级为 Smart Auto 或 Capture Corrected。
+- Roll 选择 Profile 后，实际处理参数必须消费 Capture payload；仅保存文件路径不能显示 Calibrated。
+
+验收：灯板不均匀性、镜头暗角和黑电平误差在参考帧报告中下降；参考文件变化、硬件变化或版本不兼容会触发重验证。
+
+### P3：Measured Density 与数字 mask（v1.2）
+
+- 导入 IT8、阶梯、已知 Status M 或 printing-density 目标，并明确目标密度域。
+- 在已验证 Density Input 上拟合受约束 3x3 + offset；三通道对齐只作为对角 offset/尺度步骤，不冒充数字 mask。
+- 提供独立验证、每通道 RMSE、最大残差、矩阵条件数、噪声放大、有效密度范围和超范围降级。
+- 只有通过验证且目标域明确的 Density 层才能启用未来的 MeasuredDensityV11；否则保持 Capture Corrected 或 Smart Auto。
+
+验收：目标域和输入域可追溯，矩阵可复现，换设备/灯板/胶片后不会静默复用。
+
+### P4：Film Profile（v1.2.x/v1.3）
+
+- 支持按胶片型号、乳剂、冲洗流程和光源保存 Film Profile。
+- 支持曝光阶梯或 sensitometric wedge，拟合逐通道单调 H-D 曲线、toe/straight-line/shoulder 参数和有效范围。
+- 数字 mask/密度分离先于逐层曲线逆变换；scene-relative、display-referred 和审美 S 曲线分开。
+- 片基和全曝光端点只作为曲线边界，不能被误认为完整特性曲线。
+
+验收：曲线在声明范围内单调、可逆，并通过留出曝光档验证；范围外输出警告或退回默认重建。
+
+### P5：高级光谱路径（后续）
+
+- 支持 RGB LED 分时、SPD 管理、多波段 Capture Separation、噪声放大与漂移监测。
+- 只有通过相同 RAW 数值、CFA、黑白电平和曝光一致性测试的可插拔 backend 才能替换或补充 LibRaw。
+
+旧项目仍保持 Legacy 可复现；Profile 失效时保留 Roll 绑定并明确回退 Smart Auto。
+
 ## 11. 验收标准
 
 ### 11.1 密度与影调
@@ -294,7 +434,7 @@ Alpha 已完成 Roll 级片基/片头采样和三种缺失端点规则：两个�
 - 120 不依赖自动发现片头；Loose Import 有诚实的估计模式。
 - 旧项目保持可复现，Legacy 算法不会被静默替换。
 
-## 12. 最终原则
+## 18. 最终原则
 
 NexFilm 的校准系统不是一个万能去色罩矩阵，而是一个用户可见的 Calibration Config Profile，其中包含三层可选能力：
 
@@ -315,3 +455,79 @@ Film layer：校准胶片密度如何重建正片
 - Profile 不做设备自动匹配，不提供单帧覆盖。每个 Roll 独立保存选择，last-used 只作为未来新 Roll 的创建默认值。
 - Smart Auto 使用 log 后 identity 三通道相对密度；未经参考密度验证不得称为 Status M 或 Measured。旧 Status M 经验矩阵仅保留在 Legacy 路径。
 - log 前的暗场、无片场、平场与 Capture Separation 可以和 log 后三通道对齐共存；未来 Film layer 再使用胶片特性曲线重建曝光与正片。
+## 13. 用户模型：一次配置，自动选路
+
+用户只创建一次 Calibration Config Profile。Calibration 页面负责引导用户提供可获得的参考；无法提供的参考可以跳过。跳过不代表失败，而是该层使用默认实现，并在状态摘要中明确显示。日常使用中，复杂性全部封装在 Auto Invert 内，用户不需要手动选择矩阵、Status M、数字 mask 或曲线。
+
+引擎遵循有则用、无则退回的策略，但退回必须可追溯，不能静默伪装：
+
+```text
+读取 Profile 与 Roll Anchors
+-> 验证参考文件、硬件条件、版本和输入域
+-> 在 Capture 层选择最高可信路径
+-> 在 Density 层选择最高可信路径
+-> 仅当前置条件满足时启用数字 mask
+-> 仅密度基准匹配时启用 Film Inverse
+-> 缺失或失效处退回默认实现，并记录原因
+-> 分析 Content Range
+-> Preserve Tone / Full Tone 显示映射
+```
+
+校准等级不是单一的手动选项，而是由三个能力层共同决定：
+
+```text
+Capture: Default | Corrected | Verified
+Density: Estimated | Aligned | Measured
+Film: Generic | Approximate | Inverse
+```
+
+用户界面可以显示一个简洁总等级，但引擎内部必须保留三层状态。一个参考文件存在不等于该层可用；某层可用也不代表后续层可以越过前置条件直接启用。技术矩阵、残差、有效范围、参考文件和退回原因放在可展开的 Calibration Details 或 Technical Report 中。普通用户仍然只需要 Film Frame -> Auto Invert。
+
+## 14. 管线阶段与可用校正点
+
+| 阶段 | 主要职责 | 可使用的校正 | 缺失时的行为 |
+| --- | --- | --- | --- |
+| RAW/扫描输入 | 获得原始采样与元数据 | LibRaw 解压、CFA、黑白电平、活动区域、曝光信息 | Smart Auto 使用 LibRaw processed RGB |
+| 采集域校正 | 消除设备和光源干扰 | 暗场、无片场、平场、曝光归一化、坏点/饱和掩码 | 使用默认黑电平或相对 RGB 估计 |
+| 解马赛克 | CFA 到 Camera Native RGB | 固定、可复现的 NexFilm 解马赛克 | Smart Auto 使用 LibRaw 解马赛克 |
+| Capture Separation | 定义 Density Input RGB | 相机/光源相关分离矩阵或窄谱分离 | 保留相对三通道输入，不宣称物理密度 |
+| 透射率域 | 得到正值线性 T | 同构参考比值 `(sample-dark)/(open-dark)` | 使用相对信号估计 |
+| Log 转换 | 进入密度域 | `D_raw = -log10(T)` | 使用相对密度代理 |
+| 片基与通道对齐 | 去色罩、建立中性基准 | D-min 扣除、通道 offset/尺度对齐 | 使用 Roll 或图像统计估计 |
+| 密度标准化 | 对应目标密度标准 | Status M、printing-density、胶片数字 mask | 保留相对密度，不声明 Measured |
+| D-min/D-max 与 Content Range | 分离物理端点和照片影调 | Roll 片基、片头/全曝光、Film Profile、稳健分位数 | 缺失端点不由照片极值冒充；默认 Preserve Tone |
+| Film Reconstruction | 重建曝光或正片 | 胶片数字 mask、逐层 H-D 逆曲线 | 使用 Generic/Approximate Render |
+| 输出 | 生成可见图像 | Linear ProPhoto、曝光、白平衡、审美曲线、LUT、显示和导出 | 使用默认正片渲染 |
+
+## 15. Film Profile 使用边界
+
+严格的胶片 H-D 曲线反演不要求硬件达到绝对完美，但要求输入已经是经过验证的 Density Input，并且 Film Profile 的密度基准、胶片型号、乳剂、冲洗条件和光源与当前输入匹配。未经 Capture/Density 校准的 ProPhoto 估计不能直接套用物理 H-D 曲线。
+
+Smart Auto 可以提供明确标记为 Film Look / Approximate 的显示型曲线，用于改善观感；它不是场景曝光恢复。Film Inverse / Measured 只有在 Density 层验证通过且输入域匹配时启用。物理顺序是：
+
+```text
+Density Input -> log -> base subtraction -> density alignment/mask
+-> film-layer density -> inverse H-D curves
+-> scene-relative or positive ProPhoto reconstruction
+```
+
+显示 S 曲线、审美 LUT 和 Film Profile 必须独立保存、独立启用、独立报告。
+
+## 16. Auto Invert 的承诺边界
+
+普通用户的结果不是错误结果，而是承诺范围较窄的相对反相：追求稳定、平滑和合理影调，不承诺跨设备绝对密度一致。校准等级提高后，增加的是可追溯性、跨帧一致性、跨设备复现能力和物理解释能力。
+
+Auto Invert 应在内部返回处理报告，至少包括使用的 Capture/Density/Film 层、每层是否通过验证、实际使用的参考来源、退回原因、D-min/D-max 来源、Content Range 来源，以及是否启用 Approximate 或 Measured Film Profile。UI 默认只显示简短状态，报告供高级用户展开。
+
+## 17. 下一轮重构入口
+
+下一轮开发从 P0/P1 开始，不先扩展经验矩阵：
+
+1. 固化四个数据域和无效样本策略。
+2. 从 LibRaw `unpack` 暴露 `RawMosaic + RawMetadata`，保留当前 `dcraw_process` 作为 Smart Auto backend。
+3. 在 CFA 域实现同构 dark/open-gate/flat 校正、质量掩码和固定解马赛克。
+4. 让 Calibration Profile 保存并真正加载 Capture payload，完成自动分级和回退报告。
+5. 在已验证且目标域明确的 Density Input 上实现 Density 目标拟合、数字 mask 和未来的 MeasuredDensityV11。
+6. 最后接入曝光阶梯、Film Profile 和 H-D 曲线反演。
+
+## 12. 最终原则

@@ -2713,6 +2713,18 @@ body[data-theme="dark"] .import-choice-art {
     text-transform: none !important;
 }
 
+/* Library commands share one stable control height. */
+.library-toolbar-actions > :is(
+    #btn-select-all,
+    #btn-deselect-all,
+    #btn-delete-library-images,
+    #btn-calibrate-density
+) {
+    height: 32px !important;
+    min-height: 32px !important;
+    box-sizing: border-box !important;
+}
+
 body[data-theme] #view-develop > #develop-inspector {
     width: 100% !important;
     min-width: 0 !important;

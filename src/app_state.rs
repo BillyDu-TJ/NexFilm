@@ -1,13 +1,40 @@
+use base64::{engine::general_purpose, Engine as _};
 use image::{ImageBuffer, Rgb};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::VecDeque;
 use std::sync::RwLock;
 
-/// v1.1 keeps a compact display proxy plus an f32 scientific proxy for the
+use crate::raw_backend::QualityMask;
+
+/// v1.1 keeps a compact display proxy plus an f32 ProPhoto Estimate proxy for the
 /// active working set, so the cache is deliberately smaller than v1.0.
 /// Exceeding this triggers physical drop of the oldest proxy data.
 pub const MAX_PROXY_CACHE: usize = 2;
-pub const CALIBRATION_PROFILE_SCHEMA_VERSION: u32 = 1;
+pub const CALIBRATION_PROFILE_SCHEMA_VERSION: u32 = 2;
+pub const CALIBRATION_PROFILE_PAYLOAD_VERSION: u32 = 2;
+pub const CAPTURE_CORRECTION_ALGORITHM_VERSION: &str = "cfa_dark_open_v2";
+pub const CAPTURE_DEMOSAIC_ALGORITHM_VERSION: &str = "fixed_bilinear_bayer_oriented_v2";
+pub const DENSITY_ANCHOR_ALGORITHM_VERSION: &str = "density_anchor_v2";
+
+fn default_calibration_profile_payload_version() -> u32 {
+    CALIBRATION_PROFILE_PAYLOAD_VERSION
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DataDomain {
+    LegacyLinearSrgb,
+    ProPhotoEstimate,
+    RawMosaic,
+    CorrectedCfa,
+    #[serde(alias = "camera_native_rgb")]
+    CameraNativeTransmissionRgb,
+    #[serde(alias = "density_input_rgb")]
+    RelativeTransmissionRgb,
+    Density,
+    PositiveProPhotoRgb,
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -51,7 +78,285 @@ pub struct CalibrationReference {
     pub added_at: i64,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CalibrationCapability {
+    CaptureCorrected,
+    MeasuredDensity,
+    SpectralCapture,
+    FilmReconstruction,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CalibrationValidationStatus {
+    NotValidated,
+    Passed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CalibrationPayloadIssuer {
+    LegacyUnverified,
+    BackendCalibrationSession,
+}
+
+impl Default for CalibrationPayloadIssuer {
+    fn default() -> Self {
+        Self::LegacyUnverified
+    }
+}
+
+impl Default for CalibrationValidationStatus {
+    fn default() -> Self {
+        Self::NotValidated
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CalibrationReferenceSummary {
+    pub reference_id: String,
+    pub kind: CalibrationReferenceKind,
+    /// Content digest produced by the calibration session. A path alone is
+    /// never sufficient provenance for a verified Capture payload.
+    pub content_digest: String,
+    pub raw_metadata_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CaptureCalibrationParameters {
+    pub correction_algorithm: String,
+    pub demosaic_algorithm: String,
+    pub epsilon: f32,
+    pub light_source_id: String,
+    pub geometry_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CalibrationQualityMaskSummary {
+    pub total_samples: u64,
+    pub valid_samples: u64,
+    pub invalid_denominator: u64,
+    pub negative_samples: u64,
+    pub saturated_samples: u64,
+    pub bad_pixels: u64,
+    pub out_of_range: u64,
+    /// CFA sample indices excluded by the verified Capture calibration.
+    #[serde(default)]
+    pub bad_pixel_indices: Vec<u32>,
+    /// Digest of `mask_artifact`. Legacy payloads that contain only the old
+    /// digest are deliberately not considered verified.
+    #[serde(default, alias = "mask_digest")]
+    pub mask_artifact_digest: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CalibrationQualityMaskArtifact {
+    pub encoding: String,
+    pub sample_count: u64,
+    pub data_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CalibrationValidRange {
+    pub minimum_transmission: [f32; 3],
+    pub maximum_transmission: [f32; 3],
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CalibrationValidationReport {
+    #[serde(default)]
+    pub status: CalibrationValidationStatus,
+    pub checked_at: Option<i64>,
+    #[serde(default)]
+    pub checks: Vec<String>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CalibrationProfilePayload {
+    #[serde(default = "default_calibration_profile_payload_version")]
+    pub payload_version: u32,
+    #[serde(default)]
+    pub issuer: CalibrationPayloadIssuer,
+    #[serde(default)]
+    pub calibration_session_id: Option<String>,
+    #[serde(default)]
+    pub payload_digest: String,
+    #[serde(default)]
+    pub hardware_fingerprint: String,
+    #[serde(default)]
+    pub raw_decode_version: Option<i64>,
+    #[serde(default)]
+    pub libraw_version: String,
+    #[serde(default)]
+    pub reference_frames: Vec<CalibrationReferenceSummary>,
+    #[serde(default)]
+    pub capture_parameters: Option<CaptureCalibrationParameters>,
+    #[serde(default)]
+    pub quality_mask: Option<CalibrationQualityMaskSummary>,
+    #[serde(default)]
+    pub mask_artifact: Option<CalibrationQualityMaskArtifact>,
+    #[serde(default)]
+    pub valid_range: Option<CalibrationValidRange>,
+    #[serde(default)]
+    pub capabilities: Vec<CalibrationCapability>,
+    #[serde(default)]
+    pub validation_report: Option<CalibrationValidationReport>,
+}
+
+impl Default for CalibrationProfilePayload {
+    fn default() -> Self {
+        Self {
+            payload_version: CALIBRATION_PROFILE_PAYLOAD_VERSION,
+            issuer: CalibrationPayloadIssuer::LegacyUnverified,
+            calibration_session_id: None,
+            payload_digest: String::new(),
+            hardware_fingerprint: String::new(),
+            raw_decode_version: None,
+            libraw_version: String::new(),
+            reference_frames: Vec::new(),
+            capture_parameters: None,
+            quality_mask: None,
+            mask_artifact: None,
+            valid_range: None,
+            capabilities: Vec::new(),
+            validation_report: None,
+        }
+    }
+}
+
+impl CalibrationProfilePayload {
+    pub fn canonical_digest(&self) -> Result<String, String> {
+        let mut canonical = self.clone();
+        canonical.payload_digest.clear();
+        let bytes = serde_json::to_vec(&canonical)
+            .map_err(|error| format!("Failed to serialize calibration payload: {error}"))?;
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
+    pub fn capture_validation_error(
+        &self,
+        current_raw_decode_version: i64,
+    ) -> Option<&'static str> {
+        if self.payload_version != CALIBRATION_PROFILE_PAYLOAD_VERSION {
+            return Some("capture_payload_version_unsupported");
+        }
+        if self.issuer != CalibrationPayloadIssuer::BackendCalibrationSession
+            || self
+                .calibration_session_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || self.payload_digest.trim().is_empty()
+        {
+            return Some("capture_payload_not_backend_issued");
+        }
+        if self.canonical_digest().ok().as_deref() != Some(self.payload_digest.as_str()) {
+            return Some("capture_payload_digest_mismatch");
+        }
+        if !self
+            .capabilities
+            .contains(&CalibrationCapability::CaptureCorrected)
+        {
+            return Some("capture_capability_missing");
+        }
+        if self.validation_report.as_ref().map(|report| report.status)
+            != Some(CalibrationValidationStatus::Passed)
+        {
+            return Some("capture_validation_not_passed");
+        }
+        if self.hardware_fingerprint.trim().is_empty() {
+            return Some("capture_hardware_fingerprint_missing");
+        }
+        if self.libraw_version.trim().is_empty() {
+            return Some("capture_libraw_version_missing");
+        }
+        if self.raw_decode_version != Some(current_raw_decode_version) {
+            return Some("capture_raw_decode_version_mismatch");
+        }
+        let Some(parameters) = &self.capture_parameters else {
+            return Some("capture_parameters_missing");
+        };
+        if parameters.correction_algorithm != CAPTURE_CORRECTION_ALGORITHM_VERSION
+            || parameters.demosaic_algorithm != CAPTURE_DEMOSAIC_ALGORITHM_VERSION
+            || !parameters.epsilon.is_finite()
+            || (parameters.epsilon - 1.0e-6).abs() > f32::EPSILON
+            || parameters.light_source_id.trim().is_empty()
+            || parameters.geometry_fingerprint.trim().is_empty()
+        {
+            return Some("capture_parameters_invalid");
+        }
+        let required_reference = |kind| {
+            self.reference_frames.iter().any(|reference| {
+                reference.kind == kind
+                    && !reference.content_digest.trim().is_empty()
+                    && !reference.raw_metadata_digest.trim().is_empty()
+            })
+        };
+        if !required_reference(CalibrationReferenceKind::DarkFrame)
+            || !required_reference(CalibrationReferenceKind::OpenGate)
+        {
+            return Some("capture_reference_summary_incomplete");
+        }
+        let Some(quality) = &self.quality_mask else {
+            return Some("capture_quality_mask_missing");
+        };
+        if quality.total_samples == 0
+            || quality.valid_samples == 0
+            || quality.valid_samples > quality.total_samples
+            || quality.mask_artifact_digest.trim().is_empty()
+            || quality
+                .bad_pixel_indices
+                .iter()
+                .any(|index| u64::from(*index) >= quality.total_samples)
+        {
+            return Some("capture_quality_mask_invalid");
+        }
+        let Some(mask) = &self.mask_artifact else {
+            return Some("capture_quality_mask_artifact_missing");
+        };
+        if mask.encoding != "invalid_bitset_le_v1"
+            || mask.sample_count != quality.total_samples
+            || mask.data_base64.trim().is_empty()
+        {
+            return Some("capture_quality_mask_artifact_invalid");
+        }
+        let Ok(mask_bytes) = general_purpose::STANDARD.decode(&mask.data_base64) else {
+            return Some("capture_quality_mask_artifact_invalid");
+        };
+        if mask_bytes.len() != quality.total_samples.div_ceil(8) as usize
+            || format!("{:x}", Sha256::digest(&mask_bytes)) != quality.mask_artifact_digest
+        {
+            return Some("capture_quality_mask_digest_mismatch");
+        }
+        let Some(range) = &self.valid_range else {
+            return Some("capture_valid_range_missing");
+        };
+        if range
+            .minimum_transmission
+            .iter()
+            .zip(range.maximum_transmission)
+            .any(|(minimum, maximum)| {
+                !minimum.is_finite()
+                    || !maximum.is_finite()
+                    || *minimum <= 0.0
+                    || maximum <= *minimum
+            })
+        {
+            return Some("capture_valid_range_invalid");
+        }
+        None
+    }
+
+    pub fn capture_is_verified(&self, current_raw_decode_version: i64) -> bool {
+        self.capture_validation_error(current_raw_decode_version)
+            .is_none()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CalibrationConfigProfile {
     pub profile_id: String,
     pub schema_version: u32,
@@ -70,6 +375,8 @@ pub struct CalibrationConfigProfile {
     pub notes: String,
     #[serde(default)]
     pub references: Vec<CalibrationReference>,
+    #[serde(default)]
+    pub payload: CalibrationProfilePayload,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -80,7 +387,7 @@ pub enum CalibrationProfileAvailability {
     Unsupported,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CalibrationProfileView {
     pub profile: CalibrationConfigProfile,
     pub availability: CalibrationProfileAvailability,
@@ -166,14 +473,137 @@ pub enum ProcessingContract {
     /// v1.1 ProPhoto estimate with roll-level film-base and full-exposure
     /// references. Per-frame density analysis is unnecessary in this mode.
     RollAnchoredProPhotoV11,
-    /// Reserved for a later measured workflow. Alpha never selects this
-    /// contract automatically.
-    MeasuredV11,
+    /// Capture-domain dark/open correction followed by fixed demosaic and an
+    /// identity transform to relative transmission. This is not measured
+    /// density and does not imply Status M validation.
+    #[serde(alias = "measured_v11")]
+    CaptureCorrectedV11,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PipelineStageStatus {
+    Used,
+    Default,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PipelineStageRecord {
+    pub stage: String,
+    pub input_domain: DataDomain,
+    pub output_domain: DataDomain,
+    pub status: PipelineStageStatus,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PipelineProcessingReport {
+    #[serde(default)]
+    pub stages: Vec<PipelineStageRecord>,
+    #[serde(default)]
+    pub fallback_reasons: Vec<String>,
+}
+
+impl PipelineProcessingReport {
+    pub fn smart_auto() -> Self {
+        Self {
+            stages: vec![PipelineStageRecord {
+                stage: "raw_decode".to_string(),
+                input_domain: DataDomain::RawMosaic,
+                output_domain: DataDomain::ProPhotoEstimate,
+                status: PipelineStageStatus::Used,
+                detail: "libraw_dcraw_process_camera_wb_to_prophoto_estimate".to_string(),
+            }],
+            fallback_reasons: Vec::new(),
+        }
+    }
+
+    pub fn capture_corrected(flat_used: bool) -> Self {
+        Self {
+            stages: vec![
+                PipelineStageRecord {
+                    stage: "raw_unpack".to_string(),
+                    input_domain: DataDomain::RawMosaic,
+                    output_domain: DataDomain::RawMosaic,
+                    status: PipelineStageStatus::Used,
+                    detail: "libraw_unpack_without_dcraw_process".to_string(),
+                },
+                PipelineStageRecord {
+                    stage: "capture_correction".to_string(),
+                    input_domain: DataDomain::RawMosaic,
+                    output_domain: DataDomain::CorrectedCfa,
+                    status: PipelineStageStatus::Used,
+                    detail: CAPTURE_CORRECTION_ALGORITHM_VERSION.to_string(),
+                },
+                PipelineStageRecord {
+                    stage: "fixed_demosaic".to_string(),
+                    input_domain: DataDomain::CorrectedCfa,
+                    output_domain: DataDomain::CameraNativeTransmissionRgb,
+                    status: PipelineStageStatus::Used,
+                    detail: CAPTURE_DEMOSAIC_ALGORITHM_VERSION.to_string(),
+                },
+                PipelineStageRecord {
+                    stage: "capture_separation".to_string(),
+                    input_domain: DataDomain::CameraNativeTransmissionRgb,
+                    output_domain: DataDomain::RelativeTransmissionRgb,
+                    status: PipelineStageStatus::Default,
+                    detail: "identity_relative_transmission_no_density_claim".to_string(),
+                },
+                PipelineStageRecord {
+                    stage: "flat_field".to_string(),
+                    input_domain: DataDomain::CorrectedCfa,
+                    output_domain: DataDomain::CorrectedCfa,
+                    status: if flat_used {
+                        PipelineStageStatus::Default
+                    } else {
+                        PipelineStageStatus::Unavailable
+                    },
+                    detail: if flat_used {
+                        "stored_not_applied_pending_independent_definition".to_string()
+                    } else {
+                        "optional_flat_not_available".to_string()
+                    },
+                },
+            ],
+            fallback_reasons: Vec::new(),
+        }
+    }
+
+    pub fn smart_auto_fallback(reason: impl Into<String>) -> Self {
+        let mut report = Self::smart_auto();
+        report.fallback_reasons.push(reason.into());
+        report
+    }
 }
 
 impl Default for ProcessingContract {
     fn default() -> Self {
         Self::LegacyV1
+    }
+}
+
+impl ProcessingContract {
+    pub fn input_domain(self) -> DataDomain {
+        match self {
+            Self::LegacyV1 => DataDomain::LegacyLinearSrgb,
+            Self::CaptureCorrectedV11 => DataDomain::RelativeTransmissionRgb,
+            Self::SmartAutoProPhotoV11
+            | Self::RollBaseProPhotoV11
+            | Self::RollAnchoredProPhotoV11 => DataDomain::ProPhotoEstimate,
+        }
+    }
+
+    pub fn backend_label(self) -> &'static str {
+        match self {
+            Self::LegacyV1 => "LegacyV1",
+            Self::CaptureCorrectedV11 => {
+                "Capture Corrected / Relative Transmission RGB (experimental)"
+            }
+            Self::SmartAutoProPhotoV11
+            | Self::RollBaseProPhotoV11
+            | Self::RollAnchoredProPhotoV11 => "Smart Auto / ProPhoto Estimate",
+        }
     }
 }
 
@@ -203,6 +633,33 @@ pub enum DensityAnchorConfidence {
     Verified,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DensityAnchorProvenance {
+    pub input_domain: DataDomain,
+    #[serde(default)]
+    pub calibration_profile_id: Option<String>,
+    #[serde(default)]
+    pub calibration_payload_digest: Option<String>,
+    #[serde(default)]
+    pub raw_decode_version: Option<i64>,
+    pub algorithm_version: String,
+    #[serde(default)]
+    pub legacy: bool,
+}
+
+impl Default for DensityAnchorProvenance {
+    fn default() -> Self {
+        Self {
+            input_domain: DataDomain::ProPhotoEstimate,
+            calibration_profile_id: None,
+            calibration_payload_digest: None,
+            raw_decode_version: None,
+            algorithm_version: "legacy_unknown".to_string(),
+            legacy: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DensityAnchor {
     /// Raw channel density before film-base subtraction.
@@ -212,6 +669,11 @@ pub struct DensityAnchor {
     pub confidence: DensityAnchorConfidence,
     #[serde(default)]
     pub reference_id: Option<String>,
+    /// Missing provenance in legacy JSON deserializes to an explicitly
+    /// unverified ProPhoto Estimate record. It is retained for history but can
+    /// never be promoted by deserialization.
+    #[serde(default)]
+    pub provenance: DensityAnchorProvenance,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -220,6 +682,10 @@ pub struct DensityAnchors {
     pub d_min_base: Option<DensityAnchor>,
     #[serde(default)]
     pub d_max_full_exposure: Option<DensityAnchor>,
+    /// Replaced or domain-incompatible records retained for provenance and
+    /// audit. Resolution never promotes these back into active endpoints.
+    #[serde(default)]
+    pub retained_records: Vec<DensityAnchor>,
 }
 
 impl DensityAnchors {
@@ -316,6 +782,8 @@ pub struct PipelineState {
     pub content_range: Option<ContentRange>,
     #[serde(default)]
     pub render_mapping: RenderMapping,
+    #[serde(default)]
+    pub processing_report: PipelineProcessingReport,
 }
 
 impl Default for PipelineState {
@@ -325,6 +793,7 @@ impl Default for PipelineState {
             density_anchors: DensityAnchors::default(),
             content_range: None,
             render_mapping: RenderMapping::default(),
+            processing_report: PipelineProcessingReport::default(),
         }
     }
 }
@@ -333,6 +802,7 @@ impl PipelineState {
     pub fn smart_auto() -> Self {
         Self {
             contract: ProcessingContract::SmartAutoProPhotoV11,
+            processing_report: PipelineProcessingReport::smart_auto(),
             ..Self::default()
         }
     }
@@ -341,6 +811,16 @@ impl PipelineState {
         Self {
             contract: anchors.prophoto_contract(),
             density_anchors: anchors,
+            processing_report: PipelineProcessingReport::smart_auto(),
+            ..Self::default()
+        }
+    }
+
+    pub fn capture_corrected(anchors: DensityAnchors, flat_used: bool) -> Self {
+        Self {
+            contract: ProcessingContract::CaptureCorrectedV11,
+            density_anchors: anchors,
+            processing_report: PipelineProcessingReport::capture_corrected(flat_used),
             ..Self::default()
         }
     }
@@ -563,11 +1043,26 @@ pub struct FilmItem {
     pub rendered_thumbnail_base64: Option<String>,
     pub original_proxy: Option<ImageBuffer<Rgb<u16>, Vec<u16>>>,
     pub proxy_image: Option<ImageBuffer<Rgb<u16>, Vec<u16>>>,
-    /// Linear ProPhoto RGB transmission retained as f32 for v1.1 contracts.
-    /// LegacyV1 leaves this empty and continues to use the u16 proxy above.
-    pub scientific_proxy: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
+    /// Linear ProPhoto RGB estimate retained as f32 for Smart Auto contracts.
+    /// It is not Camera Native Transmission RGB or measured density. LegacyV1
+    /// leaves this empty and continues to use the u16 proxy above.
+    pub prophoto_estimate_proxy: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
+    /// Capture-corrected relative transmission, distinct from ProPhoto
+    /// Estimate. It is present only while the active contract is
+    /// CaptureCorrectedV11.
+    pub(crate) relative_transmission_proxy: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
+    /// Quality state for relative transmission. Invalid samples are never
+    /// promoted into density math by epsilon substitution.
+    pub(crate) relative_transmission_quality: Option<QualityMask>,
     pub pristine_proxy: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
     pub base_color: BaseColor,
+    /// Ephemeral result of the last capability resolution. The persisted
+    /// `pipeline_state` keeps the user's request and all anchor records.
+    pub runtime_pipeline_state: Option<PipelineState>,
+    /// Provenance attached to frame anchors computed from the current input.
+    pub runtime_density_provenance: Option<DensityAnchorProvenance>,
+    /// Resolver cache key. Capability recovery invalidates fallback proxies.
+    pub runtime_pipeline_key: Option<String>,
     pub pipeline_state: PipelineState,
     pub params: TuningParams,
     pub geom: GeometryState,
@@ -578,6 +1073,12 @@ pub struct FilmItem {
 }
 
 impl FilmItem {
+    pub fn effective_pipeline_state(&self) -> &PipelineState {
+        self.runtime_pipeline_state
+            .as_ref()
+            .unwrap_or(&self.pipeline_state)
+    }
+
     pub fn preferred_thumbnail(&self) -> &str {
         self.rendered_thumbnail_base64
             .as_deref()

@@ -2706,6 +2706,7 @@ name = "nexfilm_engine"
 version = "1.0.2"
 dependencies = [
  "base64 0.22.1",
+ "cc",
  "clap",
  "dashmap",
  "flate2",
@@ -2719,6 +2720,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

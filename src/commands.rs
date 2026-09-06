@@ -1,13 +1,20 @@
 use crate::app_state::{
-    BaseColor, CalibrationConfigProfile, CalibrationLevel, CalibrationProfileAvailability,
-    CalibrationProfileView, CalibrationReference, CalibrationReferenceKind, ContentRange,
-    ContentRangeScope, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope,
-    DensityAnchorSource, DensityAnchors, EngineState, FilmItem, FilmMode, FilmstripItem,
-    GeometryState, PipelineState, ProcessingContract, RenderMode, Roll, RollBaseStatus,
-    RollCalibrationFormat, RollCalibrationMode, RollCalibrationStatus, RollDmaxStatus,
-    RollFrameStatus, RollToneStatus, TuningParams, CALIBRATION_PROFILE_SCHEMA_VERSION,
+    BaseColor, CalibrationCapability, CalibrationConfigProfile, CalibrationLevel,
+    CalibrationPayloadIssuer, CalibrationProfileAvailability, CalibrationProfilePayload,
+    CalibrationProfileView, CalibrationQualityMaskArtifact, CalibrationQualityMaskSummary,
+    CalibrationReference, CalibrationReferenceKind, CalibrationReferenceSummary,
+    CalibrationValidRange, CalibrationValidationReport, CalibrationValidationStatus,
+    CaptureCalibrationParameters, ContentRange, ContentRangeScope, DensityAnchor,
+    DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource, DensityAnchors, EngineState,
+    FilmItem, FilmMode, FilmstripItem, GeometryState, PipelineState, ProcessingContract,
+    RenderMode, Roll, RollBaseStatus, RollCalibrationFormat, RollCalibrationMode,
+    RollCalibrationStatus, RollDmaxStatus, RollFrameStatus, RollToneStatus, TuningParams,
+    CALIBRATION_PROFILE_PAYLOAD_VERSION, CALIBRATION_PROFILE_SCHEMA_VERSION,
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
+use crate::capability_resolver::{
+    resolve_pipeline, PipelineImageKind, PipelineResolution, PipelineResolverInput, ResolverProfile,
+};
 use crate::color_science::{
     apply_linear_matrix, canonical_output_space, compress_linear_srgb_for_density,
     convert_encoded_to_linear_rgb_with_matrix, identify_icc_profile, linear_conversion_matrix,
@@ -31,6 +38,7 @@ use rayon::prelude::*;
 use rfd::FileDialog;
 use rusqlite::OptionalExtension;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::Path;
@@ -54,7 +62,7 @@ const FALLBACK_THUMB: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADU
 const IMPORT_PREVIEW_LONG_EDGE: u32 = 1024;
 const PROXY_LONG_EDGE: f32 = 2560.0;
 const MAX_PREVIEW_PROXY_LONG_EDGE: u32 = 4096;
-// The WebGL proxy is a compact transport cache, not the scientific working buffer.
+// The WebGL proxy is a compact transport cache, not the domain-typed f32 buffer.
 // Preserve a useful signed ProPhoto range instead of clipping it to display RGB.
 const PROPHOTO_TRANSPORT_MIN: f32 = -1.0;
 const PROPHOTO_TRANSPORT_MAX: f32 = 3.0;
@@ -1689,16 +1697,17 @@ fn build_response_buffer_from_proxy_with_state(
     proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>,
     base_color: &BaseColor,
     pipeline_state: &PipelineState,
+    quality: Option<&crate::raw_backend::QualityMask>,
     is_full_proxy: bool,
 ) -> Vec<u8> {
     let (width, height) = proxy.dimensions();
     let base_density = pipeline_base_density(pipeline_state, base_color);
     let base_analyzed = pipeline_has_base(pipeline_state, base_color);
     let flags = u32::from(base_analyzed)
-        | if pipeline_state.contract == ProcessingContract::LegacyV1 {
-            0
-        } else {
-            2
+        | match pipeline_state.contract {
+            ProcessingContract::LegacyV1 => 0,
+            ProcessingContract::CaptureCorrectedV11 => 4,
+            _ => 2,
         };
     let mut out = vec![0u8; (width * height * 8) as usize + 28];
     out[0..4].copy_from_slice(&width.to_le_bytes());
@@ -1713,12 +1722,16 @@ fn build_response_buffer_from_proxy_with_state(
         .as_raw()
         .par_chunks_exact(3)
         .zip(out[28..].par_chunks_exact_mut(8))
-        .for_each(|(pixel, target)| {
+        .enumerate()
+        .for_each(|(index, (pixel, target))| {
             for channel in 0..3 {
                 let start = channel * 2;
                 target[start..start + 2].copy_from_slice(&pixel[channel].to_le_bytes());
             }
-            target[6..8].copy_from_slice(&u16::MAX.to_le_bytes());
+            let valid = quality
+                .filter(|_| pipeline_state.contract == ProcessingContract::CaptureCorrectedV11)
+                .is_none_or(|mask| mask.valid.get(index).copied().unwrap_or(false));
+            target[6..8].copy_from_slice(&(if valid { u16::MAX } else { 0 }).to_le_bytes());
         });
     out
 }
@@ -1815,13 +1828,59 @@ fn compute_auto_base_f32(proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>) -> [f32; 3] {
     })
 }
 
-fn density_anchor_from_f32(density: [f32; 3]) -> DensityAnchor {
+fn compute_auto_base_capture_corrected(
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    quality: &crate::raw_backend::QualityMask,
+) -> Result<[f32; 3], String> {
+    let mut values = [Vec::new(), Vec::new(), Vec::new()];
+    for (index, pixel) in proxy.as_raw().chunks_exact(3).enumerate() {
+        if !quality.valid.get(index).copied().unwrap_or(false)
+            || pixel
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            continue;
+        }
+        for channel in 0..3 {
+            values[channel].push(pixel[channel]);
+        }
+    }
+    let mut density = [0.0; 3];
+    for channel in 0..3 {
+        if values[channel].is_empty() {
+            return Err("Capture Corrected contains no valid film-base samples".to_string());
+        }
+        let index = ((values[channel].len() as f32 * 0.99).ceil() as usize)
+            .saturating_sub(1)
+            .min(values[channel].len() - 1);
+        values[channel].select_nth_unstable_by(index, |left, right| left.total_cmp(right));
+        density[channel] = -values[channel][index].log10();
+    }
+    Ok(density)
+}
+
+fn density_anchor_from_f32(
+    density: [f32; 3],
+    provenance: crate::app_state::DensityAnchorProvenance,
+) -> DensityAnchor {
     DensityAnchor {
         density,
         source: DensityAnchorSource::EstimatedFromContent,
         scope: DensityAnchorScope::Frame,
         confidence: DensityAnchorConfidence::Estimated,
         reference_id: None,
+        provenance,
+    }
+}
+
+fn replace_base_anchor_preserving_history(
+    anchors: &mut DensityAnchors,
+    replacement: DensityAnchor,
+) {
+    if let Some(previous) = anchors.d_min_base.replace(replacement) {
+        if !anchors.retained_records.contains(&previous) {
+            anchors.retained_records.push(previous);
+        }
     }
 }
 
@@ -1834,20 +1893,250 @@ fn base_color_from_density(density: [f32; 3]) -> BaseColor {
     }
 }
 
-fn scientific_to_transport_proxy(
-    scientific: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+fn prophoto_estimate_to_transport_proxy(
+    estimate: &ImageBuffer<Rgb<f32>, Vec<f32>>,
 ) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
-    let mut transport =
-        ImageBuffer::<Rgb<u16>, Vec<u16>>::new(scientific.width(), scientific.height());
+    let mut transport = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(estimate.width(), estimate.height());
     let span = PROPHOTO_TRANSPORT_MAX - PROPHOTO_TRANSPORT_MIN;
     transport
         .as_mut()
         .par_chunks_exact_mut(3)
-        .zip(scientific.as_raw().par_chunks_exact(3))
+        .zip(estimate.as_raw().par_chunks_exact(3))
         .for_each(|(target, source)| {
             for channel in 0..3 {
                 let encoded = (source[channel] - PROPHOTO_TRANSPORT_MIN) / span;
                 target[channel] = (encoded.clamp(0.0, 1.0) * 65535.0).round() as u16;
+            }
+        });
+    transport
+}
+
+#[derive(Debug, Clone)]
+struct CaptureCorrectedProxyData {
+    image: ImageBuffer<Rgb<f32>, Vec<f32>>,
+    quality: crate::raw_backend::QualityMask,
+}
+
+fn capture_reference(
+    profile: &CalibrationConfigProfile,
+    kind: CalibrationReferenceKind,
+) -> Result<&CalibrationReference, String> {
+    let mut matches = profile
+        .references
+        .iter()
+        .filter(|reference| reference.kind == kind);
+    let reference = matches
+        .next()
+        .ok_or_else(|| format!("Capture Corrected reference is missing: {kind:?}"))?;
+    if matches.next().is_some() {
+        return Err(format!(
+            "Capture Corrected reference is ambiguous: {kind:?}"
+        ));
+    }
+    let summarized = profile
+        .payload
+        .reference_frames
+        .iter()
+        .any(|summary| summary.kind == kind && summary.reference_id == reference.reference_id);
+    if !summarized {
+        return Err(format!(
+            "Capture Corrected reference is not covered by the verified payload: {kind:?}"
+        ));
+    }
+    Ok(reference)
+}
+
+fn decode_capture_corrected_image_buffer(
+    path: &str,
+    profile: &CalibrationConfigProfile,
+) -> Result<CaptureCorrectedProxyData, String> {
+    if !profile.payload.capture_is_verified(RAW_DECODE_VERSION) {
+        return Err(profile
+            .payload
+            .capture_validation_error(RAW_DECODE_VERSION)
+            .unwrap_or("capture_profile_not_verified")
+            .to_string());
+    }
+    if !is_raw_extension(path) {
+        return Err(
+            "Capture Corrected requires a LibRaw-supported Bayer mosaic source".to_string(),
+        );
+    }
+    let dark_reference = capture_reference(profile, CalibrationReferenceKind::DarkFrame)?;
+    let open_reference = capture_reference(profile, CalibrationReferenceKind::OpenGate)?;
+    for reference in [dark_reference, open_reference] {
+        if let Some(error) = verified_reference_error(profile, reference) {
+            return Err(error);
+        }
+    }
+    let dark_path = &dark_reference.file_path;
+    let open_path = &open_reference.file_path;
+    for reference_path in [dark_path, open_path] {
+        if !is_raw_extension(reference_path) {
+            return Err(format!(
+                "Capture Corrected reference is not a LibRaw mosaic: {reference_path}"
+            ));
+        }
+    }
+
+    let sample = crate::raw_backend::decode_raw_mosaic(path)?;
+    let dark = crate::raw_backend::decode_raw_mosaic(dark_path)?;
+    let open = crate::raw_backend::decode_raw_mosaic(open_path)?;
+    for mosaic in [&sample, &dark, &open] {
+        if mosaic.metadata.libraw_version != profile.payload.libraw_version {
+            return Err(format!(
+                "capture_libraw_version_mismatch|expected={}|actual={}",
+                profile.payload.libraw_version, mosaic.metadata.libraw_version
+            ));
+        }
+    }
+    let parameters = profile
+        .payload
+        .capture_parameters
+        .as_ref()
+        .ok_or_else(|| "capture_parameters_missing".to_string())?;
+    if parameters.light_source_id != profile.light_source.trim() {
+        return Err("capture_light_source_changed".to_string());
+    }
+    let sample_geometry = crate::raw_backend::raw_geometry_fingerprint(&sample)?;
+    if sample_geometry != parameters.geometry_fingerprint {
+        return Err("capture_sample_geometry_mismatch".to_string());
+    }
+    if capture_hardware_fingerprint(profile, &sample)? != profile.payload.hardware_fingerprint {
+        return Err("capture_hardware_fingerprint_mismatch".to_string());
+    }
+    let bad_pixels = profile
+        .payload
+        .quality_mask
+        .as_ref()
+        .map(|quality| {
+            quality
+                .bad_pixel_indices
+                .iter()
+                .map(|index| *index as usize)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let mut capture_corrected = crate::raw_backend::decode_capture_corrected_input(
+        &sample,
+        Some(&dark),
+        Some(&open),
+        &bad_pixels,
+    )?;
+    let range = profile
+        .payload
+        .valid_range
+        .as_ref()
+        .ok_or_else(|| "capture_valid_range_missing".to_string())?;
+    for (index, pixel) in capture_corrected
+        .transmission
+        .chunks_exact_mut(3)
+        .enumerate()
+    {
+        if capture_corrected.quality.valid[index]
+            && (0..3).any(|channel| {
+                !pixel[channel].is_finite()
+                    || pixel[channel] < range.minimum_transmission[channel]
+                    || pixel[channel] > range.maximum_transmission[channel]
+            })
+        {
+            capture_corrected
+                .quality
+                .invalidate(index, crate::raw_backend::QualityFlag::OutOfRange);
+            pixel.fill(f32::NAN);
+        }
+    }
+    let summary = capture_corrected.quality.summary();
+    if summary.valid_samples == 0 {
+        return Err(
+            "Capture Corrected produced no valid relative-transmission samples".to_string(),
+        );
+    }
+    eprintln!(
+        "[RAW Pipeline] Capture Corrected / Relative Transmission RGB: valid={}/{} invalid_denominator={} negative={} saturated={} bad={} out_of_range={} separation={}",
+        summary.valid_samples,
+        summary.total_samples,
+        summary.invalid_denominator,
+        summary.negative_samples,
+        summary.saturated_samples,
+        summary.bad_pixels,
+        summary.out_of_range,
+        capture_corrected.capture_separation,
+    );
+    eprintln!(
+        "[RAW Pipeline] Capture diagnostics: min={:?} max={:?} mean={:?}",
+        capture_corrected.diagnostics.valid_min,
+        capture_corrected.diagnostics.valid_max,
+        capture_corrected.diagnostics.valid_mean,
+    );
+    let image = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(
+        capture_corrected.width,
+        capture_corrected.height,
+        capture_corrected.transmission,
+    )
+    .ok_or_else(|| "Failed to allocate Relative Transmission RGB".to_string())?;
+    Ok(CaptureCorrectedProxyData {
+        image,
+        quality: capture_corrected.quality,
+    })
+}
+
+fn resize_capture_corrected_proxy(
+    source: CaptureCorrectedProxyData,
+    target_long_edge: u32,
+) -> CaptureCorrectedProxyData {
+    let (width, height) = source.image.dimensions();
+    let ratio = (target_long_edge as f32 / width.max(height).max(1) as f32).min(1.0);
+    if ratio >= 0.999 {
+        return source;
+    }
+    let target_width = (width as f32 * ratio).max(1.0) as u32;
+    let target_height = (height as f32 * ratio).max(1.0) as u32;
+    let mut resized = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(target_width, target_height);
+    let mut quality =
+        crate::raw_backend::QualityMask::new(target_width as usize * target_height as usize);
+    for y in 0..target_height {
+        for x in 0..target_width {
+            let source_x = ((x as u64 * width as u64) / target_width as u64)
+                .min(width.saturating_sub(1) as u64) as usize;
+            let source_y = ((y as u64 * height as u64) / target_height as u64)
+                .min(height.saturating_sub(1) as u64) as usize;
+            let source_index = source_y * width as usize + source_x;
+            let target_index = y as usize * target_width as usize + x as usize;
+            *resized.get_pixel_mut(x, y) =
+                *source.image.get_pixel(source_x as u32, source_y as u32);
+            if !source.quality.valid[source_index] {
+                for flag in source.quality.flags[source_index].iter() {
+                    quality.invalidate(target_index, flag);
+                }
+            }
+        }
+    }
+    CaptureCorrectedProxyData {
+        image: resized,
+        quality,
+    }
+}
+
+fn relative_transmission_to_transport_proxy(
+    relative_transmission: &CaptureCorrectedProxyData,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    let mut transport = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(
+        relative_transmission.image.width(),
+        relative_transmission.image.height(),
+    );
+    transport
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(relative_transmission.image.as_raw().par_chunks_exact(3))
+        .zip(relative_transmission.quality.valid.par_iter())
+        .for_each(|((target, source), valid)| {
+            if *valid {
+                for channel in 0..3 {
+                    target[channel] = (source[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+                }
+            } else {
+                target.fill(0);
             }
         });
     transport
@@ -1877,6 +2166,7 @@ fn linear_srgb_u16_to_prophoto_f32(
 
 fn compute_content_limits_f32(
     proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    quality: Option<&crate::raw_backend::QualityMask>,
     geom: &GeometryState,
     base_density: [f32; 3],
 ) -> Result<AutoColorLimits, String> {
@@ -1947,10 +2237,17 @@ fn compute_content_limits_f32(
                 };
                 let source_uv =
                     map_oriented_uv_to_source(oriented_uv, source_width, source_height, geom);
-                let Some(raw) = sample_rgb32_nearest(proxy, source_uv) else {
+                let Some(raw) = sample_rgb32_nearest_checked(proxy, quality, source_uv) else {
                     continue;
                 };
-                let density = raw.map(|value| -value.max(1e-6).log10());
+                let density = if quality.is_some() {
+                    if raw.iter().any(|value| !value.is_finite() || *value <= 0.0) {
+                        continue;
+                    }
+                    raw.map(|value| -value.log10())
+                } else {
+                    raw.map(|value| -value.max(1e-6).log10())
+                };
                 let density = [
                     density[0] - base_density[0],
                     density[1] - base_density[1],
@@ -2025,9 +2322,30 @@ fn apply_roll_density_anchor_limits(
     }
 }
 
+const PRESERVE_TONE_MIN_DENSITY_SPAN: f32 = 1.9;
+
+fn preserve_tone_density_span(limits: &mut AutoColorLimits, anchors: &DensityAnchors) {
+    for channel in 0..3 {
+        let span = limits.d_max[channel] - limits.d_min[channel];
+        if !span.is_finite() || span >= PRESERVE_TONE_MIN_DENSITY_SPAN {
+            continue;
+        }
+        if anchors.has_roll_full_exposure() {
+            // A verified roll D-max remains fixed; extend only the estimated
+            // endpoint so short content cannot silently become Full Tone.
+            limits.d_min[channel] = limits.d_max[channel] - PRESERVE_TONE_MIN_DENSITY_SPAN;
+        } else {
+            // Keep a sampled roll D-min (or the estimated low endpoint) fixed.
+            limits.d_max[channel] = limits.d_min[channel] + PRESERVE_TONE_MIN_DENSITY_SPAN;
+        }
+    }
+}
+
 fn compute_pristine_proxy(
     proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>,
-    scientific_proxy: Option<&ImageBuffer<Rgb<f32>, Vec<f32>>>,
+    prophoto_estimate_proxy: Option<&ImageBuffer<Rgb<f32>, Vec<f32>>>,
+    relative_transmission_proxy: Option<&ImageBuffer<Rgb<f32>, Vec<f32>>>,
+    relative_transmission_quality: Option<&crate::raw_backend::QualityMask>,
     base_color: &BaseColor,
     pipeline_state: &PipelineState,
     mode: FilmMode,
@@ -2038,10 +2356,29 @@ fn compute_pristine_proxy(
 
     let out_pixels: &mut [f32] = pristine.as_mut();
 
-    if let Some(scientific) =
-        scientific_proxy.filter(|image| image.dimensions() == proxy.dimensions())
+    if pipeline_state.contract == ProcessingContract::CaptureCorrectedV11 {
+        if let (Some(measured), Some(quality)) = (
+            relative_transmission_proxy.filter(|image| image.dimensions() == proxy.dimensions()),
+            relative_transmission_quality,
+        ) {
+            measured
+                .as_raw()
+                .par_chunks_exact(3)
+                .zip(quality.valid.par_iter())
+                .zip(out_pixels.par_chunks_exact_mut(3))
+                .for_each(|((in_px, valid), out_px)| {
+                    let density =
+                        pipeline.compute_relative_density(&[in_px[0], in_px[1], in_px[2]], *valid);
+                    out_px.copy_from_slice(&density.unwrap_or([f32::NAN; 3]));
+                });
+            return pristine;
+        }
+    }
+
+    if let Some(prophoto_estimate) =
+        prophoto_estimate_proxy.filter(|image| image.dimensions() == proxy.dimensions())
     {
-        scientific
+        prophoto_estimate
             .as_raw()
             .par_chunks_exact(3)
             .zip(out_pixels.par_chunks_exact_mut(3))
@@ -2747,11 +3084,10 @@ fn decode_image_buffer(
     Ok(converted)
 }
 
-/// Decode the v1.1 scientific proxy without applying the legacy display-gamut
-/// compression or quantizing the camera matrix result before density math.
-/// Direct/scanner inputs reuse the existing linear decoder, while RAW inputs
-/// keep the matrix result in f32 and convert it directly to ProPhoto RGB.
-fn decode_scientific_image_buffer(
+/// Decode the Smart Auto ProPhoto Estimate without applying the legacy
+/// display-gamut compression or quantizing the camera matrix result. This
+/// output is a relative display estimate, never a measured Density Input RGB.
+fn decode_prophoto_estimate_image_buffer(
     path: &str,
     mode: DecodeMode,
 ) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
@@ -2786,18 +3122,13 @@ fn decode_scientific_image_buffer(
         linear_gamma: true,
         use_camera_wb: true,
     };
-    let decoded = crate::raw_backend::extract_camera_rgb_with_options(path, &options)
+    let decoded = crate::raw_backend::decode_smart_auto_rgb(path, &options)
         .map_err(|error| libraw_decode_error_message(path, error))?;
-    let (width, height, camera_pixels) = rgb32_pixels_from_bytes(
-        decoded.width as u32,
-        decoded.height as u32,
-        decoded.colors as usize,
-        decoded.bits,
-        &decoded.data,
-    )?;
     let srgb_to_prophoto = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
-    let mut converted = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(width, height, camera_pixels)
-        .ok_or_else(|| "Failed to allocate scientific RAW image".to_string())?;
+    let mut converted =
+        ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(decoded.width, decoded.height, decoded.pixels)
+            .ok_or_else(|| "Failed to allocate Smart Auto ProPhoto Estimate".to_string())?;
+    eprintln!("[RAW Pipeline] {}", decoded.label);
     converted
         .as_mut()
         .par_chunks_exact_mut(3)
@@ -2861,13 +3192,20 @@ fn reference_density_extreme(
 }
 
 fn sampled_roll_anchor(path: &str, source: DensityAnchorSource) -> Result<DensityAnchor, String> {
-    let image = decode_scientific_image_buffer(path, DecodeMode::DevelopProxy)?;
+    let image = decode_prophoto_estimate_image_buffer(path, DecodeMode::DevelopProxy)?;
     Ok(DensityAnchor {
         density: reference_density_extreme(&image, source)?,
         source,
         scope: DensityAnchorScope::Roll,
         confidence: DensityAnchorConfidence::UserSampled,
         reference_id: Some(path.to_string()),
+        provenance: crate::app_state::DensityAnchorProvenance {
+            input_domain: crate::app_state::DataDomain::ProPhotoEstimate,
+            raw_decode_version: Some(RAW_DECODE_VERSION),
+            algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+            legacy: false,
+            ..Default::default()
+        },
     })
 }
 
@@ -2899,6 +3237,7 @@ pub async fn analyze_roll_density_references(
         Ok(crate::app_state::DensityAnchors {
             d_min_base: Some(base),
             d_max_full_exposure: full_exposure,
+            retained_records: Vec::new(),
         })
     })
     .await
@@ -2907,6 +3246,7 @@ pub async fn analyze_roll_density_references(
 
 fn averaged_reference_density(
     image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    quality: Option<&crate::raw_backend::QualityMask>,
     normalized_x: f32,
     normalized_y: f32,
 ) -> Result<[f32; 3], String> {
@@ -2925,6 +3265,13 @@ fn averaged_reference_density(
     let mut channels = [Vec::new(), Vec::new(), Vec::new()];
     for y in (center_y - radius).max(0)..=(center_y + radius).min(height as i32 - 1) {
         for x in (center_x - radius).max(0)..=(center_x + radius).min(width as i32 - 1) {
+            let pixel_index = y as usize * width as usize + x as usize;
+            if quality
+                .and_then(|mask| mask.valid.get(pixel_index))
+                .is_some_and(|valid| !*valid)
+            {
+                continue;
+            }
             let pixel = image.get_pixel(x as u32, y as u32).0;
             for channel in 0..3 {
                 if pixel[channel].is_finite() && pixel[channel] > 0.0 {
@@ -2954,10 +3301,41 @@ pub async fn sample_roll_density_reference(
     y: f32,
     state: State<'_, EngineState>,
 ) -> Result<DensityAnchor, String> {
-    let (path, roll_id) = {
+    let (path, roll_id, input, provenance) = {
         let item = state.items.get(&id).ok_or("Image ID not found")?;
         let item = read_lock(item.value());
-        (item.file_path.clone(), item.roll_id.clone())
+        let effective = item.effective_pipeline_state();
+        if effective.contract == ProcessingContract::CaptureCorrectedV11 {
+            let image = item
+                .relative_transmission_proxy
+                .clone()
+                .ok_or_else(|| "Capture Corrected proxy is not prepared.".to_string())?;
+            let provenance = item
+                .runtime_density_provenance
+                .clone()
+                .ok_or_else(|| "Capture Corrected provenance is unavailable.".to_string())?;
+            (
+                item.file_path.clone(),
+                item.roll_id.clone(),
+                (image, item.relative_transmission_quality.clone()),
+                provenance,
+            )
+        } else {
+            let image = item.prophoto_estimate_proxy.clone().unwrap_or_default();
+            (
+                item.file_path.clone(),
+                item.roll_id.clone(),
+                (image, None),
+                crate::app_state::DensityAnchorProvenance {
+                    input_domain: crate::app_state::DataDomain::ProPhotoEstimate,
+                    raw_decode_version: Some(RAW_DECODE_VERSION),
+                    algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION
+                        .to_string(),
+                    legacy: false,
+                    ..Default::default()
+                },
+            )
+        }
     };
     let source = match kind.as_str() {
         "base" => DensityAnchorSource::SampledFilmBase,
@@ -2965,13 +3343,17 @@ pub async fn sample_roll_density_reference(
         _ => return Err("Unknown density reference kind.".to_string()),
     };
     tokio::task::spawn_blocking(move || {
-        let image = decode_scientific_image_buffer(&path, DecodeMode::DevelopProxy)?;
+        let (mut image, quality) = input;
+        if image.width() == 0 || image.height() == 0 {
+            image = decode_prophoto_estimate_image_buffer(&path, DecodeMode::DevelopProxy)?;
+        }
         Ok(DensityAnchor {
-            density: averaged_reference_density(&image, x, y)?,
+            density: averaged_reference_density(&image, quality.as_ref(), x, y)?,
             source,
             scope: DensityAnchorScope::Roll,
             confidence: DensityAnchorConfidence::UserSampled,
             reference_id: Some(format!("{roll_id}:{path}")),
+            provenance,
         })
     })
     .await
@@ -3057,6 +3439,166 @@ fn default_pipeline_state_for_import(
     target_roll: &str,
     rolls: &[Roll],
 ) -> PipelineState {
+    default_pipeline_state_for_import_with_profiles(loose, target_roll, rolls, &[])
+}
+
+fn pipeline_image_kind(path: &str) -> PipelineImageKind {
+    if !Path::new(path).is_file() {
+        PipelineImageKind::Missing
+    } else if is_raw_extension(path) {
+        PipelineImageKind::RawBayer
+    } else if is_direct_image_extension(path) || is_tiff_extension(path) {
+        PipelineImageKind::DirectRgb
+    } else {
+        PipelineImageKind::Unsupported
+    }
+}
+
+fn resolver_profile(view: &CalibrationProfileView) -> ResolverProfile {
+    let has_reference = |kind| {
+        view.profile
+            .references
+            .iter()
+            .any(|reference| reference.kind == kind)
+    };
+    ResolverProfile {
+        profile_id: view.profile.profile_id.clone(),
+        payload_digest: view.profile.payload.payload_digest.clone(),
+        available: view.availability == CalibrationProfileAvailability::Available,
+        capture_validation_error: view
+            .profile
+            .payload
+            .capture_validation_error(RAW_DECODE_VERSION)
+            .map(str::to_string),
+        has_dark: has_reference(CalibrationReferenceKind::DarkFrame),
+        has_open_gate: has_reference(CalibrationReferenceKind::OpenGate),
+        has_flat: view
+            .profile
+            .references
+            .iter()
+            .find(|reference| reference.kind == CalibrationReferenceKind::FlatField)
+            .is_some_and(|reference| verified_reference_error(&view.profile, reference).is_none()),
+    }
+}
+
+fn resolve_image_pipeline(
+    persisted: &PipelineState,
+    roll: Option<&Roll>,
+    profiles: &[CalibrationProfileView],
+    path: &str,
+    runtime_failure: Option<String>,
+) -> PipelineResolution {
+    resolve_pipeline(&pipeline_resolver_input(
+        persisted,
+        roll,
+        profiles,
+        path,
+        runtime_failure,
+    ))
+}
+
+fn pipeline_resolver_input(
+    persisted: &PipelineState,
+    roll: Option<&Roll>,
+    profiles: &[CalibrationProfileView],
+    path: &str,
+    runtime_failure: Option<String>,
+) -> PipelineResolverInput {
+    pipeline_resolver_input_for_kind(
+        persisted,
+        roll,
+        profiles,
+        pipeline_image_kind(path),
+        runtime_failure,
+    )
+}
+
+fn pipeline_resolver_input_for_kind(
+    persisted: &PipelineState,
+    roll: Option<&Roll>,
+    profiles: &[CalibrationProfileView],
+    image_kind: PipelineImageKind,
+    runtime_failure: Option<String>,
+) -> PipelineResolverInput {
+    let roll_profile_id = roll.and_then(|roll| roll.calibration_profile_id.clone());
+    let profile = roll_profile_id.as_deref().and_then(|profile_id| {
+        profiles
+            .iter()
+            .find(|view| view.profile.profile_id == profile_id)
+            .map(resolver_profile)
+    });
+    let mut anchors = persisted.density_anchors.clone();
+    if let Some(roll) = roll {
+        if roll.density_anchors.d_min_base.is_some() {
+            anchors.d_min_base = roll.density_anchors.d_min_base.clone();
+        }
+        if roll.density_anchors.d_max_full_exposure.is_some() {
+            anchors.d_max_full_exposure = roll.density_anchors.d_max_full_exposure.clone();
+        }
+    }
+    PipelineResolverInput {
+        persisted_contract: persisted.contract,
+        roll_profile_id,
+        profile,
+        image_kind,
+        density_anchors: anchors,
+        raw_decode_version: RAW_DECODE_VERSION,
+        runtime_failure,
+    }
+}
+
+fn state_from_resolution(
+    persisted: &PipelineState,
+    resolution: &PipelineResolution,
+) -> PipelineState {
+    let mut state = persisted.clone();
+    state.contract = resolution.resolved_path;
+    state.density_anchors = resolution.usable_density_anchors.clone();
+    state.processing_report = resolution.processing_report.clone();
+    state
+}
+
+fn resolution_key(resolution: &PipelineResolution) -> String {
+    serde_json::to_string(resolution).unwrap_or_else(|_| {
+        format!(
+            "{:?}|{:?}|{:?}",
+            resolution.requested_path, resolution.resolved_path, resolution.resolved_profile_id
+        )
+    })
+}
+
+fn resolution_density_provenance(
+    resolution: &PipelineResolution,
+) -> crate::app_state::DensityAnchorProvenance {
+    crate::app_state::DensityAnchorProvenance {
+        input_domain: resolution.resolved_path.input_domain(),
+        calibration_profile_id: resolution.resolved_profile_id.clone(),
+        calibration_payload_digest: resolution.resolved_payload_digest.clone(),
+        raw_decode_version: Some(RAW_DECODE_VERSION),
+        algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+        legacy: false,
+    }
+}
+
+fn pipeline_state_for_roll_profile(
+    roll: &Roll,
+    _profiles: &[CalibrationProfileView],
+) -> PipelineState {
+    // Persist the requested path. Runtime capability resolution may fall back
+    // for one invocation without rewriting this request or the Roll binding.
+    if roll.calibration_profile_id.is_some() {
+        PipelineState::capture_corrected(roll.density_anchors.clone(), false)
+    } else {
+        PipelineState::from_roll_anchors(roll.density_anchors.clone())
+    }
+}
+
+fn default_pipeline_state_for_import_with_profiles(
+    loose: bool,
+    target_roll: &str,
+    rolls: &[Roll],
+    profiles: &[CalibrationProfileView],
+) -> PipelineState {
     if loose {
         // Loose Import has no capture, film-stock, or roll-reference metadata.
         // The lowest v1.1 contract guarantees output without reintroducing Status M.
@@ -3065,7 +3607,7 @@ fn default_pipeline_state_for_import(
     rolls
         .iter()
         .find(|roll| roll.roll_id == target_roll)
-        .map(|roll| PipelineState::from_roll_anchors(roll.density_anchors.clone()))
+        .map(|roll| pipeline_state_for_roll_profile(roll, profiles))
         .unwrap_or_else(PipelineState::smart_auto)
 }
 
@@ -3089,9 +3631,15 @@ pub async fn import_images(
         .unwrap_or_else(|| "LOOSE_DEFAULT".to_string());
     let loose = is_loose.unwrap_or(false);
     let in_lib = in_library.unwrap_or(true);
+    let calibration_profiles = load_calibration_profile_views().unwrap_or_default();
     let default_pipeline_state = {
         let rolls = read_lock(&state.rolls);
-        default_pipeline_state_for_import(loose, &target_roll, &rolls)
+        default_pipeline_state_for_import_with_profiles(
+            loose,
+            &target_roll,
+            &rolls,
+            &calibration_profiles,
+        )
     };
     let historical = is_historical.unwrap_or(false);
     if historical {
@@ -3490,9 +4038,14 @@ pub async fn import_images(
                         rendered_thumbnail_base64: rendered_thumb.clone(),
                         original_proxy: None,
                         proxy_image: None,
-                        scientific_proxy: None,
+                        prophoto_estimate_proxy: None,
+                        relative_transmission_proxy: None,
+                        relative_transmission_quality: None,
                         pristine_proxy: None,
                         base_color: base_color.clone(),
+                        runtime_pipeline_state: None,
+                        runtime_density_provenance: None,
+                        runtime_pipeline_key: None,
                         pipeline_state: pipeline_state.clone(),
                         params: params.clone(),
                         geom: normalize_persisted_geometry_for_rendered_image(
@@ -3520,9 +4073,14 @@ pub async fn import_images(
                     rendered_thumbnail_base64: None,
                     original_proxy: None,
                     proxy_image: None,
-                    scientific_proxy: None,
+                    prophoto_estimate_proxy: None,
+                    relative_transmission_proxy: None,
+                    relative_transmission_quality: None,
                     pristine_proxy: None,
                     base_color: BaseColor::default(),
+                    runtime_pipeline_state: None,
+                    runtime_density_provenance: None,
+                    runtime_pipeline_key: None,
                     pipeline_state: default_pipeline_state.clone(),
                     params,
                     geom,
@@ -4191,9 +4749,14 @@ mod history_contract_tests {
                 rendered_thumbnail_base64: rendered_thumbnail.map(str::to_string),
                 original_proxy: None,
                 proxy_image: None,
-                scientific_proxy: None,
+                prophoto_estimate_proxy: None,
+                relative_transmission_proxy: None,
+                relative_transmission_quality: None,
                 pristine_proxy: None,
                 base_color: BaseColor::default(),
+                runtime_pipeline_state: None,
+                runtime_density_provenance: None,
+                runtime_pipeline_key: None,
                 pipeline_state: PipelineState::default(),
                 params: TuningParams::default(),
                 geom: GeometryState::default(),
@@ -4322,6 +4885,36 @@ pub async fn get_embedded_preview(
     .map_err(|e| e.to_string())
 }
 
+/// Decode the selected source through the full-resolution RAW path for
+/// calibration inspection. The result is resized only after demosaic so this
+/// never falls back to a camera-embedded thumbnail or the half-size proxy.
+#[tauri::command]
+pub async fn get_density_calibration_preview(
+    id: String,
+    state: State<'_, EngineState>,
+) -> Result<String, String> {
+    let file_path = {
+        let item_arc = state.items.get(&id).ok_or("Image ID not found")?;
+        let item = read_lock(&item_arc);
+        if std::fs::File::open(&item.file_path).is_err() {
+            return Err("FILE_MISSING".into());
+        }
+        item.file_path.clone()
+    };
+
+    tokio::task::spawn_blocking(move || {
+        let image = decode_image_buffer(&file_path, DecodeMode::ExportFull)?;
+        encode_stretched_preview_jpeg_base64(
+            image::DynamicImage::ImageRgb16(image),
+            MAX_PREVIEW_PROXY_LONG_EDGE,
+            95,
+        )
+        .ok_or_else(|| format!("Could not encode calibration preview for {file_path}"))
+    })
+    .await
+    .map_err(|error| format!("Calibration preview worker failed: {error}"))?
+}
+
 #[derive(serde::Serialize)]
 pub struct ActiveImageState {
     pub params: TuningParams,
@@ -4353,7 +4946,9 @@ fn evict_proxy_if_needed(state: &EngineState) {
                 let mut item = write_lock(&item_arc);
                 item.original_proxy = None;
                 item.proxy_image = None;
-                item.scientific_proxy = None;
+                item.prophoto_estimate_proxy = None;
+                item.relative_transmission_proxy = None;
+                item.relative_transmission_quality = None;
                 item.pristine_proxy = None;
             }
         }
@@ -4434,7 +5029,7 @@ pub async fn prepare_proxy(
 ) -> Result<u32, String> {
     let target_long_edge = preview_proxy_target_long_edge(target_long_edge);
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
-    let (file_path, current_long_edge, contract) = {
+    let (file_path, roll_id, current_long_edge, persisted_state, cached_resolution_key) = {
         let item = read_lock(&item_arc);
         if std::fs::File::open(&item.file_path).is_err() {
             return Err("FILE_MISSING".into());
@@ -4446,89 +5041,195 @@ pub async fn prepare_proxy(
             .unwrap_or(0);
         (
             item.file_path.clone(),
+            item.roll_id.clone(),
             current_long_edge,
-            item.pipeline_state.contract,
+            item.pipeline_state.clone(),
+            item.runtime_pipeline_key.clone(),
         )
     };
 
-    if current_long_edge >= target_long_edge {
+    let rolls = read_lock(&state.rolls).clone();
+    let roll = rolls.iter().find(|roll| roll.roll_id == roll_id);
+    let profiles = load_calibration_profile_views()?;
+    let initial_resolution =
+        resolve_image_pipeline(&persisted_state, roll, &profiles, &file_path, None);
+    let initial_resolution_key = resolution_key(&initial_resolution);
+    if current_long_edge >= target_long_edge
+        && cached_resolution_key.as_deref() == Some(initial_resolution_key.as_str())
+    {
         track_proxy_loaded(&state, &id);
         return Ok(current_long_edge);
     }
 
-    let (loaded, scientific_proxy) = tokio::task::spawn_blocking(move || -> Result<_, String> {
-        let decode_mode = preview_proxy_decode_mode(target_long_edge);
-        if contract != ProcessingContract::LegacyV1 {
-            let mut scientific = if is_dng_extension(&file_path) {
-                let linear = decode_reduced_dng_for_working_space(&file_path, target_long_edge)
-                    .or_else(|_| decode_image_buffer(&file_path, decode_mode))?;
-                linear_srgb_u16_to_prophoto_f32(&linear)
-            } else if is_tiff_extension(&file_path) || is_scanner_fff_tiff(&file_path) {
-                let linear = decode_reduced_tiff_for_working_space(&file_path, target_long_edge)
-                    .or_else(|_| decode_image_buffer(&file_path, decode_mode))?;
-                linear_srgb_u16_to_prophoto_f32(&linear)
+    let contract = initial_resolution.resolved_path;
+    let capture_profile = if contract == ProcessingContract::CaptureCorrectedV11 {
+        initial_resolution
+            .resolved_profile_id
+            .as_deref()
+            .and_then(|profile_id| {
+                profiles
+                    .iter()
+                    .find(|view| view.profile.profile_id == profile_id)
+                    .map(|view| view.profile.clone())
+            })
+    } else {
+        None
+    };
+
+    struct PreparedProxy {
+        transport: ImageBuffer<Rgb<u16>, Vec<u16>>,
+        prophoto_estimate: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
+        capture_corrected: Option<CaptureCorrectedProxyData>,
+        fallback_reason: Option<String>,
+    }
+
+    let decode_path = file_path.clone();
+    let prepared =
+        tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let decode_mode = preview_proxy_decode_mode(target_long_edge);
+            if contract == ProcessingContract::CaptureCorrectedV11 {
+                let capture_attempt = capture_profile
+                    .as_ref()
+                    .ok_or_else(|| "capture_profile_unavailable".to_string())
+                    .and_then(|profile| decode_capture_corrected_image_buffer(&decode_path, profile))
+                    .map(|capture| resize_capture_corrected_proxy(capture, target_long_edge));
+                match capture_attempt {
+                    Ok(capture_corrected) => {
+                        let transport = relative_transmission_to_transport_proxy(&capture_corrected);
+                        return Ok(PreparedProxy {
+                            transport,
+                            prophoto_estimate: None,
+                            capture_corrected: Some(capture_corrected),
+                            fallback_reason: None,
+                        });
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "[RAW Pipeline] Capture Corrected unavailable; falling back to Smart Auto / ProPhoto Estimate for this invocation: {error}"
+                        );
+                        let mut estimate = decode_prophoto_estimate_image_buffer(
+                            &decode_path,
+                            decode_mode,
+                        )?;
+                        let (width, height) = estimate.dimensions();
+                        let ratio =
+                            (target_long_edge as f32 / width.max(height) as f32).min(1.0);
+                        if ratio < 0.999 {
+                            estimate = image::imageops::resize(
+                                &estimate,
+                                (width as f32 * ratio).max(1.0) as u32,
+                                (height as f32 * ratio).max(1.0) as u32,
+                                FilterType::Lanczos3,
+                            );
+                        }
+                        return Ok(PreparedProxy {
+                            transport: prophoto_estimate_to_transport_proxy(&estimate),
+                            prophoto_estimate: Some(estimate),
+                            capture_corrected: None,
+                            fallback_reason: Some(error),
+                        });
+                    }
+                }
+            }
+            if contract != ProcessingContract::LegacyV1 {
+                let mut estimate = if is_dng_extension(&decode_path) {
+                    let linear = decode_reduced_dng_for_working_space(&decode_path, target_long_edge)
+                        .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
+                    linear_srgb_u16_to_prophoto_f32(&linear)
+                } else if is_tiff_extension(&decode_path) || is_scanner_fff_tiff(&decode_path) {
+                    let linear =
+                        decode_reduced_tiff_for_working_space(&decode_path, target_long_edge)
+                            .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
+                    linear_srgb_u16_to_prophoto_f32(&linear)
+                } else {
+                    decode_prophoto_estimate_image_buffer(&decode_path, decode_mode)?
+                };
+                let (width, height) = estimate.dimensions();
+                let ratio = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
+                if ratio < 0.999 {
+                    estimate = image::imageops::resize(
+                        &estimate,
+                        (width as f32 * ratio).max(1.0) as u32,
+                        (height as f32 * ratio).max(1.0) as u32,
+                        FilterType::Lanczos3,
+                    );
+                }
+                let transport = prophoto_estimate_to_transport_proxy(&estimate);
+                return Ok(PreparedProxy {
+                    transport,
+                    prophoto_estimate: Some(estimate),
+                    capture_corrected: None,
+                    fallback_reason: None,
+                });
+            }
+
+            let img_buffer = if is_dng_extension(&decode_path) {
+                decode_reduced_dng_for_working_space(&decode_path, target_long_edge)
+                    .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?
+            } else if is_tiff_extension(&decode_path) || is_scanner_fff_tiff(&decode_path) {
+                decode_reduced_tiff_for_working_space(&decode_path, target_long_edge)
+                    .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?
             } else {
-                decode_scientific_image_buffer(&file_path, decode_mode)?
+                decode_image_buffer(&decode_path, decode_mode)?
             };
-            let (width, height) = scientific.dimensions();
+            let (width, height) = img_buffer.dimensions();
             let ratio = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
-            if ratio < 0.999 {
-                scientific = image::imageops::resize(
-                    &scientific,
+            let display = if ratio < 0.999 {
+                image::imageops::resize(
+                    &img_buffer,
                     (width as f32 * ratio).max(1.0) as u32,
                     (height as f32 * ratio).max(1.0) as u32,
                     FilterType::Lanczos3,
-                );
-            }
-            let transport = scientific_to_transport_proxy(&scientific);
-            return Ok((transport, Some(scientific)));
-        }
+                )
+            } else {
+                img_buffer
+            };
+            Ok(PreparedProxy {
+                transport: display,
+                prophoto_estimate: None,
+                capture_corrected: None,
+                fallback_reason: None,
+            })
+        })
+        .await
+        .map_err(|e| e.to_string())??;
 
-        let img_buffer = if is_dng_extension(&file_path) {
-            decode_reduced_dng_for_working_space(&file_path, target_long_edge)
-                .or_else(|_| decode_image_buffer(&file_path, decode_mode))?
-        } else if is_tiff_extension(&file_path) || is_scanner_fff_tiff(&file_path) {
-            decode_reduced_tiff_for_working_space(&file_path, target_long_edge)
-                .or_else(|_| decode_image_buffer(&file_path, decode_mode))?
-        } else {
-            decode_image_buffer(&file_path, decode_mode)?
-        };
-        let (width, height) = img_buffer.dimensions();
-        let ratio = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
-        let display = if ratio < 0.999 {
-            image::imageops::resize(
-                &img_buffer,
-                (width as f32 * ratio).max(1.0) as u32,
-                (height as f32 * ratio).max(1.0) as u32,
-                FilterType::Lanczos3,
-            )
-        } else {
-            img_buffer
-        };
-        Ok((display, None))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-
-    let loaded_long_edge = loaded.width().max(loaded.height());
+    let final_resolution = if let Some(reason) = prepared.fallback_reason.clone() {
+        resolve_image_pipeline(&persisted_state, roll, &profiles, &file_path, Some(reason))
+    } else {
+        initial_resolution
+    };
+    let final_state = state_from_resolution(&persisted_state, &final_resolution);
+    let final_resolution_key = resolution_key(&final_resolution);
+    let density_provenance = resolution_density_provenance(&final_resolution);
+    let loaded_long_edge = prepared.transport.width().max(prepared.transport.height());
     let retained_long_edge = {
         let mut item = write_lock(&item_arc);
-        // Legacy keeps linear-sRGB u16. v1.1 keeps ProPhoto f32 for scientific
-        // work and a separate u16 ProPhoto transport texture for the GPU.
+        // Legacy keeps linear-sRGB u16. Smart Auto and Capture Corrected keep
+        // domain-typed f32 sources plus a separate u16 GPU transport texture.
         let retained_long_edge = item
             .proxy_image
             .as_ref()
             .map(|image| image.width().max(image.height()))
             .unwrap_or(0);
-        if loaded_long_edge > retained_long_edge {
+        let resolution_changed =
+            item.runtime_pipeline_key.as_deref() != Some(final_resolution_key.as_str());
+        if loaded_long_edge > retained_long_edge || resolution_changed {
             item.original_proxy = None;
-            item.proxy_image = Some(loaded);
-            item.scientific_proxy = scientific_proxy;
+            item.proxy_image = Some(prepared.transport);
+            item.prophoto_estimate_proxy = prepared.prophoto_estimate;
+            item.relative_transmission_proxy = prepared
+                .capture_corrected
+                .as_ref()
+                .map(|data| data.image.clone());
+            item.relative_transmission_quality =
+                prepared.capture_corrected.map(|data| data.quality);
             item.pristine_proxy = None;
-            loaded_long_edge
-        } else {
-            retained_long_edge
         }
+        item.runtime_pipeline_state = Some(final_state);
+        item.runtime_density_provenance = Some(density_provenance);
+        item.runtime_pipeline_key = Some(final_resolution_key);
+        loaded_long_edge.max(retained_long_edge)
     };
     track_proxy_loaded(&state, &id);
     Ok(retained_long_edge)
@@ -4545,45 +5246,104 @@ pub async fn analyze_proxy_base_color(
 
     tokio::task::spawn_blocking(move || {
         ensure_current_development_generation(&epoch, generation)?;
-        let (base_color, pipeline_state) = {
+        let (base_color, runtime_pipeline_state, persisted_pipeline_state) = {
             let item = read_lock(&item_arc);
-            if pipeline_has_base(&item.pipeline_state, &item.base_color) {
+            let effective = item.effective_pipeline_state().clone();
+            if pipeline_has_base(&effective, &item.base_color) {
                 return Ok(());
             }
-            if item.pipeline_state.contract == ProcessingContract::LegacyV1 {
+            if effective.contract == ProcessingContract::LegacyV1 {
                 let proxy = item
                     .proxy_image
                     .as_ref()
                     .ok_or_else(|| "PROXY_NOT_READY".to_string())?;
-                (compute_auto_base(proxy), item.pipeline_state.clone())
+                (
+                    compute_auto_base(proxy),
+                    effective,
+                    item.pipeline_state.clone(),
+                )
             } else {
-                let scientific = item
-                    .scientific_proxy
-                    .as_ref()
-                    .ok_or_else(|| "PROXY_NOT_READY".to_string())?;
-                let density = if item.pipeline_state.density_anchors.has_roll_full_exposure() {
+                let capture_corrected =
+                    effective.contract == ProcessingContract::CaptureCorrectedV11;
+                let input = if capture_corrected {
+                    item.relative_transmission_proxy.as_ref()
+                } else {
+                    item.prophoto_estimate_proxy.as_ref()
+                }
+                .ok_or_else(|| "PROXY_NOT_READY".to_string())?;
+                let quality = capture_corrected
+                    .then_some(item.relative_transmission_quality.as_ref())
+                    .flatten();
+                let density = if effective.density_anchors.has_roll_full_exposure() {
                     // A sampled leader fixes D-max. Its missing base endpoint
                     // must be inferred from the confirmed Film Area, not from
                     // unrelated border and sprocket pixels in the full scan.
-                    compute_content_limits_f32(scientific, &item.geom, [0.0; 3])?.d_min
+                    compute_content_limits_f32(input, quality, &item.geom, [0.0; 3])?.d_min
+                } else if let Some(quality) = quality {
+                    compute_auto_base_capture_corrected(input, quality)?
                 } else {
-                    compute_auto_base_f32(scientific)
+                    compute_auto_base_f32(input)
                 };
-                let mut state = item.pipeline_state.clone();
-                state.density_anchors.d_min_base = Some(density_anchor_from_f32(density));
-                state.contract = state.density_anchors.prophoto_contract();
-                (base_color_from_density(density), state)
+                let provenance = item.runtime_density_provenance.clone().unwrap_or_else(|| {
+                    resolution_density_provenance(&PipelineResolution {
+                        requested_path: effective.contract,
+                        resolved_path: effective.contract,
+                        resolved_profile_id: None,
+                        resolved_payload_digest: None,
+                        capture: crate::capability_resolver::LayerCapability {
+                            layer: String::new(),
+                            status: crate::app_state::PipelineStageStatus::Default,
+                            detail: String::new(),
+                        },
+                        density: crate::capability_resolver::LayerCapability {
+                            layer: String::new(),
+                            status: crate::app_state::PipelineStageStatus::Default,
+                            detail: String::new(),
+                        },
+                        film: crate::capability_resolver::LayerCapability {
+                            layer: String::new(),
+                            status: crate::app_state::PipelineStageStatus::Default,
+                            detail: String::new(),
+                        },
+                        flat: crate::capability_resolver::LayerCapability {
+                            layer: String::new(),
+                            status: crate::app_state::PipelineStageStatus::Default,
+                            detail: String::new(),
+                        },
+                        usable_density_anchors: DensityAnchors::default(),
+                        rejected_anchor_reasons: Vec::new(),
+                        processing_report: effective.processing_report.clone(),
+                    })
+                });
+                let anchor = density_anchor_from_f32(density, provenance);
+                let mut runtime = effective;
+                replace_base_anchor_preserving_history(
+                    &mut runtime.density_anchors,
+                    anchor.clone(),
+                );
+                if runtime.contract != ProcessingContract::CaptureCorrectedV11 {
+                    runtime.contract = runtime.density_anchors.prophoto_contract();
+                }
+                let mut persisted = item.pipeline_state.clone();
+                replace_base_anchor_preserving_history(&mut persisted.density_anchors, anchor);
+                (base_color_from_density(density), runtime, persisted)
             }
         };
 
         let mut item = write_lock(&item_arc);
         ensure_current_development_generation(&epoch, generation)?;
-        if pipeline_has_base(&item.pipeline_state, &item.base_color) {
+        if pipeline_has_base(item.effective_pipeline_state(), &item.base_color) {
             return Ok(());
         }
-        persist_base_and_pipeline(&item.roll_id, &item.file_path, &base_color, &pipeline_state)?;
+        persist_base_and_pipeline(
+            &item.roll_id,
+            &item.file_path,
+            &base_color,
+            &persisted_pipeline_state,
+        )?;
         item.base_color = base_color;
-        item.pipeline_state = pipeline_state;
+        item.pipeline_state = persisted_pipeline_state;
+        item.runtime_pipeline_state = Some(runtime_pipeline_state);
         item.pristine_proxy = None;
         Ok(())
     })
@@ -4600,7 +5360,9 @@ pub async fn analyze_proxy_density_limits(
     tokio::task::spawn_blocking(move || {
         let (
             legacy_proxy,
-            scientific,
+            prophoto_estimate,
+            relative_transmission,
+            relative_transmission_quality,
             geom,
             base_color,
             mode,
@@ -4608,17 +5370,19 @@ pub async fn analyze_proxy_density_limits(
             mut pipeline_state,
         ) = {
             let item = read_lock(&item_arc);
-            if !pipeline_has_base(&item.pipeline_state, &item.base_color) {
+            if !pipeline_has_base(item.effective_pipeline_state(), &item.base_color) {
                 return Err("BASE_COLOR_NOT_ANALYZED".to_string());
             }
             (
                 item.proxy_image.clone(),
-                item.scientific_proxy.clone(),
+                item.prophoto_estimate_proxy.clone(),
+                item.relative_transmission_proxy.clone(),
+                item.relative_transmission_quality.clone(),
                 item.geom.clone(),
                 item.base_color.clone(),
                 item.params.film_mode.clone(),
                 is_noritsu_rendered_image(&item.file_path),
-                item.pipeline_state.clone(),
+                item.effective_pipeline_state().clone(),
             )
         };
         let mut limits = if pipeline_state.contract == ProcessingContract::LegacyV1 {
@@ -4630,6 +5394,22 @@ pub async fn analyze_proxy_density_limits(
                 linked_color_limits,
             )?
         } else {
+            let (input, quality) =
+                if pipeline_state.contract == ProcessingContract::CaptureCorrectedV11 {
+                    (
+                        relative_transmission
+                            .as_ref()
+                            .ok_or_else(|| "PROXY_NOT_READY".to_string())?,
+                        relative_transmission_quality.as_ref(),
+                    )
+                } else {
+                    (
+                        prophoto_estimate
+                            .as_ref()
+                            .ok_or_else(|| "PROXY_NOT_READY".to_string())?,
+                        None,
+                    )
+                };
             let base = pipeline_base_density(&pipeline_state, &base_color);
             if pipeline_state.density_anchors.is_fully_anchored() {
                 let full_exposure = pipeline_state
@@ -4647,11 +5427,7 @@ pub async fn analyze_proxy_density_limits(
                     pipeline_state: None,
                 }
             } else {
-                let mut estimated = compute_content_limits_f32(
-                    &scientific.ok_or_else(|| "PROXY_NOT_READY".to_string())?,
-                    &geom,
-                    base,
-                )?;
+                let mut estimated = compute_content_limits_f32(input, quality, &geom, base)?;
                 apply_roll_density_anchor_limits(
                     &mut estimated,
                     &pipeline_state.density_anchors,
@@ -4672,14 +5448,18 @@ pub async fn analyze_proxy_density_limits(
                     },
                     percentile_method: "co_sited_2pct_v1".to_string(),
                 });
+                preserve_tone_density_span(&mut limits, &pipeline_state.density_anchors);
             }
             pipeline_state.render_mapping.mode = RenderMode::PreserveTone;
             pipeline_state.render_mapping.density_low = limits.d_min;
             pipeline_state.render_mapping.density_high = limits.d_max;
-            let item = read_lock(&item_arc);
-            persist_pipeline_state(&item.roll_id, &item.file_path, &pipeline_state)?;
-            drop(item);
-            write_lock(&item_arc).pipeline_state = pipeline_state.clone();
+            let mut item = write_lock(&item_arc);
+            let mut persisted = item.pipeline_state.clone();
+            persisted.content_range = pipeline_state.content_range.clone();
+            persisted.render_mapping = pipeline_state.render_mapping.clone();
+            persist_pipeline_state(&item.roll_id, &item.file_path, &persisted)?;
+            item.pipeline_state = persisted;
+            item.runtime_pipeline_state = Some(pipeline_state.clone());
             limits.pipeline_state = Some(pipeline_state);
         }
         Ok(limits)
@@ -4707,6 +5487,7 @@ pub async fn reset_image_development(
             PipelineState::default()
         } else {
             let mut pipeline = item.pipeline_state.clone();
+            let capture_corrected = pipeline.contract == ProcessingContract::CaptureCorrectedV11;
             pipeline.density_anchors.d_min_base = pipeline
                 .density_anchors
                 .d_min_base
@@ -4715,12 +5496,18 @@ pub async fn reset_image_development(
                 .density_anchors
                 .d_max_full_exposure
                 .filter(|anchor| anchor.scope == DensityAnchorScope::Roll);
-            pipeline.contract = pipeline.density_anchors.prophoto_contract();
+            pipeline.contract = if capture_corrected {
+                ProcessingContract::CaptureCorrectedV11
+            } else {
+                pipeline.density_anchors.prophoto_contract()
+            };
             pipeline.content_range = None;
             pipeline.render_mapping = Default::default();
             pipeline
         };
-        if reset_pipeline.density_anchors.d_min_base.is_none() {
+        if reset_pipeline.density_anchors.d_min_base.is_none()
+            && reset_pipeline.contract != ProcessingContract::CaptureCorrectedV11
+        {
             reset_pipeline.contract = match reset_pipeline.contract {
                 ProcessingContract::LegacyV1 => ProcessingContract::LegacyV1,
                 _ => ProcessingContract::SmartAutoProPhotoV11,
@@ -4761,6 +5548,9 @@ pub async fn reset_image_development(
         item.params = params;
         item.base_color = default_base;
         item.pipeline_state = reset_pipeline;
+        item.runtime_pipeline_state = None;
+        item.runtime_density_provenance = None;
+        item.runtime_pipeline_key = None;
         item.rendered_thumbnail_base64 = None;
         item.pristine_proxy = None;
         Ok(item.pipeline_state.clone())
@@ -4785,9 +5575,11 @@ pub async fn sync_thumbnail_buffer(
                 if let Some(proxy) = item.proxy_image.as_ref() {
                     item.pristine_proxy = Some(compute_pristine_proxy(
                         proxy,
-                        item.scientific_proxy.as_ref(),
+                        item.prophoto_estimate_proxy.as_ref(),
+                        item.relative_transmission_proxy.as_ref(),
+                        item.relative_transmission_quality.as_ref(),
                         &item.base_color,
-                        &item.pipeline_state,
+                        item.effective_pipeline_state(),
                         item.params.film_mode.clone(),
                     ));
                 }
@@ -4805,7 +5597,7 @@ pub async fn sync_thumbnail_buffer(
         ensure_current_development_generation(&epoch, generation)?;
         persist_rendered_thumbnail(&item.roll_id, &item.file_path, &new_thumbnail)?;
         item.rendered_thumbnail_base64 = Some(new_thumbnail);
-        if item.pipeline_state.contract != ProcessingContract::LegacyV1 {
+        if item.effective_pipeline_state().contract != ProcessingContract::LegacyV1 {
             item.pristine_proxy = None;
         }
         Ok(())
@@ -5183,7 +5975,8 @@ pub fn get_proxy_response_buffer(state: &EngineState, id: &str) -> Result<Vec<u8
             build_response_buffer_from_proxy_with_state(
                 proxy,
                 &item.base_color,
-                &item.pipeline_state,
+                item.effective_pipeline_state(),
+                item.relative_transmission_quality.as_ref(),
                 true,
             )
         } else {
@@ -5357,6 +6150,29 @@ fn sample_rgb32_nearest(image: &ImageBuffer<Rgb<f32>, Vec<f32>>, uv: [f32; 2]) -
     Some([pixel[0], pixel[1], pixel[2]])
 }
 
+#[inline]
+fn sample_rgb32_nearest_checked(
+    image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    quality: Option<&crate::raw_backend::QualityMask>,
+    uv: [f32; 2],
+) -> Option<[f32; 3]> {
+    let pixel = sample_rgb32_nearest(image, uv)?;
+    if let Some(quality) = quality {
+        let (width, height) = image.dimensions();
+        let x = (uv[0] * width as f32).floor().min((width - 1) as f32) as usize;
+        let y = (uv[1] * height as f32).floor().min((height - 1) as f32) as usize;
+        if !quality
+            .valid
+            .get(y * width as usize + x)
+            .copied()
+            .unwrap_or(false)
+        {
+            return None;
+        }
+    }
+    Some(pixel)
+}
+
 fn render_shader_equivalent_core(
     source_width: u32,
     source_height: u32,
@@ -5421,6 +6237,7 @@ fn render_shader_equivalent_core(
         params.film_mode.clone(),
     );
     let positive_to_display = (pipeline_state.contract != ProcessingContract::LegacyV1
+        && pipeline_state.contract != ProcessingContract::CaptureCorrectedV11
         && params.film_mode == FilmMode::Color)
         .then(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb));
     let (bw_dmin, bw_dmax) = neutral_density_bounds(params.density.d_min, params.density.d_max);
@@ -5455,7 +6272,14 @@ fn render_shader_equivalent_core(
             let Some(raw) = sample(warped_uv) else {
                 return;
             };
-            let density = pipeline.process_pixel(&raw);
+            let density = if pipeline_state.contract == ProcessingContract::CaptureCorrectedV11 {
+                let Some(true_density) = pipeline.compute_relative_density(&raw, true) else {
+                    return;
+                };
+                pipeline.apply_exposure(&true_density)
+            } else {
+                pipeline.process_pixel(&raw)
+            };
             let (d_min, d_max) = if params.film_mode == FilmMode::BW {
                 ([bw_dmin; 3], [bw_dmax; 3])
             } else {
@@ -5603,8 +6427,9 @@ fn render_shader_equivalent_with_state(
     )
 }
 
-fn render_scientific_shader_equivalent(
+fn render_f32_shader_equivalent(
     source: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    quality: Option<&crate::raw_backend::QualityMask>,
     params: &TuningParams,
     geom: &crate::app_state::GeometryState,
     base_color: &BaseColor,
@@ -5614,7 +6439,7 @@ fn render_scientific_shader_equivalent(
     render_shader_equivalent_core(
         source.width(),
         source.height(),
-        |uv| sample_rgb32_nearest(source, uv),
+        |uv| sample_rgb32_nearest_checked(source, quality, uv),
         params,
         geom,
         base_color,
@@ -5632,6 +6457,8 @@ struct ExportItemSnapshot {
     geom: GeometryState,
     base_color: BaseColor,
     pipeline_state: PipelineState,
+    resolver_input: PipelineResolverInput,
+    capture_profile: Option<CalibrationConfigProfile>,
     output_path: std::path::PathBuf,
     export_metadata: Option<ExportMetadata>,
 }
@@ -5720,6 +6547,7 @@ pub struct BatchExportResult {
     failed: usize,
     output_dir: String,
     errors: Vec<String>,
+    warnings: Vec<String>,
 }
 
 fn export_sharpening(value: &str) -> Result<Option<(f32, f32)>, String> {
@@ -6645,6 +7473,7 @@ pub async fn batch_export_images(
             failed: 0,
             output_dir,
             errors: Vec::new(),
+            warnings: Vec::new(),
         });
     }
     if EXPORT_ACTIVE.swap(true, Ordering::SeqCst) {
@@ -6657,6 +7486,9 @@ pub async fn batch_export_images(
         .map_err(|error| format!("Export cleanup worker failed: {error}"))??;
 
     let rolls = read_lock(&state.rolls).clone();
+    let calibration_profiles = tokio::task::spawn_blocking(load_calibration_profile_views)
+        .await
+        .map_err(|error| format!("Calibration profile worker failed: {error}"))??;
     let progress_app = app_handle.clone();
     let identities = export_ids
         .iter()
@@ -6703,6 +7535,16 @@ pub async fn batch_export_images(
                 geom,
                 base_color,
                 pipeline_state,
+                resolver_input: PipelineResolverInput {
+                    persisted_contract: ProcessingContract::LegacyV1,
+                    roll_profile_id: None,
+                    profile: None,
+                    image_kind: PipelineImageKind::Unsupported,
+                    density_anchors: DensityAnchors::default(),
+                    raw_decode_version: RAW_DECODE_VERSION,
+                    runtime_failure: None,
+                },
+                capture_profile: None,
                 output_path: std::path::PathBuf::new(),
                 export_metadata: None,
             });
@@ -6721,8 +7563,42 @@ pub async fn batch_export_images(
     // the same file.
     let mut reserved_paths = HashSet::new();
     let mut skipped_count = 0;
+    let mut resolution_warnings = Vec::new();
     for (index, snapshot) in export_snapshots.iter_mut().enumerate() {
         let roll = rolls.iter().find(|roll| roll.roll_id == snapshot.roll_id);
+        snapshot.resolver_input = pipeline_resolver_input(
+            &snapshot.pipeline_state,
+            roll,
+            &calibration_profiles,
+            &snapshot.file_path,
+            None,
+        );
+        let resolution = resolve_pipeline(&snapshot.resolver_input);
+        if resolution.requested_path != resolution.resolved_path {
+            resolution_warnings.push(format!(
+                "export_pipeline_fallback|{}|requested={:?}|resolved={:?}|{}",
+                snapshot.file_path,
+                resolution.requested_path,
+                resolution.resolved_path,
+                resolution.processing_report.fallback_reasons.join(",")
+            ));
+        }
+        snapshot.pipeline_state = state_from_resolution(&snapshot.pipeline_state, &resolution);
+        if snapshot.pipeline_state.contract == ProcessingContract::CaptureCorrectedV11 {
+            let profile_id = resolution
+                .resolved_profile_id
+                .as_deref()
+                .ok_or_else(|| "Resolver omitted the Capture Profile id".to_string())?;
+            snapshot.capture_profile = calibration_profiles
+                .iter()
+                .find(|view| {
+                    view.profile.profile_id == profile_id
+                        && view.availability == CalibrationProfileAvailability::Available
+                        && view.profile.payload.capture_is_verified(RAW_DECODE_VERSION)
+                })
+                .map(|view| view.profile.clone());
+            debug_assert!(snapshot.capture_profile.is_some());
+        }
         if write_exif {
             snapshot.export_metadata = roll.map(ExportMetadata::from);
         }
@@ -6772,6 +7648,7 @@ pub async fn batch_export_images(
     let result = tokio::task::spawn_blocking(move || {
         let success_count = std::sync::atomic::AtomicUsize::new(0);
         let failures = Mutex::new(Vec::<String>::new());
+        let warnings = Mutex::new(resolution_warnings);
         let _ = progress_app.emit(
             "export_progress",
             serde_json::json!({ "processed": skipped_count, "total": count }),
@@ -6798,19 +7675,60 @@ pub async fn batch_export_images(
                     let params = &params_owned;
                     let base_color = &base_color_owned;
                     if snapshot.pipeline_state.contract != ProcessingContract::LegacyV1 {
-                        let scientific = match decode_scientific_image_buffer(&file_path, DecodeMode::ExportFull) {
-                            Ok(image) => image,
+                        let mut render_pipeline_state = snapshot.pipeline_state.clone();
+                        let decoded_f32 = if snapshot.pipeline_state.contract
+                            == ProcessingContract::CaptureCorrectedV11
+                        {
+                            let capture_result = snapshot
+                                .capture_profile
+                                .as_ref()
+                                .ok_or_else(|| "verified Capture Profile is missing".to_string())
+                                .and_then(|profile| decode_capture_corrected_image_buffer(&file_path, profile));
+                            match capture_result {
+                                Ok(capture) => Ok((capture.image, Some(capture.quality))),
+                                Err(error) => {
+                                    let mut fallback_input = snapshot.resolver_input.clone();
+                                    fallback_input.runtime_failure = Some(error.clone());
+                                    let fallback = resolve_pipeline(&fallback_input);
+                                    render_pipeline_state = state_from_resolution(
+                                        &snapshot.pipeline_state,
+                                        &fallback,
+                                    );
+                                    lock_mutex(&warnings).push(format!(
+                                        "export_pipeline_runtime_fallback|{}|requested={:?}|resolved={:?}|{}",
+                                        file_path,
+                                        fallback.requested_path,
+                                        fallback.resolved_path,
+                                        fallback.processing_report.fallback_reasons.join(",")
+                                    ));
+                                    decode_prophoto_estimate_image_buffer(
+                                        &file_path,
+                                        DecodeMode::ExportFull,
+                                    )
+                                    .map(|estimate| (estimate, None))
+                                }
+                            }
+                        } else {
+                            decode_prophoto_estimate_image_buffer(
+                                &file_path,
+                                DecodeMode::ExportFull,
+                            )
+                            .map(|estimate| (estimate, None))
+                        };
+                        let (input, quality_mask) = match decoded_f32 {
+                            Ok(decoded) => decoded,
                             Err(error) => {
                                 lock_mutex(&failures).push(format!("Failed to decode {}: {error}", file_path));
                                 return;
                             }
                         };
-                        let rendered_display = render_scientific_shader_equivalent(
-                            &scientific,
+                        let rendered_display = render_f32_shader_equivalent(
+                            &input,
+                            quality_mask.as_ref(),
                             params,
                             &geom_owned,
                             base_color,
-                            &snapshot.pipeline_state,
+                            &render_pipeline_state,
                             params.lut.lut_path.as_deref().and_then(|path| parsed_luts.get(path)),
                         );
                         let mut out_buffer = rendered_display;
@@ -7004,6 +7922,9 @@ pub async fn batch_export_images(
             failed: failures.len(),
             output_dir,
             errors: failures,
+            warnings: warnings
+                .into_inner()
+                .unwrap_or_else(|error| error.into_inner()),
         }
     })
     .await
@@ -7019,7 +7940,7 @@ pub async fn get_rolls(state: State<'_, EngineState>) -> Result<Vec<Roll>, Strin
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CalibrationProfileInput {
     pub profile_id: Option<String>,
     pub name: String,
@@ -7035,14 +7956,101 @@ pub struct CalibrationProfileInput {
     pub references: Vec<CalibrationReference>,
 }
 
-fn calibration_level_from_references(references: &[CalibrationReference]) -> CalibrationLevel {
-    if references
-        .iter()
-        .any(|reference| reference.kind == CalibrationReferenceKind::SpectralCapture)
+fn sha256_bytes(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file = std::fs::File::open(path)
+        .map_err(|error| format!("Failed to open {} for digest: {error}", path.display()))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("Failed to hash {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn reference_summary(
+    reference: &CalibrationReference,
+) -> Result<CalibrationReferenceSummary, String> {
+    let mosaic = crate::raw_backend::decode_raw_mosaic(&reference.file_path)?;
+    Ok(CalibrationReferenceSummary {
+        reference_id: reference.reference_id.clone(),
+        kind: reference.kind,
+        content_digest: sha256_file(Path::new(&reference.file_path))?,
+        raw_metadata_digest: crate::raw_backend::normalized_raw_metadata_digest(&mosaic.metadata)?,
+    })
+}
+
+fn verified_reference_error(
+    profile: &CalibrationConfigProfile,
+    reference: &CalibrationReference,
+) -> Option<String> {
+    let Some(expected) = profile.payload.reference_frames.iter().find(|summary| {
+        summary.reference_id == reference.reference_id && summary.kind == reference.kind
+    }) else {
+        return Some(format!(
+            "profile_reference_summary_missing|{}",
+            reference.file_name
+        ));
+    };
+    let actual = match reference_summary(reference) {
+        Ok(actual) => actual,
+        Err(error) => {
+            return Some(format!(
+                "profile_reference_revalidation_failed|{}|{}",
+                reference.file_name, error
+            ));
+        }
+    };
+    if actual.content_digest != expected.content_digest {
+        Some(format!(
+            "profile_reference_content_digest_changed|{}",
+            reference.file_name
+        ))
+    } else if actual.raw_metadata_digest != expected.raw_metadata_digest {
+        Some(format!(
+            "profile_reference_metadata_digest_changed|{}",
+            reference.file_name
+        ))
+    } else {
+        None
+    }
+}
+
+fn capture_hardware_fingerprint(
+    profile: &CalibrationConfigProfile,
+    mosaic: &crate::raw_backend::RawMosaic,
+) -> Result<String, String> {
+    let geometry_fingerprint = crate::raw_backend::raw_geometry_fingerprint(mosaic)?;
+    Ok(sha256_bytes(
+        format!(
+            "{}|{}|{}|{}|{:?}",
+            profile.camera.trim(),
+            profile.lens.trim(),
+            mosaic.metadata.camera_id,
+            geometry_fingerprint,
+            mosaic.metadata.cfa,
+        )
+        .as_bytes(),
+    ))
+}
+
+fn calibration_level_from_profile(payload: &CalibrationProfilePayload) -> CalibrationLevel {
+    if !payload.capture_is_verified(RAW_DECODE_VERSION) {
+        CalibrationLevel::SmartAuto
+    } else if payload
+        .capabilities
+        .contains(&CalibrationCapability::SpectralCapture)
     {
         CalibrationLevel::Spectral
-    } else if references.is_empty() {
-        CalibrationLevel::SmartAuto
     } else {
         CalibrationLevel::Calibrated
     }
@@ -7073,11 +8081,23 @@ fn calibration_profile_view(mut profile: CalibrationConfigProfile) -> Calibratio
             CalibrationReferenceKind::FilmBase | CalibrationReferenceKind::FullExposure
         )
     });
-    profile.calibration_level = calibration_level_from_references(&profile.references);
+    profile.calibration_level = calibration_level_from_profile(&profile.payload);
     let mut warnings = Vec::new();
-    let unsupported = profile.schema_version != CALIBRATION_PROFILE_SCHEMA_VERSION;
+    let mut blocking_warning = false;
+    let unsupported = profile.schema_version != CALIBRATION_PROFILE_SCHEMA_VERSION
+        || profile.payload.payload_version != CALIBRATION_PROFILE_PAYLOAD_VERSION;
     if unsupported {
         warnings.push("profile_schema_unsupported".to_string());
+        blocking_warning = true;
+    }
+    let capture_payload_present = !profile.payload.capabilities.is_empty()
+        || profile.payload.capture_parameters.is_some()
+        || profile.payload.validation_report.is_some();
+    if !unsupported && capture_payload_present {
+        if let Some(reason) = profile.payload.capture_validation_error(RAW_DECODE_VERSION) {
+            warnings.push(format!("profile_capture_invalid|{reason}"));
+            blocking_warning = true;
+        }
     }
     for reference in &profile.references {
         if reference.kind == CalibrationReferenceKind::Unknown {
@@ -7085,10 +8105,12 @@ fn calibration_profile_view(mut profile: CalibrationConfigProfile) -> Calibratio
                 "profile_reference_kind_unsupported|{}",
                 reference.file_name
             ));
+            blocking_warning = true;
         }
         let path = Path::new(&reference.file_path);
         let Ok(metadata) = std::fs::metadata(path) else {
             warnings.push(format!("profile_reference_missing|{}", reference.file_name));
+            blocking_warning |= reference.kind != CalibrationReferenceKind::FlatField;
             continue;
         };
         let current_modified = metadata
@@ -7097,14 +8119,21 @@ fn calibration_profile_view(mut profile: CalibrationConfigProfile) -> Calibratio
             .and_then(timestamp_from_system_time);
         if metadata.len() != reference.file_size || current_modified != reference.modified_at {
             warnings.push(format!("profile_reference_changed|{}", reference.file_name));
+            blocking_warning |= reference.kind != CalibrationReferenceKind::FlatField;
+        }
+        if profile.payload.issuer == CalibrationPayloadIssuer::BackendCalibrationSession {
+            if let Some(error) = verified_reference_error(&profile, reference) {
+                warnings.push(error);
+                blocking_warning |= reference.kind != CalibrationReferenceKind::FlatField;
+            }
         }
     }
     let availability = if unsupported {
         CalibrationProfileAvailability::Unsupported
-    } else if warnings.is_empty() {
-        CalibrationProfileAvailability::Available
-    } else {
+    } else if blocking_warning {
         CalibrationProfileAvailability::NeedsAttention
+    } else {
+        CalibrationProfileAvailability::Available
     };
     CalibrationProfileView {
         profile,
@@ -7116,9 +8145,34 @@ fn calibration_profile_view(mut profile: CalibrationConfigProfile) -> Calibratio
 fn load_calibration_profile_views() -> Result<Vec<CalibrationProfileView>, String> {
     let connection = persistence::open_connection()
         .map_err(|error| format!("Failed to open calibration database: {error}"))?;
-    persistence::load_calibration_profiles(&connection)
-        .map_err(|error| format!("Failed to load calibration profiles: {error}"))
-        .map(|profiles| profiles.into_iter().map(calibration_profile_view).collect())
+    let profiles = persistence::load_calibration_profiles(&connection)
+        .map_err(|error| format!("Failed to load calibration profiles: {error}"))?;
+    Ok(profiles
+        .into_iter()
+        .map(|profile| {
+            let session_valid =
+                profile
+                    .payload
+                    .calibration_session_id
+                    .as_deref()
+                    .map(|session_id| {
+                        persistence::calibration_session_matches(
+                            &connection,
+                            session_id,
+                            &profile.profile_id,
+                            &profile.payload.payload_digest,
+                        )
+                        .unwrap_or(false)
+                    });
+            let mut view = calibration_profile_view(profile);
+            if session_valid == Some(false) {
+                view.warnings
+                    .push("profile_calibration_session_missing_or_changed".to_string());
+                view.availability = CalibrationProfileAvailability::NeedsAttention;
+            }
+            view
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -7207,7 +8261,28 @@ pub async fn save_calibration_profile(
                 )
             })
             .collect::<Vec<_>>();
-        let calibration_level = calibration_level_from_references(&references);
+        let input_hardware = (
+            input.camera.trim(),
+            input.light_source.trim(),
+            input.lens.trim(),
+        );
+        let existing_hardware = existing_profile.map(|profile| {
+            (
+                profile.camera.as_str(),
+                profile.light_source.as_str(),
+                profile.lens.as_str(),
+            )
+        });
+        let references_unchanged =
+            existing_profile.is_some_and(|profile| profile.references == references);
+        let payload = if references_unchanged && existing_hardware == Some(input_hardware) {
+            existing_profile
+                .map(|profile| profile.payload.clone())
+                .unwrap_or_default()
+        } else {
+            CalibrationProfilePayload::default()
+        };
+        let calibration_level = calibration_level_from_profile(&payload);
         let profile = CalibrationConfigProfile {
             profile_id: requested_id
                 .map(str::to_string)
@@ -7224,6 +8299,7 @@ pub async fn save_calibration_profile(
             calibration_level,
             notes: input.notes.trim().to_string(),
             references,
+            payload,
         };
         let mut reference_ids = HashSet::new();
         for reference in &profile.references {
@@ -7243,6 +8319,205 @@ pub async fn save_calibration_profile(
     .map_err(|error| format!("Calibration profile worker failed: {error}"))?
 }
 
+fn unique_capture_reference(
+    profile: &CalibrationConfigProfile,
+    kind: CalibrationReferenceKind,
+) -> Result<&CalibrationReference, String> {
+    let mut references = profile
+        .references
+        .iter()
+        .filter(|reference| reference.kind == kind);
+    let reference = references
+        .next()
+        .ok_or_else(|| format!("Calibration session requires {kind:?}"))?;
+    if references.next().is_some() {
+        return Err(format!(
+            "Calibration session reference is ambiguous: {kind:?}"
+        ));
+    }
+    Ok(reference)
+}
+
+fn build_capture_calibration_session(
+    profile: &CalibrationConfigProfile,
+) -> Result<CalibrationProfilePayload, String> {
+    if profile.camera.trim().is_empty() || profile.light_source.trim().is_empty() {
+        return Err("Calibration session requires camera and light-source identity.".to_string());
+    }
+    let dark_reference = unique_capture_reference(profile, CalibrationReferenceKind::DarkFrame)?;
+    let open_reference = unique_capture_reference(profile, CalibrationReferenceKind::OpenGate)?;
+    let dark = crate::raw_backend::decode_raw_mosaic(&dark_reference.file_path)?;
+    let open = crate::raw_backend::decode_raw_mosaic(&open_reference.file_path)?;
+    let summaries = profile
+        .references
+        .iter()
+        .filter(|reference| {
+            matches!(
+                reference.kind,
+                CalibrationReferenceKind::DarkFrame
+                    | CalibrationReferenceKind::OpenGate
+                    | CalibrationReferenceKind::FlatField
+            )
+        })
+        .map(reference_summary)
+        .collect::<Result<Vec<_>, _>>()?;
+    build_capture_calibration_payload(
+        profile,
+        &dark,
+        &open,
+        summaries,
+        persistence::now_timestamp(),
+        calibration_id("cal-session"),
+    )
+}
+
+fn build_capture_calibration_payload(
+    profile: &CalibrationConfigProfile,
+    dark: &crate::raw_backend::RawMosaic,
+    open: &crate::raw_backend::RawMosaic,
+    summaries: Vec<CalibrationReferenceSummary>,
+    checked_at: i64,
+    session_id: String,
+) -> Result<CalibrationProfilePayload, String> {
+    if !matches!(
+        open.metadata.cfa,
+        crate::raw_backend::CfaPattern::Bayer { .. }
+    ) {
+        return Err(
+            "Capture Corrected currently requires Bayer RAW; X-Trans falls back.".to_string(),
+        );
+    }
+    let corrected = crate::raw_backend::correct_cfa_capture(&open, Some(&dark), Some(&open), &[])?;
+    let quality = corrected.quality.summary();
+    if quality.valid_samples == 0 {
+        return Err("Calibration session produced no valid dark/open samples.".to_string());
+    }
+    let mut mask_bytes = vec![0u8; quality.total_samples.div_ceil(8)];
+    let mut bad_pixel_indices = Vec::new();
+    for (index, valid) in corrected.quality.valid.iter().enumerate() {
+        if !valid {
+            mask_bytes[index / 8] |= 1 << (index % 8);
+            if index <= u32::MAX as usize {
+                bad_pixel_indices.push(index as u32);
+            }
+        }
+    }
+    let mask_digest = sha256_bytes(&mask_bytes);
+    let geometry_fingerprint = crate::raw_backend::raw_geometry_fingerprint(&open)?;
+    let hardware_fingerprint = capture_hardware_fingerprint(profile, &open)?;
+    if !summaries
+        .iter()
+        .any(|summary| summary.kind == CalibrationReferenceKind::DarkFrame)
+        || !summaries
+            .iter()
+            .any(|summary| summary.kind == CalibrationReferenceKind::OpenGate)
+    {
+        return Err(
+            "Calibration session summaries must cover dark and open-gate references.".to_string(),
+        );
+    }
+    let has_flat = summaries
+        .iter()
+        .any(|summary| summary.kind == CalibrationReferenceKind::FlatField);
+    let mut payload = CalibrationProfilePayload {
+        issuer: CalibrationPayloadIssuer::BackendCalibrationSession,
+        calibration_session_id: Some(session_id),
+        hardware_fingerprint,
+        raw_decode_version: Some(RAW_DECODE_VERSION),
+        libraw_version: open.metadata.libraw_version.clone(),
+        reference_frames: summaries,
+        capture_parameters: Some(CaptureCalibrationParameters {
+            correction_algorithm: crate::app_state::CAPTURE_CORRECTION_ALGORITHM_VERSION
+                .to_string(),
+            demosaic_algorithm: crate::app_state::CAPTURE_DEMOSAIC_ALGORITHM_VERSION.to_string(),
+            epsilon: crate::raw_backend::DENSITY_EPSILON,
+            light_source_id: profile.light_source.trim().to_string(),
+            geometry_fingerprint,
+        }),
+        quality_mask: Some(CalibrationQualityMaskSummary {
+            total_samples: quality.total_samples as u64,
+            valid_samples: quality.valid_samples as u64,
+            invalid_denominator: quality.invalid_denominator as u64,
+            negative_samples: quality.negative_samples as u64,
+            saturated_samples: quality.saturated_samples as u64,
+            bad_pixels: quality.bad_pixels as u64,
+            out_of_range: quality.out_of_range as u64,
+            bad_pixel_indices,
+            mask_artifact_digest: mask_digest,
+        }),
+        mask_artifact: Some(CalibrationQualityMaskArtifact {
+            encoding: "invalid_bitset_le_v1".to_string(),
+            sample_count: quality.total_samples as u64,
+            data_base64: general_purpose::STANDARD.encode(mask_bytes),
+        }),
+        valid_range: Some(CalibrationValidRange {
+            minimum_transmission: [crate::raw_backend::DENSITY_EPSILON; 3],
+            maximum_transmission: [1.0 + crate::raw_backend::DENSITY_EPSILON; 3],
+        }),
+        capabilities: vec![CalibrationCapability::CaptureCorrected],
+        validation_report: Some(CalibrationValidationReport {
+            status: CalibrationValidationStatus::Passed,
+            checked_at: Some(checked_at),
+            checks: vec![
+                "sha256_reference_content".to_string(),
+                "normalized_raw_metadata".to_string(),
+                "dark_open_homogeneous_path".to_string(),
+                "mask_artifact_persisted".to_string(),
+            ],
+            warnings: if has_flat {
+                vec!["flat_stored_not_applied_pending_independent_definition".to_string()]
+            } else {
+                vec!["optional_flat_not_available".to_string()]
+            },
+        }),
+        ..CalibrationProfilePayload::default()
+    };
+    payload.payload_digest = payload.canonical_digest()?;
+    Ok(payload)
+}
+
+#[tauri::command]
+pub async fn run_capture_calibration_session(
+    profile_id: String,
+) -> Result<CalibrationProfileView, String> {
+    tokio::task::spawn_blocking(move || {
+        let mut connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open calibration database: {error}"))?;
+        let mut profile = persistence::load_calibration_profiles(&connection)
+            .map_err(|error| format!("Failed to load calibration profiles: {error}"))?
+            .into_iter()
+            .find(|profile| profile.profile_id == profile_id)
+            .ok_or_else(|| "Calibration profile no longer exists.".to_string())?;
+        let payload = build_capture_calibration_session(&profile)?;
+        let session_id = payload
+            .calibration_session_id
+            .clone()
+            .ok_or_else(|| "Calibration session id was not generated.".to_string())?;
+        let checked_at = payload
+            .validation_report
+            .as_ref()
+            .and_then(|report| report.checked_at)
+            .unwrap_or_else(persistence::now_timestamp);
+        profile.payload = payload;
+        profile.calibration_level = CalibrationLevel::Calibrated;
+        profile.updated_at = checked_at;
+        persistence::save_calibration_profile(&mut connection, &profile)
+            .map_err(|error| format!("Failed to save calibrated profile: {error}"))?;
+        persistence::save_calibration_session(
+            &connection,
+            &session_id,
+            &profile.profile_id,
+            checked_at,
+            "passed",
+            &profile.payload,
+        )
+        .map_err(|error| format!("Failed to save calibration session: {error}"))?;
+        Ok(calibration_profile_view(profile))
+    })
+    .await
+    .map_err(|error| format!("Calibration session worker failed: {error}"))?
+}
+
 #[tauri::command]
 pub async fn delete_calibration_profile(profile_id: String) -> Result<bool, String> {
     tokio::task::spawn_blocking(move || {
@@ -7253,24 +8528,6 @@ pub async fn delete_calibration_profile(profile_id: String) -> Result<bool, Stri
     })
     .await
     .map_err(|error| format!("Calibration profile worker failed: {error}"))?
-}
-
-fn available_last_used_profile_id() -> Result<Option<String>, String> {
-    let connection = persistence::open_connection()
-        .map_err(|error| format!("Failed to open calibration database: {error}"))?;
-    let requested = persistence::get_last_used_calibration_profile(&connection)
-        .map_err(|error| format!("Failed to load last-used calibration profile: {error}"))?;
-    let Some(requested) = requested else {
-        return Ok(None);
-    };
-    let profile = persistence::load_calibration_profiles(&connection)
-        .map_err(|error| format!("Failed to load calibration profiles: {error}"))?
-        .into_iter()
-        .find(|profile| profile.profile_id == requested);
-    Ok(profile
-        .map(calibration_profile_view)
-        .filter(|view| view.availability == CalibrationProfileAvailability::Available)
-        .map(|view| view.profile.profile_id))
 }
 
 fn persist_roll_snapshot(rolls: &[Roll]) -> Result<(), String> {
@@ -7338,11 +8595,9 @@ pub async fn import_roll(
             roll.calibration_profile_id = existing.calibration_profile_id.clone();
             *existing = roll;
         } else {
-            roll.calibration_profile_id = if is_loose_roll {
-                None
-            } else {
-                available_last_used_profile_id()?
-            };
+            // Capture Corrected is Experimental and opt-in per Roll. A newly
+            // imported Roll never inherits a previous Profile implicitly.
+            roll.calibration_profile_id = None;
             updated.push(roll);
         }
         let updated = persist_roll_snapshot_async(updated).await?;
@@ -7366,7 +8621,7 @@ fn selected_roll_item_state(
     state: &EngineState,
     roll_id: &str,
     image_id: Option<&str>,
-) -> Option<(PipelineState, bool)> {
+) -> Option<(PipelineState, bool, PipelineImageKind)> {
     let requested = image_id
         .and_then(|id| state.items.get(id))
         .and_then(|entry| {
@@ -7375,6 +8630,7 @@ fn selected_roll_item_state(
                 (
                     item.pipeline_state.clone(),
                     item.geom.calibration_points.is_some(),
+                    pipeline_image_kind(&item.file_path),
                 )
             })
         });
@@ -7385,6 +8641,7 @@ fn selected_roll_item_state(
                 (
                     item.pipeline_state.clone(),
                     item.geom.calibration_points.is_some(),
+                    pipeline_image_kind(&item.file_path),
                 )
             })
         })
@@ -7412,7 +8669,7 @@ fn roll_calibration_format(value: &str) -> RollCalibrationFormat {
 fn build_roll_calibration_status(
     roll: &Roll,
     profiles: &[CalibrationProfileView],
-    selected_state: Option<(PipelineState, bool)>,
+    selected_state: Option<(PipelineState, bool, PipelineImageKind)>,
 ) -> RollCalibrationStatus {
     let format = roll_calibration_format(&roll.format);
     let requested_profile_id = roll.calibration_profile_id.clone();
@@ -7421,37 +8678,50 @@ fn build_roll_calibration_status(
             .iter()
             .find(|view| view.profile.profile_id == profile_id)
     });
-    let resolved_profile = requested_profile
-        .filter(|view| view.availability == CalibrationProfileAvailability::Available);
-    let fallback_to_smart_auto = requested_profile_id.is_some() && resolved_profile.is_none();
-    let (pipeline, frame_set) = selected_state
-        .map(|(pipeline, frame_set)| (Some(pipeline), frame_set))
-        .unwrap_or((None, false));
-    let legacy = pipeline
-        .as_ref()
-        .is_some_and(|pipeline| pipeline.contract == ProcessingContract::LegacyV1);
-    let tone = match pipeline
-        .as_ref()
-        .map(|pipeline| pipeline.render_mapping.mode)
-    {
-        Some(RenderMode::FullTone) => RollToneStatus::FullTone,
-        _ => RollToneStatus::Preserve,
+    let (pipeline, frame_set, image_kind) = selected_state.unwrap_or_else(|| {
+        (
+            pipeline_state_for_roll_profile(roll, profiles),
+            false,
+            PipelineImageKind::RawBayer,
+        )
+    });
+    let resolution = resolve_pipeline(&pipeline_resolver_input_for_kind(
+        &pipeline,
+        Some(roll),
+        profiles,
+        image_kind,
+        None,
+    ));
+    let resolved_profile = resolution
+        .resolved_profile_id
+        .as_deref()
+        .and_then(|profile_id| {
+            profiles
+                .iter()
+                .find(|view| view.profile.profile_id == profile_id)
+        });
+    let fallback_to_smart_auto = resolution.requested_path
+        == ProcessingContract::CaptureCorrectedV11
+        && resolution.resolved_path != ProcessingContract::CaptureCorrectedV11;
+    let legacy = resolution.resolved_path == ProcessingContract::LegacyV1;
+    let tone = if pipeline.render_mapping.mode == RenderMode::FullTone {
+        RollToneStatus::FullTone
+    } else {
+        RollToneStatus::Preserve
     };
-    let base = if roll.density_anchors.has_roll_base() {
+    let base = if resolution.usable_density_anchors.has_roll_base() {
         RollBaseStatus::Sampled
     } else {
         RollBaseStatus::Estimated
     };
-    let dmax = if roll.density_anchors.has_roll_full_exposure() {
+    let dmax = if resolution.usable_density_anchors.has_roll_full_exposure() {
         RollDmaxStatus::FullExposure
     } else {
         RollDmaxStatus::Unknown
     };
     let calibration = if legacy {
         RollCalibrationMode::Legacy
-    } else if resolved_profile
-        .is_some_and(|view| view.profile.calibration_level != CalibrationLevel::SmartAuto)
-    {
+    } else if resolution.resolved_path == ProcessingContract::CaptureCorrectedV11 {
         RollCalibrationMode::Configured
     } else {
         RollCalibrationMode::SmartAuto
@@ -7474,16 +8744,22 @@ fn build_roll_calibration_status(
     } else if requested_profile_id.is_some() {
         warnings.push("profile_missing_fallback".to_string());
     }
+    if fallback_to_smart_auto {
+        warnings.push(format!(
+            "profile_capture_fallback|{}",
+            resolution.processing_report.fallback_reasons.join(",")
+        ));
+    }
     if calibration == RollCalibrationMode::Configured {
-        warnings.push("profile_configured_not_measured".to_string());
+        warnings.push("profile_capture_corrected_density_unvalidated".to_string());
     }
     if legacy {
         warnings.push("legacy_contract_preserved".to_string());
     }
     match format {
         RollCalibrationFormat::Film135 => match (
-            roll.density_anchors.has_roll_base(),
-            roll.density_anchors.has_roll_full_exposure(),
+            resolution.usable_density_anchors.has_roll_base(),
+            resolution.usable_density_anchors.has_roll_full_exposure(),
         ) {
             (false, false) => warnings.push("film135_references_missing".to_string()),
             (false, true) => warnings.push("film_base_missing".to_string()),
@@ -7491,8 +8767,8 @@ fn build_roll_calibration_status(
             (true, true) => {}
         },
         RollCalibrationFormat::Film120 => match (
-            roll.density_anchors.has_roll_base(),
-            roll.density_anchors.has_roll_full_exposure(),
+            resolution.usable_density_anchors.has_roll_base(),
+            resolution.usable_density_anchors.has_roll_full_exposure(),
         ) {
             (false, false) => warnings.push("film120_external_reference_recommended".to_string()),
             (false, true) => warnings.push("film120_base_missing".to_string()),
@@ -7556,15 +8832,39 @@ pub async fn update_roll_calibration_profile(
     }
     roll.calibration_profile_id = profile_id.clone();
     let updated_roll = roll.clone();
+    let selected_template = pipeline_state_for_roll_profile(&updated_roll, &profiles);
+    let pipeline_updates = state
+        .items
+        .iter()
+        .filter_map(|entry| {
+            let item = read_lock(entry.value());
+            if item.roll_id != roll_id
+                || item.pipeline_state.contract == ProcessingContract::LegacyV1
+            {
+                return None;
+            }
+            let mut next = selected_template.clone();
+            next.content_range = item.pipeline_state.content_range.clone();
+            next.render_mapping = item.pipeline_state.render_mapping.clone();
+            Some((entry.key().clone(), item.file_path.clone(), next))
+        })
+        .collect::<Vec<_>>();
     let persisted_rolls = updated_rolls.clone();
     let persisted_profile_id = profile_id.clone();
+    let persisted_pipeline_states = pipeline_updates
+        .iter()
+        .map(|(_, file_path, pipeline_state)| {
+            (roll_id.clone(), file_path.clone(), pipeline_state.clone())
+        })
+        .collect::<Vec<_>>();
     tokio::task::spawn_blocking(move || {
         let mut connection = persistence::open_connection()
             .map_err(|error| format!("Failed to open calibration database: {error}"))?;
-        persistence::save_rolls_and_last_used_calibration_profile(
+        persistence::save_rolls_profile_selection_and_pipeline_states(
             &mut connection,
             &persisted_rolls,
             persisted_profile_id.as_deref(),
+            &persisted_pipeline_states,
         )
         .map_err(|error| format!("Failed to save Roll Profile selection: {error}"))?;
         update_rolls_compatibility_mirror(&persisted_rolls);
@@ -7573,6 +8873,21 @@ pub async fn update_roll_calibration_profile(
     .await
     .map_err(|error| format!("Roll Profile worker failed: {error}"))??;
     *write_lock(&state.rolls) = updated_rolls;
+    for (item_id, _, pipeline_state) in pipeline_updates {
+        if let Some(entry) = state.items.get(&item_id) {
+            let mut item = write_lock(entry.value());
+            item.pipeline_state = pipeline_state;
+            item.runtime_pipeline_state = None;
+            item.runtime_density_provenance = None;
+            item.runtime_pipeline_key = None;
+            item.original_proxy = None;
+            item.proxy_image = None;
+            item.prophoto_estimate_proxy = None;
+            item.relative_transmission_proxy = None;
+            item.relative_transmission_quality = None;
+            item.pristine_proxy = None;
+        }
+    }
     let selected_state = selected_roll_item_state(&state, &roll_id, None);
     Ok(build_roll_calibration_status(
         &updated_roll,
@@ -7606,15 +8921,25 @@ pub async fn get_roll_calibration_status(
 #[cfg(test)]
 mod calibration_profile_contract_tests {
     use super::{
-        build_roll_calibration_status, calibration_level_from_references, calibration_profile_view,
-        roll_calibration_format,
+        build_capture_calibration_payload, build_roll_calibration_status,
+        calibration_level_from_profile, calibration_profile_view, pipeline_resolver_input,
+        pipeline_state_for_roll_profile, roll_calibration_format, sha256_bytes,
+        CalibrationProfileInput, PipelineImageKind,
     };
     use crate::app_state::{
-        CalibrationConfigProfile, CalibrationLevel, CalibrationProfileAvailability,
-        CalibrationProfileView, CalibrationReference, CalibrationReferenceKind, DensityAnchors,
-        PipelineState, Roll, RollBaseStatus, RollCalibrationFormat, RollCalibrationMode,
-        RollDmaxStatus, CALIBRATION_PROFILE_SCHEMA_VERSION,
+        CalibrationCapability, CalibrationConfigProfile, CalibrationLevel,
+        CalibrationPayloadIssuer, CalibrationProfileAvailability, CalibrationProfilePayload,
+        CalibrationProfileView, CalibrationQualityMaskArtifact, CalibrationQualityMaskSummary,
+        CalibrationReference, CalibrationReferenceKind, CalibrationReferenceSummary,
+        CalibrationValidRange, CalibrationValidationReport, CalibrationValidationStatus,
+        CaptureCalibrationParameters, DensityAnchors, PipelineState, ProcessingContract, Roll,
+        RollBaseStatus, RollCalibrationFormat, RollCalibrationMode, RollDmaxStatus,
+        CALIBRATION_PROFILE_SCHEMA_VERSION, CAPTURE_CORRECTION_ALGORITHM_VERSION,
+        CAPTURE_DEMOSAIC_ALGORITHM_VERSION,
     };
+    use crate::persistence::RAW_DECODE_VERSION;
+    use crate::raw_backend::{CaptureConditions, CfaPattern, RawMetadata, RawMosaic};
+    use base64::{engine::general_purpose, Engine as _};
 
     fn roll(format: &str, profile_id: Option<&str>) -> Roll {
         Roll {
@@ -7640,9 +8965,10 @@ mod calibration_profile_contract_tests {
                 camera: String::new(),
                 light_source: String::new(),
                 lens: String::new(),
-                calibration_level: CalibrationLevel::Calibrated,
+                calibration_level: CalibrationLevel::SmartAuto,
                 notes: String::new(),
                 references: Vec::new(),
+                payload: CalibrationProfilePayload::default(),
             },
             availability,
             warnings: Vec::new(),
@@ -7664,21 +8990,192 @@ mod calibration_profile_contract_tests {
         }
     }
 
+    fn verified_capture_profile() -> CalibrationProfileView {
+        let mut view = profile(CalibrationProfileAvailability::Available);
+        view.profile.references = [
+            CalibrationReferenceKind::DarkFrame,
+            CalibrationReferenceKind::OpenGate,
+            CalibrationReferenceKind::FlatField,
+        ]
+        .into_iter()
+        .map(reference)
+        .collect();
+        let mask_bytes = vec![1 << 5, 0];
+        let mut payload = CalibrationProfilePayload {
+            issuer: CalibrationPayloadIssuer::BackendCalibrationSession,
+            calibration_session_id: Some("session-a".to_string()),
+            hardware_fingerprint: "camera|lens|light".to_string(),
+            raw_decode_version: Some(RAW_DECODE_VERSION),
+            libraw_version: "0.22-test".to_string(),
+            reference_frames: view
+                .profile
+                .references
+                .iter()
+                .map(|reference| CalibrationReferenceSummary {
+                    reference_id: reference.reference_id.clone(),
+                    kind: reference.kind,
+                    content_digest: format!("content-{}", reference.reference_id),
+                    raw_metadata_digest: format!("metadata-{}", reference.reference_id),
+                })
+                .collect(),
+            capture_parameters: Some(CaptureCalibrationParameters {
+                correction_algorithm: CAPTURE_CORRECTION_ALGORITHM_VERSION.to_string(),
+                demosaic_algorithm: CAPTURE_DEMOSAIC_ALGORITHM_VERSION.to_string(),
+                epsilon: 1.0e-6,
+                light_source_id: "light-a".to_string(),
+                geometry_fingerprint: "geometry-a".to_string(),
+            }),
+            quality_mask: Some(CalibrationQualityMaskSummary {
+                total_samples: 16,
+                valid_samples: 15,
+                bad_pixels: 1,
+                bad_pixel_indices: vec![5],
+                mask_artifact_digest: sha256_bytes(&mask_bytes),
+                ..CalibrationQualityMaskSummary::default()
+            }),
+            mask_artifact: Some(CalibrationQualityMaskArtifact {
+                encoding: "invalid_bitset_le_v1".to_string(),
+                sample_count: 16,
+                data_base64: general_purpose::STANDARD.encode(mask_bytes),
+            }),
+            valid_range: Some(CalibrationValidRange {
+                minimum_transmission: [0.01; 3],
+                maximum_transmission: [1.0; 3],
+            }),
+            capabilities: vec![CalibrationCapability::CaptureCorrected],
+            validation_report: Some(CalibrationValidationReport {
+                status: CalibrationValidationStatus::Passed,
+                checked_at: Some(1),
+                checks: vec!["capture_reference_consistency".to_string()],
+                warnings: Vec::new(),
+            }),
+            ..CalibrationProfilePayload::default()
+        };
+        payload.payload_digest = payload.canonical_digest().unwrap();
+        view.profile.payload = payload;
+        view.profile.calibration_level = CalibrationLevel::Calibrated;
+        view
+    }
+
+    fn synthetic_mosaic(value: u16) -> RawMosaic {
+        RawMosaic {
+            width: 4,
+            height: 4,
+            samples: vec![value; 16],
+            metadata: RawMetadata {
+                cfa: CfaPattern::Bayer {
+                    filters: 0x94949494,
+                },
+                active_area: [0, 0, 4, 4],
+                raw_pitch_bytes: 8,
+                black_level: [100.0; 4],
+                white_level: [4000.0; 4],
+                masked_areas: Vec::new(),
+                masked_pixels: Vec::new(),
+                orientation: 0,
+                iso: Some(100.0),
+                exposure_seconds: Some(0.01),
+                camera_id: "maker|camera".to_string(),
+                libraw_version: "0.22-test".to_string(),
+                capture_conditions: CaptureConditions::default(),
+            },
+        }
+    }
+
     #[test]
-    fn calibration_level_is_derived_from_profile_capabilities() {
+    fn reference_presence_alone_does_not_promote_profile_level() {
         assert_eq!(
-            calibration_level_from_references(&[]),
+            calibration_level_from_profile(&CalibrationProfilePayload::default()),
             CalibrationLevel::SmartAuto
         );
+    }
+
+    #[test]
+    fn normal_profile_input_cannot_forge_a_verified_payload() {
+        let value = serde_json::json!({
+            "profileId": null,
+            "name": "Forged",
+            "camera": "Camera",
+            "lightSource": "Light",
+            "references": [],
+            "payload": {
+                "issuer": "backend_calibration_session",
+                "validation_report": { "status": "passed" }
+            }
+        });
+        assert!(serde_json::from_value::<CalibrationProfileInput>(value).is_err());
+    }
+
+    #[test]
+    fn backend_session_builds_self_verifying_payload_from_synthetic_mosaics() {
+        let mut view = profile(CalibrationProfileAvailability::Available);
+        view.profile.camera = "Session Camera".to_string();
+        view.profile.light_source = "Session Light".to_string();
+        view.profile.lens = "Session Lens".to_string();
+        let summaries = [
+            CalibrationReferenceKind::DarkFrame,
+            CalibrationReferenceKind::OpenGate,
+        ]
+        .into_iter()
+        .map(|kind| CalibrationReferenceSummary {
+            reference_id: format!("summary-{kind:?}"),
+            kind,
+            content_digest: format!("content-{kind:?}"),
+            raw_metadata_digest: format!("metadata-{kind:?}"),
+        })
+        .collect();
+        let payload = build_capture_calibration_payload(
+            &view.profile,
+            &synthetic_mosaic(100),
+            &synthetic_mosaic(1000),
+            summaries,
+            42,
+            "session-synthetic".to_string(),
+        )
+        .expect("synthetic calibration payload");
+
+        assert!(payload.capture_is_verified(RAW_DECODE_VERSION));
         assert_eq!(
-            calibration_level_from_references(&[reference(CalibrationReferenceKind::DarkFrame)]),
-            CalibrationLevel::Calibrated
+            payload.calibration_session_id.as_deref(),
+            Some("session-synthetic")
         );
+        assert!(payload.mask_artifact.is_some());
+        assert_eq!(payload.canonical_digest().unwrap(), payload.payload_digest);
+
+        let mut tampered = payload.clone();
+        tampered.hardware_fingerprint.push_str("-changed");
         assert_eq!(
-            calibration_level_from_references(&[reference(
-                CalibrationReferenceKind::SpectralCapture
-            )]),
-            CalibrationLevel::Spectral
+            tampered.capture_validation_error(RAW_DECODE_VERSION),
+            Some("capture_payload_digest_mismatch")
+        );
+    }
+
+    #[test]
+    fn preview_analysis_thumbnail_auto_invert_and_export_share_one_resolution() {
+        let verified = verified_capture_profile();
+        let roll = roll("135", Some("profile-a"));
+        let persisted = pipeline_state_for_roll_profile(&roll, std::slice::from_ref(&verified));
+        let raw_path =
+            std::env::temp_dir().join(format!("nexfilm-resolver-{}.dng", std::process::id()));
+        std::fs::write(&raw_path, b"resolver-only").unwrap();
+        let input = pipeline_resolver_input(
+            &persisted,
+            Some(&roll),
+            std::slice::from_ref(&verified),
+            raw_path.to_string_lossy().as_ref(),
+            None,
+        );
+        let resolutions = (0..5)
+            .map(|_| crate::capability_resolver::resolve_pipeline(&input))
+            .collect::<Vec<_>>();
+        std::fs::remove_file(raw_path).unwrap();
+
+        for resolution in &resolutions[1..] {
+            assert_eq!(resolution, &resolutions[0]);
+        }
+        assert_eq!(
+            resolutions[0].resolved_path,
+            ProcessingContract::CaptureCorrectedV11
         );
     }
 
@@ -7719,7 +9216,11 @@ mod calibration_profile_contract_tests {
         let status = build_roll_calibration_status(
             &roll("135", Some("missing-profile")),
             &[],
-            Some((PipelineState::smart_auto(), true)),
+            Some((
+                PipelineState::smart_auto(),
+                true,
+                PipelineImageKind::RawBayer,
+            )),
         );
 
         assert_eq!(
@@ -7736,22 +9237,59 @@ mod calibration_profile_contract_tests {
     }
 
     #[test]
-    fn available_profile_is_configured_but_does_not_claim_measured_density() {
+    fn available_but_unverified_profile_keeps_binding_and_falls_back() {
         let status = build_roll_calibration_status(
             &roll("120 (6x6)", Some("profile-a")),
             &[profile(CalibrationProfileAvailability::Available)],
-            Some((PipelineState::smart_auto(), true)),
+            Some((
+                PipelineState::smart_auto(),
+                true,
+                PipelineImageKind::RawBayer,
+            )),
         );
 
-        assert_eq!(status.resolved_profile_id.as_deref(), Some("profile-a"));
-        assert!(!status.fallback_to_smart_auto);
-        assert_eq!(status.calibration, RollCalibrationMode::Configured);
+        assert_eq!(status.requested_profile_id.as_deref(), Some("profile-a"));
+        assert_eq!(status.resolved_profile_id, None);
+        assert!(status.fallback_to_smart_auto);
+        assert_eq!(status.calibration, RollCalibrationMode::SmartAuto);
         assert_eq!(status.base, RollBaseStatus::Estimated);
         assert_eq!(status.dmax, RollDmaxStatus::Unknown);
         assert!(status
             .warnings
             .iter()
-            .any(|warning| warning == "profile_configured_not_measured"));
+            .any(|warning| warning.starts_with("profile_capture_fallback|")));
+
+        let state = pipeline_state_for_roll_profile(
+            &roll("120 (6x6)", Some("profile-a")),
+            &[profile(CalibrationProfileAvailability::Available)],
+        );
+        assert_eq!(state.contract, ProcessingContract::CaptureCorrectedV11);
+        assert!(state.processing_report.fallback_reasons.is_empty());
+    }
+
+    #[test]
+    fn verified_capture_profile_selects_relative_transmission_without_density_claim() {
+        let verified = verified_capture_profile();
+        let roll = roll("120 (6x6)", Some("profile-a"));
+        let state = pipeline_state_for_roll_profile(&roll, &[verified.clone()]);
+        assert_eq!(state.contract, ProcessingContract::CaptureCorrectedV11);
+        assert_eq!(
+            state.contract.input_domain(),
+            crate::app_state::DataDomain::RelativeTransmissionRgb
+        );
+
+        let status = build_roll_calibration_status(
+            &roll,
+            &[verified],
+            Some((state, true, PipelineImageKind::RawBayer)),
+        );
+        assert_eq!(status.resolved_profile_id.as_deref(), Some("profile-a"));
+        assert!(!status.fallback_to_smart_auto);
+        assert_eq!(status.calibration, RollCalibrationMode::Configured);
+        assert!(status
+            .warnings
+            .iter()
+            .any(|warning| { warning == "profile_capture_corrected_density_unvalidated" }));
     }
 
     #[test]
@@ -7759,7 +9297,11 @@ mod calibration_profile_contract_tests {
         let status = build_roll_calibration_status(
             &roll("135", Some("profile-a")),
             &[profile(CalibrationProfileAvailability::NeedsAttention)],
-            Some((PipelineState::smart_auto(), true)),
+            Some((
+                PipelineState::smart_auto(),
+                true,
+                PipelineImageKind::RawBayer,
+            )),
         );
 
         assert_eq!(status.requested_profile_id.as_deref(), Some("profile-a"));
@@ -8154,17 +9696,25 @@ pub async fn update_roll_density_anchors(
             );
         }
     }
-    let anchors = DensityAnchors {
-        d_min_base: base,
-        d_max_full_exposure: full_exposure,
-    };
     let _mutation = state.roll_mutation.lock().await;
     let mut updated_rolls = read_lock(&state.rolls).clone();
     let roll = updated_rolls
         .iter_mut()
         .find(|roll| roll.roll_id == roll_id)
         .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
+    let mut anchors = roll.density_anchors.clone();
+    if let Some(base) = base {
+        replace_base_anchor_preserving_history(&mut anchors, base);
+    }
+    if let Some(full_exposure) = full_exposure {
+        if let Some(previous) = anchors.d_max_full_exposure.replace(full_exposure) {
+            if !anchors.retained_records.contains(&previous) {
+                anchors.retained_records.push(previous);
+            }
+        }
+    }
     roll.density_anchors = anchors.clone();
+    let capture_requested = roll.calibration_profile_id.is_some();
 
     let affected = state
         .items
@@ -8174,7 +9724,11 @@ pub async fn update_roll_density_anchors(
             (item.roll_id == roll_id).then(|| {
                 let mut pipeline = item.pipeline_state.clone();
                 pipeline.density_anchors = anchors.clone();
-                pipeline.contract = anchors.prophoto_contract();
+                pipeline.contract = if capture_requested {
+                    ProcessingContract::CaptureCorrectedV11
+                } else {
+                    anchors.prophoto_contract()
+                };
                 (entry.key().clone(), item.file_path.clone(), pipeline)
             })
         })
@@ -8202,7 +9756,11 @@ pub async fn update_roll_density_anchors(
     *write_lock(&state.rolls) = updated_rolls;
     for (id, _, pipeline) in affected {
         if let Some(item) = state.items.get(&id) {
-            write_lock(item.value()).pipeline_state = pipeline;
+            let mut item = write_lock(item.value());
+            item.pipeline_state = pipeline;
+            item.runtime_pipeline_state = None;
+            item.runtime_density_provenance = None;
+            item.runtime_pipeline_key = None;
         }
     }
     Ok(anchors)
@@ -8677,9 +10235,14 @@ fn load_all_image_states_from_connection(
             rendered_thumbnail_base64: rendered_thumb,
             original_proxy: None,
             proxy_image: None,
-            scientific_proxy: None,
+            prophoto_estimate_proxy: None,
+            relative_transmission_proxy: None,
+            relative_transmission_quality: None,
             pristine_proxy: None,
             base_color,
+            runtime_pipeline_state: None,
+            runtime_density_provenance: None,
+            runtime_pipeline_key: None,
             pipeline_state,
             params,
             geom,
@@ -8858,8 +10421,9 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             params.exposure.exposure + params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
         ]
     };
+    let effective_pipeline = item.effective_pipeline_state();
     let pipeline = FilmPipeline::from_state(
-        &item.pipeline_state,
+        effective_pipeline,
         base_color,
         exposure_offsets,
         params.film_mode.clone(),
@@ -8888,7 +10452,8 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
         (0.0, 0.0, 0.0)
     };
     let luma_coefficients = DENSITY_LUMA_COEFFICIENTS;
-    let prophoto_to_srgb = (item.pipeline_state.contract != ProcessingContract::LegacyV1
+    let prophoto_to_srgb = (effective_pipeline.contract != ProcessingContract::LegacyV1
+        && effective_pipeline.contract != ProcessingContract::CaptureCorrectedV11
         && params.film_mode == FilmMode::Color)
         .then(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb));
 
@@ -9011,10 +10576,10 @@ mod import_contract_tests {
         decode_reduced_tiff_for_working_space, default_pipeline_state_for_import,
         is_better_preview_edge, is_lightweight_direct_preview, is_noritsu_rendered_image,
         is_raw_extension, is_scanner_fff_tiff, is_tiff_extension, libraw_decode_error_message,
-        linearize_scanner_fff, persist_import_batch, raw_decode_failure_hint,
-        reference_density_extreme, render_shader_equivalent, rgb16_image_from_bytes,
-        scientific_to_transport_proxy, AutoColorLimits, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
-        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
+        linearize_scanner_fff, persist_import_batch, preserve_tone_density_span,
+        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
+        render_shader_equivalent, rgb16_image_from_bytes, AutoColorLimits, DecodeMode,
+        IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
         BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
@@ -9645,9 +11210,9 @@ mod import_contract_tests {
     }
 
     #[test]
-    fn scientific_transport_preserves_signed_prophoto_values_within_cache_range() {
+    fn prophoto_transport_preserves_signed_estimate_values_within_cache_range() {
         let source = ImageBuffer::from_raw(2, 1, vec![-1.0, 0.0, 1.0, 2.0, 2.5, 3.0]).unwrap();
-        let transport = scientific_to_transport_proxy(&source);
+        let transport = prophoto_estimate_to_transport_proxy(&source);
         let span = PROPHOTO_TRANSPORT_MAX - PROPHOTO_TRANSPORT_MIN;
         for (encoded, original) in transport.as_raw().iter().zip(source.as_raw().iter()) {
             let decoded = *encoded as f32 / 65535.0 * span + PROPHOTO_TRANSPORT_MIN;
@@ -9684,6 +11249,7 @@ mod import_contract_tests {
                 scope: DensityAnchorScope::Roll,
                 confidence: DensityAnchorConfidence::UserSampled,
                 reference_id: Some("base.tif".into()),
+                provenance: Default::default(),
             }),
             d_max_full_exposure: Some(DensityAnchor {
                 density: [2.0; 3],
@@ -9691,7 +11257,9 @@ mod import_contract_tests {
                 scope: DensityAnchorScope::Roll,
                 confidence: DensityAnchorConfidence::UserSampled,
                 reference_id: Some("full.tif".into()),
+                provenance: Default::default(),
             }),
+            retained_records: Vec::new(),
         };
         let rolls = vec![Roll {
             roll_id: "roll-a".into(),
@@ -9721,6 +11289,7 @@ mod import_contract_tests {
             scope: DensityAnchorScope::Roll,
             confidence: DensityAnchorConfidence::UserSampled,
             reference_id: None,
+            provenance: Default::default(),
         };
         let estimated_base = DensityAnchor {
             density: [0.1; 3],
@@ -9728,10 +11297,12 @@ mod import_contract_tests {
             scope: DensityAnchorScope::Frame,
             confidence: DensityAnchorConfidence::Estimated,
             reference_id: None,
+            provenance: Default::default(),
         };
         let full_only = DensityAnchors {
             d_min_base: None,
             d_max_full_exposure: Some(sampled(DensityAnchorSource::SampledFullExposure)),
+            retained_records: Vec::new(),
         };
         assert!(!full_only.is_fully_anchored());
         assert_eq!(
@@ -9742,6 +11313,7 @@ mod import_contract_tests {
         let estimated_and_full = DensityAnchors {
             d_min_base: Some(estimated_base),
             d_max_full_exposure: full_only.d_max_full_exposure.clone(),
+            retained_records: Vec::new(),
         };
         assert!(!estimated_and_full.is_fully_anchored());
         assert_eq!(
@@ -9752,6 +11324,7 @@ mod import_contract_tests {
         let complete = DensityAnchors {
             d_min_base: Some(sampled(DensityAnchorSource::SampledFilmBase)),
             d_max_full_exposure: full_only.d_max_full_exposure,
+            retained_records: Vec::new(),
         };
         assert!(complete.is_fully_anchored());
         assert_eq!(
@@ -9768,6 +11341,7 @@ mod import_contract_tests {
             scope: DensityAnchorScope::Roll,
             confidence: DensityAnchorConfidence::UserSampled,
             reference_id: None,
+            provenance: Default::default(),
         };
         let full = DensityAnchor {
             density: [2.2, 2.4, 2.6],
@@ -9775,6 +11349,7 @@ mod import_contract_tests {
             scope: DensityAnchorScope::Roll,
             confidence: DensityAnchorConfidence::UserSampled,
             reference_id: None,
+            provenance: Default::default(),
         };
         let mut base_only_limits = AutoColorLimits {
             d_min: [0.12, 0.13, 0.14],
@@ -9786,6 +11361,7 @@ mod import_contract_tests {
             &DensityAnchors {
                 d_min_base: Some(base.clone()),
                 d_max_full_exposure: None,
+                retained_records: Vec::new(),
             },
             base.density,
         );
@@ -9803,12 +11379,65 @@ mod import_contract_tests {
             &DensityAnchors {
                 d_min_base: None,
                 d_max_full_exposure: Some(full),
+                retained_records: Vec::new(),
             },
             estimated_base,
         );
         assert_eq!(full_only_limits.d_min, [0.12, 0.13, 0.14]);
         for (actual, expected) in full_only_limits.d_max.iter().zip([2.1, 2.2, 2.3]) {
             assert!((actual - expected).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn film_area_content_never_moves_a_roll_dmin_anchor() {
+        let base = DensityAnchor {
+            density: [0.2, 0.3, 0.4],
+            source: DensityAnchorSource::SampledFilmBase,
+            scope: DensityAnchorScope::Roll,
+            confidence: DensityAnchorConfidence::UserSampled,
+            reference_id: None,
+            provenance: Default::default(),
+        };
+        let anchors = DensityAnchors {
+            d_min_base: Some(base.clone()),
+            d_max_full_exposure: None,
+            retained_records: Vec::new(),
+        };
+        for film_area_limits in [[0.05, 0.10, 0.15], [0.65, 0.70, 0.75]] {
+            let mut limits = AutoColorLimits {
+                d_min: film_area_limits,
+                d_max: [1.4, 1.5, 1.6],
+                pipeline_state: None,
+            };
+            apply_roll_density_anchor_limits(&mut limits, &anchors, base.density);
+            assert_eq!(limits.d_min, [0.0; 3]);
+        }
+    }
+
+    #[test]
+    fn preserve_tone_does_not_full_stretch_a_short_tone_photo() {
+        let anchors = DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: [0.2; 3],
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: Default::default(),
+            }),
+            d_max_full_exposure: None,
+            retained_records: Vec::new(),
+        };
+        let mut limits = AutoColorLimits {
+            d_min: [0.0; 3],
+            d_max: [0.35, 0.45, 0.55],
+            pipeline_state: None,
+        };
+        preserve_tone_density_span(&mut limits, &anchors);
+        assert_eq!(limits.d_min, [0.0; 3]);
+        for maximum in limits.d_max {
+            assert!((maximum - super::PRESERVE_TONE_MIN_DENSITY_SPAN).abs() < 1.0e-6);
         }
     }
 
@@ -10130,7 +11759,7 @@ mod import_contract_tests {
     }
 
     #[test]
-    fn nikon_nef_develop_decode_is_measured() {
+    fn nikon_nef_develop_decode_is_full_resolution() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("test_picture")
             .join("_DSC7333.NEF");
@@ -10197,9 +11826,14 @@ mod import_contract_tests {
             rendered_thumbnail_base64: None,
             original_proxy: None,
             proxy_image: None,
-            scientific_proxy: None,
+            prophoto_estimate_proxy: None,
+            relative_transmission_proxy: None,
+            relative_transmission_quality: None,
             pristine_proxy: None,
             base_color: BaseColor::default(),
+            runtime_pipeline_state: None,
+            runtime_density_provenance: None,
+            runtime_pipeline_key: None,
             pipeline_state: PipelineState::smart_auto(),
             params: TuningParams::default(),
             geom: GeometryState::default(),
@@ -10233,9 +11867,14 @@ mod library_management_contract_tests {
             rendered_thumbnail_base64: None,
             original_proxy: None,
             proxy_image: None,
-            scientific_proxy: None,
+            prophoto_estimate_proxy: None,
+            relative_transmission_proxy: None,
+            relative_transmission_quality: None,
             pristine_proxy: None,
             base_color: BaseColor::default(),
+            runtime_pipeline_state: None,
+            runtime_density_provenance: None,
+            runtime_pipeline_key: None,
             pipeline_state: PipelineState::default(),
             params: TuningParams::default(),
             geom: GeometryState::default(),
@@ -10413,15 +12052,17 @@ mod library_management_contract_tests {
 #[cfg(test)]
 mod export_contract_tests {
     use super::{
-        build_response_buffer_from_proxy, co_sited_density_extremes, compute_auto_color_limits,
-        density_histogram_extremes, embedded_input_profile, encode_export_buffer,
-        export_dimensions, export_profile_for_output, gaussian_blur_rgb16_parallel,
-        normalize_persisted_geometry_for_rendered_image, render_shader_equivalent,
-        reserve_export_path, sanitize_export_file_stem, should_apply_sprocket_mask,
-        validate_export_color_space, write_export_image, write_export_image_with_profile,
-        ExportConflictPolicy, ExportFormat,
+        build_response_buffer_from_proxy, build_response_buffer_from_proxy_with_state,
+        co_sited_density_extremes, compute_auto_color_limits, density_histogram_extremes,
+        embedded_input_profile, encode_export_buffer, export_dimensions, export_profile_for_output,
+        gaussian_blur_rgb16_parallel, normalize_persisted_geometry_for_rendered_image,
+        render_shader_equivalent, reserve_export_path, sanitize_export_file_stem,
+        should_apply_sprocket_mask, validate_export_color_space, write_export_image,
+        write_export_image_with_profile, ExportConflictPolicy, ExportFormat,
     };
-    use crate::app_state::{BaseColor, FilmMode, GeometryState, TuningParams};
+    use crate::app_state::{
+        BaseColor, DensityAnchors, FilmMode, GeometryState, PipelineState, TuningParams,
+    };
     use crate::color_science::ColorSpaceId;
     use image::{ColorType, GenericImageView, ImageBuffer, Rgb};
     use std::collections::HashSet;
@@ -10736,6 +12377,35 @@ mod export_contract_tests {
             u16::from_le_bytes(analyzed[28..30].try_into().unwrap()),
             1234
         );
+    }
+
+    #[test]
+    fn capture_corrected_proxy_transports_quality_mask_in_alpha() {
+        let proxy = ImageBuffer::from_fn(2, 1, |x, _| {
+            if x == 0 {
+                Rgb([10_000, 20_000, 30_000])
+            } else {
+                Rgb([40_000, 50_000, 60_000])
+            }
+        });
+        let pipeline = PipelineState::capture_corrected(DensityAnchors::default(), false);
+        let mut quality = crate::raw_backend::QualityMask::new(2);
+        quality.invalidate(1, crate::raw_backend::QualityFlag::BadPixel);
+        let response = build_response_buffer_from_proxy_with_state(
+            &proxy,
+            &white_base(),
+            &pipeline,
+            Some(&quality),
+            true,
+        );
+
+        let flags = u32::from_le_bytes(response[24..28].try_into().unwrap());
+        assert_ne!(flags & 4, 0, "Measured domain flag must be present");
+        assert_eq!(
+            u16::from_le_bytes(response[34..36].try_into().unwrap()),
+            u16::MAX
+        );
+        assert_eq!(u16::from_le_bytes(response[42..44].try_into().unwrap()), 0);
     }
 
     #[test]

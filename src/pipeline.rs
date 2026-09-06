@@ -3,8 +3,9 @@ use nalgebra::{Matrix3, Vector3};
 
 use crate::app_state::{BaseColor, FilmMode, PipelineState, ProcessingContract};
 
-/// 胶片物理处理管线状态对象。
-/// 封装了色彩变换矩阵与下限阈值，片基密度 (D_min) 以及通道偏移补偿。
+/// Film inversion pipeline. LegacyV1 retains the historical Status M estimate;
+/// newer contracts operate in their declared input domain without claiming a
+/// physical density calibration that the capture profile has not supplied.
 /// 实现了无状态函数式调用，兼容 Rayon 跨线程高并发处理。
 pub struct FilmPipeline {
     /// 核心去串扰矩阵 (Status M)
@@ -48,9 +49,9 @@ impl FilmPipeline {
         }
     }
 
-    /// v1.1 scientific path: ProPhoto RGB is the shared linear basis and no
-    /// Status M matrix is applied at this lowest contract level. Density
-    /// channel alignment is therefore the explicit base subtraction itself.
+    /// v1.1 non-Legacy path. Smart Auto receives a ProPhoto Estimate while
+    /// Capture Corrected receives quality-checked relative transmission. Neither path adds
+    /// the historical empirical Status M matrix.
     pub fn new_prophoto(
         base_density: [f32; 3],
         exp_offset: [f32; 3],
@@ -136,6 +137,27 @@ impl FilmPipeline {
         }
     }
 
+    /// Consume a relative-transmission sample only when its capture-quality
+    /// mask says it is valid. Unlike the compatibility method above, this
+    /// entry point never turns zero, negative, NaN, or saturated/masked input
+    /// into an apparently valid density using epsilon.
+    #[inline]
+    pub fn compute_relative_density(
+        &self,
+        relative_transmission_rgb: &[f32; 3],
+        quality_valid: bool,
+    ) -> Option<[f32; 3]> {
+        if self.contract != ProcessingContract::CaptureCorrectedV11
+            || !quality_valid
+            || relative_transmission_rgb
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            return None;
+        }
+        Some(self.compute_true_density(relative_transmission_rgb))
+    }
+
     /// 应用曝光偏移并防止负密度
     #[inline]
     pub fn apply_exposure(&self, true_density: &[f32; 3]) -> [f32; 3] {
@@ -199,6 +221,19 @@ mod tests {
     }
 
     #[test]
+    fn legacy_contract_retains_the_historical_status_m_result() {
+        let pipeline = FilmPipeline::new([u16::MAX; 3], [0.0; 3], FilmMode::Color);
+        let input = [0.5f32, 0.25, 0.125];
+        let raw_density =
+            nalgebra::Vector3::new(-input[0].log10(), -input[1].log10(), -input[2].log10());
+        let expected = crate::core_math::status_m_crosstalk_matrix() * raw_density;
+        let actual = pipeline.compute_true_density(&input);
+        assert!((actual[0] - expected.x).abs() < 1.0e-6);
+        assert!((actual[1] - expected.y).abs() < 1.0e-6);
+        assert!((actual[2] - expected.z).abs() < 1.0e-6);
+    }
+
+    #[test]
     fn state_uses_roll_base_anchor_for_prophoto_density() {
         let mut state = PipelineState::smart_auto();
         state.density_anchors = DensityAnchors {
@@ -208,13 +243,37 @@ mod tests {
                 scope: crate::app_state::DensityAnchorScope::Roll,
                 confidence: crate::app_state::DensityAnchorConfidence::UserSampled,
                 reference_id: None,
+                provenance: Default::default(),
             }),
             d_max_full_exposure: None,
+            retained_records: Vec::new(),
         };
         state.contract = ProcessingContract::RollBaseProPhotoV11;
         let pipeline =
             FilmPipeline::from_state(&state, &BaseColor::default(), [0.0; 3], FilmMode::Color);
         let density = pipeline.compute_true_density(&[0.5, 0.5, 0.5]);
         assert!((density[0] - (-0.5f32.log10() - 0.11)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn relative_density_rejects_invalid_input_without_epsilon_repair() {
+        let pipeline = FilmPipeline::new_prophoto(
+            [0.0; 3],
+            [0.0; 3],
+            FilmMode::Color,
+            ProcessingContract::CaptureCorrectedV11,
+        );
+        assert_eq!(
+            pipeline.compute_relative_density(&[0.5, 0.25, 0.125], true),
+            Some([0.30103, 0.60206, 0.90309])
+        );
+        assert_eq!(
+            pipeline.compute_relative_density(&[0.5, 0.0, 0.125], true),
+            None
+        );
+        assert_eq!(
+            pipeline.compute_relative_density(&[0.5, 0.25, 0.125], false),
+            None
+        );
     }
 }

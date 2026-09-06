@@ -94,6 +94,7 @@ const calibrationReferenceEditor = document.getElementById('calibration-referenc
 const btnSaveCalibrationProfile = document.getElementById('btn-save-calibration-profile');
 const btnNewCalibrationProfile = document.getElementById('btn-new-calibration-profile');
 const btnEmptyNewCalibrationProfile = document.getElementById('btn-empty-new-calibration-profile');
+const btnRunCalibrationSession = document.getElementById('btn-run-calibration-session');
 const btnEditCalibrationProfile = document.getElementById('btn-edit-calibration-profile');
 const btnDeleteCalibrationProfile = document.getElementById('btn-delete-calibration-profile');
 const btnCloseCalibrationProfile = document.getElementById('btn-close-calibration-profile');
@@ -104,8 +105,6 @@ const btnCloseCalibrationDelete = document.getElementById('btn-close-calibration
 const btnCancelCalibrationDelete = document.getElementById('btn-cancel-calibration-delete');
 const btnConfirmCalibrationDelete = document.getElementById('btn-confirm-calibration-delete');
 const developCalibrationProfileSelect = document.getElementById('develop-calibration-profile-select');
-const developCalibrationStatus = document.getElementById('develop-calibration-status');
-const developCalibrationWarning = document.getElementById('develop-calibration-warning');
 
 // DOM: Sponsor Modal
 const sponsorModal = document.getElementById('sponsor-modal');
@@ -744,12 +743,45 @@ function renderDensityCalibrationState() {
     btnConfirmDensityCalibration.disabled = !densityCalibrationDraft.base && !densityCalibrationDraft.full;
 }
 
+function densityCalibrationContainGeometry() {
+    const previewRect = densityCalibrationPreview.getBoundingClientRect();
+    const sourceWidth = densityCalibrationImage.naturalWidth;
+    const sourceHeight = densityCalibrationImage.naturalHeight;
+    if (!previewRect.width || !previewRect.height || !sourceWidth || !sourceHeight) return null;
+
+    const scale = Math.min(previewRect.width / sourceWidth, previewRect.height / sourceHeight);
+    const renderedWidth = sourceWidth * scale;
+    const renderedHeight = sourceHeight * scale;
+    return {
+        previewRect,
+        renderedWidth,
+        renderedHeight,
+        offsetX: (previewRect.width - renderedWidth) / 2,
+        offsetY: (previewRect.height - renderedHeight) / 2,
+    };
+}
+
+function densityCalibrationSourcePoint(clientX, clientY) {
+    const geometry = densityCalibrationContainGeometry();
+    if (!geometry) return null;
+    const localX = clientX - geometry.previewRect.left - geometry.offsetX;
+    const localY = clientY - geometry.previewRect.top - geometry.offsetY;
+    if (localX < 0 || localY < 0
+        || localX > geometry.renderedWidth || localY > geometry.renderedHeight) {
+        return null;
+    }
+    return {
+        x: localX / geometry.renderedWidth,
+        y: localY / geometry.renderedHeight,
+    };
+}
+
 function setDensitySampleMarker(kind, normalizedX, normalizedY) {
     const marker = kind === 'base' ? densityBaseMarker : densityFullMarker;
-    const previewRect = densityCalibrationPreview.getBoundingClientRect();
-    const imageRect = densityCalibrationImage.getBoundingClientRect();
-    marker.style.left = `${imageRect.left - previewRect.left + normalizedX * imageRect.width}px`;
-    marker.style.top = `${imageRect.top - previewRect.top + normalizedY * imageRect.height}px`;
+    const geometry = densityCalibrationContainGeometry();
+    if (!geometry) return;
+    marker.style.left = `${geometry.offsetX + normalizedX * geometry.renderedWidth}px`;
+    marker.style.top = `${geometry.offsetY + normalizedY * geometry.renderedHeight}px`;
     marker.classList.remove('hidden');
 }
 
@@ -765,8 +797,10 @@ async function openDensityCalibration(item) {
     activeDensitySampleKind = null;
     densityBaseMarker.classList.add('hidden');
     densityFullMarker.classList.add('hidden');
-    const embedded = item.embedded_thumbnail_base64 || await invoke('get_embedded_preview', { id: item.id });
-    densityCalibrationImage.src = embedded.startsWith('data:') ? embedded : `data:image/jpeg;base64,${embedded}`;
+    // Calibration inspection must use a full RAW decode, never a library
+    // thumbnail, camera-embedded JPEG, or half-size develop proxy.
+    const preview = await invoke('get_density_calibration_preview', { id: item.id });
+    densityCalibrationImage.src = preview.startsWith('data:') ? preview : `data:image/jpeg;base64,${preview}`;
     densityCalibrationModal.classList.add('is-open');
     densityCalibrationModal.setAttribute('aria-hidden', 'false');
     renderDensityCalibrationState();
@@ -807,9 +841,9 @@ btnCalibrateDensity.addEventListener('click', async () => {
 densityCalibrationImage.addEventListener('click', async event => {
     if (!activeDensitySampleKind || !densityCalibrationDraft) return;
     const kind = activeDensitySampleKind;
-    const rect = densityCalibrationImage.getBoundingClientRect();
-    const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / rect.height));
+    const sourcePoint = densityCalibrationSourcePoint(event.clientX, event.clientY);
+    if (!sourcePoint) return;
+    const { x, y } = sourcePoint;
     const button = kind === 'base' ? btnSampleDensityBase : btnSampleDensityFull;
     button.disabled = true;
     const status = kind === 'base' ? densityBaseStatus : densityFullStatus;
@@ -1744,6 +1778,7 @@ let u_tint_loc;
 let u_mode_loc;
 let u_invert_enabled_loc;
 let u_legacy_pipeline_loc;
+let u_capture_corrected_pipeline_loc;
 let u_geometry_uv_loc;
 let u_highlights_loc;
 let u_shadows_loc;
@@ -1771,6 +1806,7 @@ let currentBaseDensity = [0, 0, 0];
 let proxyHasAnalyzedBase = false;
 let currentPipelineState = { contract: 'legacy_v1', density_anchors: {} };
 let currentPipelineContract = 'legacy_v1';
+let currentProxyDomain = 'legacy_linear_srgb';
 
 function pipelineHasCompleteRollAnchors(state = currentPipelineState) {
     const anchors = state?.density_anchors || {};
@@ -1835,6 +1871,7 @@ function initWebGL() {
     uniform int u_mode;
     uniform int u_invert_enabled;
     uniform int u_legacy_pipeline;
+    uniform int u_capture_corrected_pipeline;
     
     uniform float u_highlights;
     uniform float u_shadows;
@@ -1980,7 +2017,7 @@ function initWebGL() {
             vec2 sprocket_source_uv = mapOrientedToSource(u_sprocket_uv);
             vec3 raw_color = vec3(texture(u_image, warped_uv).rgb) / 65535.0;
             vec3 raw_target = vec3(texture(u_image, sprocket_source_uv).rgb) / 65535.0;
-            if (u_legacy_pipeline == 0) {
+            if (u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0) {
                 raw_color = decodeProPhotoTransport(raw_color);
                 raw_target = decodeProPhotoTransport(raw_target);
             }
@@ -1989,8 +2026,12 @@ function initWebGL() {
         }
 
         uvec4 texel = texture(u_image, warped_uv);
+        if (u_capture_corrected_pipeline != 0 && texel.a == 0u) {
+            outColor = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
         vec3 raw_rgb = vec3(texel.rgb) / 65535.0;
-        if (u_legacy_pipeline == 0) {
+        if (u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0) {
             raw_rgb = decodeProPhotoTransport(raw_rgb);
         }
 
@@ -2002,7 +2043,7 @@ function initWebGL() {
             vec3 staged = clamp(raw_rgb * exp2(u_exposure), 0.0, 1.0);
             if (u_mode != 0) {
                 staged = vec3(getLuma(staged));
-            } else if (u_legacy_pipeline == 0) {
+            } else if (u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0) {
                 staged = PROPHOTO_TO_LINEAR_SRGB * staged;
             }
             float safe_gamma = max(u_gamma, 1e-6);
@@ -2010,10 +2051,15 @@ function initWebGL() {
             return;
         }
         
+        if (u_capture_corrected_pipeline != 0
+            && (raw_rgb.r <= 0.0 || raw_rgb.g <= 0.0 || raw_rgb.b <= 0.0)) {
+            outColor = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
         float epsilon = 1e-6;
-        float t_r = max(raw_rgb.r, epsilon);
-        float t_g = max(raw_rgb.g, epsilon);
-        float t_b = max(raw_rgb.b, epsilon);
+        float t_r = u_capture_corrected_pipeline != 0 ? raw_rgb.r : max(raw_rgb.r, epsilon);
+        float t_g = u_capture_corrected_pipeline != 0 ? raw_rgb.g : max(raw_rgb.g, epsilon);
+        float t_b = u_capture_corrected_pipeline != 0 ? raw_rgb.b : max(raw_rgb.b, epsilon);
         
         vec3 density = vec3(-log(t_r) / log(10.0), -log(t_g) / log(10.0), -log(t_b) / log(10.0));
         
@@ -2046,7 +2092,7 @@ function initWebGL() {
         vec3 norm = mix(vec3(0.0), (density - effective_dmin) / safe_range, valid_range);
         
         vec3 positive_linear = clamp(norm, 0.0, 1.0);
-        if (u_mode == 0 && u_legacy_pipeline == 0) {
+        if (u_mode == 0 && u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0) {
             positive_linear = PROPHOTO_TO_LINEAR_SRGB * positive_linear;
         }
         float safe_gamma = max(u_gamma, 1e-6);
@@ -2160,6 +2206,7 @@ function initWebGL() {
     u_mode_loc = gl.getUniformLocation(shaderProgram, "u_mode");
     u_invert_enabled_loc = gl.getUniformLocation(shaderProgram, "u_invert_enabled");
     u_legacy_pipeline_loc = gl.getUniformLocation(shaderProgram, "u_legacy_pipeline");
+    u_capture_corrected_pipeline_loc = gl.getUniformLocation(shaderProgram, "u_capture_corrected_pipeline");
     u_geometry_uv_loc = gl.getUniformLocation(shaderProgram, "u_geometry_uv");
     u_highlights_loc = gl.getUniformLocation(shaderProgram, "u_highlights");
     u_shadows_loc = gl.getUniformLocation(shaderProgram, "u_shadows");
@@ -2785,6 +2832,10 @@ function renderWebGL() {
     gl.uniform1i(u_mode_loc, mode);
     gl.uniform1i(u_invert_enabled_loc, proxyHasAnalyzedBase ? 1 : 0);
     gl.uniform1i(u_legacy_pipeline_loc, currentPipelineContract === 'legacy_v1' ? 1 : 0);
+    gl.uniform1i(
+        u_capture_corrected_pipeline_loc,
+        currentProxyDomain === 'relative_transmission_rgb' ? 1 : 0
+    );
     
     gl.uniform1f(u_highlights_loc, parseFloat(sliders.highlights.el.value));
     gl.uniform1f(u_shadows_loc, parseFloat(sliders.shadows.el.value));
@@ -3037,6 +3088,11 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         const baseAnalyzed = dataView.byteLength >= 28
             ? (flags & 1) !== 0
             : proxyAnalyzedBaseIds.has(requestedId);
+        currentProxyDomain = (flags & 4) !== 0
+            ? 'relative_transmission_rgb'
+            : (flags & 2) !== 0
+                ? 'prophoto_estimate'
+                : 'legacy_linear_srgb';
         const pixels = new Uint16Array(arrayBuffer, byteOffset + (dataView.byteLength >= 28 ? 28 : 24), width * height * 4);
         const nextTexture = gl.createTexture();
         if (!nextTexture) throw new Error('Could not allocate the preview texture.');
@@ -3488,7 +3544,6 @@ let calibrationProfiles = [];
 let selectedCalibrationProfileId = null;
 let editingCalibrationProfileId = null;
 let calibrationProfileDraftReferences = [];
-let developCalibrationRequest = 0;
 let currentRollViewId = null;
 let historyRollViewId = null;
 let isRollEditing = false; // true only when Continue Editing (explicitly imported for editing), false for History preview
@@ -3520,22 +3575,6 @@ const calibrationReferenceLabelKeys = {
     flat_field: 'calibrationConfig.reference.flat_field',
     transmission_target: 'calibrationConfig.reference.transmission_target',
     spectral_capture: 'calibrationConfig.reference.spectral_capture',
-};
-
-const calibrationStatusLabelKeys = {
-    frame: 'calibrationConfig.status.frame',
-    base: 'calibrationConfig.status.base',
-    dmax: 'calibrationConfig.status.dmax',
-    calibration: 'calibrationConfig.status.calibration',
-    tone: 'calibrationConfig.status.tone',
-};
-
-const calibrationStatusValueKeys = {
-    frame: { set: 'calibrationConfig.status.frame.set', not_set: 'calibrationConfig.status.frame.not_set' },
-    base: { sampled: 'calibrationConfig.status.base.sampled', estimated: 'calibrationConfig.status.base.estimated' },
-    dmax: { full_exposure: 'calibrationConfig.status.dmax.full_exposure', film_profile: 'calibrationConfig.status.dmax.film_profile', unknown: 'calibrationConfig.status.dmax.unknown' },
-    calibration: { configured: 'calibrationConfig.status.calibration.configured', smart_auto: 'calibrationConfig.status.calibration.smart_auto', legacy: 'calibrationConfig.status.calibration.legacy' },
-    tone: { preserve: 'calibrationConfig.status.tone.preserve', full_tone: 'calibrationConfig.status.tone.full_tone', mixed: 'calibrationConfig.status.tone.mixed' },
 };
 
 function calibrationLevelLabel(level) {
@@ -3652,6 +3691,15 @@ function renderCalibrationProfileDetail(view) {
     calibrationDetailLight.textContent = profile.light_source || i18nText('common.unknown');
     calibrationDetailLens.textContent = profile.lens || i18nText('common.unknown');
     calibrationDetailReferenceCount.textContent = String(profile.references.length);
+    const referenceKinds = new Set(profile.references.map(reference => reference.kind));
+    if (btnRunCalibrationSession) {
+        btnRunCalibrationSession.disabled = !(
+            referenceKinds.has('dark_frame')
+            && referenceKinds.has('open_gate')
+            && profile.camera
+            && profile.light_source
+        );
+    }
 
     calibrationDetailWarnings.replaceChildren();
     calibrationDetailWarnings.classList.toggle('hidden', view.warnings.length === 0);
@@ -3661,7 +3709,7 @@ function renderCalibrationProfileDetail(view) {
         calibrationDetailWarnings.appendChild(paragraph);
     });
 
-    const kinds = new Set(profile.references.map(reference => reference.kind));
+    const kinds = referenceKinds;
     const stages = [
         { title: 'calibrationConfig.stage.dark', description: 'calibrationConfig.stage.darkDescription', configured: kinds.has('dark_frame') },
         { title: 'calibrationConfig.stage.openGate', description: 'calibrationConfig.stage.openGateDescription', configured: kinds.has('open_gate') },
@@ -3802,39 +3850,8 @@ function closeCalibrationProfileEditor() {
     calibrationProfileDraftReferences = [];
 }
 
-function calibrationStatusValue(group, value) {
-    return i18nText(calibrationStatusValueKeys[group]?.[value] || 'calibrationConfig.status.' + group);
-}
-
-function renderDevelopCalibrationStatus(status) {
-    const fields = [
-        ['frame', status.frame],
-        ['base', status.base],
-        ['dmax', status.dmax],
-        ['calibration', status.calibration],
-        ['tone', status.tone],
-    ];
-    developCalibrationStatus.replaceChildren(...fields.map(([group, value]) => {
-        const item = document.createElement('div');
-        const label = document.createElement('span');
-        const result = document.createElement('strong');
-        label.textContent = i18nText(calibrationStatusLabelKeys[group]);
-        result.textContent = calibrationStatusValue(group, value);
-        item.append(label, result);
-        return item;
-    }));
-    developCalibrationWarning.replaceChildren();
-    developCalibrationWarning.classList.toggle('hidden', status.warnings.length === 0);
-    status.warnings.forEach(warning => {
-        const paragraph = document.createElement('p');
-        paragraph.textContent = calibrationWarningText(warning);
-        developCalibrationWarning.appendChild(paragraph);
-    });
-}
-
 async function renderDevelopCalibrationProfile() {
     if (!developCalibrationProfileSelect) return;
-    const request = ++developCalibrationRequest;
     const rollId = getDevelopRollId();
     const roll = allRolls.find(candidate => candidate.roll_id === rollId) || null;
     const smartAuto = document.createElement('option');
@@ -3858,32 +3875,33 @@ async function renderDevelopCalibrationProfile() {
     }
     developCalibrationProfileSelect.replaceChildren(...options);
     developCalibrationProfileSelect.value = roll?.calibration_profile_id || '';
-    developCalibrationStatus.replaceChildren();
-    developCalibrationWarning.classList.add('hidden');
-    developCalibrationWarning.replaceChildren();
     if (!rollId || !roll) {
         developCalibrationProfileSelect.disabled = true;
         return;
     }
     const loose = isLooseImportRoll(roll);
     developCalibrationProfileSelect.disabled = loose || !activeId;
-    try {
-        const status = await invoke('get_roll_calibration_status', {
-            rollId,
-            imageId: activeId || null,
-        });
-        if (request !== developCalibrationRequest || rollId !== getDevelopRollId()) return;
-        renderDevelopCalibrationStatus(status);
-    } catch (error) {
-        if (request !== developCalibrationRequest) return;
-        developCalibrationWarning.classList.remove('hidden');
-        developCalibrationWarning.textContent = i18nText('calibrationConfig.statusFailed', { error });
-    }
 }
 
 btnNewCalibrationProfile?.addEventListener('click', () => openCalibrationProfileEditor());
 btnEmptyNewCalibrationProfile?.addEventListener('click', () => openCalibrationProfileEditor());
 btnEditCalibrationProfile?.addEventListener('click', () => openCalibrationProfileEditor(selectedCalibrationProfileView()));
+btnRunCalibrationSession?.addEventListener('click', async () => {
+    const selected = selectedCalibrationProfileView();
+    if (!selected) return;
+    btnRunCalibrationSession.disabled = true;
+    try {
+        await invoke('run_capture_calibration_session', {
+            profileId: selected.profile.profile_id,
+        });
+        await loadCalibrationProfiles();
+        showToast(i18nText('calibrationConfig.sessionPassed'), 'success');
+    } catch (error) {
+        showToast(i18nText('calibrationConfig.sessionFailed', { error }), 'error');
+    } finally {
+        renderCalibrationWorkspace();
+    }
+});
 btnCloseCalibrationProfile?.addEventListener('click', closeCalibrationProfileEditor);
 btnCancelCalibrationProfile?.addEventListener('click', closeCalibrationProfileEditor);
 calibrationProfileModal?.addEventListener('click', event => {
@@ -3944,9 +3962,19 @@ developCalibrationProfileSelect?.addEventListener('change', async () => {
     const profileId = developCalibrationProfileSelect.value || null;
     developCalibrationProfileSelect.disabled = true;
     try {
-        const status = await invoke('update_roll_calibration_profile', { rollId, profileId });
+        await invoke('update_roll_calibration_profile', { rollId, profileId });
         roll.calibration_profile_id = profileId;
-        renderDevelopCalibrationStatus(status);
+        for (const item of allLibraryItems) {
+            if (item.roll_id === rollId) {
+                proxyCache.delete(item.id);
+                readyProxyIds.delete(item.id);
+            }
+        }
+        if (activeId) {
+            proxyCache.delete(activeId);
+            readyProxyIds.delete(activeId);
+            await selectImage(activeId, { force: true });
+        }
         showToast(i18nText('calibrationConfig.rollSelectionSaved'), 'success');
     } catch (error) {
         developCalibrationProfileSelect.value = previous;
@@ -4847,8 +4875,8 @@ function publishThumbnailUpdate(id, thumbnail, { rendered = true } = {}) {
     return updated;
 }
 
-async function selectImage(id) {
-    if (activeId === id) return;
+async function selectImage(id, { force = false } = {}) {
+    if (activeId === id && !force) return;
     const myToken = ++currentImageRequestToken;
     calibrationRevision++;
     calibrationDragState = null;
@@ -5672,7 +5700,12 @@ btnConfirmExport.addEventListener('click', async () => {
         });
         if (skipped) message += '\n' + i18nText('export.skippedSummary', { count: skipped });
         if (failed) message += '\n' + i18nText('export.failedSummary', { count: failed });
-        showToast(message, failed ? 'error' : 'success');
+        const warnings = Array.isArray(result && result.warnings) ? result.warnings : [];
+        if (warnings.length) {
+            message += '\n' + i18nText('export.pipelineFallbackWarning', { count: warnings.length });
+            console.warn('Export pipeline fallback:', ...warnings);
+        }
+        showToast(message, failed ? 'error' : (warnings.length ? 'warning' : 'success'));
         if (failed && result.errors && result.errors[0]) console.error('Export failure:', result.errors[0]);
     } catch (error) {
         showToast('Batch export failed: ' + error, 'error');
@@ -6142,7 +6175,7 @@ btnFlipV.addEventListener('click', () => {
 async function doAutoColor(targetId = activeId, generation = developOperationRevision) {
     if (!targetId || targetId !== activeId || !gl) return false;
     // The backend selects the capture representation from the versioned
-    // contract: legacy u16 or the v1.1 ProPhoto f32 scientific proxy.
+    // contract: legacy u16, Smart Auto ProPhoto Estimate, or masked Measured input.
     const limits = await invoke('analyze_proxy_density_limits', { id: targetId });
     if (targetId !== activeId || generation !== developOperationRevision) return false;
     if (limits.pipeline_state) {

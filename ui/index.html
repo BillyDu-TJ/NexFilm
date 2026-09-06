@@ -261,6 +261,7 @@
                                 <p id="calibration-detail-created"></p>
                             </div>
                             <div class="calibration-detail-actions">
+                                <button id="btn-run-calibration-session" type="button" class="calibration-secondary-button" data-i18n="calibrationConfig.runSession">Validate Capture (Experimental)</button>
                                 <button id="btn-edit-calibration-profile" type="button" class="calibration-secondary-button" data-i18n="actions.editInfo">Edit Info</button>
                                 <button id="btn-delete-calibration-profile" type="button" class="calibration-danger-button" data-i18n-title="actions.delete" aria-label="Delete Profile" data-i18n-aria-label="calibrationConfig.deleteProfile">&times;</button>
                             </div>
@@ -594,13 +595,10 @@
                     <div id="inspector-calibration-profile" class="develop-calibration-profile control-group border-t border-[#28282c] pt-6">
                         <div class="develop-profile-heading">
                             <label for="develop-calibration-profile-select" data-i18n="calibrationConfig.profileLabel">Calibration Config Profile</label>
-                            <span id="develop-calibration-scope" data-i18n="calibrationConfig.rollScope">Current Roll</span>
                         </div>
-                        <select id="develop-calibration-profile-select" disabled>
+                        <select id="develop-calibration-profile-select" aria-label="Calibration Config Profile" data-i18n-aria-label="calibrationConfig.profileLabel" disabled>
                             <option value="" data-i18n="calibrationConfig.smartAuto">Smart Auto</option>
                         </select>
-                        <div id="develop-calibration-status" class="develop-calibration-status" aria-live="polite"></div>
-                        <div id="develop-calibration-warning" class="develop-calibration-warning hidden"></div>
                     </div>
 
                     <!-- Auto Invert -->
