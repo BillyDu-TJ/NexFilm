@@ -210,7 +210,7 @@ fn matrix_to_array(matrix: &Matrix3<f32>) -> [[f32; 3]; 3] {
     ]
 }
 
-fn measurement_digest(measurements: &CalibrationMeasurementSet) -> Result<String, String> {
+pub fn measurement_digest(measurements: &CalibrationMeasurementSet) -> Result<String, String> {
     let bytes = serde_json::to_vec(measurements)
         .map_err(|error| format!("fit_measurement_digest_serialize_failed|{error}"))?;
     Ok(format!("{:x}", Sha256::digest(bytes)))

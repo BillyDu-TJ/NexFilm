@@ -90,9 +90,12 @@ const calibrationProfileCamera = document.getElementById('calibration-profile-ca
 const calibrationProfileLight = document.getElementById('calibration-profile-light');
 const calibrationProfileLens = document.getElementById('calibration-profile-lens');
 const calibrationProfileNotes = document.getElementById('calibration-profile-notes');
+const calibrationFitDomain = document.getElementById('calibration-fit-domain');
+const calibrationFitPatches = document.getElementById('calibration-fit-patches');
 const calibrationReferenceEditor = document.getElementById('calibration-reference-editor');
 const btnSaveCalibrationProfile = document.getElementById('btn-save-calibration-profile');
 const btnNewCalibrationProfile = document.getElementById('btn-new-calibration-profile');
+const btnImportScannerProfile = document.getElementById('btn-import-scanner-profile');
 const btnEmptyNewCalibrationProfile = document.getElementById('btn-empty-new-calibration-profile');
 const btnRunCalibrationSession = document.getElementById('btn-run-calibration-session');
 const btnEditCalibrationProfile = document.getElementById('btn-edit-calibration-profile');
@@ -105,6 +108,7 @@ const btnCloseCalibrationDelete = document.getElementById('btn-close-calibration
 const btnCancelCalibrationDelete = document.getElementById('btn-cancel-calibration-delete');
 const btnConfirmCalibrationDelete = document.getElementById('btn-confirm-calibration-delete');
 const developCalibrationProfileSelect = document.getElementById('develop-calibration-profile-select');
+const developScannerProfileSelect = document.getElementById('develop-scanner-profile-select');
 
 // DOM: Sponsor Modal
 const sponsorModal = document.getElementById('sponsor-modal');
@@ -3549,6 +3553,7 @@ function disableUI() {
 
 let allRolls = [];
 let calibrationProfiles = [];
+let scannerProfiles = [];
 let selectedCalibrationProfileId = null;
 let editingCalibrationProfileId = null;
 let calibrationProfileDraftReferences = [];
@@ -3846,6 +3851,21 @@ function openCalibrationProfileEditor(view = null) {
     calibrationProfileLight.value = profile?.light_source || '';
     calibrationProfileLens.value = profile?.lens || '';
     calibrationProfileNotes.value = profile?.notes || '';
+    calibrationFitDomain.value = 'transmission_rgb';
+    calibrationFitPatches.value = '';
+    if (profile?.payload?.fit_measurements?.patches) {
+        const measurements = profile.payload.fit_measurements;
+        calibrationFitDomain.value = measurements.patches[0]?.reference_domain || 'transmission_rgb';
+        calibrationFitPatches.value = measurements.patches.map(patch => [
+            patch.patch_id,
+            patch.position?.[0] ?? '',
+            patch.position?.[1] ?? '',
+            patch.reference_value?.[0] ?? '',
+            patch.reference_value?.[1] ?? '',
+            patch.reference_value?.[2] ?? '',
+            patch.validation ? 'validate' : 'train',
+        ].join(',')).join('\n');
+    }
     calibrationProfileDraftReferences = (profile?.references || []).map(reference => ({ ...reference }));
     calibrationProfileModalTitle.textContent = i18nText(profile
         ? 'calibrationConfig.editProfile'
@@ -3894,9 +3914,41 @@ async function renderDevelopCalibrationProfile() {
     }
     const loose = isLooseImportRoll(roll);
     developCalibrationProfileSelect.disabled = loose || !activeId;
+
+    const scannerNone = document.createElement('option');
+    scannerNone.value = '';
+    scannerNone.textContent = i18nText('scannerConfig.none');
+    const scannerOptions = [scannerNone];
+    scannerProfiles.forEach(record => {
+        const option = document.createElement('option');
+        option.value = record.profile.profile_id;
+        option.textContent = `${record.profile.manufacturer} ${record.profile.model} · ${record.profile.verified ? i18nText('scannerConfig.characterized') : i18nText('scannerConfig.estimate')}`;
+        scannerOptions.push(option);
+    });
+    if (roll?.scanner_profile_id && !scannerProfiles.some(record => record.profile.profile_id === roll.scanner_profile_id)) {
+        const missing = document.createElement('option');
+        missing.value = roll.scanner_profile_id;
+        missing.textContent = i18nText('scannerConfig.missing');
+        scannerOptions.push(missing);
+    }
+    developScannerProfileSelect.replaceChildren(...scannerOptions);
+    developScannerProfileSelect.value = roll?.scanner_profile_id || '';
+    developScannerProfileSelect.disabled = loose || !activeId;
 }
 
 btnNewCalibrationProfile?.addEventListener('click', () => openCalibrationProfileEditor());
+btnImportScannerProfile?.addEventListener('click', async () => {
+    try {
+        const path = await invoke('choose_scanner_profile_file');
+        if (!path) return;
+        await invoke('import_scanner_profile', { path });
+        scannerProfiles = await invoke('get_scanner_profiles');
+        await renderDevelopCalibrationProfile();
+        showToast(i18nText('scannerConfig.saved'), 'success');
+    } catch (error) {
+        showToast(i18nText('scannerConfig.saveFailed', { error }), 'error');
+    }
+});
 btnEmptyNewCalibrationProfile?.addEventListener('click', () => openCalibrationProfileEditor());
 btnEditCalibrationProfile?.addEventListener('click', () => openCalibrationProfileEditor(selectedCalibrationProfileView()));
 btnRunCalibrationSession?.addEventListener('click', async () => {
@@ -3927,6 +3979,43 @@ calibrationProfileForm?.addEventListener('submit', async event => {
     event.preventDefault();
     btnSaveCalibrationProfile.disabled = true;
     try {
+        const target = calibrationProfileDraftReferences.find(reference => reference.kind === 'transmission_target');
+        const dark = calibrationProfileDraftReferences.find(reference => reference.kind === 'dark_frame');
+        const open = calibrationProfileDraftReferences.find(reference => reference.kind === 'open_gate');
+        const patchLines = String(calibrationFitPatches?.value || '')
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean);
+        let fitSpec = null;
+        if (patchLines.length > 0) {
+            if (!target || !dark || !open) {
+                throw new Error(i18nText('calibrationConfig.fitReferencesRequired'));
+            }
+            const patches = patchLines.map((line, index) => {
+                const fields = line.split(',').map(value => value.trim());
+                if (fields.length < 6) throw new Error(i18nText('calibrationConfig.fitLineInvalid', { line: index + 1 }));
+                const numbers = fields.slice(1, 6).map(Number);
+                if (numbers.some(value => !Number.isFinite(value))) throw new Error(i18nText('calibrationConfig.fitLineInvalid', { line: index + 1 }));
+                const [x, y, r, g, b] = numbers;
+                if (x < 0 || x > 1 || y < 0 || y > 1 || [r, g, b].some(value => value < 0)) {
+                    throw new Error(i18nText('calibrationConfig.fitLineInvalid', { line: index + 1 }));
+                }
+                return {
+                    patchId: fields[0],
+                    position: [x, y],
+                    referenceValue: [r, g, b],
+                    referenceDomain: calibrationFitDomain.value,
+                    validation: (fields[6] || '').toLowerCase() === 'validate',
+                };
+            });
+            fitSpec = {
+                darkFrame: dark.file_path,
+                openFrame: open.file_path,
+                flatFrame: calibrationProfileDraftReferences.find(reference => reference.kind === 'flat_field')?.file_path || null,
+                targetFrame: target.file_path,
+                patches,
+            };
+        }
         const saved = await invoke('save_calibration_profile', {
             input: {
                 profileId: editingCalibrationProfileId,
@@ -3936,6 +4025,8 @@ calibrationProfileForm?.addEventListener('submit', async event => {
                 lens: calibrationProfileLens.value,
                 notes: calibrationProfileNotes.value,
                 references: calibrationProfileDraftReferences,
+                fitSpec,
+                clearFit: patchLines.length === 0,
             },
         });
         selectedCalibrationProfileId = saved.profile.profile_id;
@@ -3994,6 +4085,31 @@ developCalibrationProfileSelect?.addEventListener('change', async () => {
         showToast(i18nText('calibrationConfig.rollSelectionFailed', { error }), 'error');
     } finally {
         developCalibrationProfileSelect.disabled = isLooseImportRoll(roll) || !activeId;
+    }
+});
+
+developScannerProfileSelect?.addEventListener('change', async () => {
+    const rollId = getDevelopRollId();
+    const roll = allRolls.find(candidate => candidate.roll_id === rollId);
+    if (!rollId || !roll) return;
+    const previous = roll.scanner_profile_id || '';
+    const profileId = developScannerProfileSelect.value || null;
+    developScannerProfileSelect.disabled = true;
+    try {
+        allRolls = await invoke('update_roll_scanner_profile', { rollId, profileId });
+        for (const item of allLibraryItems) {
+            if (item.roll_id === rollId) {
+                proxyCache.delete(item.id);
+                readyProxyIds.delete(item.id);
+            }
+        }
+        if (activeId) await selectImage(activeId, { force: true });
+        showToast(i18nText('scannerConfig.saved'), 'success');
+    } catch (error) {
+        developScannerProfileSelect.value = previous;
+        showToast(i18nText('scannerConfig.saveFailed', { error }), 'error');
+    } finally {
+        developScannerProfileSelect.disabled = isLooseImportRoll(roll) || !activeId;
     }
 });
 
@@ -7811,10 +7927,11 @@ window.addEventListener('DOMContentLoaded', async () => {
     document.body.appendChild(loadingOverlay);
 
     try {
-        [allRolls, allLibraryItems, calibrationProfiles] = await Promise.all([
+        [allRolls, allLibraryItems, calibrationProfiles, scannerProfiles] = await Promise.all([
             invoke('get_rolls'),
             invoke('get_filmstrip'),
             invoke('get_calibration_profiles'),
+            invoke('get_scanner_profiles'),
         ]);
         selectedCalibrationProfileId = calibrationProfiles[0]?.profile.profile_id || null;
         rememberItems(allLibraryItems);

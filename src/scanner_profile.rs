@@ -1,5 +1,7 @@
 //! Independent scanner input-profile boundary.
 
+use image::{ImageBuffer, Rgb};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -127,6 +129,31 @@ impl ScannerInputProfile {
             .map_err(|error| format!("scanner_profile_serialize_failed|{error}"))?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
+
+    pub fn apply_linear_rgb_image(
+        &self,
+        image: &mut ImageBuffer<Rgb<f32>, Vec<f32>>,
+    ) -> Result<(), String> {
+        self.validate()?;
+        let matrix = self.matrix;
+        let offset = self.offset;
+        image.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+            let input = [pixel[0], pixel[1], pixel[2]];
+            pixel[0] = matrix[0][0] * input[0]
+                + matrix[0][1] * input[1]
+                + matrix[0][2] * input[2]
+                + offset[0];
+            pixel[1] = matrix[1][0] * input[0]
+                + matrix[1][1] * input[1]
+                + matrix[1][2] * input[2]
+                + offset[1];
+            pixel[2] = matrix[2][0] * input[0]
+                + matrix[2][1] * input[1]
+                + matrix[2][2] * input[2]
+                + offset[2];
+        });
+        Ok(())
+    }
 }
 
 pub fn import_local_profile(
@@ -220,5 +247,18 @@ mod tests {
         std::fs::write(&path, b"{}").unwrap();
         assert!(!record_is_current(&record));
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn full_image_transform_applies_to_every_linear_rgb_pixel() {
+        let mut profile = profile();
+        profile.matrix = [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]];
+        profile.offset = [0.1, 0.2, 0.3];
+        profile.icc_digest = profile.canonical_config_digest().unwrap();
+        let mut image = ImageBuffer::from_raw(2, 1, vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6]).unwrap();
+        profile.apply_linear_rgb_image(&mut image).unwrap();
+        for (actual, expected) in image.as_raw().iter().zip([0.3, 0.8, 1.5, 0.9, 1.7, 2.7]) {
+            assert!((*actual - expected).abs() < 1.0e-6);
+        }
     }
 }

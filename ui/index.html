@@ -231,7 +231,10 @@
         <section id="view-calibration" class="calibration-workspace transition-opacity duration-300 z-10" style="display: none;" aria-hidden="true" aria-labelledby="calibration-view-title">
             <div class="view-toolbar calibration-toolbar">
                 <h1 id="calibration-view-title" data-i18n="calibrationConfig.title">Hardware Calibration Profiles</h1>
-                <button id="btn-new-calibration-profile" type="button" class="calibration-primary-button" data-i18n="calibrationConfig.newProfile">New Profile</button>
+                <div class="flex items-center gap-2">
+                    <button id="btn-import-scanner-profile" type="button" class="calibration-secondary-button" data-i18n="scannerConfig.import">Import Scanner Profile</button>
+                    <button id="btn-new-calibration-profile" type="button" class="calibration-primary-button" data-i18n="calibrationConfig.newProfile">New Profile</button>
+                </div>
             </div>
             <div class="calibration-layout">
                 <aside class="calibration-profile-panel" aria-labelledby="calibration-profile-list-title">
@@ -598,6 +601,15 @@
                         </div>
                         <select id="develop-calibration-profile-select" aria-label="Calibration Config Profile" data-i18n-aria-label="calibrationConfig.profileLabel" disabled>
                             <option value="" data-i18n="calibrationConfig.smartAuto">Smart Auto</option>
+                        </select>
+                    </div>
+
+                    <div id="inspector-scanner-profile" class="develop-calibration-profile control-group border-t border-[#28282c] pt-6">
+                        <div class="develop-profile-heading">
+                            <label for="develop-scanner-profile-select" data-i18n="scannerConfig.profileLabel">Scanner Input Profile</label>
+                        </div>
+                        <select id="develop-scanner-profile-select" aria-label="Scanner Input Profile" data-i18n-aria-label="scannerConfig.profileLabel" disabled>
+                            <option value="" data-i18n="scannerConfig.none">None</option>
                         </select>
                     </div>
 
@@ -1203,7 +1215,25 @@
                         <span data-i18n="calibrationConfig.notes">Notes</span>
                         <textarea id="calibration-profile-notes" name="notes" rows="2" maxlength="1200"></textarea>
                     </label>
-                    <p class="calibration-form-hint calibration-form-field-wide" data-i18n="calibrationConfig.fitHint">Optional target measurements are supplied as a validated local JSON set by the integration API.</p>
+                    <div class="calibration-fit-panel calibration-form-field-wide">
+                        <div class="calibration-fit-heading">
+                            <h3 data-i18n="calibrationConfig.fitTitle">Capture Separation fit</h3>
+                            <span data-i18n="calibrationConfig.fitOptional">Optional</span>
+                        </div>
+                        <p class="calibration-form-hint" data-i18n="calibrationConfig.fitHint">Choose a transmission target above, then enter normalized patch positions and reference values below. The RAW is decoded and fitted when you save.</p>
+                        <label>
+                            <span data-i18n="calibrationConfig.fitDomain">Reference domain</span>
+                            <select id="calibration-fit-domain">
+                                <option value="transmission_rgb" data-i18n="calibrationConfig.fitDomainTransmission">Transmission RGB</option>
+                                <option value="density_rgb" data-i18n="calibrationConfig.fitDomainDensity">Density RGB</option>
+                            </select>
+                        </label>
+                        <label>
+                            <span data-i18n="calibrationConfig.fitPatches">Patch data</span>
+                            <textarea id="calibration-fit-patches" rows="6" spellcheck="false" placeholder="A1,0.10,0.10,0.95,0.94,0.93,train"></textarea>
+                        </label>
+                        <small class="calibration-form-hint" data-i18n="calibrationConfig.fitFormat">One line per patch: id, x, y, R, G, B, train|validate. x/y are normalized 0..1.</small>
+                    </div>
                 </div>
                 <section class="calibration-editor-references" aria-labelledby="calibration-editor-references-title">
                     <div class="calibration-section-heading">

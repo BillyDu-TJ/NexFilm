@@ -12,7 +12,10 @@ use crate::app_state::{
     CALIBRATION_PROFILE_PAYLOAD_VERSION, CALIBRATION_PROFILE_SCHEMA_VERSION,
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
-use crate::calibration_fit::{fit_capture_separation, CalibrationMeasurementSet, FitOptions};
+use crate::calibration_fit::{
+    fit_capture_separation, CalibrationMeasurementSet, CalibrationPatch, FitOptions,
+    ReferenceDomain,
+};
 use crate::capability_resolver::{
     resolve_pipeline, PipelineImageKind, PipelineResolution, PipelineResolverInput, ResolverProfile,
 };
@@ -3195,6 +3198,43 @@ fn decode_prophoto_estimate_image_buffer(
     Ok(converted)
 }
 
+fn decode_scanner_profiled_estimate_image_buffer(
+    path: &str,
+    mode: DecodeMode,
+    profile: Option<&crate::scanner_profile::ScannerInputProfile>,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    let Some(profile) = profile.filter(|_| !is_raw_extension(path) && !is_dng_extension(path))
+    else {
+        return decode_prophoto_estimate_image_buffer(path, mode);
+    };
+    let source = if is_tiff_extension(path) || is_scanner_fff_tiff(path) {
+        decode_reduced_tiff_for_working_space(path, target_long_edge)
+            .or_else(|_| decode_image_buffer(path, mode))?
+    } else {
+        decode_image_buffer(path, mode)?
+    };
+    let mut linear = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(source.width(), source.height());
+    linear
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(source.as_raw().par_chunks_exact(3))
+        .for_each(|(target, pixel)| {
+            target.copy_from_slice(&[
+                pixel[0] as f32 / 65535.0,
+                pixel[1] as f32 / 65535.0,
+                pixel[2] as f32 / 65535.0,
+            ]);
+        });
+    profile.apply_linear_rgb_image(&mut linear)?;
+    let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
+    linear.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+        let rgb = apply_linear_matrix([pixel[0], pixel[1], pixel[2]], matrix);
+        pixel.copy_from_slice(&rgb);
+    });
+    Ok(linear)
+}
+
 fn reference_density_extreme(
     image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
     source: DensityAnchorSource,
@@ -3657,6 +3697,8 @@ fn pipeline_state_for_roll_profile(
     // for one invocation without rewriting this request or the Roll binding.
     if roll.calibration_profile_id.is_some() {
         PipelineState::capture_corrected(roll.density_anchors.clone(), false)
+    } else if roll.scanner_profile_id.is_some() {
+        PipelineState::smart_auto()
     } else {
         PipelineState::from_roll_anchors(roll.density_anchors.clone())
     }
@@ -4847,6 +4889,7 @@ mod history_contract_tests {
             image_paths: vec!["first.dng".into(), "second.dng".into(), "third.dng".into()],
             density_anchors: Default::default(),
             calibration_profile_id: None,
+            scanner_profile_id: None,
         };
         insert_history_item(&state, "first", "roll-a", "first.dng", None);
         insert_history_item(
@@ -4889,6 +4932,7 @@ mod history_contract_tests {
                 image_paths: vec!["A\\First.DNG".into(), "A\\Second.DNG".into()],
                 density_anchors: Default::default(),
                 calibration_profile_id: None,
+                scanner_profile_id: None,
             },
             Roll {
                 roll_id: "roll-b".into(),
@@ -4899,6 +4943,7 @@ mod history_contract_tests {
                 image_paths: vec!["A\\First.DNG".into()],
                 density_anchors: Default::default(),
                 calibration_profile_id: None,
+                scanner_profile_id: None,
             },
         ];
 
@@ -5139,6 +5184,24 @@ pub async fn prepare_proxy(
     let rolls = read_lock(&state.rolls).clone();
     let roll = rolls.iter().find(|roll| roll.roll_id == roll_id);
     let profiles = load_calibration_profile_views()?;
+    let scanner_profiles = {
+        let connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open scanner database: {error}"))?;
+        persistence::load_scanner_profiles(&connection)
+            .map_err(|error| format!("Failed to load scanner profiles: {error}"))?
+    };
+    let scanner_profile = roll
+        .and_then(|roll| roll.scanner_profile_id.as_deref())
+        .and_then(|profile_id| {
+            scanner_profiles
+                .iter()
+                .find(|record| record.profile.profile_id == profile_id)
+        })
+        .filter(|record| record_is_current(record))
+        .map(|record| record.profile.clone());
+    if roll.is_some_and(|roll| roll.scanner_profile_id.is_some()) && scanner_profile.is_none() {
+        eprintln!("[Scanner Pipeline] Bound scanner profile is missing or stale; using source RGB unchanged");
+    }
     let initial_resolution =
         resolve_image_pipeline(&persisted_state, roll, &profiles, &file_path, None);
     let initial_resolution_key = resolution_key(&initial_resolution);
@@ -5195,9 +5258,11 @@ pub async fn prepare_proxy(
                         eprintln!(
                             "[RAW Pipeline] Capture Corrected unavailable; falling back to Smart Auto / ProPhoto Estimate for this invocation: {error}"
                         );
-                        let mut estimate = decode_prophoto_estimate_image_buffer(
+                        let mut estimate = decode_scanner_profiled_estimate_image_buffer(
                             &decode_path,
                             decode_mode,
+                            scanner_profile.as_ref(),
+                            target_long_edge,
                         )?;
                         let (width, height) = estimate.dimensions();
                         let ratio =
@@ -5220,7 +5285,17 @@ pub async fn prepare_proxy(
                 }
             }
             if contract != ProcessingContract::LegacyV1 {
-                let mut estimate = if is_dng_extension(&decode_path) {
+                let mut estimate = if scanner_profile.is_some()
+                    && !is_raw_extension(&decode_path)
+                    && !is_dng_extension(&decode_path)
+                {
+                    decode_scanner_profiled_estimate_image_buffer(
+                        &decode_path,
+                        decode_mode,
+                        scanner_profile.as_ref(),
+                        target_long_edge,
+                    )?
+                } else if is_dng_extension(&decode_path) {
                     let linear = decode_reduced_dng_for_working_space(&decode_path, target_long_edge)
                         .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
                     linear_srgb_u16_to_prophoto_f32(&linear)
@@ -5230,7 +5305,12 @@ pub async fn prepare_proxy(
                             .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
                     linear_srgb_u16_to_prophoto_f32(&linear)
                 } else {
-                    decode_prophoto_estimate_image_buffer(&decode_path, decode_mode)?
+                    decode_scanner_profiled_estimate_image_buffer(
+                        &decode_path,
+                        decode_mode,
+                        scanner_profile.as_ref(),
+                        target_long_edge,
+                    )?
                 };
                 let (width, height) = estimate.dimensions();
                 let ratio = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
@@ -5251,6 +5331,30 @@ pub async fn prepare_proxy(
                 });
             }
 
+            if scanner_profile.is_some() && !is_raw_extension(&decode_path) {
+                let mut estimate = decode_scanner_profiled_estimate_image_buffer(
+                    &decode_path,
+                    decode_mode,
+                    scanner_profile.as_ref(),
+                    target_long_edge,
+                )?;
+                let (width, height) = estimate.dimensions();
+                let ratio = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
+                if ratio < 0.999 {
+                    estimate = image::imageops::resize(
+                        &estimate,
+                        (width as f32 * ratio).max(1.0) as u32,
+                        (height as f32 * ratio).max(1.0) as u32,
+                        FilterType::Lanczos3,
+                    );
+                }
+                return Ok(PreparedProxy {
+                    transport: prophoto_estimate_to_transport_proxy(&estimate),
+                    prophoto_estimate: Some(estimate),
+                    capture_corrected: None,
+                    fallback_reason: None,
+                });
+            }
             let img_buffer = if is_dng_extension(&decode_path) {
                 decode_reduced_dng_for_working_space(&decode_path, target_long_edge)
                     .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?
@@ -6547,6 +6651,7 @@ struct ExportItemSnapshot {
     pipeline_state: PipelineState,
     resolver_input: PipelineResolverInput,
     capture_profile: Option<CalibrationConfigProfile>,
+    scanner_profile: Option<crate::scanner_profile::ScannerInputProfile>,
     output_path: std::path::PathBuf,
     export_metadata: Option<ExportMetadata>,
 }
@@ -7633,6 +7738,7 @@ pub async fn batch_export_images(
                     runtime_failure: None,
                 },
                 capture_profile: None,
+                scanner_profile: None,
                 output_path: std::path::PathBuf::new(),
                 export_metadata: None,
             });
@@ -7654,6 +7760,20 @@ pub async fn batch_export_images(
     let mut resolution_warnings = Vec::new();
     for (index, snapshot) in export_snapshots.iter_mut().enumerate() {
         let roll = rolls.iter().find(|roll| roll.roll_id == snapshot.roll_id);
+        snapshot.scanner_profile = roll
+            .and_then(|roll| roll.scanner_profile_id.as_deref())
+            .and_then(|profile_id| {
+                persistence::open_connection()
+                    .ok()
+                    .and_then(|connection| persistence::load_scanner_profiles(&connection).ok())
+                    .and_then(|records| {
+                        records
+                            .into_iter()
+                            .find(|record| record.profile.profile_id == profile_id)
+                    })
+            })
+            .filter(|record| record_is_current(record))
+            .map(|record| record.profile);
         snapshot.resolver_input = pipeline_resolver_input(
             &snapshot.pipeline_state,
             roll,
@@ -7789,17 +7909,21 @@ pub async fn batch_export_images(
                                         fallback.resolved_path,
                                         fallback.processing_report.fallback_reasons.join(",")
                                     ));
-                                    decode_prophoto_estimate_image_buffer(
+                                    decode_scanner_profiled_estimate_image_buffer(
                                         &file_path,
                                         DecodeMode::ExportFull,
+                                        snapshot.scanner_profile.as_ref(),
+                                        u32::MAX,
                                     )
                                     .map(|estimate| (estimate, None))
                                 }
                             }
                         } else {
-                            decode_prophoto_estimate_image_buffer(
+                            decode_scanner_profiled_estimate_image_buffer(
                                 &file_path,
                                 DecodeMode::ExportFull,
+                                snapshot.scanner_profile.as_ref(),
+                                u32::MAX,
                             )
                             .map(|estimate| (estimate, None))
                         };
@@ -8046,11 +8170,49 @@ pub struct CalibrationProfileInput {
     /// measurement-backed pre-log fit and stores its coefficients.
     #[serde(default)]
     pub fit_measurements: Option<CalibrationMeasurementSet>,
+    /// UI-friendly target fit request. The backend decodes the three RAW
+    /// frames and fills each patch's measured transmission before fitting.
+    #[serde(default)]
+    pub fit_spec: Option<CalibrationFitSpec>,
+    #[serde(default)]
+    pub clear_fit: bool,
     /// Optional fit configuration. Offsets are disabled by default and, when
     /// requested, are accepted only if the affine model stays positive over
     /// the normalized transmission cube.
     #[serde(default)]
     pub fit_options: Option<FitOptions>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CalibrationFitSpec {
+    pub dark_frame: String,
+    pub open_frame: String,
+    #[serde(default)]
+    pub flat_frame: Option<String>,
+    pub target_frame: String,
+    pub patches: Vec<CalibrationPatchSpec>,
+    #[serde(default)]
+    pub resolution: Option<u32>,
+    #[serde(default)]
+    pub crop_geometry: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CalibrationPatchSpec {
+    pub patch_id: String,
+    pub position: [f32; 2],
+    pub reference_value: [f32; 3],
+    pub reference_domain: ReferenceDomain,
+    #[serde(default)]
+    pub validation: bool,
+    #[serde(default)]
+    pub saturated: bool,
+    #[serde(default)]
+    pub bad_pixel: bool,
+    #[serde(default)]
+    pub outlier: bool,
 }
 
 fn sha256_bytes(bytes: &[u8]) -> String {
@@ -8072,6 +8234,137 @@ fn sha256_file(path: &Path) -> Result<String, String> {
         digest.update(&buffer[..read]);
     }
     Ok(format!("{:x}", digest.finalize()))
+}
+
+fn sample_capture_patch(
+    image: &crate::raw_backend::RelativeTransmissionRgbF32,
+    position: [f32; 2],
+) -> Result<[f32; 3], String> {
+    if !position
+        .iter()
+        .all(|value| value.is_finite() && (0.0..=1.0).contains(value))
+    {
+        return Err("fit_patch_position_invalid".into());
+    }
+    let center_x = (position[0] * image.width.saturating_sub(1) as f32).round() as i32;
+    let center_y = (position[1] * image.height.saturating_sub(1) as f32).round() as i32;
+    let mut sum = [0.0_f32; 3];
+    let mut count = 0_u32;
+    for y in (center_y - 1).max(0)..=(center_y + 1).min(image.height as i32 - 1) {
+        for x in (center_x - 1).max(0)..=(center_x + 1).min(image.width as i32 - 1) {
+            let index = y as usize * image.width as usize + x as usize;
+            if !image.quality.valid.get(index).copied().unwrap_or(false) {
+                continue;
+            }
+            let pixel = image
+                .transmission
+                .get(index * 3..index * 3 + 3)
+                .ok_or_else(|| "fit_patch_sample_missing".to_string())?;
+            if !pixel.iter().all(|value| value.is_finite() && *value > 0.0) {
+                continue;
+            }
+            for channel in 0..3 {
+                sum[channel] += pixel[channel];
+            }
+            count += 1;
+        }
+    }
+    if count == 0 {
+        return Err("fit_patch_sample_invalid".into());
+    }
+    Ok(sum.map(|value| value / count as f32))
+}
+
+fn build_measurement_set_from_spec(
+    spec: &CalibrationFitSpec,
+    profile_camera: &str,
+    profile_light: &str,
+) -> Result<CalibrationMeasurementSet, String> {
+    if spec.patches.len() < 4 {
+        return Err("fit_requires_at_least_four_patches".into());
+    }
+    let dark = crate::raw_backend::decode_raw_mosaic(&spec.dark_frame)?;
+    let open = crate::raw_backend::decode_raw_mosaic(&spec.open_frame)?;
+    let target = crate::raw_backend::decode_raw_mosaic(&spec.target_frame)?;
+    for (label, mosaic) in [("dark", &dark), ("open", &open), ("target", &target)] {
+        if !matches!(
+            mosaic.metadata.cfa,
+            crate::raw_backend::CfaPattern::Bayer { .. }
+        ) {
+            return Err(format!("fit_{label}_requires_bayer_raw"));
+        }
+        if mosaic.metadata.libraw_version != target.metadata.libraw_version {
+            return Err("fit_libraw_version_mismatch".into());
+        }
+    }
+    let geometry = crate::raw_backend::raw_geometry_fingerprint(&target)?;
+    if crate::raw_backend::raw_geometry_fingerprint(&dark)? != geometry
+        || crate::raw_backend::raw_geometry_fingerprint(&open)? != geometry
+    {
+        return Err("fit_reference_geometry_mismatch".into());
+    }
+    let corrected =
+        crate::raw_backend::decode_capture_corrected_input(&target, Some(&dark), Some(&open), &[])?;
+    let patches = spec
+        .patches
+        .iter()
+        .map(|patch| {
+            Ok(CalibrationPatch {
+                patch_id: patch.patch_id.trim().to_string(),
+                position: Some(patch.position),
+                capture_transmission: sample_capture_patch(&corrected, patch.position)?,
+                reference_value: patch.reference_value,
+                reference_domain: patch.reference_domain,
+                validation: patch.validation,
+                saturated: patch.saturated,
+                bad_pixel: patch.bad_pixel,
+                outlier: patch.outlier,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let dark_digest = sha256_file(Path::new(&spec.dark_frame))?;
+    let open_digest = sha256_file(Path::new(&spec.open_frame))?;
+    let target_digest = sha256_file(Path::new(&spec.target_frame))?;
+    let flat_digest = spec
+        .flat_frame
+        .as_deref()
+        .map(|path| sha256_file(Path::new(path)))
+        .transpose()?;
+    let quality_bytes = serde_json::to_vec(&corrected.quality.valid)
+        .map_err(|error| format!("fit_quality_digest_serialize_failed|{error}"))?;
+    let quality_mask_digest = sha256_bytes(&quality_bytes);
+    let input_digest = sha256_bytes(
+        &serde_json::to_vec(&(
+            &dark_digest,
+            &open_digest,
+            &target_digest,
+            &flat_digest,
+            &patches,
+        ))
+        .map_err(|error| format!("fit_input_digest_serialize_failed|{error}"))?,
+    );
+    let camera_model = if !profile_camera.trim().is_empty() {
+        profile_camera.trim().to_string()
+    } else {
+        target.metadata.camera_id.clone()
+    };
+    Ok(CalibrationMeasurementSet {
+        dark_frame: spec.dark_frame.clone(),
+        open_frame: spec.open_frame.clone(),
+        flat_frame: spec.flat_frame.clone(),
+        target_frame: spec.target_frame.clone(),
+        patches,
+        camera_model,
+        scanner_model: None,
+        iso: target.metadata.iso,
+        exposure: target.metadata.exposure_seconds,
+        light_source: profile_light.trim().to_string(),
+        resolution: spec.resolution.or(Some(target.width.max(target.height))),
+        crop_geometry: spec.crop_geometry.clone().unwrap_or(geometry),
+        raw_decode_version: RAW_DECODE_VERSION.to_string(),
+        input_digest,
+        quality_mask_digest,
+    })
 }
 
 fn reference_summary(
@@ -8187,7 +8480,8 @@ fn calibration_profile_view(mut profile: CalibrationConfigProfile) -> Calibratio
     let capture_payload_present = !profile.payload.capabilities.is_empty()
         || profile.payload.capture_parameters.is_some()
         || profile.payload.validation_report.is_some()
-        || profile.payload.fit_model.is_some();
+        || profile.payload.fit_model.is_some()
+        || profile.payload.fit_measurements.is_some();
     if !unsupported && capture_payload_present {
         if let Some(reason) = profile.payload.capture_validation_error(RAW_DECODE_VERSION) {
             warnings.push(format!("profile_capture_invalid|{reason}"));
@@ -8327,6 +8621,109 @@ pub async fn get_scanner_profiles() -> Result<Vec<ScannerProfileRecord>, String>
 }
 
 #[tauri::command]
+pub async fn update_roll_scanner_profile(
+    roll_id: String,
+    profile_id: Option<String>,
+    state: State<'_, EngineState>,
+) -> Result<Vec<Roll>, String> {
+    let profile_id = profile_id
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let profiles = tokio::task::spawn_blocking(|| {
+        let connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open scanner database: {error}"))?;
+        persistence::load_scanner_profiles(&connection)
+            .map_err(|error| format!("Failed to load scanner profiles: {error}"))
+    })
+    .await
+    .map_err(|error| format!("Scanner profile worker failed: {error}"))??;
+    if let Some(requested) = &profile_id {
+        let record = profiles
+            .iter()
+            .find(|record| record.profile.profile_id == *requested)
+            .ok_or_else(|| "Scanner profile no longer exists.".to_string())?;
+        if !record_is_current(record) {
+            return Err("Scanner profile source has changed; re-import it before binding.".into());
+        }
+    }
+    let _mutation = state.roll_mutation.lock().await;
+    let mut rolls = read_lock(&state.rolls).clone();
+    let selected_template = {
+        let roll = rolls
+            .iter_mut()
+            .find(|roll| roll.roll_id == roll_id)
+            .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
+        if roll_calibration_format(&roll.format) == RollCalibrationFormat::Loose
+            && profile_id.is_some()
+        {
+            return Err("Loose Import cannot bind a Scanner Profile.".into());
+        }
+        roll.scanner_profile_id = profile_id;
+        pipeline_state_for_roll_profile(roll, &[])
+    };
+    let persisted = rolls.clone();
+    let pipeline_updates = state
+        .items
+        .iter()
+        .filter_map(|entry| {
+            let item = read_lock(entry.value());
+            if item.roll_id != roll_id {
+                return None;
+            }
+            let mut next = selected_template.clone();
+            next.content_range = item.pipeline_state.content_range.clone();
+            next.render_mapping = item.pipeline_state.render_mapping.clone();
+            Some((item.file_path.clone(), next))
+        })
+        .collect::<Vec<_>>();
+    let persisted_pipeline_states = pipeline_updates
+        .iter()
+        .map(|(file_path, pipeline_state)| {
+            (roll_id.clone(), file_path.clone(), pipeline_state.clone())
+        })
+        .collect::<Vec<_>>();
+    tokio::task::spawn_blocking(move || {
+        let mut connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open roll database: {error}"))?;
+        persistence::save_rolls_and_pipeline_states(
+            &mut connection,
+            &persisted,
+            &persisted_pipeline_states,
+        )
+        .map_err(|error| format!("Failed to save Scanner Profile binding: {error}"))?;
+        update_rolls_compatibility_mirror(&persisted);
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|error| format!("Roll persistence worker failed: {error}"))??;
+    for entry in state.items.iter() {
+        let item = entry.value();
+        let Ok(mut item) = item.write() else {
+            continue;
+        };
+        if item.roll_id != roll_id {
+            continue;
+        }
+        if let Some((_, next)) = pipeline_updates
+            .iter()
+            .find(|(file_path, _)| file_path == &item.file_path)
+        {
+            item.pipeline_state = next.clone();
+        }
+        item.runtime_pipeline_state = None;
+        item.runtime_pipeline_key = None;
+        item.original_proxy = None;
+        item.proxy_image = None;
+        item.prophoto_estimate_proxy = None;
+        item.relative_transmission_proxy = None;
+        item.relative_transmission_quality = None;
+        item.pristine_proxy = None;
+    }
+    *write_lock(&state.rolls) = rolls.clone();
+    Ok(rolls)
+}
+
+#[tauri::command]
 pub async fn apply_scanner_profile(
     profile_id: String,
     input: [f32; 3],
@@ -8461,10 +8858,68 @@ pub async fn save_calibration_profile(
         } else {
             CalibrationProfilePayload::default()
         };
-        if let Some(measurements) = input.fit_measurements {
+        let mut fit_measurements = input.fit_measurements;
+        let fit_from_spec = input.fit_spec.is_some();
+        if input.clear_fit {
+            payload.fit_measurements = None;
+            payload.fit_model = None;
+        }
+        if let Some(spec) = input.fit_spec.as_ref() {
+            let reference_matches = |kind: CalibrationReferenceKind, path: &str| {
+                references.iter().any(|reference| {
+                    reference.kind == kind
+                        && normalize_path(&reference.file_path) == normalize_path(path)
+                })
+            };
+            if !reference_matches(CalibrationReferenceKind::DarkFrame, &spec.dark_frame)
+                || !reference_matches(CalibrationReferenceKind::OpenGate, &spec.open_frame)
+                || !reference_matches(
+                    CalibrationReferenceKind::TransmissionTarget,
+                    &spec.target_frame,
+                )
+                || (spec.flat_frame.as_deref().is_some_and(|path| {
+                    !reference_matches(CalibrationReferenceKind::FlatField, path)
+                }))
+            {
+                return Err(
+                    "Calibration fit frames must be selected as matching Profile references."
+                        .into(),
+                );
+            }
+            let measurements = build_measurement_set_from_spec(
+                spec,
+                input.camera.as_str(),
+                input.light_source.as_str(),
+            )?;
+            fit_measurements = Some(measurements);
+        }
+        if let Some(measurements) = fit_measurements {
+            if fit_from_spec {
+                let reference_matches = |kind: CalibrationReferenceKind, path: &str| {
+                    references.iter().any(|reference| {
+                        reference.kind == kind
+                            && normalize_path(&reference.file_path) == normalize_path(path)
+                    })
+                };
+                if !reference_matches(
+                    CalibrationReferenceKind::DarkFrame,
+                    &measurements.dark_frame,
+                ) || !reference_matches(
+                    CalibrationReferenceKind::OpenGate,
+                    &measurements.open_frame,
+                ) || !reference_matches(
+                    CalibrationReferenceKind::TransmissionTarget,
+                    &measurements.target_frame,
+                ) || (measurements.flat_frame.as_deref().is_some_and(|path| {
+                    !reference_matches(CalibrationReferenceKind::FlatField, path)
+                })) {
+                    return Err("Calibration measurements must match Profile references.".into());
+                }
+            }
             let model =
                 fit_capture_separation(&measurements, input.fit_options.unwrap_or_default())
                     .map_err(|error| format!("Calibration fit failed: {error}"))?;
+            payload.fit_measurements = Some(measurements);
             payload.fit_model = Some(model);
         }
         let calibration_level = calibration_level_from_profile(&payload);
@@ -8542,6 +8997,7 @@ fn build_capture_calibration_session(
                 CalibrationReferenceKind::DarkFrame
                     | CalibrationReferenceKind::OpenGate
                     | CalibrationReferenceKind::FlatField
+                    | CalibrationReferenceKind::TransmissionTarget
             )
         })
         .map(reference_summary)
@@ -8660,6 +9116,26 @@ fn build_capture_calibration_payload(
     // Preserve an already fitted target model while refreshing capture-frame
     // provenance. The fit is part of the same payload digest and session.
     payload.fit_model = profile.payload.fit_model.clone();
+    payload.fit_measurements = profile.payload.fit_measurements.clone();
+    if let Some(measurements) = payload.fit_measurements.as_ref() {
+        let matches_reference = |kind: CalibrationReferenceKind, path: &str| {
+            profile.references.iter().any(|reference| {
+                reference.kind == kind
+                    && normalize_path(&reference.file_path) == normalize_path(path)
+            })
+        };
+        if !matches_reference(
+            CalibrationReferenceKind::DarkFrame,
+            &measurements.dark_frame,
+        ) || !matches_reference(CalibrationReferenceKind::OpenGate, &measurements.open_frame)
+            || !matches_reference(
+                CalibrationReferenceKind::TransmissionTarget,
+                &measurements.target_frame,
+            )
+        {
+            return Err("Stored fit measurements no longer match Profile references.".into());
+        }
+    }
     payload.payload_digest = payload.canonical_digest()?;
     Ok(payload)
 }
@@ -8780,11 +9256,13 @@ pub async fn import_roll(
             // Import metadata is not a Profile-selection action. Preserve the
             // existing Roll binding even when an older client omits the field.
             roll.calibration_profile_id = existing.calibration_profile_id.clone();
+            roll.scanner_profile_id = existing.scanner_profile_id.clone();
             *existing = roll;
         } else {
             // Capture Corrected is Experimental and opt-in per Roll. A newly
             // imported Roll never inherits a previous Profile implicitly.
             roll.calibration_profile_id = None;
+            roll.scanner_profile_id = None;
             updated.push(roll);
         }
         let updated = persist_roll_snapshot_async(updated).await?;
@@ -9138,6 +9616,7 @@ mod calibration_profile_contract_tests {
             image_paths: Vec::new(),
             density_anchors: DensityAnchors::default(),
             calibration_profile_id: profile_id.map(str::to_string),
+            scanner_profile_id: None,
         }
     }
 
@@ -10580,6 +11059,7 @@ fn migrate_legacy_loose_roll(
         image_paths: paths,
         density_anchors: Default::default(),
         calibration_profile_id: None,
+        scanner_profile_id: None,
     });
     persistence::save_rolls(connection, rolls)
         .map_err(|error| format!("Failed to migrate legacy loose imports: {error}"))?;
@@ -11546,6 +12026,7 @@ mod import_contract_tests {
             image_paths: Vec::new(),
             density_anchors: anchors,
             calibration_profile_id: None,
+            scanner_profile_id: None,
         }];
         assert_eq!(
             default_pipeline_state_for_import(true, "roll-a", &rolls).contract,
@@ -12236,6 +12717,7 @@ mod library_management_contract_tests {
             image_paths: vec!["NEW.DNG".to_string()],
             density_anchors: Default::default(),
             calibration_profile_id: None,
+            scanner_profile_id: None,
         };
 
         let activated = activate_library_roll(&state, &roll).unwrap();
@@ -12278,6 +12760,7 @@ mod library_management_contract_tests {
             image_paths: vec!["scan.tif".to_string()],
             density_anchors: Default::default(),
             calibration_profile_id: None,
+            scanner_profile_id: None,
         };
 
         activate_library_roll(&state, &roll).unwrap();

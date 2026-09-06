@@ -216,6 +216,11 @@ pub struct CalibrationProfilePayload {
     /// Absence means the profile only provides capture normalization.
     #[serde(default)]
     pub fit_model: Option<crate::calibration_fit::CalibrationFitModel>,
+    /// Normalized source measurements used to produce `fit_model`. Keeping the
+    /// artifact with the coefficients makes the fit auditable and lets the
+    /// loader reject a model whose measurement digest no longer matches.
+    #[serde(default)]
+    pub fit_measurements: Option<crate::calibration_fit::CalibrationMeasurementSet>,
 }
 
 impl Default for CalibrationProfilePayload {
@@ -236,6 +241,7 @@ impl Default for CalibrationProfilePayload {
             capabilities: Vec::new(),
             validation_report: None,
             fit_model: None,
+            fit_measurements: None,
         }
     }
 }
@@ -374,6 +380,17 @@ impl CalibrationProfilePayload {
         let Some(model) = &self.fit_model else {
             return None;
         };
+        let Some(measurements) = &self.fit_measurements else {
+            return Some("capture_fit_measurements_missing");
+        };
+        if measurements.validate().is_err()
+            || crate::calibration_fit::measurement_digest(measurements)
+                .ok()
+                .as_deref()
+                != Some(model.measurement_digest.as_str())
+        {
+            return Some("capture_fit_measurements_invalid");
+        }
         if model.source_domain
             != crate::calibration_fit::ReferenceDomain::CameraNativeTransmissionRgb
             || model.target_domain != crate::calibration_fit::ReferenceDomain::TransmissionRgb
@@ -1248,6 +1265,9 @@ pub struct Roll {
     /// to it without being changed by the application's last-used selection.
     #[serde(default)]
     pub calibration_profile_id: Option<String>,
+    /// Optional scanner input profile applied to scanner-originated RGB input.
+    #[serde(default)]
+    pub scanner_profile_id: Option<String>,
 }
 
 pub struct EngineState {

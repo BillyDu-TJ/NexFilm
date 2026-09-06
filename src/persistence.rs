@@ -141,6 +141,7 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
             camera TEXT NOT NULL,
             image_paths TEXT NOT NULL,
             density_anchors TEXT NOT NULL DEFAULT '{}',
+            scanner_profile_id TEXT,
             sort_order INTEGER NOT NULL,
             updated_at INTEGER NOT NULL DEFAULT 0
         )",
@@ -222,6 +223,7 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
     add_column_if_missing(connection, "pipeline_state", "TEXT NOT NULL DEFAULT '{}'")?;
     add_roll_column_if_missing(connection, "density_anchors", "TEXT NOT NULL DEFAULT '{}'")?;
     add_roll_column_if_missing(connection, "calibration_profile_id", "TEXT")?;
+    add_roll_column_if_missing(connection, "scanner_profile_id", "TEXT")?;
     add_calibration_profile_column_if_missing(connection, "payload", "TEXT NOT NULL DEFAULT '{}'")?;
     migrate_legacy_thumbnails(connection)?;
     migrate_raw_decode_settings(connection)?;
@@ -544,8 +546,8 @@ fn insert_roll(connection: &Connection, roll: &Roll, sort_order: usize) -> rusql
     connection.execute(
         "INSERT INTO rolls (
              roll_id, date, roll_format, film_stock, camera,
-             image_paths, density_anchors, calibration_profile_id, sort_order, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             image_paths, density_anchors, calibration_profile_id, scanner_profile_id, sort_order, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         rusqlite::params![
             roll.roll_id,
             roll.date,
@@ -555,6 +557,7 @@ fn insert_roll(connection: &Connection, roll: &Roll, sort_order: usize) -> rusql
             image_paths,
             density_anchors,
             roll.calibration_profile_id,
+            roll.scanner_profile_id,
             sort_order as i64,
             now_timestamp(),
         ],
@@ -605,7 +608,7 @@ pub fn save_rolls_and_pipeline_states(
 pub fn load_rolls(connection: &Connection) -> rusqlite::Result<Vec<Roll>> {
     let mut statement = connection.prepare(
         "SELECT roll_id, date, roll_format, film_stock, camera, image_paths, density_anchors,
-                calibration_profile_id
+                calibration_profile_id, scanner_profile_id
          FROM rolls ORDER BY sort_order, roll_id",
     )?;
     let rows = statement.query_map([], |row| {
@@ -634,6 +637,7 @@ pub fn load_rolls(connection: &Connection) -> rusqlite::Result<Vec<Roll>> {
             image_paths,
             density_anchors,
             calibration_profile_id: row.get(7)?,
+            scanner_profile_id: row.get(8)?,
         })
     })?;
     rows.collect()
@@ -1414,6 +1418,7 @@ mod tests {
             image_paths: paths.iter().map(|path| path.to_string()).collect(),
             density_anchors: Default::default(),
             calibration_profile_id: None,
+            scanner_profile_id: None,
         }
     }
 

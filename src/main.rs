@@ -117,6 +117,7 @@ fn main() {
             nexfilm_engine::commands::get_calibration_profiles,
             nexfilm_engine::commands::import_scanner_profile,
             nexfilm_engine::commands::get_scanner_profiles,
+            nexfilm_engine::commands::update_roll_scanner_profile,
             nexfilm_engine::commands::apply_scanner_profile,
             nexfilm_engine::commands::choose_scanner_profile_file,
             nexfilm_engine::commands::choose_calibration_reference,

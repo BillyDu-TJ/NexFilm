@@ -693,3 +693,9 @@ NexFilm 文档和 UI 统一使用以下术语：
 本文采用的最终工程原则是：
 
 > `log` 前校准硬件如何读取透射率；`log` 后校准扫描密度如何对应胶片或相纸密度；最后使用胶片模型重建正片。任何跨越这些边界的端到端方法都可以作为实用校色，但必须与可测量的科学管线分开标识。
+
+## 13. 当前实现增量
+
+Calibration UI 的目标素材流程现在是真实闭环：用户选择 dark/open/target 并提供 patch 坐标和明确的 Transmission/Density 参考域，后端解码目标 RAW、提取有效 Camera Native transmission、拟合并将 `CalibrationMeasurementSet` 与模型一起保存。拟合系数在 Capture Corrected 像素的 `log10` 前应用；它不等同于 Density Calibrated。
+
+Scanner Profile 是独立输入边界：Profile 绑定到 Roll 后，只对已知线性扫描仪 RGB 应用矩阵/offset，再转入 ProPhoto；不作用于 Capture Corrected RAW 域，也不把普通 ICC 或扫描仪配置宣称为胶片密度、Status M 或数字 mask。

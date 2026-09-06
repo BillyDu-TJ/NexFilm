@@ -539,3 +539,11 @@ Auto Invert 应在内部返回处理报告，至少包括使用的 Capture/Densi
 6. 最后接入曝光阶梯、Film Profile 和 H-D 曲线反演。
 
 ## 12. 最终原则
+
+## 13. P1.1 后续增量交付
+
+- Calibration 页面可选择 dark/open/flat/透射目标，并输入归一化 patch 坐标、参考 RGB、参考域和训练/验证标记；保存时后端重新解码 RAW 并从有效邻域生成测量值后拟合 `CaptureSeparation3x3`。
+- Profile 同时保存规范化 `CalibrationMeasurementSet` 与拟合矩阵。加载时验证测量 digest，并确认测量文件仍对应 Profile references；素材替换、参考值修改或 artifact 篡改会触发降级和回退。
+- 真实素材可达到的最高等级是 `Capture Characterized`。dark/open/flat 只能达到 `Capture Corrected Experimental`；本阶段仍没有 `Density Calibrated`、数字 mask、胶片 H-D 曲线或新的 Status M 矩阵。
+- Scanner Input Profile 可从本地 JSON 导入、绑定到 Roll，并在代理与导出中按“线性扫描 RGB -> Scanner Profile -> ProPhoto”应用；其 `Scanner Input Estimate/Characterized` 等级独立于 Capture/Density。
+- 自动化测试覆盖拟合数学、artifact digest、Profile 篡改回退、Roll 绑定迁移和整图 Scanner 变换；真实相机、灯板、透射目标与独立密度计仍需按 checklist 验证。
