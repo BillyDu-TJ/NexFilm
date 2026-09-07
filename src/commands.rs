@@ -1817,38 +1817,13 @@ fn compute_auto_base_f32(
 ) -> Result<([f32; 3], f32), String> {
     // Smart Auto estimates a display-base candidate only from the selected
     // film geometry. It is never promoted to a physical anchor.
-    let points =
-        geom.calibration_points
-            .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-    let min_x = points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
-    let max_x = points
-        .iter()
-        .map(|p| p[0])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let min_y = points.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
-    let max_y = points
-        .iter()
-        .map(|p| p[1])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let mut values = Vec::<[f32; 3]>::new();
-    for (index, pixel) in proxy.as_raw().chunks_exact(3).enumerate() {
-        let x =
-            (index as u32 % proxy.width()) as f32 / proxy.width().saturating_sub(1).max(1) as f32;
-        let y =
-            (index as u32 / proxy.width()) as f32 / proxy.height().saturating_sub(1).max(1) as f32;
-        if x < min_x || x > max_x || y < min_y || y > max_y {
-            continue;
-        }
-        if pixel
-            .iter()
-            .any(|v| !v.is_finite() || *v <= 0.0 || *v >= 0.995)
-        {
-            continue;
-        }
-        // The proxy is sampled in source order; use the crop rectangle as a
-        // conservative film-area gate when a quadrilateral is unavailable.
-        values.push([pixel[0], pixel[1], pixel[2]]);
+    if geom.calibration_points.is_none() {
+        // A full scan may be dominated by an open light panel, sprockets, or
+        // unrelated background. Without an explicit film area there is no
+        // trustworthy D-min candidate, so use content-driven mapping instead.
+        return Ok(([0.0; 3], 0.0));
     }
+    let mut values = collect_film_area_rgb32(proxy, None, geom, true);
     if values.len() < 8 {
         // No trustworthy base candidate is a valid low-confidence outcome;
         // callers continue with the content-driven zero-reference fallback.
@@ -1913,18 +1888,9 @@ fn smart_auto_exclusion_counts(
 fn compute_auto_base_capture_corrected(
     proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
     quality: &crate::raw_backend::QualityMask,
+    geom: &GeometryState,
 ) -> Result<[f32; 3], String> {
-    let mut values = Vec::<[f32; 3]>::new();
-    for (index, pixel) in proxy.as_raw().chunks_exact(3).enumerate() {
-        if !quality.valid.get(index).copied().unwrap_or(false)
-            || pixel
-                .iter()
-                .any(|value| !value.is_finite() || *value <= 0.0 || *value >= 0.995)
-        {
-            continue;
-        }
-        values.push([pixel[0], pixel[1], pixel[2]]);
-    }
+    let mut values = collect_film_area_rgb32(proxy, Some(quality), geom, true);
     if values.len() < 8 {
         return Err("Capture Corrected contains no valid film-base samples".to_string());
     }
@@ -5611,7 +5577,7 @@ pub async fn analyze_proxy_base_color(
                         )
                     } else if let Some(quality) = quality {
                         (
-                            compute_auto_base_capture_corrected(input, quality)?,
+                            compute_auto_base_capture_corrected(input, quality, &item.geom)?,
                             0.9,
                             "detected_film_base",
                         )
@@ -6529,6 +6495,100 @@ fn sample_rgb32_nearest_checked(
         }
     }
     Some(pixel)
+}
+
+/// Collect co-sited RGB samples through the same geometry map used by the
+/// renderer. A film-area quadrilateral is a semantic region, not merely its
+/// axis-aligned bounding box; this keeps lamp panels and sprocket regions out
+/// of Smart Auto base estimation even when perspective correction is active.
+fn collect_film_area_rgb32(
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    quality: Option<&crate::raw_backend::QualityMask>,
+    geom: &GeometryState,
+    reject_saturated: bool,
+) -> Vec<[f32; 3]> {
+    const SAMPLE_EDGE: u32 = 512;
+    let (source_width, source_height) = proxy.dimensions();
+    let longest = source_width.max(source_height).max(1);
+    let sample_width = ((source_width as f64 / longest as f64) * SAMPLE_EDGE as f64)
+        .round()
+        .max(2.0) as u32;
+    let sample_height = ((source_height as f64 / longest as f64) * SAMPLE_EDGE as f64)
+        .round()
+        .max(2.0) as u32;
+    let points =
+        geom.calibration_points
+            .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+    let min_x = points
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::INFINITY, f32::min);
+    let max_x = points
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::INFINITY, f32::min);
+    let max_y = points
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    // Do not let nearest-neighbour samples exactly on the selected edge pick
+    // up a one-pixel lamp-panel/sprocket fringe. The margin is sub-pixel on a
+    // normal proxy and scales with the source resolution.
+    let region_margin = 1.0 / source_width.max(source_height).max(1) as f32;
+    let homography = shader_homography(points);
+    let mut values = Vec::new();
+    for y in 0..sample_height {
+        for x in 0..sample_width {
+            let base_uv = [
+                x as f32 / (sample_width - 1) as f32,
+                y as f32 / (sample_height - 1) as f32,
+            ];
+            let crop_uv = [
+                geom.crop_rect.x + base_uv[0] * geom.crop_rect.width,
+                geom.crop_rect.y + base_uv[1] * geom.crop_rect.height,
+            ];
+            if geom.calibration_points.is_some()
+                && (crop_uv[0] < min_x + region_margin
+                    || crop_uv[0] > max_x - region_margin
+                    || crop_uv[1] < min_y + region_margin
+                    || crop_uv[1] > max_y - region_margin)
+            {
+                continue;
+            }
+            let Some(perspective_uv) = apply_perspective_uv(
+                crop_uv,
+                geom.perspective_vertical,
+                geom.perspective_horizontal,
+                geom.perspective_aspect,
+                geom.perspective_scale,
+            ) else {
+                continue;
+            };
+            let Some(oriented_uv) = apply_homography(&homography, perspective_uv) else {
+                continue;
+            };
+            let Some(oriented_uv) = apply_lens_distortion_uv(oriented_uv, geom.lens_distortion)
+            else {
+                continue;
+            };
+            let source_uv =
+                map_oriented_uv_to_source(oriented_uv, source_width, source_height, geom);
+            let Some(pixel) = sample_rgb32_nearest_checked(proxy, quality, source_uv) else {
+                continue;
+            };
+            if pixel.iter().any(|value| {
+                !value.is_finite() || *value <= 0.0 || (reject_saturated && *value >= 0.995)
+            }) {
+                continue;
+            }
+            values.push(pixel);
+        }
+    }
+    values
 }
 
 fn render_shader_equivalent_core(
@@ -11495,16 +11555,17 @@ mod import_contract_tests {
     use super::{
         apply_roll_density_anchor_limits, compute_auto_base, compute_auto_base_f32,
         compute_auto_color_limits, compute_content_limits_f32, decode_image_buffer,
-        decode_import_preview_base64, decode_reduced_dng_for_working_space,
-        decode_reduced_tiff_for_working_space, decode_tiff_for_smart_auto,
-        default_pipeline_state_for_import, is_better_preview_edge, is_lightweight_direct_preview,
-        is_noritsu_rendered_image, is_raw_extension, is_scanner_fff_tiff, is_tiff_extension,
-        libraw_decode_error_message, linearize_scanner_fff, persist_import_batch,
-        pipeline_base_density, pipeline_has_base, preserve_smart_auto_content_span,
-        preserve_tone_density_span, prophoto_estimate_to_transport_proxy, raw_decode_failure_hint,
-        reference_density_extreme, render_f32_shader_equivalent, render_shader_equivalent,
-        rgb16_image_from_bytes, share_smart_auto_density_scale, AutoColorLimits, DecodeMode,
-        IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
+        decode_import_preview_base64,
+        decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
+        decode_tiff_for_smart_auto, default_pipeline_state_for_import, is_better_preview_edge,
+        is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
+        is_scanner_fff_tiff, is_tiff_extension, libraw_decode_error_message, linearize_scanner_fff,
+        persist_import_batch, pipeline_base_density, pipeline_has_base,
+        preserve_smart_auto_content_span, preserve_tone_density_span,
+        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
+        render_f32_shader_equivalent, render_shader_equivalent, rgb16_image_from_bytes,
+        share_smart_auto_density_scale, AutoColorLimits, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
+        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
         BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
@@ -12383,6 +12444,14 @@ mod import_contract_tests {
         assert!(confidence > 0.1);
         assert!(base.iter().all(|value| value.is_finite() && *value > 0.0));
         assert!(base[0] > 0.05 && base[0] < 0.2);
+    }
+
+    #[test]
+    fn smart_auto_without_film_area_uses_content_fallback() {
+        let image = ImageBuffer::from_pixel(8, 8, Rgb([0.8, 0.75, 0.7]));
+        let (base, confidence) = compute_auto_base_f32(&image, &GeometryState::default()).unwrap();
+        assert_eq!(base, [0.0; 3]);
+        assert_eq!(confidence, 0.0);
     }
 
     #[test]
