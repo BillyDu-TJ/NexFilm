@@ -895,10 +895,22 @@ impl PipelineState {
     }
 
     pub fn from_roll_anchors(anchors: DensityAnchors) -> Self {
+        let mut report = PipelineProcessingReport::smart_auto();
+        report.base_source = if anchors.has_base() {
+            "verified_anchor".to_string()
+        } else {
+            "content_estimate".to_string()
+        };
+        report.base_confidence = if anchors.has_base() {
+            "verified".to_string()
+        } else {
+            "low".to_string()
+        };
+        report.uses_physical_anchors = anchors.has_base();
         Self {
             contract: anchors.prophoto_contract(),
             density_anchors: anchors,
-            processing_report: PipelineProcessingReport::smart_auto(),
+            processing_report: report,
             ..Self::default()
         }
     }
