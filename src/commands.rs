@@ -3202,16 +3202,16 @@ fn decode_image_buffer(
         .par_chunks_exact_mut(3)
         .zip(camera_rgb.as_raw().par_chunks_exact(3))
         .for_each(|(target, pixel)| {
-            let rgb = compress_linear_srgb_for_density(apply_linear_matrix(
+            let rgb = apply_linear_matrix(
                 [
                     pixel[0] as f32 / 65535.0,
                     pixel[1] as f32 / 65535.0,
                     pixel[2] as f32 / 65535.0,
                 ],
                 matrix,
-            ));
+            );
             for channel in 0..3 {
-                target[channel] = (rgb[channel] * 65535.0).round() as u16;
+                target[channel] = (rgb[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
             }
         });
     Ok(converted)
