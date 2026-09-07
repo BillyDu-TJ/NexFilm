@@ -2297,14 +2297,13 @@ fn compute_content_limits_f32(
                 let Some(raw) = sample_rgb32_nearest_checked(proxy, quality, source_uv) else {
                     continue;
                 };
-                let density = if quality.is_some() {
-                    if raw.iter().any(|value| !value.is_finite() || *value <= 0.0) {
-                        continue;
-                    }
-                    raw.map(|value| -value.log10())
-                } else {
-                    raw.map(|value| -value.max(1e-6).log10())
-                };
+                // Smart Auto input is an estimate, not a physical measurement,
+                // but invalid samples must still be excluded rather than
+                // repaired into a fake density with epsilon.
+                if raw.iter().any(|value| !value.is_finite() || *value <= 0.0) {
+                    continue;
+                }
+                let density = raw.map(|value| -value.log10());
                 let density = [
                     density[0] - base_density[0],
                     density[1] - base_density[1],
@@ -12498,6 +12497,23 @@ mod import_contract_tests {
             assert!((a.d_min[channel] - b.d_min[channel]).abs() < 1.0e-5);
             assert!((a.d_max[channel] - b.d_max[channel]).abs() < 1.0e-5);
         }
+    }
+
+    #[test]
+    fn smart_auto_content_limits_skip_invalid_samples_without_epsilon_repair() {
+        let mut image = ImageBuffer::from_fn(8, 8, |x, y| {
+            let value = 0.35 + ((x + y) % 4) as f32 * 0.04;
+            Rgb([value, value + 0.05, value + 0.1])
+        });
+        image.put_pixel(0, 0, Rgb([-1.0, f32::NAN, 0.0]));
+        let limits =
+            compute_content_limits_f32(&image, None, &GeometryState::default(), [0.0; 3]).unwrap();
+        assert!(limits
+            .d_min
+            .iter()
+            .chain(limits.d_max.iter())
+            .all(|value| value.is_finite()));
+        assert!(limits.d_min.iter().all(|value| *value > 0.0));
     }
 
     #[test]
