@@ -200,10 +200,20 @@ pub fn source_digest(path: impl AsRef<Path>) -> Result<String, String> {
 }
 
 pub fn record_is_current(record: &ScannerProfileRecord) -> bool {
+    let config_digest_ok = record
+        .profile
+        .canonical_config_digest()
+        .ok()
+        .is_some_and(|canonical| {
+            record.profile.config_digest == canonical
+                // Beta persisted the JSON digest in icc_digest. Keep those
+                // records usable while new imports store the fields separately.
+                || (record.profile.config_digest.is_empty()
+                    && record.profile.icc_digest == canonical)
+        });
     source_digest(&record.source_path).ok().as_deref() == Some(record.source_digest.as_str())
         && record.profile.validate().is_ok()
-        && record.profile.canonical_config_digest().ok().as_deref()
-            == Some(record.profile.config_digest.as_str())
+        && config_digest_ok
 }
 
 #[cfg(test)]

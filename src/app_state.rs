@@ -595,7 +595,7 @@ impl PipelineProcessingReport {
                 detail: "libraw_dcraw_process_camera_wb_to_prophoto_estimate".to_string(),
             }],
             fallback_reasons: Vec::new(),
-            base_source: "content_estimate".to_string(),
+            base_source: "unresolved".to_string(),
             base_confidence: "low".to_string(),
             excluded_open_light_pixels: 0,
             excluded_saturated_pixels: 0,
@@ -896,17 +896,17 @@ impl PipelineState {
 
     pub fn from_roll_anchors(anchors: DensityAnchors) -> Self {
         let mut report = PipelineProcessingReport::smart_auto();
-        report.base_source = if anchors.has_base() {
+        report.base_source = if anchors.has_roll_base() {
             "verified_anchor".to_string()
         } else {
             "content_estimate".to_string()
         };
-        report.base_confidence = if anchors.has_base() {
+        report.base_confidence = if anchors.has_roll_base() {
             "verified".to_string()
         } else {
             "low".to_string()
         };
-        report.uses_physical_anchors = anchors.has_base();
+        report.uses_physical_anchors = anchors.has_roll_base();
         Self {
             contract: anchors.prophoto_contract(),
             density_anchors: anchors,

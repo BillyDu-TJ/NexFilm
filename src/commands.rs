@@ -6,10 +6,10 @@ use crate::app_state::{
     CalibrationValidRange, CalibrationValidationReport, CalibrationValidationStatus,
     CaptureCalibrationParameters, ContentRange, ContentRangeScope, DensityAnchor,
     DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource, DensityAnchors, EngineState,
-    FilmItem, FilmMode, FilmstripItem, GeometryState, PipelineState, ProcessingContract,
-    RenderMode, Roll, RollBaseStatus, RollCalibrationFormat, RollCalibrationMode,
-    RollCalibrationStatus, RollDmaxStatus, RollFrameStatus, RollToneStatus, TuningParams,
-    CALIBRATION_PROFILE_PAYLOAD_VERSION, CALIBRATION_PROFILE_SCHEMA_VERSION,
+    FilmItem, FilmMode, FilmstripItem, GeometryState, PipelineProcessingReport, PipelineState,
+    ProcessingContract, RenderMode, Roll, RollBaseStatus, RollCalibrationFormat,
+    RollCalibrationMode, RollCalibrationStatus, RollDmaxStatus, RollFrameStatus, RollToneStatus,
+    TuningParams, CALIBRATION_PROFILE_PAYLOAD_VERSION, CALIBRATION_PROFILE_SCHEMA_VERSION,
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
 use crate::calibration_fit::{
@@ -1850,7 +1850,9 @@ fn compute_auto_base_f32(
         values.push([pixel[0], pixel[1], pixel[2]]);
     }
     if values.len() < 8 {
-        return Err("smart_auto_no_trusted_film_base".to_string());
+        // No trustworthy base candidate is a valid low-confidence outcome;
+        // callers continue with the content-driven zero-reference fallback.
+        return Ok(([0.0; 3], 0.0));
     }
     values.sort_unstable_by(|a, b| {
         density_luma([-a[0].log10(), -a[1].log10(), -a[2].log10()]).total_cmp(&density_luma([
@@ -1872,49 +1874,73 @@ fn compute_auto_base_f32(
     Ok((density, confidence))
 }
 
+fn smart_auto_exclusion_counts(
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    geom: &GeometryState,
+) -> (usize, usize, usize) {
+    let points =
+        geom.calibration_points
+            .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+    let min_x = points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+    let max_x = points
+        .iter()
+        .map(|p| p[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+    let max_y = points
+        .iter()
+        .map(|p| p[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut open = 0;
+    let mut saturated = 0;
+    let mut invalid = 0;
+    for (index, pixel) in proxy.as_raw().chunks_exact(3).enumerate() {
+        let x =
+            (index as u32 % proxy.width()) as f32 / proxy.width().saturating_sub(1).max(1) as f32;
+        let y =
+            (index as u32 / proxy.width()) as f32 / proxy.height().saturating_sub(1).max(1) as f32;
+        if x < min_x || x > max_x || y < min_y || y > max_y {
+            open += 1;
+        } else if pixel.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            invalid += 1;
+        } else if pixel.iter().any(|v| *v >= 0.995) {
+            saturated += 1;
+        }
+    }
+    (open, saturated, invalid)
+}
+
 fn compute_auto_base_capture_corrected(
     proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
     quality: &crate::raw_backend::QualityMask,
 ) -> Result<[f32; 3], String> {
-    let mut values = [Vec::new(), Vec::new(), Vec::new()];
+    let mut values = Vec::<[f32; 3]>::new();
     for (index, pixel) in proxy.as_raw().chunks_exact(3).enumerate() {
         if !quality.valid.get(index).copied().unwrap_or(false)
             || pixel
                 .iter()
-                .any(|value| !value.is_finite() || *value <= 0.0)
+                .any(|value| !value.is_finite() || *value <= 0.0 || *value >= 0.995)
         {
             continue;
         }
+        values.push([pixel[0], pixel[1], pixel[2]]);
+    }
+    if values.len() < 8 {
+        return Err("Capture Corrected contains no valid film-base samples".to_string());
+    }
+    values.sort_unstable_by(|left, right| {
+        density_luma([-left[0].log10(), -left[1].log10(), -left[2].log10()]).total_cmp(
+            &density_luma([-right[0].log10(), -right[1].log10(), -right[2].log10()]),
+        )
+    });
+    let tail = ((values.len() as f32 * 0.02).ceil() as usize).clamp(1, values.len());
+    let mut density = [0.0f32; 3];
+    for sample in values.iter().take(tail) {
         for channel in 0..3 {
-            values[channel].push(pixel[channel]);
+            density[channel] += -sample[channel].log10();
         }
     }
-    let mut density = [0.0; 3];
-    for channel in 0..3 {
-        if values[channel].is_empty() {
-            return Err("Capture Corrected contains no valid film-base samples".to_string());
-        }
-        let index = ((values[channel].len() as f32 * 0.99).ceil() as usize)
-            .saturating_sub(1)
-            .min(values[channel].len() - 1);
-        values[channel].select_nth_unstable_by(index, |left, right| left.total_cmp(right));
-        density[channel] = -values[channel][index].log10();
-    }
-    Ok(density)
-}
-
-fn density_anchor_from_f32(
-    density: [f32; 3],
-    provenance: crate::app_state::DensityAnchorProvenance,
-) -> DensityAnchor {
-    DensityAnchor {
-        density,
-        source: DensityAnchorSource::EstimatedFromContent,
-        scope: DensityAnchorScope::Frame,
-        confidence: DensityAnchorConfidence::Estimated,
-        reference_id: None,
-        provenance,
-    }
+    Ok(density.map(|value| value / tail as f32))
 }
 
 fn replace_base_anchor_preserving_history(
@@ -2329,10 +2355,10 @@ fn compute_content_limits_f32(
     };
 
     let mut samples = collect(true);
-    if samples.len() < 64 {
+    if samples.len() < 64 && geom.calibration_points.is_none() {
         samples = collect(false);
     }
-    if samples.len() < 64 {
+    if samples.len() < 8 {
         return Err("The selected film area contains too little image data.".to_string());
     }
     let (low, high) = co_sited_density_extremes(samples)
@@ -2372,6 +2398,8 @@ fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
             .d_min_base
             .as_ref()
             .is_some_and(|anchor| anchor_matches_resolved_contract(anchor, state))
+            || (state.processing_report.base_source != "unresolved"
+                && !state.processing_report.base_source.is_empty())
     }
 }
 
@@ -2422,6 +2450,15 @@ fn apply_roll_density_anchor_limits(
             full_exposure.density[1] - base_density[1],
             full_exposure.density[2] - base_density[2],
         ];
+    }
+}
+
+fn share_smart_auto_density_scale(limits: &mut AutoColorLimits) {
+    let low = density_luma(limits.d_min);
+    let high = density_luma(limits.d_max);
+    if low.is_finite() && high.is_finite() && high > low + 1.0e-6 {
+        limits.d_min = [low; 3];
+        limits.d_max = [high; 3];
     }
 }
 
@@ -2967,6 +3004,16 @@ fn decode_reduced_tiff_for_working_space(
         ColorSpaceId::SRgb,
         requested_profile,
     ))
+}
+
+fn decode_tiff_for_smart_auto(
+    path: &str,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    if !is_scanner_fff_tiff(path) && embedded_input_profile(path).is_none() {
+        return Err("scanner_tiff_input_space_unknown".to_string());
+    }
+    decode_reduced_tiff_for_working_space(path, target_long_edge)
 }
 
 fn decode_reduced_dng_for_working_space(
@@ -5351,9 +5398,7 @@ pub async fn prepare_proxy(
                         .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
                     linear_srgb_u16_to_prophoto_f32(&linear)
                 } else if is_tiff_extension(&decode_path) || is_scanner_fff_tiff(&decode_path) {
-                    let linear =
-                        decode_reduced_tiff_for_working_space(&decode_path, target_long_edge)
-                            .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
+                    let linear = decode_tiff_for_smart_auto(&decode_path, target_long_edge)?;
                     linear_srgb_u16_to_prophoto_f32(&linear)
                 } else {
                     decode_scanner_profiled_estimate_image_buffer(
@@ -5537,40 +5582,6 @@ pub async fn analyze_proxy_base_color(
                         let (density, confidence) = compute_auto_base_f32(input, &item.geom)?;
                         (density, confidence, "content_estimate")
                     };
-                let provenance = item.runtime_density_provenance.clone().unwrap_or_else(|| {
-                    resolution_density_provenance(&PipelineResolution {
-                        requested_path: effective.contract,
-                        resolved_path: effective.contract,
-                        resolved_profile_id: None,
-                        resolved_payload_digest: None,
-                        capture: crate::capability_resolver::LayerCapability {
-                            layer: String::new(),
-                            status: crate::app_state::PipelineStageStatus::Default,
-                            detail: String::new(),
-                        },
-                        density: crate::capability_resolver::LayerCapability {
-                            layer: String::new(),
-                            status: crate::app_state::PipelineStageStatus::Default,
-                            detail: String::new(),
-                        },
-                        film: crate::capability_resolver::LayerCapability {
-                            layer: String::new(),
-                            status: crate::app_state::PipelineStageStatus::Default,
-                            detail: String::new(),
-                        },
-                        flat: crate::capability_resolver::LayerCapability {
-                            layer: String::new(),
-                            status: crate::app_state::PipelineStageStatus::Default,
-                            detail: String::new(),
-                        },
-                        usable_density_anchors: DensityAnchors::default(),
-                        rejected_anchor_reasons: Vec::new(),
-                        processing_report: effective.processing_report.clone(),
-                    })
-                });
-                let anchor = density_anchor_from_f32(density, provenance);
-                let keep_anchor = effective.contract == ProcessingContract::CaptureCorrectedV11
-                    || effective.density_anchors.has_roll_full_exposure();
                 let mut runtime = effective;
                 let mut persisted = item.pipeline_state.clone();
                 for report in [
@@ -5579,21 +5590,25 @@ pub async fn analyze_proxy_base_color(
                 ] {
                     report.base_source = estimated_source.to_string();
                     report.base_confidence = format!("{estimated_confidence:.3}");
-                    report.analysis_data_domain = if keep_anchor {
+                    report.analysis_data_domain = if capture_corrected {
                         "relative_transmission_rgb".to_string()
                     } else {
                         "linear_prophoto_estimate".to_string()
                     };
-                    report.uses_physical_anchors = keep_anchor;
-                }
-                if keep_anchor {
-                    replace_base_anchor_preserving_history(
-                        &mut runtime.density_anchors,
-                        anchor.clone(),
-                    );
-                    replace_base_anchor_preserving_history(&mut persisted.density_anchors, anchor);
-                    if runtime.contract != ProcessingContract::CaptureCorrectedV11 {
-                        runtime.contract = runtime.density_anchors.prophoto_contract();
+                    report.uses_physical_anchors = runtime.density_anchors.has_base();
+                    let (open, saturated, invalid) = smart_auto_exclusion_counts(input, &item.geom);
+                    report.excluded_open_light_pixels = open;
+                    report.excluded_saturated_pixels = saturated;
+                    report.excluded_invalid_pixels = invalid;
+                    if estimated_confidence <= 0.0
+                        && !report
+                            .fallback_reasons
+                            .iter()
+                            .any(|reason| reason == "smart_auto_no_trusted_film_base")
+                    {
+                        report
+                            .fallback_reasons
+                            .push("smart_auto_no_trusted_film_base".to_string());
                     }
                 }
                 (base_color_from_density(density), runtime, persisted)
@@ -5698,6 +5713,15 @@ pub async fn analyze_proxy_density_limits(
                 }
             } else {
                 let mut estimated = compute_content_limits_f32(input, quality, &geom, base)?;
+                if pipeline_state.contract != ProcessingContract::CaptureCorrectedV11
+                    && !pipeline_state.density_anchors.has_roll_base()
+                    && !pipeline_state.density_anchors.has_roll_full_exposure()
+                {
+                    // Smart Auto has no physical channel endpoints. Use one
+                    // luma scale so the orange mask cannot turn into a green
+                    // or cyan cast through three independent stretches.
+                    share_smart_auto_density_scale(&mut estimated);
+                }
                 apply_roll_density_anchor_limits(
                     &mut estimated,
                     &pipeline_state.density_anchors,
@@ -5773,6 +5797,17 @@ pub async fn reset_image_development(
             };
             pipeline.content_range = None;
             pipeline.render_mapping = Default::default();
+            pipeline.processing_report = if capture_corrected {
+                PipelineProcessingReport::capture_corrected(false)
+            } else {
+                let mut report = PipelineProcessingReport::smart_auto();
+                if pipeline.density_anchors.has_roll_base() {
+                    report.base_source = "verified_anchor".to_string();
+                    report.base_confidence = "verified".to_string();
+                    report.uses_physical_anchors = true;
+                }
+                report
+            };
             pipeline
         };
         if reset_pipeline.density_anchors.d_min_base.is_none()
@@ -11406,15 +11441,17 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 mod import_contract_tests {
     use super::{
         apply_roll_density_anchor_limits, compute_auto_base, compute_auto_base_f32,
-        compute_auto_color_limits, decode_image_buffer, decode_import_preview_base64,
-        decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
+        compute_auto_color_limits, compute_content_limits_f32, decode_image_buffer,
+        decode_import_preview_base64, decode_reduced_dng_for_working_space,
+        decode_reduced_tiff_for_working_space, decode_tiff_for_smart_auto,
         default_pipeline_state_for_import, is_better_preview_edge, is_lightweight_direct_preview,
         is_noritsu_rendered_image, is_raw_extension, is_scanner_fff_tiff, is_tiff_extension,
         libraw_decode_error_message, linearize_scanner_fff, persist_import_batch,
-        preserve_tone_density_span, prophoto_estimate_to_transport_proxy, raw_decode_failure_hint,
-        reference_density_extreme, render_shader_equivalent, rgb16_image_from_bytes,
-        AutoColorLimits, DecodeMode, IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX,
-        PROPHOTO_TRANSPORT_MIN,
+        pipeline_base_density, pipeline_has_base, preserve_tone_density_span,
+        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
+        render_f32_shader_equivalent, render_shader_equivalent, rgb16_image_from_bytes,
+        share_smart_auto_density_scale, AutoColorLimits, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
+        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
         BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
@@ -12296,6 +12333,67 @@ mod import_contract_tests {
     }
 
     #[test]
+    fn selected_film_area_limits_ignore_outside_light_panel_changes() {
+        let mut first = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_pixel(16, 16, Rgb([0.98; 3]));
+        let mut second = first.clone();
+        for y in 4..12 {
+            for x in 4..12 {
+                let value = 0.35 + ((x + y) % 8) as f32 * 0.04;
+                let pixel = Rgb([value, value * 0.95, value * 1.05]);
+                first.put_pixel(x, y, pixel);
+                second.put_pixel(x, y, pixel);
+            }
+        }
+        for y in 0..4 {
+            for x in 0..16 {
+                second.put_pixel(x, y, Rgb([0.70; 3]));
+            }
+        }
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]);
+        let a = compute_content_limits_f32(&first, None, &geom, [0.0; 3]).unwrap();
+        let b = compute_content_limits_f32(&second, None, &geom, [0.0; 3]).unwrap();
+        for channel in 0..3 {
+            assert!((a.d_min[channel] - b.d_min[channel]).abs() < 1.0e-5);
+            assert!((a.d_max[channel] - b.d_max[channel]).abs() < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn uncalibrated_smart_auto_renders_finite_visible_positive_fixture() {
+        let image = ImageBuffer::from_fn(32, 24, |x, y| {
+            let value = 0.25 + ((x + y) % 12) as f32 * 0.035;
+            Rgb([value, value * 0.92, value * 1.08])
+        });
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]);
+        let mut state = PipelineState::smart_auto();
+        let mut limits = compute_content_limits_f32(&image, None, &geom, [0.0; 3]).unwrap();
+        share_smart_auto_density_scale(&mut limits);
+        state.processing_report.base_source = "content_estimate".to_string();
+        state.render_mapping.density_low = limits.d_min;
+        state.render_mapping.density_high = limits.d_max;
+        let rendered = render_f32_shader_equivalent(
+            &image,
+            None,
+            &TuningParams::default(),
+            &geom,
+            &BaseColor::default(),
+            &state,
+            None,
+        );
+        assert!(rendered.as_raw().iter().all(|value| *value <= u16::MAX));
+        assert!(rendered.as_raw().iter().any(|value| *value > 0));
+        assert!(rendered.as_raw().iter().any(|value| *value < u16::MAX));
+    }
+
+    #[test]
+    fn unprofiled_generic_tiff_is_rejected_from_smart_auto_domain() {
+        let error = decode_tiff_for_smart_auto("missing-unprofiled.tiff", 256).unwrap_err();
+        assert_eq!(error, "scanner_tiff_input_space_unknown");
+    }
+
+    #[test]
     fn smart_auto_short_tone_is_not_forced_to_fixed_density_span() {
         let anchors = DensityAnchors::default();
         let mut limits = AutoColorLimits {
@@ -12306,6 +12404,33 @@ mod import_contract_tests {
         preserve_tone_density_span(&mut limits, &anchors);
         assert_eq!(limits.d_min, [0.1; 3]);
         assert_eq!(limits.d_max, [0.4; 3]);
+    }
+
+    #[test]
+    fn smart_auto_uses_one_shared_density_scale_for_colour_channels() {
+        let mut limits = AutoColorLimits {
+            d_min: [0.10, 0.20, 0.30],
+            d_max: [0.80, 1.00, 1.20],
+            pipeline_state: None,
+        };
+        share_smart_auto_density_scale(&mut limits);
+        assert_eq!(limits.d_min[0], limits.d_min[1]);
+        assert_eq!(limits.d_min[1], limits.d_min[2]);
+        assert_eq!(limits.d_max[0], limits.d_max[1]);
+        assert_eq!(limits.d_max[1], limits.d_max[2]);
+    }
+
+    #[test]
+    fn estimated_smart_auto_base_is_analysis_state_not_physical_anchor() {
+        let mut state = PipelineState::smart_auto();
+        assert!(!pipeline_has_base(&state, &BaseColor::default()));
+        state.processing_report.base_source = "content_estimate".to_string();
+        assert!(pipeline_has_base(&state, &BaseColor::default()));
+        assert_eq!(
+            pipeline_base_density(&state, &BaseColor::default()),
+            [0.0; 3]
+        );
+        assert!(state.density_anchors.d_min_base.is_none());
     }
 
     #[test]

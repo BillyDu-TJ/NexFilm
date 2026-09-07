@@ -88,6 +88,12 @@ impl FilmPipeline {
             .as_ref()
             .map(|anchor| anchor.density)
             .unwrap_or_else(|| {
+                if state.contract != ProcessingContract::LegacyV1 {
+                    // Smart Auto's estimated candidate is analysis metadata;
+                    // the content-driven render mapping uses a neutral zero
+                    // reference until a physical D-min is verified.
+                    return [0.0; 3];
+                }
                 [
                     density_from_u16(base_color.base_r),
                     density_from_u16(base_color.base_g),
@@ -256,6 +262,26 @@ mod tests {
     }
 
     #[test]
+    fn smart_auto_estimate_does_not_become_render_base() {
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.base_source = "content_estimate".to_string();
+        let pipeline = FilmPipeline::from_state(
+            &state,
+            &BaseColor {
+                base_r: 10000,
+                base_g: 20000,
+                base_b: 30000,
+            },
+            [0.0; 3],
+            FilmMode::Color,
+        );
+        let density = pipeline.compute_true_density(&[0.5, 0.5, 0.5]);
+        let expected = -0.5f32.log10();
+        assert!(density.iter().all(|value| (*value - expected).abs() < 1e-6));
+        assert!(state.density_anchors.d_min_base.is_none());
+    }
+
+    #[test]
     fn relative_density_rejects_invalid_input_without_epsilon_repair() {
         let pipeline = FilmPipeline::new_prophoto(
             [0.0; 3],
@@ -275,5 +301,17 @@ mod tests {
             pipeline.compute_relative_density(&[0.5, 0.25, 0.125], false),
             None
         );
+    }
+
+    #[test]
+    fn prophoto_estimate_clamps_invalid_transport_without_nan() {
+        let pipeline = FilmPipeline::new_prophoto(
+            [0.0; 3],
+            [0.0; 3],
+            FilmMode::Color,
+            ProcessingContract::SmartAutoProPhotoV11,
+        );
+        let density = pipeline.compute_true_density(&[-1.0, 2.0, f32::NAN]);
+        assert!(density.iter().all(|value| value.is_finite()));
     }
 }
