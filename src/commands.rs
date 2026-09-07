@@ -2462,6 +2462,19 @@ fn share_smart_auto_density_scale(limits: &mut AutoColorLimits) {
     }
 }
 
+fn preserve_smart_auto_content_span(limits: &mut AutoColorLimits) {
+    const MIN_DISPLAY_SPAN: f32 = 0.8;
+    let low = limits.d_min[0];
+    let high = limits.d_max[0];
+    let span = high - low;
+    if !span.is_finite() || span <= 1.0e-6 || span >= MIN_DISPLAY_SPAN {
+        return;
+    }
+    let center = (low + high) * 0.5;
+    limits.d_min = [center - MIN_DISPLAY_SPAN * 0.5; 3];
+    limits.d_max = [center + MIN_DISPLAY_SPAN * 0.5; 3];
+}
+
 const PRESERVE_TONE_MIN_DENSITY_SPAN: f32 = 1.9;
 
 fn preserve_tone_density_span(limits: &mut AutoColorLimits, anchors: &DensityAnchors) {
@@ -3761,7 +3774,31 @@ fn state_from_resolution(
     let mut state = persisted.clone();
     state.contract = resolution.resolved_path;
     state.density_anchors = resolution.usable_density_anchors.clone();
-    state.processing_report = resolution.processing_report.clone();
+    let mut report = resolution.processing_report.clone();
+    let expected_domain = match resolution.resolved_path {
+        ProcessingContract::CaptureCorrectedV11 => "relative_transmission_rgb",
+        ProcessingContract::LegacyV1 => "legacy_linear_srgb",
+        _ => "linear_prophoto_estimate",
+    };
+    if report.base_source == "unresolved"
+        && persisted.processing_report.analysis_data_domain == expected_domain
+        && persisted.processing_report.base_source != "unresolved"
+    {
+        // Resolver stages describe capability; the persisted report carries
+        // the completed frame analysis. Keep both pieces of provenance.
+        report.base_source = persisted.processing_report.base_source.clone();
+        report.base_confidence = persisted.processing_report.base_confidence.clone();
+        report.excluded_open_light_pixels = persisted.processing_report.excluded_open_light_pixels;
+        report.excluded_saturated_pixels = persisted.processing_report.excluded_saturated_pixels;
+        report.excluded_invalid_pixels = persisted.processing_report.excluded_invalid_pixels;
+        report.tone_mapping_mode = persisted.processing_report.tone_mapping_mode.clone();
+        report.uses_physical_anchors = persisted.processing_report.uses_physical_anchors;
+        report.analysis_data_domain = persisted.processing_report.analysis_data_domain.clone();
+        report
+            .fallback_reasons
+            .extend(persisted.processing_report.fallback_reasons.iter().cloned());
+    }
+    state.processing_report = report;
     state
 }
 
@@ -5580,7 +5617,15 @@ pub async fn analyze_proxy_base_color(
                         )
                     } else {
                         let (density, confidence) = compute_auto_base_f32(input, &item.geom)?;
-                        (density, confidence, "content_estimate")
+                        (
+                            density,
+                            confidence,
+                            if confidence > 0.0 {
+                                "content_estimate"
+                            } else {
+                                "compatibility_fallback"
+                            },
+                        )
                     };
                 let mut runtime = effective;
                 let mut persisted = item.pipeline_state.clone();
@@ -5720,7 +5765,13 @@ pub async fn analyze_proxy_density_limits(
                     // Smart Auto has no physical channel endpoints. Use one
                     // luma scale so the orange mask cannot turn into a green
                     // or cyan cast through three independent stretches.
+                    let short_content = estimated.d_max[0] - estimated.d_min[0] < 0.8;
                     share_smart_auto_density_scale(&mut estimated);
+                    preserve_smart_auto_content_span(&mut estimated);
+                    if short_content {
+                        pipeline_state.processing_report.tone_mapping_mode =
+                            "preserve_tone_adaptive_midpoint".to_string();
+                    }
                 }
                 apply_roll_density_anchor_limits(
                     &mut estimated,
@@ -5731,10 +5782,11 @@ pub async fn analyze_proxy_density_limits(
             }
         };
         if pipeline_state.contract != ProcessingContract::LegacyV1 {
+            let analysis_limits = limits.clone();
             if !pipeline_state.density_anchors.is_fully_anchored() {
                 pipeline_state.content_range = Some(ContentRange {
-                    low: limits.d_min,
-                    high: limits.d_max,
+                    low: analysis_limits.d_min,
+                    high: analysis_limits.d_max,
                     source_scope: if geom.calibration_points.is_some() {
                         ContentRangeScope::FilmArea
                     } else {
@@ -5749,6 +5801,7 @@ pub async fn analyze_proxy_density_limits(
             pipeline_state.render_mapping.density_high = limits.d_max;
             let mut item = write_lock(&item_arc);
             let mut persisted = item.pipeline_state.clone();
+            persisted.processing_report = pipeline_state.processing_report.clone();
             persisted.content_range = pipeline_state.content_range.clone();
             persisted.render_mapping = pipeline_state.render_mapping.clone();
             persist_pipeline_state(&item.roll_id, &item.file_path, &persisted)?;
@@ -11447,11 +11500,11 @@ mod import_contract_tests {
         default_pipeline_state_for_import, is_better_preview_edge, is_lightweight_direct_preview,
         is_noritsu_rendered_image, is_raw_extension, is_scanner_fff_tiff, is_tiff_extension,
         libraw_decode_error_message, linearize_scanner_fff, persist_import_batch,
-        pipeline_base_density, pipeline_has_base, preserve_tone_density_span,
-        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
-        render_f32_shader_equivalent, render_shader_equivalent, rgb16_image_from_bytes,
-        share_smart_auto_density_scale, AutoColorLimits, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
-        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
+        pipeline_base_density, pipeline_has_base, preserve_smart_auto_content_span,
+        preserve_tone_density_span, prophoto_estimate_to_transport_proxy, raw_decode_failure_hint,
+        reference_density_extreme, render_f32_shader_equivalent, render_shader_equivalent,
+        rgb16_image_from_bytes, share_smart_auto_density_scale, AutoColorLimits, DecodeMode,
+        IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
         BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
@@ -12418,6 +12471,20 @@ mod import_contract_tests {
         assert_eq!(limits.d_min[1], limits.d_min[2]);
         assert_eq!(limits.d_max[0], limits.d_max[1]);
         assert_eq!(limits.d_max[1], limits.d_max[2]);
+    }
+
+    #[test]
+    fn smart_auto_short_content_gets_an_adaptive_mid_tone_window() {
+        let mut limits = AutoColorLimits {
+            d_min: [0.30; 3],
+            d_max: [0.50; 3],
+            pipeline_state: None,
+        };
+        preserve_smart_auto_content_span(&mut limits);
+        assert!((limits.d_min[0] - 0.0).abs() < 1.0e-6);
+        assert!((limits.d_max[0] - 0.8).abs() < 1.0e-6);
+        assert_eq!(limits.d_min, [limits.d_min[0]; 3]);
+        assert_eq!(limits.d_max, [limits.d_max[0]; 3]);
     }
 
     #[test]
