@@ -44,7 +44,11 @@ pub struct ScannerInputProfile {
     pub file_transfer_curve: String,
     pub crop_geometry: String,
     pub input_encoding: String,
+    /// Digest of the actual ICC file, when an external ICC is supplied.
     pub icc_digest: String,
+    /// Digest of this NexFilm JSON configuration, kept separate from ICC.
+    #[serde(default)]
+    pub config_digest: String,
     pub profile_source: String,
     pub license: String,
     pub verified: bool,
@@ -87,6 +91,12 @@ impl ScannerInputProfile {
         if self.verified && self.confidence != ScannerProfileConfidence::Characterized {
             return Err("scanner_profile_verified_requires_characterized_confidence".into());
         }
+        if self.input_encoding.trim().to_ascii_lowercase() != "linear_rgb" {
+            return Err("scanner_profile_input_encoding_unsupported".into());
+        }
+        if self.target != ScannerProfileTarget::LinearRgb {
+            return Err("scanner_profile_target_space_unsupported".into());
+        }
         Ok(())
     }
 
@@ -125,6 +135,7 @@ impl ScannerInputProfile {
     pub fn canonical_config_digest(&self) -> Result<String, String> {
         let mut canonical = self.clone();
         canonical.icc_digest.clear();
+        canonical.config_digest.clear();
         let bytes = serde_json::to_vec(&canonical)
             .map_err(|error| format!("scanner_profile_serialize_failed|{error}"))?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
@@ -161,10 +172,21 @@ pub fn import_local_profile(
 ) -> Result<(ScannerInputProfile, String), String> {
     let path = path.as_ref();
     let bytes = std::fs::read(path).map_err(|e| format!("scanner_profile_read_failed|{e}"))?;
-    let profile: ScannerInputProfile =
+    let mut profile: ScannerInputProfile =
         serde_json::from_slice(&bytes).map_err(|e| format!("scanner_profile_parse_failed|{e}"))?;
     profile.validate()?;
-    if profile.icc_digest != profile.canonical_config_digest()? {
+    let canonical = profile.canonical_config_digest()?;
+    if !profile.config_digest.is_empty() {
+        if profile.config_digest != canonical {
+            return Err("scanner_profile_config_digest_mismatch".into());
+        }
+    } else if profile.icc_digest == canonical {
+        // v1.1 beta files used the ICC field for the JSON digest. Preserve
+        // them explicitly as an unbound ICC rather than silently conflating
+        // the two digests going forward.
+        profile.config_digest = canonical;
+        profile.icc_digest = "unbound".to_string();
+    } else {
         return Err("scanner_profile_digest_mismatch".into());
     }
     let digest = format!("{:x}", Sha256::digest(&bytes));
@@ -181,7 +203,7 @@ pub fn record_is_current(record: &ScannerProfileRecord) -> bool {
     source_digest(&record.source_path).ok().as_deref() == Some(record.source_digest.as_str())
         && record.profile.validate().is_ok()
         && record.profile.canonical_config_digest().ok().as_deref()
-            == Some(record.profile.icc_digest.as_str())
+            == Some(record.profile.config_digest.as_str())
 }
 
 #[cfg(test)]
@@ -203,6 +225,7 @@ mod tests {
             crop_geometry: "full".into(),
             input_encoding: "linear_rgb".into(),
             icc_digest: "digest".into(),
+            config_digest: String::new(),
             profile_source: "local".into(),
             license: "internal".into(),
             verified: false,
@@ -216,6 +239,22 @@ mod tests {
     #[test]
     fn estimate_is_not_density() {
         assert_eq!(profile().capability_label(), "Scanner Input Estimate");
+    }
+
+    #[test]
+    fn unsupported_encoding_and_pcs_are_rejected() {
+        let mut p = profile();
+        p.input_encoding = "jpeg_srgb".into();
+        assert_eq!(
+            p.validate().unwrap_err(),
+            "scanner_profile_input_encoding_unsupported"
+        );
+        let mut p = profile();
+        p.target = ScannerProfileTarget::Pcs;
+        assert_eq!(
+            p.validate().unwrap_err(),
+            "scanner_profile_target_space_unsupported"
+        );
     }
     #[test]
     fn invalid_verified_profile_is_rejected() {
@@ -231,7 +270,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("scanner.json");
         let mut value = profile();
-        value.icc_digest = value.canonical_config_digest().unwrap();
+        value.config_digest = value.canonical_config_digest().unwrap();
         std::fs::write(&path, serde_json::to_vec(&value).unwrap()).unwrap();
         let (loaded, digest) = import_local_profile(&path).unwrap();
         let record = ScannerProfileRecord {
@@ -254,7 +293,7 @@ mod tests {
         let mut profile = profile();
         profile.matrix = [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]];
         profile.offset = [0.1, 0.2, 0.3];
-        profile.icc_digest = profile.canonical_config_digest().unwrap();
+        profile.config_digest = profile.canonical_config_digest().unwrap();
         let mut image = ImageBuffer::from_raw(2, 1, vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6]).unwrap();
         profile.apply_linear_rgb_image(&mut image).unwrap();
         for (actual, expected) in image.as_raw().iter().zip([0.3, 0.8, 1.5, 0.9, 1.7, 2.7]) {

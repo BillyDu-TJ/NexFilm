@@ -1811,26 +1811,65 @@ fn compute_auto_base(proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> BaseColor {
     }
 }
 
-fn compute_auto_base_f32(proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>) -> [f32; 3] {
-    let mut values = [Vec::new(), Vec::new(), Vec::new()];
-    for pixel in proxy.as_raw().chunks_exact(3) {
+fn compute_auto_base_f32(
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    geom: &GeometryState,
+) -> Result<([f32; 3], f32), String> {
+    // Smart Auto estimates a display-base candidate only from the selected
+    // film geometry. It is never promoted to a physical anchor.
+    let points =
+        geom.calibration_points
+            .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+    let min_x = points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+    let max_x = points
+        .iter()
+        .map(|p| p[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+    let max_y = points
+        .iter()
+        .map(|p| p[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut values = Vec::<[f32; 3]>::new();
+    for (index, pixel) in proxy.as_raw().chunks_exact(3).enumerate() {
+        let x =
+            (index as u32 % proxy.width()) as f32 / proxy.width().saturating_sub(1).max(1) as f32;
+        let y =
+            (index as u32 / proxy.width()) as f32 / proxy.height().saturating_sub(1).max(1) as f32;
+        if x < min_x || x > max_x || y < min_y || y > max_y {
+            continue;
+        }
+        if pixel
+            .iter()
+            .any(|v| !v.is_finite() || *v <= 0.0 || *v >= 0.995)
+        {
+            continue;
+        }
+        // The proxy is sampled in source order; use the crop rectangle as a
+        // conservative film-area gate when a quadrilateral is unavailable.
+        values.push([pixel[0], pixel[1], pixel[2]]);
+    }
+    if values.len() < 8 {
+        return Err("smart_auto_no_trusted_film_base".to_string());
+    }
+    values.sort_unstable_by(|a, b| {
+        density_luma([-a[0].log10(), -a[1].log10(), -a[2].log10()]).total_cmp(&density_luma([
+            -b[0].log10(),
+            -b[1].log10(),
+            -b[2].log10(),
+        ]))
+    });
+    let tail = ((values.len() as f32 * 0.02).ceil() as usize).clamp(1, values.len());
+    let mut sum = [0.0f32; 3];
+    for sample in values.iter().take(tail) {
         for channel in 0..3 {
-            let value = pixel[channel].max(1e-6);
-            if value.is_finite() {
-                values[channel].push(value);
-            }
+            sum[channel] += -sample[channel].log10();
         }
     }
-    values.map(|mut channel| {
-        if channel.is_empty() {
-            return 0.0;
-        }
-        let index = ((channel.len() as f32 * 0.99).ceil() as usize)
-            .saturating_sub(1)
-            .min(channel.len() - 1);
-        channel.select_nth_unstable_by(index, |left, right| left.total_cmp(right));
-        -channel[index].log10()
-    })
+    let density = sum.map(|v| v / tail as f32);
+    let confidence =
+        (values.len() as f32 / (proxy.width() * proxy.height()).max(1) as f32).clamp(0.0, 1.0);
+    Ok((density, confidence))
 }
 
 fn compute_auto_base_capture_corrected(
@@ -2313,6 +2352,12 @@ fn pipeline_base_density(state: &PipelineState, base_color: &BaseColor) -> [f32;
         .filter(|anchor| anchor_matches_resolved_contract(anchor, state))
         .map(|anchor| anchor.density)
         .unwrap_or_else(|| {
+            if state.contract != ProcessingContract::LegacyV1 {
+                // Smart Auto's candidate is analysis metadata only. The
+                // content-driven fallback uses a zero reference and maps the
+                // observed scene range directly for display.
+                return [0.0; 3];
+            }
             [base_color.base_r, base_color.base_g, base_color.base_b]
                 .map(|value| -(value as f32 / 65535.0).max(1e-6).log10())
         })
@@ -2383,6 +2428,12 @@ fn apply_roll_density_anchor_limits(
 const PRESERVE_TONE_MIN_DENSITY_SPAN: f32 = 1.9;
 
 fn preserve_tone_density_span(limits: &mut AutoColorLimits, anchors: &DensityAnchors) {
+    // Smart Auto content ranges are display estimates. Expanding a short
+    // scene to a fixed physical span makes fog and low-contrast frames black.
+    // Only verified roll anchors may request endpoint completion.
+    if !anchors.has_roll_base() && !anchors.has_roll_full_exposure() {
+        return;
+    }
     for channel in 0..3 {
         let span = limits.d_max[channel] - limits.d_min[channel];
         if !span.is_finite() || span >= PRESERVE_TONE_MIN_DENSITY_SPAN {
@@ -5466,16 +5517,26 @@ pub async fn analyze_proxy_base_color(
                 let quality = capture_corrected
                     .then_some(item.relative_transmission_quality.as_ref())
                     .flatten();
-                let density = if effective.density_anchors.has_roll_full_exposure() {
-                    // A sampled leader fixes D-max. Its missing base endpoint
-                    // must be inferred from the confirmed Film Area, not from
-                    // unrelated border and sprocket pixels in the full scan.
-                    compute_content_limits_f32(input, quality, &item.geom, [0.0; 3])?.d_min
-                } else if let Some(quality) = quality {
-                    compute_auto_base_capture_corrected(input, quality)?
-                } else {
-                    compute_auto_base_f32(input)
-                };
+                let (density, estimated_confidence, estimated_source) =
+                    if effective.density_anchors.has_roll_full_exposure() {
+                        // A sampled leader fixes D-max. Its missing base endpoint
+                        // must be inferred from the confirmed Film Area, not from
+                        // unrelated border and sprocket pixels in the full scan.
+                        (
+                            compute_content_limits_f32(input, quality, &item.geom, [0.0; 3])?.d_min,
+                            0.8,
+                            "detected_film_base",
+                        )
+                    } else if let Some(quality) = quality {
+                        (
+                            compute_auto_base_capture_corrected(input, quality)?,
+                            0.9,
+                            "detected_film_base",
+                        )
+                    } else {
+                        let (density, confidence) = compute_auto_base_f32(input, &item.geom)?;
+                        (density, confidence, "content_estimate")
+                    };
                 let provenance = item.runtime_density_provenance.clone().unwrap_or_else(|| {
                     resolution_density_provenance(&PipelineResolution {
                         requested_path: effective.contract,
@@ -5508,16 +5569,33 @@ pub async fn analyze_proxy_base_color(
                     })
                 });
                 let anchor = density_anchor_from_f32(density, provenance);
+                let keep_anchor = effective.contract == ProcessingContract::CaptureCorrectedV11
+                    || effective.density_anchors.has_roll_full_exposure();
                 let mut runtime = effective;
-                replace_base_anchor_preserving_history(
-                    &mut runtime.density_anchors,
-                    anchor.clone(),
-                );
-                if runtime.contract != ProcessingContract::CaptureCorrectedV11 {
-                    runtime.contract = runtime.density_anchors.prophoto_contract();
-                }
                 let mut persisted = item.pipeline_state.clone();
-                replace_base_anchor_preserving_history(&mut persisted.density_anchors, anchor);
+                for report in [
+                    &mut runtime.processing_report,
+                    &mut persisted.processing_report,
+                ] {
+                    report.base_source = estimated_source.to_string();
+                    report.base_confidence = format!("{estimated_confidence:.3}");
+                    report.analysis_data_domain = if keep_anchor {
+                        "relative_transmission_rgb".to_string()
+                    } else {
+                        "linear_prophoto_estimate".to_string()
+                    };
+                    report.uses_physical_anchors = keep_anchor;
+                }
+                if keep_anchor {
+                    replace_base_anchor_preserving_history(
+                        &mut runtime.density_anchors,
+                        anchor.clone(),
+                    );
+                    replace_base_anchor_preserving_history(&mut persisted.density_anchors, anchor);
+                    if runtime.contract != ProcessingContract::CaptureCorrectedV11 {
+                        runtime.contract = runtime.density_anchors.prophoto_contract();
+                    }
+                }
                 (base_color_from_density(density), runtime, persisted)
             }
         };
@@ -11327,15 +11405,16 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 #[cfg(test)]
 mod import_contract_tests {
     use super::{
-        apply_roll_density_anchor_limits, compute_auto_base, compute_auto_color_limits,
-        decode_image_buffer, decode_import_preview_base64, decode_reduced_dng_for_working_space,
-        decode_reduced_tiff_for_working_space, default_pipeline_state_for_import,
-        is_better_preview_edge, is_lightweight_direct_preview, is_noritsu_rendered_image,
-        is_raw_extension, is_scanner_fff_tiff, is_tiff_extension, libraw_decode_error_message,
-        linearize_scanner_fff, persist_import_batch, preserve_tone_density_span,
-        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
-        render_shader_equivalent, rgb16_image_from_bytes, AutoColorLimits, DecodeMode,
-        IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
+        apply_roll_density_anchor_limits, compute_auto_base, compute_auto_base_f32,
+        compute_auto_color_limits, decode_image_buffer, decode_import_preview_base64,
+        decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
+        default_pipeline_state_for_import, is_better_preview_edge, is_lightweight_direct_preview,
+        is_noritsu_rendered_image, is_raw_extension, is_scanner_fff_tiff, is_tiff_extension,
+        libraw_decode_error_message, linearize_scanner_fff, persist_import_batch,
+        preserve_tone_density_span, prophoto_estimate_to_transport_proxy, raw_decode_failure_hint,
+        reference_density_extreme, render_shader_equivalent, rgb16_image_from_bytes,
+        AutoColorLimits, DecodeMode, IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX,
+        PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
         BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
@@ -11347,7 +11426,7 @@ mod import_contract_tests {
         ColorSpaceId, DENSITY_CAPTURE_PROFILE,
     };
     use base64::Engine as _;
-    use image::ImageBuffer;
+    use image::{ImageBuffer, Rgb};
     use rayon::prelude::*;
 
     #[test]
@@ -12196,6 +12275,37 @@ mod import_contract_tests {
         for maximum in limits.d_max {
             assert!((maximum - super::PRESERVE_TONE_MIN_DENSITY_SPAN).abs() < 1.0e-6);
         }
+    }
+
+    #[test]
+    fn smart_auto_base_ignores_outside_white_panel_and_invalid_values() {
+        let mut image =
+            ImageBuffer::<Rgb<f32>, Vec<f32>>::from_pixel(8, 8, Rgb([0.99, 0.99, 0.99]));
+        for y in 2..6 {
+            for x in 2..6 {
+                image.put_pixel(x, y, Rgb([0.72, 0.68, 0.64]));
+            }
+        }
+        image.put_pixel(3, 3, Rgb([-1.0, f32::NAN, 2.0]));
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]);
+        let (base, confidence) = compute_auto_base_f32(&image, &geom).unwrap();
+        assert!(confidence > 0.1);
+        assert!(base.iter().all(|value| value.is_finite() && *value > 0.0));
+        assert!(base[0] > 0.05 && base[0] < 0.2);
+    }
+
+    #[test]
+    fn smart_auto_short_tone_is_not_forced_to_fixed_density_span() {
+        let anchors = DensityAnchors::default();
+        let mut limits = AutoColorLimits {
+            d_min: [0.1; 3],
+            d_max: [0.4; 3],
+            pipeline_state: None,
+        };
+        preserve_tone_density_span(&mut limits, &anchors);
+        assert_eq!(limits.d_min, [0.1; 3]);
+        assert_eq!(limits.d_max, [0.4; 3]);
     }
 
     #[test]

@@ -566,6 +566,22 @@ pub struct PipelineProcessingReport {
     pub stages: Vec<PipelineStageRecord>,
     #[serde(default)]
     pub fallback_reasons: Vec<String>,
+    #[serde(default)]
+    pub base_source: String,
+    #[serde(default)]
+    pub base_confidence: String,
+    #[serde(default)]
+    pub excluded_open_light_pixels: usize,
+    #[serde(default)]
+    pub excluded_saturated_pixels: usize,
+    #[serde(default)]
+    pub excluded_invalid_pixels: usize,
+    #[serde(default)]
+    pub tone_mapping_mode: String,
+    #[serde(default)]
+    pub uses_physical_anchors: bool,
+    #[serde(default)]
+    pub analysis_data_domain: String,
 }
 
 impl PipelineProcessingReport {
@@ -579,6 +595,14 @@ impl PipelineProcessingReport {
                 detail: "libraw_dcraw_process_camera_wb_to_prophoto_estimate".to_string(),
             }],
             fallback_reasons: Vec::new(),
+            base_source: "content_estimate".to_string(),
+            base_confidence: "low".to_string(),
+            excluded_open_light_pixels: 0,
+            excluded_saturated_pixels: 0,
+            excluded_invalid_pixels: 0,
+            tone_mapping_mode: "preserve_tone".to_string(),
+            uses_physical_anchors: false,
+            analysis_data_domain: "linear_prophoto_estimate".to_string(),
         }
     }
 
@@ -629,7 +653,7 @@ impl PipelineProcessingReport {
                     },
                 },
             ],
-            fallback_reasons: Vec::new(),
+            ..Self::smart_auto()
         }
     }
 
