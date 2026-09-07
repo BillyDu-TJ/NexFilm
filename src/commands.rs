@@ -2211,14 +2211,12 @@ fn linear_srgb_u16_to_prophoto_f32(
         .par_chunks_exact_mut(3)
         .zip(source.as_raw().par_chunks_exact(3))
         .for_each(|(target, pixel)| {
-            target.copy_from_slice(&apply_linear_matrix(
-                [
-                    pixel[0] as f32 / 65535.0,
-                    pixel[1] as f32 / 65535.0,
-                    pixel[2] as f32 / 65535.0,
-                ],
-                matrix,
-            ));
+            let srgb = compress_linear_srgb_for_density([
+                pixel[0] as f32 / 65535.0,
+                pixel[1] as f32 / 65535.0,
+                pixel[2] as f32 / 65535.0,
+            ]);
+            target.copy_from_slice(&apply_linear_matrix(srgb, matrix));
         });
     converted
 }
@@ -3219,9 +3217,10 @@ fn decode_image_buffer(
     Ok(converted)
 }
 
-/// Decode the Smart Auto ProPhoto Estimate without applying the legacy
-/// display-gamut compression or quantizing the camera matrix result. This
-/// output is a relative display estimate, never a measured Density Input RGB.
+/// Decode the Smart Auto ProPhoto Estimate. Camera/sRGB values are first fit
+/// into a finite positive transmission domain while preserving luminance;
+/// the resulting ProPhoto values remain a relative display estimate, never a
+/// measured Density Input RGB.
 fn decode_prophoto_estimate_image_buffer(
     path: &str,
     mode: DecodeMode,
@@ -3236,11 +3235,11 @@ fn decode_prophoto_estimate_image_buffer(
             .zip(source.as_raw().par_chunks_exact(3))
             .for_each(|(target, pixel)| {
                 let rgb = apply_linear_matrix(
-                    [
+                    compress_linear_srgb_for_density([
                         pixel[0] as f32 / 65535.0,
                         pixel[1] as f32 / 65535.0,
                         pixel[2] as f32 / 65535.0,
-                    ],
+                    ]),
                     matrix,
                 );
                 target.copy_from_slice(&rgb);
@@ -3269,7 +3268,10 @@ fn decode_prophoto_estimate_image_buffer(
         .par_chunks_exact_mut(3)
         .for_each(|pixel| {
             let camera = [pixel[0], pixel[1], pixel[2]];
-            let srgb = apply_linear_matrix(camera, decoded.camera_to_srgb);
+            let srgb = compress_linear_srgb_for_density(apply_linear_matrix(
+                camera,
+                decoded.camera_to_srgb,
+            ));
             pixel.copy_from_slice(&apply_linear_matrix(srgb, srgb_to_prophoto));
         });
     Ok(converted)
@@ -3306,7 +3308,10 @@ fn decode_scanner_profiled_estimate_image_buffer(
     profile.apply_linear_rgb_image(&mut linear)?;
     let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
     linear.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
-        let rgb = apply_linear_matrix([pixel[0], pixel[1], pixel[2]], matrix);
+        let rgb = apply_linear_matrix(
+            compress_linear_srgb_for_density([pixel[0], pixel[1], pixel[2]]),
+            matrix,
+        );
         pixel.copy_from_slice(&rgb);
     });
     Ok(linear)
@@ -12202,6 +12207,21 @@ mod import_contract_tests {
         for (encoded, original) in transport.as_raw().iter().zip(source.as_raw().iter()) {
             let decoded = *encoded as f32 / 65535.0 * span + PROPHOTO_TRANSPORT_MIN;
             assert!((decoded - original).abs() <= span / 65535.0 + 1e-6);
+        }
+    }
+
+    #[test]
+    fn smart_auto_input_compression_produces_finite_positive_prophoto_values() {
+        let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
+        for source in [[-0.4, 0.3, 1.8], [0.95, 0.08, -0.2], [f32::NAN, 0.5, 0.5]] {
+            let safe = compress_linear_srgb_for_density(source);
+            let prophoto = apply_linear_matrix(safe, matrix);
+            assert!(safe
+                .iter()
+                .all(|value| value.is_finite() && *value > 0.0 && *value < 1.0));
+            assert!(prophoto
+                .iter()
+                .all(|value| value.is_finite() && *value > 0.0));
         }
     }
 
