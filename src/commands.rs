@@ -2416,13 +2416,36 @@ fn apply_roll_density_anchor_limits(
     }
 }
 
-fn share_smart_auto_density_scale(limits: &mut AutoColorLimits) {
+fn share_smart_auto_density_scale(limits: &mut AutoColorLimits) -> [f32; 3] {
+    const MAX_CHANNEL_OFFSET: f32 = 0.30;
     let low = density_luma(limits.d_min);
     let high = density_luma(limits.d_max);
-    if low.is_finite() && high.is_finite() && high > low + 1.0e-6 {
-        limits.d_min = [low; 3];
-        limits.d_max = [high; 3];
+    if !low.is_finite() || !high.is_finite() || high <= low + 1.0e-6 {
+        return [0.0; 3];
     }
+
+    // Use one contrast slope for all channels, but retain the co-sited
+    // channel-center differences needed to neutralize the film mask and
+    // capture illuminant. Removing these offsets preserves the negative's
+    // mask as a severe cyan/green cast in the positive. The bound prevents a
+    // strongly coloured subject from driving an unbounded grey-world shift.
+    let centers = [
+        (limits.d_min[0] + limits.d_max[0]) * 0.5,
+        (limits.d_min[1] + limits.d_max[1]) * 0.5,
+        (limits.d_min[2] + limits.d_max[2]) * 0.5,
+    ];
+    let center = density_luma(centers);
+    let mut offsets =
+        centers.map(|value| (value - center).clamp(-MAX_CHANNEL_OFFSET, MAX_CHANNEL_OFFSET));
+    let residual = density_luma(offsets);
+    offsets =
+        offsets.map(|value| (value - residual).clamp(-MAX_CHANNEL_OFFSET, MAX_CHANNEL_OFFSET));
+
+    for channel in 0..3 {
+        limits.d_min[channel] = low + offsets[channel];
+        limits.d_max[channel] = high + offsets[channel];
+    }
+    offsets
 }
 
 fn preserve_smart_auto_content_span(limits: &mut AutoColorLimits) {
@@ -2433,9 +2456,11 @@ fn preserve_smart_auto_content_span(limits: &mut AutoColorLimits) {
     if !span.is_finite() || span <= 1.0e-6 || span >= MIN_DISPLAY_SPAN {
         return;
     }
-    let center = (low + high) * 0.5;
-    limits.d_min = [center - MIN_DISPLAY_SPAN * 0.5; 3];
-    limits.d_max = [center + MIN_DISPLAY_SPAN * 0.5; 3];
+    for channel in 0..3 {
+        let center = (limits.d_min[channel] + limits.d_max[channel]) * 0.5;
+        limits.d_min[channel] = center - MIN_DISPLAY_SPAN * 0.5;
+        limits.d_max[channel] = center + MIN_DISPLAY_SPAN * 0.5;
+    }
 }
 
 const PRESERVE_TONE_MIN_DENSITY_SPAN: f32 = 1.9;
@@ -5685,6 +5710,8 @@ pub async fn analyze_proxy_density_limits(
                 item.effective_pipeline_state().clone(),
             )
         };
+        let mut observed_content_range = None;
+        let mut channel_offsets = [0.0; 3];
         let mut limits = if pipeline_state.contract == ProcessingContract::LegacyV1 {
             compute_auto_color_limits(
                 &legacy_proxy.ok_or_else(|| "PROXY_NOT_READY".to_string())?,
@@ -5728,15 +5755,17 @@ pub async fn analyze_proxy_density_limits(
                 }
             } else {
                 let mut estimated = compute_content_limits_f32(input, quality, &geom, base)?;
+                observed_content_range = Some((estimated.d_min, estimated.d_max));
                 if pipeline_state.contract != ProcessingContract::CaptureCorrectedV11
                     && !pipeline_state.density_anchors.has_roll_base()
                     && !pipeline_state.density_anchors.has_roll_full_exposure()
                 {
                     // Smart Auto has no physical channel endpoints. Use one
-                    // luma scale so the orange mask cannot turn into a green
-                    // or cyan cast through three independent stretches.
-                    let short_content = estimated.d_max[0] - estimated.d_min[0] < 0.8;
-                    share_smart_auto_density_scale(&mut estimated);
+                    // luma contrast scale plus bounded channel offsets so the
+                    // film mask is neutralized without independent stretches.
+                    let short_content =
+                        density_luma(estimated.d_max) - density_luma(estimated.d_min) < 0.8;
+                    channel_offsets = share_smart_auto_density_scale(&mut estimated);
                     preserve_smart_auto_content_span(&mut estimated);
                     if short_content {
                         pipeline_state.processing_report.tone_mapping_mode =
@@ -5752,11 +5781,12 @@ pub async fn analyze_proxy_density_limits(
             }
         };
         if pipeline_state.contract != ProcessingContract::LegacyV1 {
-            let analysis_limits = limits.clone();
             if !pipeline_state.density_anchors.is_fully_anchored() {
+                let (analysis_low, analysis_high) =
+                    observed_content_range.unwrap_or((limits.d_min, limits.d_max));
                 pipeline_state.content_range = Some(ContentRange {
-                    low: analysis_limits.d_min,
-                    high: analysis_limits.d_max,
+                    low: analysis_low,
+                    high: analysis_high,
                     source_scope: if geom.calibration_points.is_some() {
                         ContentRangeScope::FilmArea
                     } else {
@@ -5769,6 +5799,7 @@ pub async fn analyze_proxy_density_limits(
             pipeline_state.render_mapping.mode = RenderMode::PreserveTone;
             pipeline_state.render_mapping.density_low = limits.d_min;
             pipeline_state.render_mapping.density_high = limits.d_max;
+            pipeline_state.render_mapping.channel_offsets = channel_offsets;
             let mut item = write_lock(&item_arc);
             let mut persisted = item.pipeline_state.clone();
             persisted.processing_report = pipeline_state.processing_report.clone();
@@ -11559,16 +11590,17 @@ mod import_contract_tests {
     use super::{
         apply_roll_density_anchor_limits, compute_auto_base, compute_auto_base_f32,
         compute_auto_color_limits, compute_content_limits_f32, decode_image_buffer,
-        decode_import_preview_base64, decode_reduced_dng_for_working_space,
-        decode_reduced_tiff_for_working_space, decode_tiff_for_smart_auto,
-        default_pipeline_state_for_import, is_better_preview_edge, is_lightweight_direct_preview,
-        is_noritsu_rendered_image, is_raw_extension, is_scanner_fff_tiff, is_tiff_extension,
-        libraw_decode_error_message, linearize_scanner_fff, persist_import_batch,
-        pipeline_base_density, pipeline_has_base, preserve_smart_auto_content_span,
-        preserve_tone_density_span, prophoto_estimate_to_transport_proxy, raw_decode_failure_hint,
-        reference_density_extreme, render_f32_shader_equivalent, render_shader_equivalent,
-        rgb16_image_from_bytes, share_smart_auto_density_scale, AutoColorLimits, DecodeMode,
-        IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
+        decode_import_preview_base64, decode_prophoto_estimate_image_buffer,
+        decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
+        decode_tiff_for_smart_auto, default_pipeline_state_for_import, is_better_preview_edge,
+        is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
+        is_scanner_fff_tiff, is_tiff_extension, libraw_decode_error_message, linearize_scanner_fff,
+        persist_import_batch, pipeline_base_density, pipeline_has_base,
+        preserve_smart_auto_content_span, preserve_tone_density_span,
+        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
+        render_f32_shader_equivalent, render_shader_equivalent, rgb16_image_from_bytes,
+        share_smart_auto_density_scale, AutoColorLimits, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
+        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
         BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
@@ -11579,6 +11611,7 @@ mod import_contract_tests {
         apply_linear_matrix, compress_linear_srgb_for_density, linear_conversion_matrix,
         ColorSpaceId, DENSITY_CAPTURE_PROFILE,
     };
+    use crate::core_math::density_luma;
     use base64::Engine as _;
     use image::{ImageBuffer, Rgb};
     use rayon::prelude::*;
@@ -12517,6 +12550,132 @@ mod import_contract_tests {
     }
 
     #[test]
+    #[ignore = "requires the local Nikon loose-import fixture"]
+    fn nikon_loose_import_reports_smart_auto_channel_statistics() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("尼康nef_raw")
+            .join("_DSC7357.NEF");
+        assert!(path.is_file(), "fixture is missing: {}", path.display());
+
+        let image = decode_prophoto_estimate_image_buffer(
+            path.to_string_lossy().as_ref(),
+            DecodeMode::DevelopProxy,
+        )
+        .unwrap();
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([
+            [0.14733543, 0.1509434],
+            [0.825169, 0.15463659],
+            [0.8369906, 0.8396226],
+            [0.14733543, 0.8443396],
+        ]);
+
+        let raw_limits = compute_content_limits_f32(&image, None, &geom, [0.0; 3]).unwrap();
+        let old_low = density_luma(raw_limits.d_min);
+        let old_high = density_luma(raw_limits.d_max);
+        let mut old_limits = AutoColorLimits {
+            d_min: [old_low; 3],
+            d_max: [old_high; 3],
+            pipeline_state: None,
+        };
+        preserve_smart_auto_content_span(&mut old_limits);
+
+        let mut display_limits = raw_limits.clone();
+        let offsets = share_smart_auto_density_scale(&mut display_limits);
+        preserve_smart_auto_content_span(&mut display_limits);
+
+        let render = |limits: &AutoColorLimits| {
+            let mut params = TuningParams::default();
+            params.density.d_min = limits.d_min;
+            params.density.d_max = limits.d_max;
+            let mut state = PipelineState::smart_auto();
+            state.processing_report.base_source = "content_estimate".to_string();
+            render_f32_shader_equivalent(
+                &image,
+                None,
+                &params,
+                &geom,
+                &BaseColor::default(),
+                &state,
+                None,
+            )
+        };
+        let old_render = render(&old_limits);
+        let fixed_render = render(&display_limits);
+        let legacy_image =
+            decode_image_buffer(path.to_string_lossy().as_ref(), DecodeMode::DevelopProxy).unwrap();
+        let legacy_base = compute_auto_base(&legacy_image);
+        let legacy_limits =
+            compute_auto_color_limits(&legacy_image, &geom, &legacy_base, FilmMode::Color, false)
+                .unwrap();
+        let mut legacy_params = TuningParams::default();
+        legacy_params.density.d_min = legacy_limits.d_min;
+        legacy_params.density.d_max = legacy_limits.d_max;
+        let legacy_render =
+            render_shader_equivalent(&legacy_image, &legacy_params, &geom, &legacy_base, None);
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("smart-auto-real-ab");
+        std::fs::create_dir_all(&output).unwrap();
+        old_render
+            .save(output.join("DSC7357-old-shared-window.png"))
+            .unwrap();
+        fixed_render
+            .save(output.join("DSC7357-fixed-channel-offsets.png"))
+            .unwrap();
+        legacy_render
+            .save(output.join("DSC7357-v1.0.2-legacy.png"))
+            .unwrap();
+
+        let mean = |rendered: &ImageBuffer<Rgb<u16>, Vec<u16>>| {
+            let mut sum = [0u64; 3];
+            for pixel in rendered.pixels() {
+                for channel in 0..3 {
+                    sum[channel] += pixel[channel] as u64;
+                }
+            }
+            let count = u64::from(rendered.width()) * u64::from(rendered.height());
+            sum.map(|value| value as f64 / count as f64)
+        };
+
+        let old_mean = mean(&old_render);
+        let fixed_mean = mean(&fixed_render);
+        let legacy_mean = mean(&legacy_render);
+        let colour_distance = |left: [f64; 3], right: [f64; 3]| {
+            left.into_iter()
+                .zip(right)
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        };
+        assert!(
+            colour_distance(fixed_mean, legacy_mean) < colour_distance(old_mean, legacy_mean),
+            "fixed={fixed_mean:?} old={old_mean:?} legacy={legacy_mean:?}"
+        );
+
+        eprintln!(
+            "proxy={}x{} raw={:?}..{:?} old={:?}..{:?} fixed={:?}..{:?} offsets={:?} old_mean={:?} fixed_mean={:?} legacy_base={:?} legacy={:?}..{:?} legacy_mean={:?} output={}",
+            image.width(),
+            image.height(),
+            raw_limits.d_min,
+            raw_limits.d_max,
+            old_limits.d_min,
+            old_limits.d_max,
+            display_limits.d_min,
+            display_limits.d_max,
+            offsets,
+            old_mean,
+            fixed_mean,
+            [legacy_base.base_r, legacy_base.base_g, legacy_base.base_b],
+            legacy_limits.d_min,
+            legacy_limits.d_max,
+            legacy_mean,
+            output.display()
+        );
+    }
+
+    #[test]
     fn uncalibrated_smart_auto_renders_finite_visible_positive_fixture() {
         let image = ImageBuffer::from_fn(32, 24, |x, y| {
             let value = 0.25 + ((x + y) % 12) as f32 * 0.035;
@@ -12527,13 +12686,16 @@ mod import_contract_tests {
         let mut state = PipelineState::smart_auto();
         let mut limits = compute_content_limits_f32(&image, None, &geom, [0.0; 3]).unwrap();
         share_smart_auto_density_scale(&mut limits);
+        let mut params = TuningParams::default();
+        params.density.d_min = limits.d_min;
+        params.density.d_max = limits.d_max;
         state.processing_report.base_source = "content_estimate".to_string();
         state.render_mapping.density_low = limits.d_min;
         state.render_mapping.density_high = limits.d_max;
         let rendered = render_f32_shader_equivalent(
             &image,
             None,
-            &TuningParams::default(),
+            &params,
             &geom,
             &BaseColor::default(),
             &state,
@@ -12542,6 +12704,16 @@ mod import_contract_tests {
         assert!(rendered.as_raw().iter().all(|value| *value <= u16::MAX));
         assert!(rendered.as_raw().iter().any(|value| *value > 0));
         assert!(rendered.as_raw().iter().any(|value| *value < u16::MAX));
+        let mut means = [0.0f64; 3];
+        for pixel in rendered.pixels() {
+            for channel in 0..3 {
+                means[channel] += pixel[channel] as f64;
+            }
+        }
+        means = means.map(|value| value / f64::from(rendered.width() * rendered.height()));
+        let minimum = means.iter().copied().fold(f64::INFINITY, f64::min);
+        let maximum = means.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        assert!(maximum - minimum < 500.0, "channel means: {means:?}");
     }
 
     #[test]
@@ -12570,25 +12742,33 @@ mod import_contract_tests {
             d_max: [0.80, 1.00, 1.20],
             pipeline_state: None,
         };
-        share_smart_auto_density_scale(&mut limits);
-        assert_eq!(limits.d_min[0], limits.d_min[1]);
-        assert_eq!(limits.d_min[1], limits.d_min[2]);
-        assert_eq!(limits.d_max[0], limits.d_max[1]);
-        assert_eq!(limits.d_max[1], limits.d_max[2]);
+        let offsets = share_smart_auto_density_scale(&mut limits);
+        let spans = [
+            limits.d_max[0] - limits.d_min[0],
+            limits.d_max[1] - limits.d_min[1],
+            limits.d_max[2] - limits.d_min[2],
+        ];
+        assert!((spans[0] - spans[1]).abs() < 1.0e-6);
+        assert!((spans[1] - spans[2]).abs() < 1.0e-6);
+        assert!(offsets[0] < offsets[1] && offsets[1] < offsets[2]);
+        assert!(offsets.iter().all(|value| value.abs() <= 0.30));
+        assert_ne!(limits.d_min[0], limits.d_min[2]);
     }
 
     #[test]
     fn smart_auto_short_content_gets_an_adaptive_mid_tone_window() {
         let mut limits = AutoColorLimits {
-            d_min: [0.30; 3],
-            d_max: [0.50; 3],
+            d_min: [0.20, 0.30, 0.40],
+            d_max: [0.40, 0.50, 0.60],
             pipeline_state: None,
         };
         preserve_smart_auto_content_span(&mut limits);
-        assert!((limits.d_min[0] - 0.0).abs() < 1.0e-6);
-        assert!((limits.d_max[0] - 0.8).abs() < 1.0e-6);
-        assert_eq!(limits.d_min, [limits.d_min[0]; 3]);
-        assert_eq!(limits.d_max, [limits.d_max[0]; 3]);
+        for (actual, expected) in limits.d_min.into_iter().zip([-0.10, 0.0, 0.10]) {
+            assert!((actual - expected).abs() < 1.0e-6);
+        }
+        for (actual, expected) in limits.d_max.into_iter().zip([0.70, 0.80, 0.90]) {
+            assert!((actual - expected).abs() < 1.0e-6);
+        }
     }
 
     #[test]
