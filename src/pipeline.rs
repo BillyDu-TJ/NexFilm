@@ -199,8 +199,87 @@ fn density_from_u16(value: u16) -> f32 {
 mod tests {
     use super::FilmPipeline;
     use crate::app_state::{
-        BaseColor, DensityAnchors, FilmMode, PipelineState, ProcessingContract,
+        BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
+        DensityAnchors, FilmMode, PipelineState, ProcessingContract,
     };
+    use crate::raw_backend::{
+        correct_cfa_capture, demosaic_bayer_fixed, CaptureConditions, CfaPattern, RawMetadata,
+        RawMosaic,
+    };
+
+    fn synthetic_raw(value: u16) -> RawMosaic {
+        RawMosaic {
+            width: 4,
+            height: 4,
+            samples: vec![value; 16],
+            metadata: RawMetadata {
+                cfa: CfaPattern::Bayer {
+                    filters: 0x94949494,
+                },
+                active_area: [0, 0, 4, 4],
+                raw_pitch_bytes: 8,
+                black_level: [100.0; 4],
+                white_level: [4000.0; 4],
+                masked_areas: Vec::new(),
+                masked_pixels: Vec::new(),
+                orientation: 0,
+                iso: Some(100.0),
+                exposure_seconds: Some(0.01),
+                camera_id: "pipeline-test-camera".to_string(),
+                libraw_version: "test".to_string(),
+                capture_conditions: CaptureConditions::default(),
+            },
+        }
+    }
+
+    #[test]
+    fn capture_samples_produce_relative_transmission_density_and_anchored_state() {
+        let sample = synthetic_raw(550);
+        let dark = synthetic_raw(100);
+        let open = synthetic_raw(1000);
+        let corrected = correct_cfa_capture(&sample, Some(&dark), Some(&open), &[]);
+        let camera_native = demosaic_bayer_fixed(&corrected.expect("capture correction"))
+            .expect("fixed Bayer demosaic");
+        let transmission = [
+            camera_native.pixels[0],
+            camera_native.pixels[1],
+            camera_native.pixels[2],
+        ];
+        assert!(transmission
+            .iter()
+            .all(|value| (*value - 0.5).abs() < 1.0e-6));
+
+        let anchors = DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: [0.1; 3],
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll-a:base".to_string()),
+                provenance: Default::default(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: [1.2; 3],
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll-a:leader".to_string()),
+                provenance: Default::default(),
+            }),
+            retained_records: Vec::new(),
+        };
+        assert!(anchors.is_fully_anchored());
+        let state = PipelineState::capture_corrected(anchors, false);
+        let pipeline =
+            FilmPipeline::from_state(&state, &BaseColor::default(), [0.0; 3], FilmMode::Color);
+        let density = pipeline
+            .compute_relative_density(&transmission, camera_native.quality.valid[0])
+            .expect("valid relative transmission");
+        let expected = -0.5f32.log10() - 0.1;
+        assert!(density
+            .iter()
+            .all(|value| (*value - expected).abs() < 1.0e-6));
+    }
 
     #[test]
     fn monochrome_density_uses_green_heavy_capture_luminance() {

@@ -255,6 +255,9 @@ impl CalibrationProfilePayload {
         Ok(format!("{:x}", Sha256::digest(bytes)))
     }
 
+    /// Validate the independently usable dark/open Capture payload. A
+    /// Characterized fit is checked separately so a bad fit can downgrade to
+    /// Capture Corrected without discarding the verified capture correction.
     pub fn capture_validation_error(
         &self,
         current_raw_decode_version: i64,
@@ -364,9 +367,6 @@ impl CalibrationProfilePayload {
             })
         {
             return Some("capture_valid_range_invalid");
-        }
-        if let Some(reason) = self.fit_validation_error() {
-            return Some(reason);
         }
         None
     }

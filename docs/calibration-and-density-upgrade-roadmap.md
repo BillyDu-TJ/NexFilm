@@ -2,6 +2,8 @@
 
 > **当前实现基线（本阶段）**：Smart Auto 是 ProPhoto Estimate；暗场/无片场完成并通过验证的 Capture Profile 是 Capture Corrected Experimental；带有效用户目标素材、3x3 拟合系数、独立验证误差和 digest 的 Profile 是 Capture Characterized。只有明确的密度参考域、密度模型和验证报告才能进入 Density Calibrated；本版本尚未实现该等级。扫描仪输入 Profile 独立显示为 Scanner Input Estimate 或 Scanner Input Characterized，不能提升 Capture 或 Density 等级。数字 mask、胶片 H-D 曲线和新的 Status M 矩阵仍未实现。
 
+若 Characterized fit 的 digest、版本、秩、条件数或验证失败，但 dark/open 与基础 Capture payload 仍有效，resolver 保留 Capture Corrected 并记录明确的 fit 降级原因；只有基础 Capture 资料或输入条件失效时才回退 Smart Auto。仓库当前没有真实 RAW/设备 fixture，真实硬件验证仍待完成。
+
 ## 1. 目标与核心原则
 
 本路线图合并两项工作：硬件校准与三段式色彩管线升级，以及 D-Min/D-Max、片基与全曝光参考的密度标定。它们必须一起设计：硬件校准决定透射率是否可信，片基和全曝光参考决定密度坐标锚点，Auto Invert 再利用这些信息生成正片。

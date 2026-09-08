@@ -264,13 +264,6 @@ pub fn resolve_pipeline(input: &PipelineResolverInput) -> PipelineResolution {
             format!("capture_payload_invalid|{reason}"),
         );
     }
-    if let Some(reason) = &profile.fit_validation_error {
-        return fallback_resolution(
-            input,
-            requested_path,
-            format!("capture_fit_invalid|{reason}"),
-        );
-    }
     if !profile.has_dark || !profile.has_open_gate {
         return fallback_resolution(
             input,
@@ -325,6 +318,14 @@ pub fn resolve_pipeline(input: &PipelineResolverInput) -> PipelineResolution {
             stage.status = PipelineStageStatus::Used;
             stage.detail = "CaptureSeparation3x3_user_measurement_fit".to_string();
         }
+    }
+    if let Some(reason) = &profile.fit_validation_error {
+        // A bad Characterized fit does not invalidate the independently
+        // verified dark/open Capture path. Keep Capture Corrected active and
+        // report the downgrade so callers can surface the reason.
+        report
+            .fallback_reasons
+            .push(format!("capture_fit_invalid|{reason}"));
     }
     report.fallback_reasons.extend(rejected.iter().cloned());
     PipelineResolution {
@@ -458,6 +459,30 @@ mod tests {
     }
 
     #[test]
+    fn anchor_digest_and_decode_version_mismatches_are_rejected_without_losing_capture() {
+        let profile = profile();
+        for (digest, version, reason) in [
+            ("changed-payload", Some(9), "anchor_payload_mismatch"),
+            ("payload-a", Some(8), "anchor_raw_decode_version_mismatch"),
+        ] {
+            let mut input = input(Some(profile.clone()));
+            let mut sampled = anchor(DataDomain::RelativeTransmissionRgb, Some(&profile));
+            sampled.provenance.calibration_payload_digest = Some(digest.to_string());
+            sampled.provenance.raw_decode_version = version;
+            input.density_anchors.d_min_base = Some(sampled);
+            let result = resolve_pipeline(&input);
+            assert_eq!(
+                result.resolved_path,
+                ProcessingContract::CaptureCorrectedV11
+            );
+            assert!(result
+                .rejected_anchor_reasons
+                .iter()
+                .any(|value| value.contains(reason)));
+        }
+    }
+
+    #[test]
     fn no_profile_missing_reference_and_xtrans_fall_back() {
         let no_profile = resolve_pipeline(&input(None));
         assert_eq!(
@@ -533,18 +558,53 @@ mod tests {
     }
 
     #[test]
-    fn invalid_capture_fit_falls_back_with_explicit_reason() {
+    fn invalid_capture_fit_downgrades_to_capture_corrected_with_explicit_reason() {
         let mut prof = profile();
         prof.fit_validation_error = Some("capture_fit_model_invalid".to_string());
         let result = resolve_pipeline(&input(Some(prof)));
         assert_eq!(
             result.resolved_path,
-            ProcessingContract::SmartAutoProPhotoV11
+            ProcessingContract::CaptureCorrectedV11
         );
         assert!(result
             .processing_report
             .fallback_reasons
             .iter()
             .any(|reason| { reason.contains("capture_fit_invalid|capture_fit_model_invalid") }));
+        assert_eq!(
+            result
+                .processing_report
+                .stages
+                .iter()
+                .find(|stage| stage.stage == "capture_separation")
+                .unwrap()
+                .status,
+            PipelineStageStatus::Default
+        );
+    }
+
+    #[test]
+    fn characterized_fit_failures_keep_the_verified_capture_path() {
+        for reason in [
+            "capture_fit_measurement_digest_mismatch",
+            "capture_fit_version_unsupported",
+            "capture_fit_rank_invalid",
+            "capture_fit_condition_number_too_high",
+            "capture_fit_validation_error_too_high",
+        ] {
+            let mut prof = profile();
+            prof.fit_validation_error = Some(reason.to_string());
+            let result = resolve_pipeline(&input(Some(prof)));
+            assert_eq!(
+                result.resolved_path,
+                ProcessingContract::CaptureCorrectedV11,
+                "fit failure {reason} must not discard dark/open Capture"
+            );
+            assert!(result
+                .processing_report
+                .fallback_reasons
+                .iter()
+                .any(|value| value == &format!("capture_fit_invalid|{reason}")));
+        }
     }
 }

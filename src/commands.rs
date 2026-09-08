@@ -2069,7 +2069,12 @@ fn decode_capture_corrected_image_buffer(
         Some(&open),
         &bad_pixels,
     )?;
-    if let Some(model) = profile.payload.fit_model.as_ref() {
+    if let Some(model) = profile
+        .payload
+        .fit_model
+        .as_ref()
+        .filter(|_| profile.payload.fit_validation_error().is_none())
+    {
         for (index, pixel) in capture_corrected
             .transmission
             .chunks_exact_mut(3)
@@ -8994,7 +8999,6 @@ fn calibration_profile_view(mut profile: CalibrationConfigProfile) -> Calibratio
         }
         if let Some(reason) = profile.payload.fit_validation_error() {
             warnings.push(format!("profile_capture_fit_invalid|{reason}"));
-            blocking_warning = true;
         }
     }
     for reference in &profile.references {
@@ -10107,6 +10111,9 @@ mod calibration_profile_contract_tests {
         CALIBRATION_PROFILE_SCHEMA_VERSION, CAPTURE_CORRECTION_ALGORITHM_VERSION,
         CAPTURE_DEMOSAIC_ALGORITHM_VERSION,
     };
+    use crate::calibration_fit::{
+        CalibrationFitModel, FitDiagnostics, FitModelType, ReferenceDomain,
+    };
     use crate::persistence::RAW_DECODE_VERSION;
     use crate::raw_backend::{CaptureConditions, CfaPattern, RawMetadata, RawMosaic};
     use base64::{engine::general_purpose, Engine as _};
@@ -10318,6 +10325,39 @@ mod calibration_profile_contract_tests {
         assert_eq!(
             tampered.capture_validation_error(RAW_DECODE_VERSION),
             Some("capture_payload_digest_mismatch")
+        );
+    }
+
+    #[test]
+    fn invalid_characterized_fit_does_not_invalidate_verified_capture_payload() {
+        let mut payload = verified_capture_profile().profile.payload;
+        payload.fit_model = Some(CalibrationFitModel {
+            model_type: FitModelType::CaptureSeparation3x3,
+            source_domain: ReferenceDomain::CameraNativeTransmissionRgb,
+            target_domain: ReferenceDomain::TransmissionRgb,
+            pipeline_order: "capture_correction->capture_separation->log10".to_string(),
+            matrix: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            offset: [0.0; 3],
+            diagnostics: FitDiagnostics {
+                rank: 1,
+                condition_number: f32::INFINITY,
+                training_patch_count: 4,
+                validation_patch_count: 1,
+                rejected_patch_count: 0,
+                channel_rmse: [0.0; 3],
+                training_rmse: 0.0,
+                validation_rmse: 0.0,
+                max_abs_error: 0.0,
+            },
+            measurement_digest: "invalid-fit".to_string(),
+        });
+        payload.fit_measurements = None;
+        payload.payload_digest = payload.canonical_digest().unwrap();
+
+        assert_eq!(payload.capture_validation_error(RAW_DECODE_VERSION), None);
+        assert_eq!(
+            payload.fit_validation_error(),
+            Some("capture_fit_measurements_missing")
         );
     }
 

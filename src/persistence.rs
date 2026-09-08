@@ -894,7 +894,6 @@ pub fn calibration_session_matches(
             payload.payload_digest == payload_digest
                 && payload.canonical_digest().ok().as_deref() == Some(payload_digest)
                 && payload.capture_is_verified(RAW_DECODE_VERSION)
-                && payload.fit_validation_error().is_none()
         }))
 }
 
