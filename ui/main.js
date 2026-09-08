@@ -2843,7 +2843,13 @@ function renderWebGL() {
     gl.uniform1f(u_tint_loc, parseFloat(sliders.tint.el.value));
     gl.uniform1i(u_mode_loc, mode);
     gl.uniform1i(u_invert_enabled_loc, proxyHasAnalyzedBase ? 1 : 0);
-    gl.uniform1i(u_legacy_pipeline_loc, currentPipelineContract === 'legacy_v1' ? 1 : 0);
+    // Loose Smart Auto intentionally uses the v1.0.2 linear-sRGB transport
+    // and Status-M compatibility math. The contract remains Smart Auto for
+    // reporting, but the shader must not decode this texture as ProPhoto.
+    gl.uniform1i(
+        u_legacy_pipeline_loc,
+        currentPipelineContract === 'legacy_v1' || currentProxyDomain === 'legacy_linear_srgb' ? 1 : 0
+    );
     gl.uniform1i(
         u_capture_corrected_pipeline_loc,
         currentProxyDomain === 'relative_transmission_rgb' ? 1 : 0

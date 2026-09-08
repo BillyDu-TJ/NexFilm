@@ -1706,13 +1706,23 @@ fn build_response_buffer_from_proxy_with_state(
     is_full_proxy: bool,
 ) -> Vec<u8> {
     let (width, height) = proxy.dimensions();
-    let base_density = pipeline_base_density(pipeline_state, base_color);
+    let base_density = if is_smart_auto_compatibility(pipeline_state) {
+        [base_color.base_r, base_color.base_g, base_color.base_b]
+            .map(|value| -(value as f32 / 65535.0).max(1.0e-6).log10())
+    } else {
+        pipeline_base_density(pipeline_state, base_color)
+    };
     let base_analyzed = pipeline_has_base(pipeline_state, base_color);
     let flags = u32::from(base_analyzed)
         | match pipeline_state.contract {
             ProcessingContract::LegacyV1 => 0,
             ProcessingContract::CaptureCorrectedV11 => 4,
-            _ => 2,
+            ProcessingContract::SmartAutoProPhotoV11
+                if !is_smart_auto_compatibility(pipeline_state) =>
+            {
+                2
+            }
+            _ => 0,
         };
     let mut out = vec![0u8; (width * height * 8) as usize + 28];
     out[0..4].copy_from_slice(&width.to_le_bytes());
@@ -2355,6 +2365,12 @@ fn pipeline_base_density(state: &PipelineState, base_color: &BaseColor) -> [f32;
 fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
     if state.contract == ProcessingContract::LegacyV1 {
         *base_color != BaseColor::default()
+    } else if is_smart_auto_compatibility(state) {
+        // A loose Smart Auto result produced before the compatibility source
+        // was selected is not reusable: its base was measured in the
+        // ProPhoto estimate domain and would make the v1.0.2 proxy invert
+        // with the wrong endpoint. Force one fresh analysis on that path.
+        state.processing_report.base_source == "compatibility_base"
     } else {
         state
             .density_anchors
@@ -2364,6 +2380,58 @@ fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
             || (state.processing_report.base_source != "unresolved"
                 && !state.processing_report.base_source.is_empty())
     }
+}
+
+/// Loose Smart Auto has no verified roll-level endpoint. Keep that path on
+/// the v1.0.2 compatibility math so its automatic range and rendered pixels
+/// remain stable while anchored/calibrated contracts use their declared domain.
+fn is_smart_auto_compatibility(state: &PipelineState) -> bool {
+    state.contract == ProcessingContract::SmartAutoProPhotoV11
+        && !state.density_anchors.has_roll_base()
+        && !state.density_anchors.has_roll_full_exposure()
+        && state.processing_report.analysis_data_domain == "legacy_linear_srgb"
+}
+
+fn mark_loose_smart_auto_compatibility(state: &mut PipelineState, is_loose: bool) {
+    if state.contract != ProcessingContract::SmartAutoProPhotoV11
+        || state.density_anchors.has_roll_base()
+        || state.density_anchors.has_roll_full_exposure()
+    {
+        return;
+    }
+    if is_loose {
+        state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
+    } else if state.processing_report.analysis_data_domain == "legacy_linear_srgb" {
+        // A Loose frame can later be promoted into a normal Roll. Do not let
+        // its compatibility marker keep the promoted frame on Status M.
+        state.processing_report.analysis_data_domain = "linear_prophoto_estimate".to_string();
+        if state.processing_report.base_source == "compatibility_base" {
+            state.processing_report.base_source = "unresolved".to_string();
+            state.processing_report.base_confidence = "low".to_string();
+        }
+    }
+}
+
+fn srgb_proxy_u16_to_prophoto_f32(
+    source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+    let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
+    let mut converted = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(source.width(), source.height());
+    converted
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(source.as_raw().par_chunks_exact(3))
+        .for_each(|(target, pixel)| {
+            target.copy_from_slice(&apply_linear_matrix(
+                [
+                    pixel[0] as f32 / 65535.0,
+                    pixel[1] as f32 / 65535.0,
+                    pixel[2] as f32 / 65535.0,
+                ],
+                matrix,
+            ));
+        });
+    converted
 }
 
 fn anchor_matches_resolved_contract(anchor: &DensityAnchor, state: &PipelineState) -> bool {
@@ -2497,7 +2565,15 @@ fn compute_pristine_proxy(
     pipeline_state: &PipelineState,
     mode: FilmMode,
 ) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
-    let pipeline = FilmPipeline::from_state(pipeline_state, base_color, [0.0, 0.0, 0.0], mode);
+    let pipeline = if is_smart_auto_compatibility(pipeline_state) {
+        FilmPipeline::new(
+            [base_color.base_r, base_color.base_g, base_color.base_b],
+            [0.0, 0.0, 0.0],
+            mode,
+        )
+    } else {
+        FilmPipeline::from_state(pipeline_state, base_color, [0.0, 0.0, 0.0], mode)
+    };
     let (width, height) = proxy.dimensions();
     let mut pristine = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(width, height);
 
@@ -2522,19 +2598,23 @@ fn compute_pristine_proxy(
         }
     }
 
-    if let Some(prophoto_estimate) =
-        prophoto_estimate_proxy.filter(|image| image.dimensions() == proxy.dimensions())
+    if !is_smart_auto_compatibility(pipeline_state) {
+        if let Some(prophoto_estimate) =
+            prophoto_estimate_proxy.filter(|image| image.dimensions() == proxy.dimensions())
+        {
+            prophoto_estimate
+                .as_raw()
+                .par_chunks_exact(3)
+                .zip(out_pixels.par_chunks_exact_mut(3))
+                .for_each(|(in_px, out_px)| {
+                    out_px.copy_from_slice(
+                        &pipeline.compute_true_density(&[in_px[0], in_px[1], in_px[2]]),
+                    );
+                });
+            return pristine;
+        }
+    }
     {
-        prophoto_estimate
-            .as_raw()
-            .par_chunks_exact(3)
-            .zip(out_pixels.par_chunks_exact_mut(3))
-            .for_each(|(in_px, out_px)| {
-                out_px.copy_from_slice(
-                    &pipeline.compute_true_density(&[in_px[0], in_px[1], in_px[2]]),
-                );
-            });
-    } else {
         proxy
             .as_raw()
             .par_chunks_exact(3)
@@ -3773,8 +3853,22 @@ fn state_from_resolution(
     let expected_domain = match resolution.resolved_path {
         ProcessingContract::CaptureCorrectedV11 => "relative_transmission_rgb",
         ProcessingContract::LegacyV1 => "legacy_linear_srgb",
+        ProcessingContract::SmartAutoProPhotoV11
+            if persisted.processing_report.analysis_data_domain == "legacy_linear_srgb" =>
+        {
+            "legacy_linear_srgb"
+        }
         _ => "linear_prophoto_estimate",
     };
+    if resolution.resolved_path == ProcessingContract::SmartAutoProPhotoV11
+        && persisted.processing_report.analysis_data_domain == "legacy_linear_srgb"
+    {
+        // The resolver describes the generic Smart Auto capability as
+        // ProPhoto, but loose imports persist an explicit v1.0.2-compatible
+        // source marker. Preserve that marker even before Auto Invert has
+        // populated the base estimate.
+        report.analysis_data_domain = "legacy_linear_srgb".to_string();
+    }
     if report.base_source == "unresolved"
         && persisted.processing_report.analysis_data_domain == expected_domain
         && persisted.processing_report.base_source != "unresolved"
@@ -3842,8 +3936,12 @@ fn default_pipeline_state_for_import_with_profiles(
 ) -> PipelineState {
     if loose {
         // Loose Import has no capture, film-stock, or roll-reference metadata.
-        // The lowest v1.1 contract guarantees output without reintroducing Status M.
-        return PipelineState::smart_auto();
+        // Keep the Smart Auto state visible to the UI, while explicitly
+        // selecting the legacy source domain until a measured/anchored path
+        // is available.
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
+        return state;
     }
     rolls
         .iter()
@@ -5255,6 +5353,8 @@ pub async fn switch_active_image(
     item.geom = geom;
     item.base_color = base_color;
     item.pipeline_state = pipeline_state;
+    let item_is_loose = item.is_loose;
+    mark_loose_smart_auto_compatibility(&mut item.pipeline_state, item_is_loose);
 
     // Return the current resolved capability, not the persisted request. This
     // keeps UI caches and every processing entry point on the resolver's
@@ -5272,7 +5372,12 @@ pub async fn switch_active_image(
         &item.file_path,
         None,
     );
-    let resolved_state = state_from_resolution(&item.pipeline_state, &resolution);
+    let mut resolved_state = state_from_resolution(&item.pipeline_state, &resolution);
+    let is_loose = item.is_loose
+        || roll
+            .as_ref()
+            .is_some_and(|roll| roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT");
+    mark_loose_smart_auto_compatibility(&mut resolved_state, is_loose);
     item.runtime_pipeline_state = Some(resolved_state.clone());
 
     *state.active_id.write().map_err(|e| e.to_string())? = Some(id.clone());
@@ -5292,7 +5397,14 @@ pub async fn prepare_proxy(
 ) -> Result<u32, String> {
     let target_long_edge = preview_proxy_target_long_edge(target_long_edge);
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
-    let (file_path, roll_id, current_long_edge, persisted_state, cached_resolution_key) = {
+    let (
+        file_path,
+        roll_id,
+        current_long_edge,
+        mut persisted_state,
+        cached_resolution_key,
+        is_loose,
+    ) = {
         let item = read_lock(&item_arc);
         if std::fs::File::open(&item.file_path).is_err() {
             return Err("FILE_MISSING".into());
@@ -5308,11 +5420,14 @@ pub async fn prepare_proxy(
             current_long_edge,
             item.pipeline_state.clone(),
             item.runtime_pipeline_key.clone(),
+            item.is_loose,
         )
     };
-
     let rolls = read_lock(&state.rolls).clone();
     let roll = rolls.iter().find(|roll| roll.roll_id == roll_id);
+    let is_loose = is_loose
+        || roll.is_some_and(|roll| roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT");
+    mark_loose_smart_auto_compatibility(&mut persisted_state, is_loose);
     let profiles = load_calibration_profile_views()?;
     let scanner_profiles = {
         let connection = persistence::open_connection()
@@ -5334,7 +5449,13 @@ pub async fn prepare_proxy(
     }
     let initial_resolution =
         resolve_image_pipeline(&persisted_state, roll, &profiles, &file_path, None);
-    let initial_resolution_key = resolution_key(&initial_resolution);
+    let use_smart_auto_compatibility_proxy = initial_resolution.resolved_path
+        == ProcessingContract::SmartAutoProPhotoV11
+        && is_smart_auto_compatibility(&persisted_state);
+    let initial_resolution_key = format!(
+        "{}|smart_auto_compatibility={use_smart_auto_compatibility_proxy}",
+        resolution_key(&initial_resolution)
+    );
     if current_long_edge >= target_long_edge
         && cached_resolution_key.as_deref() == Some(initial_resolution_key.as_str())
     {
@@ -5413,6 +5534,37 @@ pub async fn prepare_proxy(
                         });
                     }
                 }
+            }
+            if use_smart_auto_compatibility_proxy {
+                // Loose Smart Auto deliberately shares the v1.0.2 source
+                // contract: camera matrix/gamut compression is quantized once
+                // to the same linear-sRGB u16 proxy used by legacy analysis.
+                let mut legacy = if is_dng_extension(&decode_path) {
+                    decode_reduced_dng_for_working_space(&decode_path, target_long_edge)
+                        .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?
+                } else if is_tiff_extension(&decode_path) || is_scanner_fff_tiff(&decode_path) {
+                    decode_reduced_tiff_for_working_space(&decode_path, target_long_edge)
+                        .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?
+                } else {
+                    decode_image_buffer(&decode_path, decode_mode)?
+                };
+                let (width, height) = legacy.dimensions();
+                let ratio = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
+                if ratio < 0.999 {
+                    legacy = image::imageops::resize(
+                        &legacy,
+                        (width as f32 * ratio).max(1.0) as u32,
+                        (height as f32 * ratio).max(1.0) as u32,
+                        FilterType::Lanczos3,
+                    );
+                }
+                let estimate = srgb_proxy_u16_to_prophoto_f32(&legacy);
+                return Ok(PreparedProxy {
+                    transport: legacy,
+                    prophoto_estimate: Some(estimate),
+                    capture_corrected: None,
+                    fallback_reason: None,
+                });
             }
             if contract != ProcessingContract::LegacyV1 {
                 let mut estimate = if scanner_profile.is_some()
@@ -5519,14 +5671,20 @@ pub async fn prepare_proxy(
     } else {
         initial_resolution
     };
-    let final_state = state_from_resolution(&persisted_state, &final_resolution);
-    let final_resolution_key = resolution_key(&final_resolution);
+    let mut final_state = state_from_resolution(&persisted_state, &final_resolution);
+    mark_loose_smart_auto_compatibility(&mut final_state, is_loose);
+    let final_resolution_key = format!(
+        "{}|smart_auto_compatibility={}",
+        resolution_key(&final_resolution),
+        use_smart_auto_compatibility_proxy
+    );
     let density_provenance = resolution_density_provenance(&final_resolution);
     let loaded_long_edge = prepared.transport.width().max(prepared.transport.height());
     let retained_long_edge = {
         let mut item = write_lock(&item_arc);
-        // Legacy keeps linear-sRGB u16. Smart Auto and Capture Corrected keep
-        // domain-typed f32 sources plus a separate u16 GPU transport texture.
+        // Legacy and loose Smart Auto compatibility keep the historical
+        // linear-sRGB u16 source; anchored Smart Auto and Capture Corrected
+        // additionally retain their domain-typed f32 analysis source.
         let retained_long_edge = item
             .proxy_image
             .as_ref()
@@ -5546,6 +5704,10 @@ pub async fn prepare_proxy(
                 prepared.capture_corrected.map(|data| data.quality);
             item.pristine_proxy = None;
         }
+        if use_smart_auto_compatibility_proxy {
+            item.pipeline_state.processing_report.analysis_data_domain =
+                "legacy_linear_srgb".to_string();
+        }
         item.runtime_pipeline_state = Some(final_state);
         item.runtime_density_provenance = Some(density_provenance);
         item.runtime_pipeline_key = Some(final_resolution_key);
@@ -5563,12 +5725,22 @@ pub async fn analyze_proxy_base_color(
 ) -> Result<(), String> {
     let epoch = claim_development_generation(&state, &id, generation)?;
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+    let is_loose_roll = {
+        let item = read_lock(&item_arc);
+        let rolls = read_lock(&state.rolls);
+        item.is_loose
+            || rolls.iter().any(|roll| {
+                roll.roll_id == item.roll_id
+                    && (roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT")
+            })
+    };
 
     tokio::task::spawn_blocking(move || {
         ensure_current_development_generation(&epoch, generation)?;
         let (base_color, runtime_pipeline_state, persisted_pipeline_state) = {
             let item = read_lock(&item_arc);
-            let effective = item.effective_pipeline_state().clone();
+            let mut effective = item.effective_pipeline_state().clone();
+            mark_loose_smart_auto_compatibility(&mut effective, is_loose_roll);
             if pipeline_has_base(&effective, &item.base_color) {
                 return Ok(());
             }
@@ -5583,6 +5755,7 @@ pub async fn analyze_proxy_base_color(
                     item.pipeline_state.clone(),
                 )
             } else {
+                let smart_auto_compatibility = is_smart_auto_compatibility(&effective);
                 let capture_corrected =
                     effective.contract == ProcessingContract::CaptureCorrectedV11;
                 let input = if capture_corrected {
@@ -5594,34 +5767,49 @@ pub async fn analyze_proxy_base_color(
                 let quality = capture_corrected
                     .then_some(item.relative_transmission_quality.as_ref())
                     .flatten();
-                let (density, estimated_confidence, estimated_source) =
-                    if effective.density_anchors.has_roll_full_exposure() {
-                        // A sampled leader fixes D-max. Its missing base endpoint
-                        // must be inferred from the confirmed Film Area, not from
-                        // unrelated border and sprocket pixels in the full scan.
-                        (
-                            compute_content_limits_f32(input, quality, &item.geom, [0.0; 3])?.d_min,
-                            0.8,
-                            "detected_film_base",
-                        )
-                    } else if let Some(quality) = quality {
-                        (
-                            compute_auto_base_capture_corrected(input, quality, &item.geom)?,
-                            0.9,
-                            "detected_film_base",
-                        )
-                    } else {
-                        let (density, confidence) = compute_auto_base_f32(input, &item.geom)?;
-                        (
-                            density,
-                            confidence,
-                            if confidence > 0.0 {
-                                "content_estimate"
-                            } else {
-                                "compatibility_fallback"
-                            },
-                        )
-                    };
+                let (density, estimated_confidence, estimated_source) = if smart_auto_compatibility
+                {
+                    let proxy = item
+                        .proxy_image
+                        .as_ref()
+                        .ok_or_else(|| "PROXY_NOT_READY".to_string())?;
+                    let base = compute_auto_base(proxy);
+                    (
+                        [
+                            -(base.base_r as f32 / 65535.0).max(1.0e-6).log10(),
+                            -(base.base_g as f32 / 65535.0).max(1.0e-6).log10(),
+                            -(base.base_b as f32 / 65535.0).max(1.0e-6).log10(),
+                        ],
+                        1.0,
+                        "compatibility_base",
+                    )
+                } else if effective.density_anchors.has_roll_full_exposure() {
+                    // A sampled leader fixes D-max. Its missing base endpoint
+                    // must be inferred from the confirmed Film Area, not from
+                    // unrelated border and sprocket pixels in the full scan.
+                    (
+                        compute_content_limits_f32(input, quality, &item.geom, [0.0; 3])?.d_min,
+                        0.8,
+                        "detected_film_base",
+                    )
+                } else if let Some(quality) = quality {
+                    (
+                        compute_auto_base_capture_corrected(input, quality, &item.geom)?,
+                        0.9,
+                        "detected_film_base",
+                    )
+                } else {
+                    let (density, confidence) = compute_auto_base_f32(input, &item.geom)?;
+                    (
+                        density,
+                        confidence,
+                        if confidence > 0.0 {
+                            "content_estimate"
+                        } else {
+                            "compatibility_fallback"
+                        },
+                    )
+                };
                 let mut runtime = effective;
                 let mut persisted = item.pipeline_state.clone();
                 for report in [
@@ -5632,6 +5820,8 @@ pub async fn analyze_proxy_base_color(
                     report.base_confidence = format!("{estimated_confidence:.3}");
                     report.analysis_data_domain = if capture_corrected {
                         "relative_transmission_rgb".to_string()
+                    } else if smart_auto_compatibility {
+                        "legacy_linear_srgb".to_string()
                     } else {
                         "linear_prophoto_estimate".to_string()
                     };
@@ -5657,7 +5847,9 @@ pub async fn analyze_proxy_base_color(
 
         let mut item = write_lock(&item_arc);
         ensure_current_development_generation(&epoch, generation)?;
-        if pipeline_has_base(item.effective_pipeline_state(), &item.base_color) {
+        let mut effective = item.effective_pipeline_state().clone();
+        mark_loose_smart_auto_compatibility(&mut effective, is_loose_roll);
+        if pipeline_has_base(&effective, &item.base_color) {
             return Ok(());
         }
         persist_base_and_pipeline(
@@ -5682,6 +5874,15 @@ pub async fn analyze_proxy_density_limits(
     state: State<'_, EngineState>,
 ) -> Result<AutoColorLimits, String> {
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+    let is_loose_roll = {
+        let item = read_lock(&item_arc);
+        let rolls = read_lock(&state.rolls);
+        item.is_loose
+            || rolls.iter().any(|roll| {
+                roll.roll_id == item.roll_id
+                    && (roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT")
+            })
+    };
     tokio::task::spawn_blocking(move || {
         let (
             legacy_proxy,
@@ -5695,7 +5896,9 @@ pub async fn analyze_proxy_density_limits(
             mut pipeline_state,
         ) = {
             let item = read_lock(&item_arc);
-            if !pipeline_has_base(item.effective_pipeline_state(), &item.base_color) {
+            let mut effective = item.effective_pipeline_state().clone();
+            mark_loose_smart_auto_compatibility(&mut effective, is_loose_roll);
+            if !pipeline_has_base(&effective, &item.base_color) {
                 return Err("BASE_COLOR_NOT_ANALYZED".to_string());
             }
             (
@@ -5707,12 +5910,14 @@ pub async fn analyze_proxy_density_limits(
                 item.base_color.clone(),
                 item.params.film_mode.clone(),
                 is_noritsu_rendered_image(&item.file_path),
-                item.effective_pipeline_state().clone(),
+                effective,
             )
         };
         let mut observed_content_range = None;
         let mut channel_offsets = [0.0; 3];
-        let mut limits = if pipeline_state.contract == ProcessingContract::LegacyV1 {
+        let mut limits = if pipeline_state.contract == ProcessingContract::LegacyV1
+            || is_smart_auto_compatibility(&pipeline_state)
+        {
             compute_auto_color_limits(
                 &legacy_proxy.ok_or_else(|| "PROXY_NOT_READY".to_string())?,
                 &geom,
@@ -5756,7 +5961,8 @@ pub async fn analyze_proxy_density_limits(
             } else {
                 let mut estimated = compute_content_limits_f32(input, quality, &geom, base)?;
                 observed_content_range = Some((estimated.d_min, estimated.d_max));
-                if pipeline_state.contract != ProcessingContract::CaptureCorrectedV11
+                if !is_smart_auto_compatibility(&pipeline_state)
+                    && pipeline_state.contract != ProcessingContract::CaptureCorrectedV11
                     && !pipeline_state.density_anchors.has_roll_base()
                     && !pipeline_state.density_anchors.has_roll_full_exposure()
                 {
@@ -5956,7 +6162,9 @@ pub async fn sync_thumbnail_buffer(
         ensure_current_development_generation(&epoch, generation)?;
         persist_rendered_thumbnail(&item.roll_id, &item.file_path, &new_thumbnail)?;
         item.rendered_thumbnail_base64 = Some(new_thumbnail);
-        if item.effective_pipeline_state().contract != ProcessingContract::LegacyV1 {
+        if item.effective_pipeline_state().contract != ProcessingContract::LegacyV1
+            && !is_smart_auto_compatibility(item.effective_pipeline_state())
+        {
             item.pristine_proxy = None;
         }
         Ok(())
@@ -6331,10 +6539,17 @@ pub fn get_proxy_response_buffer(state: &EngineState, id: &str) -> Result<Vec<u8
         let item_arc = state.items.get(id).ok_or("Image ID not found")?;
         let item = read_lock(&item_arc);
         if let Some(proxy) = item.proxy_image.as_ref() {
+            let is_loose = item.is_loose
+                || read_lock(&state.rolls).iter().any(|roll| {
+                    roll.roll_id == item.roll_id
+                        && (roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT")
+                });
+            let mut pipeline_state = item.effective_pipeline_state().clone();
+            mark_loose_smart_auto_compatibility(&mut pipeline_state, is_loose);
             build_response_buffer_from_proxy_with_state(
                 proxy,
                 &item.base_color,
-                item.effective_pipeline_state(),
+                &pipeline_state,
                 item.relative_transmission_quality.as_ref(),
                 true,
             )
@@ -6683,14 +6898,26 @@ fn render_shader_equivalent_core(
             params.exposure.exposure + params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
         ]
     };
-    let pipeline = FilmPipeline::from_state(
-        pipeline_state,
-        base_color,
-        exposure_offsets,
-        params.film_mode.clone(),
-    );
+    let smart_auto_compatibility = is_smart_auto_compatibility(pipeline_state);
+    let pipeline = if smart_auto_compatibility {
+        FilmPipeline::new(
+            [base_color.base_r, base_color.base_g, base_color.base_b],
+            exposure_offsets,
+            params.film_mode.clone(),
+        )
+    } else {
+        FilmPipeline::from_state(
+            pipeline_state,
+            base_color,
+            exposure_offsets,
+            params.film_mode.clone(),
+        )
+    };
+    let smart_auto_to_srgb = smart_auto_compatibility
+        .then(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb));
     let positive_to_display = (pipeline_state.contract != ProcessingContract::LegacyV1
         && pipeline_state.contract != ProcessingContract::CaptureCorrectedV11
+        && !smart_auto_compatibility
         && params.film_mode == FilmMode::Color)
         .then(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb));
     let (bw_dmin, bw_dmax) = neutral_density_bounds(params.density.d_min, params.density.d_max);
@@ -6725,6 +6952,9 @@ fn render_shader_equivalent_core(
             let Some(raw) = sample(warped_uv) else {
                 return;
             };
+            let raw = smart_auto_to_srgb
+                .map(|matrix| apply_linear_matrix(raw, matrix))
+                .unwrap_or(raw);
             let density = if pipeline_state.contract == ProcessingContract::CaptureCorrectedV11 {
                 let Some(true_density) = pipeline.compute_relative_density(&raw, true) else {
                     return;
@@ -7952,7 +8182,12 @@ pub async fn batch_export_images(
                 .get(id)
                 .ok_or_else(|| format!("Image is no longer available for export: {id}"))?;
             let item = read_lock(&item_arc);
-            Ok((id.clone(), item.file_path.clone(), item.roll_id.clone()))
+            Ok((
+                id.clone(),
+                item.file_path.clone(),
+                item.roll_id.clone(),
+                item.is_loose,
+            ))
         })
         .collect::<Result<Vec<_>, String>>()?;
 
@@ -7969,8 +8204,8 @@ pub async fn batch_export_images(
             .map_err(|error| format!("Failed to start export snapshot: {error}"))?;
         let mut snapshots = Vec::with_capacity(identities.len());
 
-        for (id, file_path, roll_id) in identities {
-            let (params, geom, base_color, pipeline_state) =
+        for (id, file_path, roll_id, is_loose) in identities {
+            let (params, geom, base_color, mut pipeline_state) =
                 load_image_state_from_connection(&transaction, &roll_id, &file_path)?
                     .map(|(_, params, geom, base_color, pipeline_state)| {
                         (params, geom, base_color, pipeline_state)
@@ -7981,6 +8216,7 @@ pub async fn batch_export_images(
                             roll_id, file_path
                         )
                     })?;
+            mark_loose_smart_auto_compatibility(&mut pipeline_state, is_loose);
             snapshots.push(ExportItemSnapshot {
                 id,
                 file_path,
@@ -8021,6 +8257,10 @@ pub async fn batch_export_images(
     let mut resolution_warnings = Vec::new();
     for (index, snapshot) in export_snapshots.iter_mut().enumerate() {
         let roll = rolls.iter().find(|roll| roll.roll_id == snapshot.roll_id);
+        mark_loose_smart_auto_compatibility(
+            &mut snapshot.pipeline_state,
+            roll.is_some_and(|roll| roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT"),
+        );
         snapshot.scanner_profile = roll
             .and_then(|roll| roll.scanner_profile_id.as_deref())
             .and_then(|profile_id| {
@@ -8132,7 +8372,9 @@ pub async fn batch_export_images(
             let params_owned = snapshot.params.clone();
             let geom_owned = snapshot.geom.clone();
             let base_color_owned = snapshot.base_color.clone();
-            let decoded = if snapshot.pipeline_state.contract == ProcessingContract::LegacyV1 {
+            let decoded = if snapshot.pipeline_state.contract == ProcessingContract::LegacyV1
+                || is_smart_auto_compatibility(&snapshot.pipeline_state)
+            {
                 decode_export_source(&file_path)
             } else {
                 // The v1.1 branch decodes directly into ProPhoto f32 below.
@@ -8143,7 +8385,9 @@ pub async fn batch_export_images(
                 Ok(original) => {
                     let params = &params_owned;
                     let base_color = &base_color_owned;
-                    if snapshot.pipeline_state.contract != ProcessingContract::LegacyV1 {
+                    if snapshot.pipeline_state.contract != ProcessingContract::LegacyV1
+                        && !is_smart_auto_compatibility(&snapshot.pipeline_state)
+                    {
                         let mut render_pipeline_state = snapshot.pipeline_state.clone();
                         let decoded_f32 = if snapshot.pipeline_state.contract
                             == ProcessingContract::CaptureCorrectedV11
@@ -11438,13 +11682,23 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             params.exposure.exposure + params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
         ]
     };
-    let effective_pipeline = item.effective_pipeline_state();
-    let pipeline = FilmPipeline::from_state(
-        effective_pipeline,
-        base_color,
-        exposure_offsets,
-        params.film_mode.clone(),
-    );
+    let mut effective_pipeline = item.effective_pipeline_state().clone();
+    mark_loose_smart_auto_compatibility(&mut effective_pipeline, item.is_loose);
+    let smart_auto_compatibility = is_smart_auto_compatibility(&effective_pipeline);
+    let pipeline = if smart_auto_compatibility {
+        FilmPipeline::new(
+            [base_color.base_r, base_color.base_g, base_color.base_b],
+            exposure_offsets,
+            params.film_mode.clone(),
+        )
+    } else {
+        FilmPipeline::from_state(
+            &effective_pipeline,
+            base_color,
+            exposure_offsets,
+            params.film_mode.clone(),
+        )
+    };
 
     let pristine = item.pristine_proxy.as_ref()?;
     let (width, height) = pristine.dimensions();
@@ -11471,6 +11725,7 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     let luma_coefficients = DENSITY_LUMA_COEFFICIENTS;
     let prophoto_to_srgb = (effective_pipeline.contract != ProcessingContract::LegacyV1
         && effective_pipeline.contract != ProcessingContract::CaptureCorrectedV11
+        && !smart_auto_compatibility
         && params.film_mode == FilmMode::Color)
         .then(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb));
 
@@ -11594,13 +11849,14 @@ mod import_contract_tests {
         decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
         decode_tiff_for_smart_auto, default_pipeline_state_for_import, is_better_preview_edge,
         is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
-        is_scanner_fff_tiff, is_tiff_extension, libraw_decode_error_message, linearize_scanner_fff,
+        is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
+        libraw_decode_error_message, linearize_scanner_fff, mark_loose_smart_auto_compatibility,
         persist_import_batch, pipeline_base_density, pipeline_has_base,
         preserve_smart_auto_content_span, preserve_tone_density_span,
         prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
         render_f32_shader_equivalent, render_shader_equivalent, rgb16_image_from_bytes,
-        share_smart_auto_density_scale, AutoColorLimits, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
-        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
+        share_smart_auto_density_scale, srgb_proxy_u16_to_prophoto_f32, AutoColorLimits,
+        DecodeMode, IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
         BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
@@ -11611,7 +11867,6 @@ mod import_contract_tests {
         apply_linear_matrix, compress_linear_srgb_for_density, linear_conversion_matrix,
         ColorSpaceId, DENSITY_CAPTURE_PROFILE,
     };
-    use crate::core_math::density_luma;
     use base64::Engine as _;
     use image::{ImageBuffer, Rgb};
     use rayon::prelude::*;
@@ -12314,6 +12569,12 @@ mod import_contract_tests {
             ProcessingContract::SmartAutoProPhotoV11
         );
         assert_eq!(
+            default_pipeline_state_for_import(true, "roll-a", &rolls)
+                .processing_report
+                .analysis_data_domain,
+            "legacy_linear_srgb"
+        );
+        assert_eq!(
             default_pipeline_state_for_import(false, "roll-a", &rolls).contract,
             ProcessingContract::RollAnchoredProPhotoV11
         );
@@ -12563,6 +12824,9 @@ mod import_contract_tests {
             DecodeMode::DevelopProxy,
         )
         .unwrap();
+        let legacy_image =
+            decode_image_buffer(path.to_string_lossy().as_ref(), DecodeMode::DevelopProxy).unwrap();
+        let compatibility_image = srgb_proxy_u16_to_prophoto_f32(&legacy_image);
         let mut geom = GeometryState::default();
         geom.calibration_points = Some([
             [0.14733543, 0.1509434],
@@ -12571,19 +12835,16 @@ mod import_contract_tests {
             [0.14733543, 0.8443396],
         ]);
 
-        let raw_limits = compute_content_limits_f32(&image, None, &geom, [0.0; 3]).unwrap();
-        let old_low = density_luma(raw_limits.d_min);
-        let old_high = density_luma(raw_limits.d_max);
-        let mut old_limits = AutoColorLimits {
-            d_min: [old_low; 3],
-            d_max: [old_high; 3],
-            pipeline_state: None,
-        };
-        preserve_smart_auto_content_span(&mut old_limits);
-
-        let mut display_limits = raw_limits.clone();
-        let offsets = share_smart_auto_density_scale(&mut display_limits);
-        preserve_smart_auto_content_span(&mut display_limits);
+        let raw_limits = compute_auto_color_limits(
+            &legacy_image,
+            &geom,
+            &compute_auto_base(&legacy_image),
+            FilmMode::Color,
+            false,
+        )
+        .unwrap();
+        let display_limits = raw_limits.clone();
+        let legacy_base = compute_auto_base(&legacy_image);
 
         let render = |limits: &AutoColorLimits| {
             let mut params = TuningParams::default();
@@ -12591,21 +12852,18 @@ mod import_contract_tests {
             params.density.d_max = limits.d_max;
             let mut state = PipelineState::smart_auto();
             state.processing_report.base_source = "content_estimate".to_string();
+            state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
             render_f32_shader_equivalent(
-                &image,
+                &compatibility_image,
                 None,
                 &params,
                 &geom,
-                &BaseColor::default(),
+                &legacy_base,
                 &state,
                 None,
             )
         };
-        let old_render = render(&old_limits);
         let fixed_render = render(&display_limits);
-        let legacy_image =
-            decode_image_buffer(path.to_string_lossy().as_ref(), DecodeMode::DevelopProxy).unwrap();
-        let legacy_base = compute_auto_base(&legacy_image);
         let legacy_limits =
             compute_auto_color_limits(&legacy_image, &geom, &legacy_base, FilmMode::Color, false)
                 .unwrap();
@@ -12618,9 +12876,6 @@ mod import_contract_tests {
             .join("target")
             .join("smart-auto-real-ab");
         std::fs::create_dir_all(&output).unwrap();
-        old_render
-            .save(output.join("DSC7357-old-shared-window.png"))
-            .unwrap();
         fixed_render
             .save(output.join("DSC7357-fixed-channel-offsets.png"))
             .unwrap();
@@ -12639,7 +12894,6 @@ mod import_contract_tests {
             sum.map(|value| value as f64 / count as f64)
         };
 
-        let old_mean = mean(&old_render);
         let fixed_mean = mean(&fixed_render);
         let legacy_mean = mean(&legacy_render);
         let colour_distance = |left: [f64; 3], right: [f64; 3]| {
@@ -12650,28 +12904,76 @@ mod import_contract_tests {
                 .sqrt()
         };
         assert!(
-            colour_distance(fixed_mean, legacy_mean) < colour_distance(old_mean, legacy_mean),
-            "fixed={fixed_mean:?} old={old_mean:?} legacy={legacy_mean:?}"
+            colour_distance(fixed_mean, legacy_mean) < 10.0,
+            "fixed={fixed_mean:?} legacy={legacy_mean:?}"
         );
 
         eprintln!(
-            "proxy={}x{} raw={:?}..{:?} old={:?}..{:?} fixed={:?}..{:?} offsets={:?} old_mean={:?} fixed_mean={:?} legacy_base={:?} legacy={:?}..{:?} legacy_mean={:?} output={}",
+            "proxy={}x{} raw={:?}..{:?} fixed={:?}..{:?} fixed_mean={:?} legacy_base={:?} legacy={:?}..{:?} legacy_mean={:?} output={}",
             image.width(),
             image.height(),
             raw_limits.d_min,
             raw_limits.d_max,
-            old_limits.d_min,
-            old_limits.d_max,
             display_limits.d_min,
             display_limits.d_max,
-            offsets,
-            old_mean,
             fixed_mean,
             [legacy_base.base_r, legacy_base.base_g, legacy_base.base_b],
             legacy_limits.d_min,
             legacy_limits.d_max,
             legacy_mean,
             output.display()
+        );
+    }
+
+    #[test]
+    fn loose_smart_auto_compatibility_matches_legacy_render_for_quantized_rgb() {
+        let source = ImageBuffer::from_fn(37, 23, |x, y| {
+            let r = 3_000u16.wrapping_add((x * 1_703 + y * 311) as u16);
+            let g = 7_000u16.wrapping_add((x * 557 + y * 2_107) as u16);
+            let b = 11_000u16.wrapping_add((x * 2_401 + y * 733) as u16);
+            Rgb([r, g, b])
+        });
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([[0.08, 0.10], [0.92, 0.10], [0.92, 0.90], [0.08, 0.90]]);
+        let base = compute_auto_base(&source);
+        let limits = compute_auto_color_limits(&source, &geom, &base, FilmMode::Color, false)
+            .expect("synthetic proxy should produce density limits");
+        let mut params = TuningParams::default();
+        params.density.d_min = limits.d_min;
+        params.density.d_max = limits.d_max;
+        params.density.gamma = 1.15;
+        params.tone.saturation = 0.18;
+        params.tone.temperature = -0.12;
+        params.tone.tint = 0.07;
+
+        let legacy = render_shader_equivalent(&source, &params, &geom, &base, None);
+        let mut compatibility_state = PipelineState::smart_auto();
+        compatibility_state.processing_report.base_source = "compatibility_base".to_string();
+        compatibility_state.processing_report.analysis_data_domain =
+            "legacy_linear_srgb".to_string();
+        let compatibility_source = srgb_proxy_u16_to_prophoto_f32(&source);
+        let compatible = render_f32_shader_equivalent(
+            &compatibility_source,
+            None,
+            &params,
+            &geom,
+            &base,
+            &compatibility_state,
+            None,
+        );
+
+        let max_delta = legacy
+            .as_raw()
+            .iter()
+            .zip(compatible.as_raw())
+            .map(|(left, right)| left.abs_diff(*right))
+            .max()
+            .unwrap_or(0);
+        // The f32 ProPhoto round trip precedes the same u16 display shader;
+        // matrix round-off can move a final channel by a handful of levels.
+        assert!(
+            max_delta <= 4,
+            "compatibility render differs by {max_delta} levels"
         );
     }
 
@@ -12782,6 +13084,29 @@ mod import_contract_tests {
             [0.0; 3]
         );
         assert!(state.density_anchors.d_min_base.is_none());
+
+        state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
+        assert!(!pipeline_has_base(&state, &BaseColor::default()));
+        state.processing_report.base_source = "compatibility_base".to_string();
+        assert!(pipeline_has_base(&state, &BaseColor::default()));
+    }
+
+    #[test]
+    fn loose_smart_auto_compatibility_marker_is_cleared_when_promoted() {
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
+        state.processing_report.base_source = "compatibility_base".to_string();
+        state.processing_report.base_confidence = "high".to_string();
+
+        mark_loose_smart_auto_compatibility(&mut state, false);
+
+        assert_eq!(
+            state.processing_report.analysis_data_domain,
+            "linear_prophoto_estimate"
+        );
+        assert_eq!(state.processing_report.base_source, "unresolved");
+        assert_eq!(state.processing_report.base_confidence, "low");
+        assert!(!is_smart_auto_compatibility(&state));
     }
 
     #[test]
@@ -13751,6 +14076,26 @@ mod export_contract_tests {
             u16::MAX
         );
         assert_eq!(u16::from_le_bytes(response[42..44].try_into().unwrap()), 0);
+    }
+
+    #[test]
+    fn loose_smart_auto_proxy_uses_legacy_transport_flag_and_base_density() {
+        let proxy = ImageBuffer::from_pixel(1, 1, Rgb([12_000, 24_000, 36_000]));
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
+        state.processing_report.base_source = "compatibility_base".to_string();
+        let response =
+            build_response_buffer_from_proxy_with_state(&proxy, &white_base(), &state, None, true);
+        let flags = u32::from_le_bytes(response[24..28].try_into().unwrap());
+        assert_eq!(flags & 2, 0, "compatibility transport must not be ProPhoto");
+        assert_ne!(flags & 1, 0, "compatibility base must be marked analyzed");
+        for channel in 0..3 {
+            let offset = 8 + channel * 4;
+            assert_eq!(
+                f32::from_le_bytes(response[offset..offset + 4].try_into().unwrap()),
+                0.0
+            );
+        }
     }
 
     #[test]
