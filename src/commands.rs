@@ -14570,7 +14570,7 @@ mod import_contract_tests {
 
         let legacy_base = compute_auto_base(&linear);
         let legacy_limits =
-            compute_auto_color_limits(&linear, &geom, &legacy_base, mode, false).unwrap();
+            compute_auto_color_limits(&linear, &geom, &legacy_base, mode.clone(), false).unwrap();
         let mut legacy_params = TuningParams::default();
         legacy_params.density.d_min = legacy_limits.d_min;
         legacy_params.density.d_max = legacy_limits.d_max;
@@ -14720,6 +14720,119 @@ mod import_contract_tests {
                 wide_limits.d_max[2]
             );
             ab_print_rendered_cast("smart-auto-f32", &wide_render, &geom);
+        }
+
+        // Trace the whole render chain for a few pixels: the positive must keep
+        // the same brightness ordering as the scene in every channel.
+        {
+            let mut trace_state = state.clone();
+            trace_state.render_mapping.density_low = limits.d_min;
+            trace_state.render_mapping.density_high = limits.d_max;
+            trace_state.render_mapping.channel_offsets = offsets;
+            let pipeline = crate::pipeline::FilmPipeline::from_state(
+                &trace_state,
+                &BaseColor::default(),
+                [0.0; 3],
+                mode.clone(),
+            );
+            let matrix = linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb);
+            println!("[DIAG] {stem} prophoto->srgb matrix = {matrix:?}");
+            for (label, uv) in [
+                ("sky", [0.50, 0.13]),
+                ("recess", [0.55, 0.55]),
+                ("road", [0.30, 0.80]),
+            ] {
+                let x = ((uv[0] * estimate.width() as f32) as u32).min(estimate.width() - 1);
+                let y = ((uv[1] * estimate.height() as f32) as u32).min(estimate.height() - 1);
+                let pixel = estimate.get_pixel(x, y).0;
+                let density = pipeline.compute_true_density(&[pixel[0], pixel[1], pixel[2]]);
+                let normalized = std::array::from_fn(|channel| {
+                    let span = limits.d_max[channel] - limits.d_min[channel];
+                    ((density[channel] - limits.d_min[channel]) / span).clamp(0.0, 1.0)
+                });
+                let mixed = apply_linear_matrix(normalized, matrix);
+                let rendered = smart_auto_render.get_pixel(x, y).0;
+                println!(
+                    "[DIAG] {stem} trace {label}: estimate=({:.3},{:.3},{:.3}) density=({:.3},{:.3},{:.3}) normalized=({:.3},{:.3},{:.3}) mixed=({:.3},{:.3},{:.3}) rendered=({:.3},{:.3},{:.3})",
+                    pixel[0], pixel[1], pixel[2],
+                    density[0], density[1], density[2],
+                    normalized[0], normalized[1], normalized[2],
+                    mixed[0], mixed[1], mixed[2],
+                    f32::from(rendered[0]) / 65535.0,
+                    f32::from(rendered[1]) / 65535.0,
+                    f32::from(rendered[2]) / 65535.0
+                );
+            }
+        }
+
+        // Prototype: keep the display matrix but replace the per-channel clamp
+        // with a chroma compression toward the neutral axis, the same idea the
+        // input side already uses, so out-of-gamut values lose saturation
+        // instead of shifting hue.
+        {
+            let mut state = state.clone();
+            let base = [0.0; 3];
+            let mut limits = compute_content_limits_f32_with_bounds(
+                &estimate,
+                None,
+                &geom,
+                base,
+                roll_physical_density_span(&state.density_anchors, base),
+            )
+            .unwrap();
+            let (offsets, _) =
+                prepare_content_render_limits(&mut limits, &state.density_anchors, base);
+            let matrix = linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb);
+            let mut pipeline_state = state.clone();
+            pipeline_state.render_mapping.density_low = limits.d_min;
+            pipeline_state.render_mapping.density_high = limits.d_max;
+            pipeline_state.render_mapping.channel_offsets = offsets;
+            let pipeline = crate::pipeline::FilmPipeline::from_state(
+                &pipeline_state,
+                &BaseColor::default(),
+                [0.0; 3],
+                mode.clone(),
+            );
+            let mut compressed =
+                ImageBuffer::<Rgb<u16>, Vec<u16>>::new(estimate.width(), estimate.height());
+            compressed
+                .as_mut()
+                .par_chunks_exact_mut(3)
+                .zip(estimate.as_raw().par_chunks_exact(3))
+                .for_each(|(target, pixel)| {
+                    let density = pipeline.compute_true_density(&[pixel[0], pixel[1], pixel[2]]);
+                    let normalized = std::array::from_fn(|channel| {
+                        let span = limits.d_max[channel] - limits.d_min[channel];
+                        ((density[channel] - limits.d_min[channel]) / span).clamp(0.0, 1.0)
+                    });
+                    let mut rgb = apply_linear_matrix(normalized, matrix);
+                    let luma = crate::core_math::density_luma(rgb);
+                    let mut scale = 1.0f32;
+                    for value in rgb {
+                        if value < 0.0 {
+                            scale = scale.min(luma / (luma - value));
+                        } else if value > 1.0 {
+                            scale = scale.min((1.0 - luma) / (value - luma));
+                        }
+                    }
+                    rgb = rgb.map(|value| (luma + (value - luma) * scale).clamp(0.0, 1.0));
+                    for (channel, value) in rgb.iter().enumerate() {
+                        target[channel] = (value * 65535.0).round() as u16;
+                    }
+                });
+            ab_save_preview(
+                output_root.join(format!("{stem}-display-gamut-compressed.jpg")),
+                &compressed,
+            );
+            ab_print_rendered_cast("display gamut compressed", &compressed, &geom);
+            for (region, uv) in [
+                ("sky", [0.50, 0.13]),
+                ("recess", [0.55, 0.55]),
+                ("road", [0.30, 0.80]),
+            ] {
+                print!("[DIAG] {stem} gamut-compressed ");
+                ab_probe_u16(region, &compressed, uv);
+            }
         }
 
         // Named scene regions: the sky should be a light blue/white, the
