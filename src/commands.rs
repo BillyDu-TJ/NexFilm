@@ -14556,6 +14556,25 @@ mod import_contract_tests {
                 print!("[DIAG] {stem} {label} ");
                 ab_probe_u16(region, &rendered, uv);
             }
+            // Same frame with a display encoding instead of writing the linear
+            // density straight to the display buffer.
+            let mut gamma_params = params.clone();
+            gamma_params.density.gamma = 2.2;
+            let gamma_render = render_f32_shader_equivalent(
+                &estimate,
+                None,
+                &gamma_params,
+                &geom,
+                &BaseColor::default(),
+                &state,
+                None,
+            );
+            ab_save_preview(
+                output_root.join(format!("{stem}-{label}-gamma22.jpg")),
+                &gamma_render,
+            );
+            print!("[DIAG] {stem} {label} gamma22 ");
+            ab_print_rendered_cast(&format!("{label} gamma22"), &gamma_render, &geom);
         }
     }
 
