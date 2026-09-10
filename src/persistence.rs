@@ -605,6 +605,37 @@ pub fn save_rolls_and_pipeline_states(
     transaction.commit()
 }
 
+/// Persist a roll's resolved pipeline state and invalidate rendered thumbnails
+/// when the mapping itself changes (for example after density-anchor edits).
+/// The embedded import preview remains available as the undeveloped fallback.
+pub fn save_rolls_and_pipeline_states_reset_thumbnails(
+    connection: &mut Connection,
+    rolls: &[Roll],
+    pipeline_states: &[(String, String, PipelineState)],
+) -> rusqlite::Result<()> {
+    let transaction = connection.transaction()?;
+    replace_rolls(&transaction, rolls)?;
+    for (roll_id, file_path, pipeline_state) in pipeline_states {
+        let serialized = serde_json::to_string(pipeline_state)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        transaction.execute(
+            "UPDATE image_states
+             SET pipeline_state = ?1, rendered_thumb_base64 = NULL,
+                 thumbnail_base64 = embedded_thumb_base64, math_version = ?2,
+                 updated_at = ?3
+             WHERE roll_id = ?4 AND file_path = ?5",
+            rusqlite::params![
+                serialized,
+                math_version_for_contract(pipeline_state.contract),
+                now_timestamp(),
+                roll_id,
+                file_path,
+            ],
+        )?;
+    }
+    transaction.commit()
+}
+
 pub fn load_rolls(connection: &Connection) -> rusqlite::Result<Vec<Roll>> {
     let mut statement = connection.prepare(
         "SELECT roll_id, date, roll_format, film_stock, camera, image_paths, density_anchors,
@@ -1419,6 +1450,43 @@ mod tests {
             calibration_profile_id: None,
             scanner_profile_id: None,
         }
+    }
+
+    #[test]
+    fn density_anchor_mapping_reset_clears_rendered_thumbnails() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let roll = sample_roll("roll-a", &["frame.dng"]);
+        save_rolls(&mut connection, std::slice::from_ref(&roll)).unwrap();
+        connection
+            .execute(
+                "INSERT INTO image_states
+                 (roll_id, file_path, thumbnail_base64, embedded_thumb_base64, rendered_thumb_base64)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params!["roll-a", "frame.dng", "positive", "negative", "positive"],
+            )
+            .unwrap();
+
+        save_rolls_and_pipeline_states_reset_thumbnails(
+            &mut connection,
+            std::slice::from_ref(&roll),
+            &[(
+                "roll-a".to_string(),
+                "frame.dng".to_string(),
+                PipelineState::default(),
+            )],
+        )
+        .unwrap();
+
+        let thumbnails: (String, Option<String>) = connection
+            .query_row(
+                "SELECT thumbnail_base64, rendered_thumb_base64
+                 FROM image_states WHERE roll_id = 'roll-a' AND file_path = 'frame.dng'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(thumbnails, ("negative".to_string(), None));
     }
 
     fn sample_calibration_profile(id: &str) -> CalibrationConfigProfile {

@@ -20,6 +20,26 @@ assert.match(main, /function createLooseImportRoll\(paths\)[\s\S]*?roll_id:\s*`l
 assert.match(main, /format:\s*'Loose'/);
 assert.match(main, /let currentRollViewId = null;\s*let historyRollViewId = null;/);
 assert.match(main, /historyRollViewId === currentRollViewId/);
+assert.match(main, /function runAutoInvertRoll\(rollId\)/);
+assert.match(main, /invoke\('auto_invert_roll', \{\s*rollId,\s*frameId:/);
+assert.match(main, /auto_invert_roll_progress/);
+assert.match(html, /id="btn-auto-color-roll"/);
+assert.match(main, /btnAutoColorRoll\.addEventListener\('click'/);
+assert.match(
+    main,
+    /const priorityId = activeId;[\s\S]*const frameItems = \[\.\.\.fetchedFrameItems\]\.sort/,
+    'Roll auto invert must prioritize the active frame before the persisted roll order',
+);
+assert.match(
+    main,
+    /await invoke\('prepare_proxy',[\s\S]*?await invoke\('auto_invert_roll',[\s\S]*?await refreshRollFilmstripThumbnails\(rollId\)/,
+    'Roll auto invert must prepare, process, and refresh each frame in sequence',
+);
+assert.match(
+    main,
+    /autoInvertRollProgress\.className\s*=\s*'fixed bottom-6 right-6 z-\[100\] w-72 border border-\[#3A3A3C\] bg-\[#1C1C1E\] p-4 shadow-2xl'/,
+    'Roll progress must use the export-style lower-right panel',
+);
 assert.match(
     main,
     /currentRollViewId = rollId;[\s\S]*?historyRollViewId = rollId;/,
@@ -110,6 +130,54 @@ assert.doesNotMatch(
 assert.match(main, /libDiv\.onmousedown = event =>[\s\S]*?clearNativeSelection\(event\)/);
 assert.match(main, /libDiv\.ondblclick = event =>[\s\S]*?clearNativeSelection\(event\)/);
 assert.match(css, /\.library-item, \.film-item, \.roll-row[\s\S]*?user-select:\s*none/);
+assert.match(
+    main,
+    /isDensityReferenceSelectionMode && scope === 'library'[\s\S]*?additive:\s*true/,
+    'Density reference selection must toggle multiple Library images without modifier keys',
+);
+const selectAllHandler = main.match(
+    /btnSelectAll\.addEventListener\('click',[\s\S]*?\n\}\);/,
+)?.[0] || '';
+assert.ok(
+    selectAllHandler && !selectAllHandler.includes('if (isDensityReferenceSelectionMode) return;'),
+    'Select All must remain usable for density reference multi-selection',
+);
+assert.match(
+    main,
+    /isDensityReferenceSelectionMode \? 'calibration\.confirmSelection' : 'calibration\.action'/,
+    'The calibration action must become Confirm while selecting references',
+);
+assert.match(
+    main,
+    /isDensityReferenceSelectionMode[\s\S]*?selectedCalibrationItems\.length === 0/,
+    'Density calibration confirmation must accept one or more selected images',
+);
+const librarySelectionUi = main.match(
+    /function updateLibrarySelectionUI\(\) \{[\s\S]*?\n\}/,
+)?.[0] || '';
+assert.ok(
+    librarySelectionUi.includes("btnCalibrateDensity.disabled = importInProgress")
+        && !librarySelectionUi.includes('calibratableItems.length'),
+    'The calibration entry must not depend on a preselected or already loaded image',
+);
+assert.match(
+    main,
+    /function openDensityCalibration\(items\)[\s\S]*?selectedRollItems\s*=\s*items\.filter\(candidate => candidate\.roll_id === item\.roll_id\)[\s\S]*?itemIds:\s*selectedRollItems\.map\(candidate => candidate\.id\)/,
+    'Density calibration must retain every selected reference image',
+);
+assert.match(main, /aggregate_roll_density_references/);
+assert.match(main, /auto_invert_roll/);
+assert.doesNotMatch(
+    html,
+    /id="btn-calibrate-density"[^>]*\sdisabled(?:\s|=|>)/,
+    'The calibration entry must be clickable before any Library image is selected',
+);
+assert.match(
+    main,
+    /densityCalibrationModal\.classList\.add\('is-open'\)[\s\S]*?void selectDensityCalibrationSource\(item\.id\)/,
+    'Calibration modal must open before the full-resolution preview finishes decoding',
+);
+assert.match(html, /id="density-calibration-source-list"/);
 assert.match(
     css,
     /\.density-calibration-preview img\s*\{[\s\S]*?width:\s*100%[\s\S]*?height:\s*100%[\s\S]*?object-fit:\s*contain/,

@@ -82,7 +82,7 @@ NexFilm Engine 用于将相机翻拍或扫描仪输出的胶片负片转换为�
 ### v1.0 主要功能
 
 - **胶卷与散张工作流**：按画幅、相机、胶片型号和日期导入整卷，也可直接拖入散张；支持继续编辑、追加画面、修改胶卷信息、筛选归档、重定位缺失文件和删除记录。
-- **自动胶片范围与透视校准**：自动检测有效成像区域，也可拖动四角或边缘手动修正；固定机位扫描时可将几何设置批量应用到同卷其他画面。
+- **自动胶片范围识别**：自动检测有效成像区域，也可拖动四角或边缘手动修正；范围仅用于内容分析与边缘排除，不会自动改变画面透视。固定机位扫描时可将范围批量应用到同卷其他画面。
 - **密度域反相与自动校色**：基于线性透射率进行密度转换、片基扣除和经验去串扰，并提供 Color / B&W、D-Min / D-Max、Printer Lights、曝光、Gamma、高光、阴影、饱和度、色温和色调控制。算法细节见 [数据处理管线说明](data_process_pipeline_doc.md)。
 - **实时 Develop 工作区**：WebGL 交互预览，支持裁切、拉直、透视、90 度旋转、水平/垂直翻转、缩放平移，以及直方图和波形图。
 - **设置复制与批处理**：可按类别选择要复制的校色、LUT、齿孔和几何参数，再粘贴到其他相似画面。
@@ -279,7 +279,7 @@ NexFilm Engine converts camera-scanned or scanner-produced film negatives into p
 ### v1.0 features
 
 - **Roll and loose-frame workflows** with format, camera, film stock, and date metadata; drag-and-drop import; archived-roll editing; append; metadata editing; missing-file relocation; and deletion.
-- **Automatic film-area detection and perspective calibration**, with manual corner/edge adjustment and batch geometry for consistently positioned scans.
+- **Automatic film-area detection**, with manual corner/edge adjustment and batch reuse for consistently positioned scans. The detected area guides analysis and edge exclusion without automatically changing image perspective.
 - **Density-domain inversion and automatic grading** with Color / B&W modes, D-Min / D-Max, Printer Lights, exposure, gamma, highlights, shadows, saturation, temperature, and tint. See the [data-processing pipeline](data_process_pipeline_doc.md) for implementation details.
 - **Real-time Develop workspace** powered by WebGL, with crop, straighten, perspective, quarter-turn rotation, horizontal/vertical flip, zoom/pan, histogram, and waveform.
 - **Selective Copy Settings / Paste Settings** for grade, LUT, sprocket, and geometry groups.

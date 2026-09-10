@@ -534,7 +534,8 @@ pub enum ProcessingContract {
     /// v1.1 ProPhoto estimate with a roll-level film-base reference.
     RollBaseProPhotoV11,
     /// v1.1 ProPhoto estimate with roll-level film-base and full-exposure
-    /// references. Per-frame density analysis is unnecessary in this mode.
+    /// references. These anchors define the fixed roll density coordinate and
+    /// display mapping; frame content never changes the endpoint mapping.
     RollAnchoredProPhotoV11,
     /// Capture-domain dark/open correction followed by fixed demosaic and an
     /// identity transform to relative transmission. This is not measured
@@ -582,6 +583,10 @@ pub struct PipelineProcessingReport {
     pub uses_physical_anchors: bool,
     #[serde(default)]
     pub analysis_data_domain: String,
+    #[serde(default)]
+    pub render_route: String,
+    #[serde(default)]
+    pub fallback_reason: String,
 }
 
 impl PipelineProcessingReport {
@@ -603,6 +608,8 @@ impl PipelineProcessingReport {
             tone_mapping_mode: "preserve_tone".to_string(),
             uses_physical_anchors: false,
             analysis_data_domain: "linear_prophoto_estimate".to_string(),
+            render_route: "FilmAreaSmartAuto".to_string(),
+            fallback_reason: String::new(),
         }
     }
 
@@ -773,6 +780,13 @@ pub struct DensityAnchors {
     /// audit. Resolution never promotes these back into active endpoints.
     #[serde(default)]
     pub retained_records: Vec<DensityAnchor>,
+    /// Fraction of the `base -> fully exposed leader` span that this Roll's own
+    /// photographs actually reach. A leader is the film's maximum density and
+    /// always sits above the scene highlights, so the display white point has
+    /// to be placed from content rather than from the leader alone. One value
+    /// per Roll keeps every frame on the same fixed mapping.
+    #[serde(default)]
+    pub highlight_fraction: Option<f32>,
 }
 
 impl DensityAnchors {
@@ -828,6 +842,8 @@ pub struct ContentRange {
 pub enum RenderMode {
     PreserveTone,
     FullTone,
+    /// Fixed roll-level mapping derived only from valid D-min/D-max anchors.
+    RollAnchored,
 }
 
 impl Default for RenderMode {
@@ -896,17 +912,29 @@ impl PipelineState {
 
     pub fn from_roll_anchors(anchors: DensityAnchors) -> Self {
         let mut report = PipelineProcessingReport::smart_auto();
+        let prophoto_estimate = anchors
+            .d_min_base
+            .as_ref()
+            .is_some_and(|anchor| anchor.provenance.input_domain == DataDomain::ProPhotoEstimate);
         report.base_source = if anchors.has_roll_base() {
-            "verified_anchor".to_string()
+            if prophoto_estimate {
+                "roll_anchor_prophoto_estimate".to_string()
+            } else {
+                "roll_anchor_relative_transmission".to_string()
+            }
         } else {
             "content_estimate".to_string()
         };
         report.base_confidence = if anchors.has_roll_base() {
-            "verified".to_string()
+            if prophoto_estimate {
+                "estimated".to_string()
+            } else {
+                "user_sampled".to_string()
+            }
         } else {
             "low".to_string()
         };
-        report.uses_physical_anchors = anchors.has_roll_base();
+        report.uses_physical_anchors = anchors.has_roll_base() && !prophoto_estimate;
         Self {
             contract: anchors.prophoto_contract(),
             density_anchors: anchors,
@@ -1162,6 +1190,15 @@ pub struct FilmItem {
     pub runtime_density_provenance: Option<DensityAnchorProvenance>,
     /// Resolver cache key. Capability recovery invalidates fallback proxies.
     pub runtime_pipeline_key: Option<String>,
+    /// Film base measured on this frame's own pixels. Scanner exposure and
+    /// white balance drift from frame to frame, so roll anchors alone leave a
+    /// colour cast after mask removal. `None` falls back to the roll anchor.
+    pub runtime_frame_base: Option<[f32; 3]>,
+    /// Fraction of the roll density span that this frame's brightest scene
+    /// content occupies. A fully exposed leader is the film's maximum density,
+    /// which sits above the scene highlights, so using the whole span pushes
+    /// every photograph towards black.
+    pub runtime_frame_highlight: Option<f32>,
     pub pipeline_state: PipelineState,
     pub params: TuningParams,
     pub geom: GeometryState,
@@ -1311,6 +1348,9 @@ pub struct EngineState {
     /// Monotonic per-image edit epochs used to reject stale asynchronous writes.
     pub development_generations:
         dashmap::DashMap<String, std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// Cooperative cancellation flags for roll-level Auto Invert workers.
+    pub roll_batch_cancellations:
+        dashmap::DashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>,
     pub film_border_cache: dashmap::DashMap<String, crate::film_border::FilmBorderDetection>,
     pub item_order: RwLock<Vec<String>>,
     pub active_id: RwLock<Option<String>>,
@@ -1328,6 +1368,7 @@ impl EngineState {
         EngineState {
             items: dashmap::DashMap::new(),
             development_generations: dashmap::DashMap::new(),
+            roll_batch_cancellations: dashmap::DashMap::new(),
             film_border_cache: dashmap::DashMap::new(),
             item_order: RwLock::new(Vec::new()),
             active_id: RwLock::new(None),

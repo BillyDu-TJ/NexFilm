@@ -21,11 +21,27 @@ assert.equal(geometry.isValidCalibrationQuad(square), true);
 assert.equal(geometry.isValidCalibrationQuad([[0.1, 0.1], [0.9, 0.9], [0.9, 0.1], [0.1, 0.9]]), false);
 
 assert.deepEqual(
-    geometry.resolveCalibrationRenderPoints(square, true),
-    [[0, 0], [1, 0], [1, 1], [0, 1]],
-    'calibration mode must keep the underlying image in its stable source coordinates'
+    geometry.mapDisplayPointToSource(
+        [0.25, 0.75],
+        { x: 0.1, y: 0.2, width: 0.6, height: 0.4 },
+        1000,
+        500,
+        { calibration_points: square }
+    ),
+    [0.25, 0.5],
+    'film-area points must not apply perspective correction'
 );
-assert.deepEqual(geometry.resolveCalibrationRenderPoints(square, false), square);
+assert.notDeepEqual(
+    geometry.mapDisplayPointToSource(
+        [0.25, 0.75],
+        { x: 0.1, y: 0.2, width: 0.6, height: 0.4 },
+        1000,
+        500,
+        { calibration_points: square, perspective_horizontal: 60 }
+    ),
+    [0.25, 0.5],
+    'explicit perspective controls must remain active'
+);
 
 assert.deepEqual(geometry.normalizeGeometryState({}).crop_rect, { x: 0, y: 0, width: 1, height: 1 });
 assert.equal(geometry.normalizeGeometryState({}).perspective_scale, 1);

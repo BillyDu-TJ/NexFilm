@@ -7,7 +7,7 @@ use crate::app_state::{
     CaptureCalibrationParameters, ContentRange, ContentRangeScope, DensityAnchor,
     DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource, DensityAnchors, EngineState,
     FilmItem, FilmMode, FilmstripItem, GeometryState, PipelineProcessingReport, PipelineState,
-    ProcessingContract, RenderMode, Roll, RollBaseStatus, RollCalibrationFormat,
+    ProcessingContract, RenderMapping, RenderMode, Roll, RollBaseStatus, RollCalibrationFormat,
     RollCalibrationMode, RollCalibrationStatus, RollDmaxStatus, RollFrameStatus, RollToneStatus,
     TuningParams, CALIBRATION_PROFILE_PAYLOAD_VERSION, CALIBRATION_PROFILE_SCHEMA_VERSION,
 };
@@ -25,9 +25,9 @@ use crate::color_science::{
     parse_output_space, ColorSpaceId, DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
 };
 use crate::core_math::{
-    apply_homography, apply_lens_distortion_uv, apply_perspective_uv,
-    apply_post_gamma_adjustments_with_luma, density_luma, neutral_density_bounds,
-    normalize_density_channel, shader_homography, sprocket_white_mask, DENSITY_LUMA_COEFFICIENTS,
+    apply_lens_distortion_uv, apply_perspective_uv, apply_post_gamma_adjustments_with_luma,
+    density_luma, neutral_density_bounds, normalize_density_channel, sprocket_white_mask,
+    DENSITY_LUMA_COEFFICIENTS,
 };
 use crate::persistence::{self, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
@@ -1718,8 +1718,15 @@ fn build_response_buffer_from_proxy_with_state(
             ProcessingContract::LegacyV1 => 0,
             ProcessingContract::CaptureCorrectedV11 => 4,
             ProcessingContract::SmartAutoProPhotoV11
+            | ProcessingContract::RollBaseProPhotoV11
+            | ProcessingContract::RollAnchoredProPhotoV11
                 if !is_smart_auto_compatibility(pipeline_state) =>
             {
+                // Every non-compatibility ProPhoto contract uses the signed
+                // ProPhoto transport proxy. The frontend must decode it back
+                // to the estimate domain before taking log density; omitting
+                // this bit makes roll-anchored previews follow the legacy
+                // sRGB/Status-M path and can collapse them to black.
                 2
             }
             _ => 0,
@@ -1866,16 +1873,6 @@ fn smart_auto_exclusion_counts(
     let points =
         geom.calibration_points
             .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-    let min_x = points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
-    let max_x = points
-        .iter()
-        .map(|p| p[0])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let min_y = points.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
-    let max_y = points
-        .iter()
-        .map(|p| p[1])
-        .fold(f32::NEG_INFINITY, f32::max);
     let mut open = 0;
     let mut saturated = 0;
     let mut invalid = 0;
@@ -1884,7 +1881,7 @@ fn smart_auto_exclusion_counts(
             (index as u32 % proxy.width()) as f32 / proxy.width().saturating_sub(1).max(1) as f32;
         let y =
             (index as u32 / proxy.width()) as f32 / proxy.height().saturating_sub(1).max(1) as f32;
-        if x < min_x || x > max_x || y < min_y || y > max_y {
+        if !point_in_film_area([x, y], &points, 0.0) {
             open += 1;
         } else if pixel.iter().any(|v| !v.is_finite() || *v <= 0.0) {
             invalid += 1;
@@ -2242,6 +2239,16 @@ fn compute_content_limits_f32(
     geom: &GeometryState,
     base_density: [f32; 3],
 ) -> Result<AutoColorLimits, String> {
+    compute_content_limits_f32_with_bounds(proxy, quality, geom, base_density, None)
+}
+
+fn compute_content_limits_f32_with_bounds(
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    quality: Option<&crate::raw_backend::QualityMask>,
+    geom: &GeometryState,
+    base_density: [f32; 3],
+    physical_span: Option<[f32; 3]>,
+) -> Result<AutoColorLimits, String> {
     const SAMPLE_EDGE: u32 = 512;
     let (source_width, source_height) = proxy.dimensions();
     let longest = source_width.max(source_height).max(1);
@@ -2254,23 +2261,6 @@ fn compute_content_limits_f32(
     let points =
         geom.calibration_points
             .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-    let min_x = points
-        .iter()
-        .map(|point| point[0])
-        .fold(f32::INFINITY, f32::min);
-    let max_x = points
-        .iter()
-        .map(|point| point[0])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let min_y = points
-        .iter()
-        .map(|point| point[1])
-        .fold(f32::INFINITY, f32::min);
-    let max_y = points
-        .iter()
-        .map(|point| point[1])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let homography = shader_homography(points);
     let collect = |inside_calibration_only: bool| {
         let mut samples = Vec::new();
         for y in 0..sample_height {
@@ -2283,14 +2273,6 @@ fn compute_content_limits_f32(
                     geom.crop_rect.x + base_uv[0] * geom.crop_rect.width,
                     geom.crop_rect.y + base_uv[1] * geom.crop_rect.height,
                 ];
-                if inside_calibration_only
-                    && (crop_uv[0] < min_x
-                        || crop_uv[0] > max_x
-                        || crop_uv[1] < min_y
-                        || crop_uv[1] > max_y)
-                {
-                    continue;
-                }
                 let Some(perspective_uv) = apply_perspective_uv(
                     crop_uv,
                     geom.perspective_vertical,
@@ -2300,13 +2282,14 @@ fn compute_content_limits_f32(
                 ) else {
                     continue;
                 };
-                let Some(oriented_uv) = apply_homography(&homography, perspective_uv) else {
-                    continue;
-                };
-                let Some(oriented_uv) = apply_lens_distortion_uv(oriented_uv, geom.lens_distortion)
+                let Some(oriented_uv) =
+                    apply_lens_distortion_uv(perspective_uv, geom.lens_distortion)
                 else {
                     continue;
                 };
+                if inside_calibration_only && !point_in_film_area(crop_uv, &points, 0.0) {
+                    continue;
+                }
                 let source_uv =
                     map_oriented_uv_to_source(oriented_uv, source_width, source_height, geom);
                 let Some(raw) = sample_rgb32_nearest_checked(proxy, quality, source_uv) else {
@@ -2324,6 +2307,21 @@ fn compute_content_limits_f32(
                     density[1] - base_density[1],
                     density[2] - base_density[2],
                 ];
+                if let Some(span) = physical_span {
+                    // A complete roll calibration gives us a useful physical
+                    // validity window. Samples below the measured clear base
+                    // or above the fully exposed leader are normally white
+                    // backing, sprocket/edge contamination, or saturation,
+                    // rather than scene content.
+                    const PHYSICAL_RANGE_MARGIN: f32 = 0.10;
+                    if density.iter().enumerate().any(|(channel, value)| {
+                        !value.is_finite()
+                            || *value < -PHYSICAL_RANGE_MARGIN
+                            || *value > span[channel] + PHYSICAL_RANGE_MARGIN
+                    }) {
+                        continue;
+                    }
+                }
                 if density.iter().all(|value| value.is_finite()) {
                     samples.push(density);
                 }
@@ -2440,7 +2438,8 @@ fn srgb_proxy_u16_to_prophoto_f32(
 }
 
 fn anchor_matches_resolved_contract(anchor: &DensityAnchor, state: &PipelineState) -> bool {
-    if anchor.provenance.input_domain != state.contract.input_domain()
+    if anchor.provenance.algorithm_version != crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION
+        || anchor.provenance.input_domain != state.contract.input_domain()
         || anchor.provenance.legacy
         || anchor.density.iter().any(|value| !value.is_finite())
     {
@@ -2461,31 +2460,6 @@ fn anchor_matches_resolved_contract(anchor: &DensityAnchor, state: &PipelineStat
     } else {
         anchor.provenance.calibration_profile_id.is_none()
             && anchor.provenance.calibration_payload_digest.is_none()
-    }
-}
-
-fn apply_roll_density_anchor_limits(
-    limits: &mut AutoColorLimits,
-    anchors: &DensityAnchors,
-    base_density: [f32; 3],
-) {
-    if anchors.has_roll_base() {
-        // Net density is measured relative to the sampled film base. The
-        // Film Area estimate may describe content, but it must not move D-Min.
-        limits.d_min = [0.0; 3];
-    }
-    if let Some(full_exposure) = anchors
-        .d_max_full_exposure
-        .as_ref()
-        .filter(|anchor| anchor.scope == DensityAnchorScope::Roll)
-    {
-        // Likewise a sampled leader fixes D-Max while the missing endpoint,
-        // if any, remains an estimate derived from Film Area.
-        limits.d_max = [
-            full_exposure.density[0] - base_density[0],
-            full_exposure.density[1] - base_density[1],
-            full_exposure.density[2] - base_density[2],
-        ];
     }
 }
 
@@ -2521,44 +2495,472 @@ fn share_smart_auto_density_scale(limits: &mut AutoColorLimits) -> [f32; 3] {
     offsets
 }
 
-fn preserve_smart_auto_content_span(limits: &mut AutoColorLimits) {
-    const MIN_DISPLAY_SPAN: f32 = 0.8;
+fn preserve_content_span(limits: &mut AutoColorLimits, minimum_span: f32) {
     let low = limits.d_min[0];
     let high = limits.d_max[0];
     let span = high - low;
-    if !span.is_finite() || span <= 1.0e-6 || span >= MIN_DISPLAY_SPAN {
+    if !span.is_finite() || span <= 1.0e-6 || span >= minimum_span {
         return;
     }
     for channel in 0..3 {
         let center = (limits.d_min[channel] + limits.d_max[channel]) * 0.5;
-        limits.d_min[channel] = center - MIN_DISPLAY_SPAN * 0.5;
-        limits.d_max[channel] = center + MIN_DISPLAY_SPAN * 0.5;
+        limits.d_min[channel] = center - minimum_span * 0.5;
+        limits.d_max[channel] = center + minimum_span * 0.5;
     }
 }
 
-const PRESERVE_TONE_MIN_DENSITY_SPAN: f32 = 1.9;
+fn preserve_smart_auto_content_span(limits: &mut AutoColorLimits) {
+    preserve_content_span(limits, 0.8);
+}
 
-fn preserve_tone_density_span(limits: &mut AutoColorLimits, anchors: &DensityAnchors) {
-    // Smart Auto content ranges are display estimates. Expanding a short
-    // scene to a fixed physical span makes fog and low-contrast frames black.
-    // Only verified roll anchors may request endpoint completion.
-    if !anchors.has_roll_base() && !anchors.has_roll_full_exposure() {
+fn prepare_content_render_limits(
+    limits: &mut AutoColorLimits,
+    anchors: &DensityAnchors,
+    base_density: [f32; 3],
+) -> ([f32; 3], bool) {
+    const MIN_DISPLAY_DENSITY_SPAN: f32 = 0.8;
+    let calibrated_span = roll_physical_density_span(anchors, base_density);
+
+    if let Some(span) = calibrated_span {
+        // The sampled base and leader define the physical coordinate system,
+        // not the display endpoints of every photograph. Work in the
+        // calibrated 0..1 density coordinate, derive a content window there,
+        // then convert that window back to per-channel density limits.
+        let mut relative = AutoColorLimits {
+            d_min: [0.0; 3],
+            d_max: [0.0; 3],
+            pipeline_state: None,
+        };
+        for channel in 0..3 {
+            relative.d_min[channel] = limits.d_min[channel] / span[channel];
+            relative.d_max[channel] = limits.d_max[channel] / span[channel];
+        }
+        let observed_span = density_luma(relative.d_max) - density_luma(relative.d_min);
+        let channel_offsets = share_smart_auto_density_scale(&mut relative);
+        let physical_luma_span = density_luma(span).max(1.0e-4);
+        let minimum_relative_span =
+            (MIN_DISPLAY_DENSITY_SPAN / physical_luma_span).clamp(0.25, 0.8);
+        preserve_content_span(&mut relative, minimum_relative_span);
+        for channel in 0..3 {
+            limits.d_min[channel] = relative.d_min[channel] * span[channel];
+            limits.d_max[channel] = relative.d_max[channel] * span[channel];
+        }
+        return (
+            [
+                channel_offsets[0] * span[0],
+                channel_offsets[1] * span[1],
+                channel_offsets[2] * span[2],
+            ],
+            observed_span < minimum_relative_span,
+        );
+    }
+
+    let observed_span = density_luma(limits.d_max) - density_luma(limits.d_min);
+    let channel_offsets = share_smart_auto_density_scale(limits);
+    preserve_smart_auto_content_span(limits);
+    (channel_offsets, observed_span < MIN_DISPLAY_DENSITY_SPAN)
+}
+
+fn roll_physical_density_span(
+    anchors: &DensityAnchors,
+    base_density: [f32; 3],
+) -> Option<[f32; 3]> {
+    anchors
+        .is_fully_anchored()
+        .then(|| anchors.d_max_full_exposure.as_ref())
+        .flatten()
+        .map(|full| {
+            [
+                full.density[0] - base_density[0],
+                full.density[1] - base_density[1],
+                full.density[2] - base_density[2],
+            ]
+        })
+        .filter(|span| {
+            span.iter()
+                .all(|value| value.is_finite() && *value > 1.0e-4)
+        })
+}
+
+/// Detect the film base on one frame's own pixels.
+///
+/// The roll anchors describe the film, but a scanner exposes every frame with
+/// its own exposure and white balance, which shifts the recorded density of the
+/// clear film base. Removing the mask with a roll constant therefore leaves a
+/// per-frame colour cast. The clear film base is the largest uniform, low
+/// density region of a negative, so the dominant density peak away from the
+/// fully exposed leader is a stable per-frame estimate.
+fn detect_frame_base_density(
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    anchor_base: [f32; 3],
+) -> Option<[f32; 3]> {
+    const BIN: f32 = 0.01;
+    const MAX_OFFSET: f32 = 0.45;
+    if !anchor_base
+        .iter()
+        .all(|value| value.is_finite() && *value > 0.0)
+    {
+        return None;
+    }
+    let anchor_luma = density_luma(anchor_base);
+    let (width, height) = proxy.dimensions();
+    if width < 32 || height < 32 {
+        return None;
+    }
+    // Subsample to roughly one million samples: enough to find a large
+    // uniform region, cheap enough to run during proxy preparation.
+    let stride = (((width * height) as f64 / 1_000_000.0).sqrt().ceil() as u32).max(1);
+    let low = (anchor_luma - MAX_OFFSET).max(0.0);
+    let high = anchor_luma + MAX_OFFSET;
+    let bin_count = (((high - low) / BIN).ceil() as usize).max(1);
+    let mut histogram = vec![0u32; bin_count + 1];
+    let mut total = 0u32;
+    let mut y = 0u32;
+    while y < height {
+        let mut x = 0u32;
+        while x < width {
+            let pixel = proxy.get_pixel(x, y).0;
+            if pixel.iter().all(|value| value.is_finite() && *value > 0.0) {
+                let luma = density_luma([-pixel[0].log10(), -pixel[1].log10(), -pixel[2].log10()]);
+                if luma >= low && luma <= high {
+                    let bin = (((luma - low) / BIN) as usize).min(bin_count);
+                    histogram[bin] += 1;
+                    total += 1;
+                }
+            }
+            x += stride;
+        }
+        y += stride;
+    }
+    if total < 4096 {
+        return None;
+    }
+    let (peak_bin, peak_count) = histogram
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, count)| **count)?;
+    // A large uniform region must own a meaningful share of the frame.
+    if peak_count.saturating_mul(40) < total {
+        return None;
+    }
+    let peak_center = low + (peak_bin as f32 + 0.5) * BIN;
+    let mut channels: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut y = 0u32;
+    while y < height {
+        let mut x = 0u32;
+        while x < width {
+            let pixel = proxy.get_pixel(x, y).0;
+            if pixel.iter().all(|value| value.is_finite() && *value > 0.0) {
+                let density = [-pixel[0].log10(), -pixel[1].log10(), -pixel[2].log10()];
+                if (density_luma(density) - peak_center).abs() <= BIN * 1.5 {
+                    for channel in 0..3 {
+                        channels[channel].push(density[channel]);
+                    }
+                }
+            }
+            x += stride;
+        }
+        y += stride;
+    }
+    let mut detected = [0.0f32; 3];
+    for channel in 0..3 {
+        if channels[channel].len() < 256 {
+            return None;
+        }
+        channels[channel].sort_unstable_by(|left, right| left.total_cmp(right));
+        detected[channel] = channels[channel][channels[channel].len() / 2];
+        if !detected[channel].is_finite()
+            || (detected[channel] - anchor_base[channel]).abs() > MAX_OFFSET + 0.15
+        {
+            return None;
+        }
+    }
+    Some(detected)
+}
+
+/// Frame base for rendering: the measured value when the proxy was prepared,
+/// otherwise a fresh measurement from the retained ProPhoto estimate.
+fn resolve_frame_render_parameters(
+    item: &FilmItem,
+    state: &PipelineState,
+) -> (Option<[f32; 3]>, Option<f32>) {
+    if state.contract != ProcessingContract::RollAnchoredProPhotoV11 {
+        return (None, None);
+    }
+    if let (Some(base), Some(highlight)) = (item.runtime_frame_base, item.runtime_frame_highlight) {
+        return (Some(base), Some(highlight));
+    }
+    let anchor_base = pipeline_base_density(state, &item.base_color);
+    if !anchor_base.iter().all(|value| *value > 0.0) {
+        return (item.runtime_frame_base, item.runtime_frame_highlight);
+    }
+    let span = roll_physical_density_span(&state.density_anchors, anchor_base);
+    let Some(estimate) = item.prophoto_estimate_proxy.as_ref() else {
+        return (item.runtime_frame_base, item.runtime_frame_highlight);
+    };
+    let base = item
+        .runtime_frame_base
+        .or_else(|| detect_frame_base_density(estimate, anchor_base));
+    let highlight = item.runtime_frame_highlight.or_else(|| {
+        base.and_then(|base| {
+            span.and_then(|span| detect_frame_highlight_fraction(estimate, base, span))
+        })
+    });
+    (base, highlight)
+}
+
+/// Fraction of the roll density span that this frame's brightest scene content
+/// occupies.
+///
+/// The user samples the film base and a fully exposed leader. The leader is the
+/// film's maximum density, but a normally exposed scene keeps highlight
+/// headroom below it: on a real Roll the scene occupies roughly half of the
+/// base-to-leader span. Mapping the whole span to black..white therefore
+/// under-exposes every print, which is what makes skies and clouds sit in the
+/// middle of the histogram.
+///
+/// The measurement is done on block averages so dust, scratches, frame edges
+/// and rebate lettering cannot claim the highlight, then clamped to a sane
+/// band so a single unusual frame cannot swing the whole look.
+fn detect_frame_highlight_fraction(
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    base_density: [f32; 3],
+    span: [f32; 3],
+) -> Option<f32> {
+    const BLOCK: u32 = 32;
+    const MIN_FILM_SHARE: f32 = 0.9;
+    let (width, height) = proxy.dimensions();
+    if width < BLOCK * 4 || height < BLOCK * 4 {
+        return None;
+    }
+    let span_luma = density_luma(span);
+    if !span_luma.is_finite() || span_luma <= 1.0e-4 {
+        return None;
+    }
+    let blocks_x = width / BLOCK;
+    let blocks_y = height / BLOCK;
+    // Subsample inside each block: the statistic only needs block averages.
+    let step = ((BLOCK as f32 / 8.0).ceil() as u32).max(1);
+    let mut block_luma = vec![f32::NAN; (blocks_x * blocks_y) as usize];
+    for block_y in 0..blocks_y {
+        for block_x in 0..blocks_x {
+            let mut film = 0u32;
+            let mut total = 0u32;
+            let mut sum = [0.0f64; 3];
+            let mut y = block_y * BLOCK;
+            while y < (block_y + 1) * BLOCK {
+                let mut x = block_x * BLOCK;
+                while x < (block_x + 1) * BLOCK {
+                    let pixel = proxy.get_pixel(x, y).0;
+                    total += 1;
+                    if pixel.iter().all(|value| value.is_finite() && *value > 0.0) {
+                        let relative = [
+                            -pixel[0].log10() - base_density[0],
+                            -pixel[1].log10() - base_density[1],
+                            -pixel[2].log10() - base_density[2],
+                        ];
+                        let luma = density_luma(relative);
+                        if luma > 0.03 && luma < 1.45 {
+                            film += 1;
+                            for channel in 0..3 {
+                                sum[channel] += relative[channel] as f64;
+                            }
+                        }
+                    }
+                    x += step;
+                }
+                y += step;
+            }
+            let film_share = film as f32 / total as f32;
+            if total == 0 || film_share < MIN_FILM_SHARE || film < 64 {
+                continue;
+            }
+            let mean = [
+                (sum[0] / film as f64) as f32,
+                (sum[1] / film as f64) as f32,
+                (sum[2] / film as f64) as f32,
+            ];
+            block_luma[(block_y * blocks_x + block_x) as usize] = density_luma(mean);
+        }
+    }
+    // Drop blocks that touch the light table, the blocking card or the frame
+    // rim: those edges are denser than the photograph and would otherwise
+    // claim the highlight.
+    const NEIGHBOURHOOD: i32 = 3;
+    const MIN_INTERIOR_SHARE: f32 = 0.85;
+    let mut interior: Vec<f32> = Vec::with_capacity((blocks_x * blocks_y) as usize);
+    for block_y in 0..blocks_y as i32 {
+        for block_x in 0..blocks_x as i32 {
+            let index = (block_y as u32 * blocks_x + block_x as u32) as usize;
+            let luma = block_luma[index];
+            if !luma.is_finite() {
+                continue;
+            }
+            let mut film_neighbours = 0u32;
+            let mut neighbours = 0u32;
+            for dy in -NEIGHBOURHOOD..=NEIGHBOURHOOD {
+                for dx in -NEIGHBOURHOOD..=NEIGHBOURHOOD {
+                    let ny = block_y + dy;
+                    let nx = block_x + dx;
+                    if ny < 0 || nx < 0 || ny >= blocks_y as i32 || nx >= blocks_x as i32 {
+                        continue;
+                    }
+                    neighbours += 1;
+                    if block_luma[(ny as u32 * blocks_x + nx as u32) as usize].is_finite() {
+                        film_neighbours += 1;
+                    }
+                }
+            }
+            let interior_share = film_neighbours as f32 / neighbours as f32;
+            if neighbours == 0 || interior_share < MIN_INTERIOR_SHARE {
+                continue;
+            }
+            interior.push(luma);
+        }
+    }
+    if interior.len() < 32 {
+        return None;
+    }
+    interior.sort_unstable_by(|left, right| left.total_cmp(right));
+    let index = ((interior.len() - 1) as f32 * 0.95).round() as usize;
+    let highlight_luma = interior[index];
+    let fraction = highlight_luma / span_luma;
+    if !fraction.is_finite() {
+        return None;
+    }
+    // Keep a floor so underexposed negatives are still lifted, and a ceiling so
+    // a bright frame cannot blow out every highlight of the Roll.
+    Some(fraction.clamp(0.45, 0.85))
+}
+
+/// Resolve the density mapping used by every complete roll-anchor renderer.
+/// The stored anchors are raw D values; `FilmPipeline` subtracts the roll D-min
+/// before rendering, so the display mapping is the relative span
+/// `[D-min_frame - D-min_roll, D-max - D-min_roll]`. `frame_base` carries the
+/// per-frame measurement that keeps mask removal exact on every frame.
+fn roll_density_mapping_with_frame_base(
+    state: &PipelineState,
+    frame_base: Option<[f32; 3]>,
+    highlight_fraction: Option<f32>,
+) -> Option<RenderMapping> {
+    if !matches!(
+        state.contract,
+        ProcessingContract::RollAnchoredProPhotoV11 | ProcessingContract::CaptureCorrectedV11
+    ) {
+        return None;
+    }
+    let base = state.density_anchors.d_min_base.as_ref()?;
+    let full = state.density_anchors.d_max_full_exposure.as_ref()?;
+    if base.scope != DensityAnchorScope::Roll
+        || full.scope != DensityAnchorScope::Roll
+        || base.source != DensityAnchorSource::SampledFilmBase
+        || full.source != DensityAnchorSource::SampledFullExposure
+        || matches!(base.confidence, DensityAnchorConfidence::Estimated)
+        || matches!(full.confidence, DensityAnchorConfidence::Estimated)
+        || !anchor_matches_resolved_contract(base, state)
+        || !anchor_matches_resolved_contract(full, state)
+    {
+        return None;
+    }
+    let span = [
+        full.density[0] - base.density[0],
+        full.density[1] - base.density[1],
+        full.density[2] - base.density[2],
+    ];
+    if span
+        .iter()
+        .any(|value| !value.is_finite() || *value <= 1.0e-4)
+    {
+        return None;
+    }
+    let offset = frame_base
+        .filter(|frame| frame.iter().all(|value| value.is_finite() && *value > 0.0))
+        .map(|frame| {
+            [
+                frame[0] - base.density[0],
+                frame[1] - base.density[1],
+                frame[2] - base.density[2],
+            ]
+        })
+        .unwrap_or([0.0; 3]);
+    // A fully exposed leader is the film's maximum density. Real scenes keep
+    // highlight headroom below it, so the white point uses only the measured
+    // fraction of the span that this Roll's content actually reaches.
+    let highlight = state
+        .density_anchors
+        .highlight_fraction
+        .or(highlight_fraction)
+        .filter(|value| value.is_finite())
+        .map(|value| value.clamp(0.45, 0.85))
+        .unwrap_or(1.0);
+    Some(RenderMapping {
+        mode: RenderMode::RollAnchored,
+        density_low: offset,
+        density_high: [
+            offset[0] + span[0] * highlight,
+            offset[1] + span[1] * highlight,
+            offset[2] + span[2] * highlight,
+        ],
+        exposure: 0.0,
+        gamma: 1.0,
+        channel_offsets: [0.0; 3],
+    })
+}
+
+fn fixed_roll_density_mapping(state: &PipelineState) -> Option<RenderMapping> {
+    roll_density_mapping_with_frame_base(state, None, None)
+}
+
+/// Learn the Roll's white point once and reuse it for every frame, so the whole
+/// Roll keeps a single fixed mapping instead of per-frame auto exposure.
+fn record_roll_highlight_fraction(state: &EngineState, roll_id: &str, fraction: f32) {
+    if !fraction.is_finite() {
         return;
     }
-    for channel in 0..3 {
-        let span = limits.d_max[channel] - limits.d_min[channel];
-        if !span.is_finite() || span >= PRESERVE_TONE_MIN_DENSITY_SPAN {
-            continue;
-        }
-        if anchors.has_roll_full_exposure() {
-            // A verified roll D-max remains fixed; extend only the estimated
-            // endpoint so short content cannot silently become Full Tone.
-            limits.d_min[channel] = limits.d_max[channel] - PRESERVE_TONE_MIN_DENSITY_SPAN;
-        } else {
-            // Keep a sampled roll D-min (or the estimated low endpoint) fixed.
-            limits.d_max[channel] = limits.d_min[channel] + PRESERVE_TONE_MIN_DENSITY_SPAN;
-        }
+    let fraction = fraction.clamp(0.45, 0.85);
+    let mut rolls = write_lock(&state.rolls);
+    let Some(roll) = rolls.iter_mut().find(|roll| roll.roll_id == roll_id) else {
+        return;
+    };
+    if roll
+        .density_anchors
+        .highlight_fraction
+        .is_some_and(|current| (current - fraction).abs() < 1.0e-4)
+    {
+        return;
     }
+    roll.density_anchors.highlight_fraction = Some(fraction);
+    let snapshot = rolls.clone();
+    drop(rolls);
+    if let Ok(connection) = persistence::open_connection() {
+        let mut connection = connection;
+        let _ = persistence::save_rolls(&mut connection, &snapshot);
+    }
+}
+
+fn apply_roll_anchor_report(state: &mut PipelineState) {
+    let report = &mut state.processing_report;
+    if state.contract == ProcessingContract::RollAnchoredProPhotoV11 {
+        // ProPhoto is a display-domain estimate. A user click improves
+        // repeatability, but it is not a measured density or Status M anchor.
+        report.base_source = "roll_anchor_prophoto_estimate".to_string();
+        report.base_confidence = "estimated".to_string();
+        report.uses_physical_anchors = false;
+        return;
+    }
+    report.base_source = "roll_anchor_relative_transmission".to_string();
+    report.base_confidence = state
+        .density_anchors
+        .d_min_base
+        .as_ref()
+        .map(|anchor| match anchor.confidence {
+            DensityAnchorConfidence::Verified => "verified",
+            DensityAnchorConfidence::UserSampled => "user_sampled",
+            DensityAnchorConfidence::Estimated => "estimated",
+        })
+        .unwrap_or("estimated")
+        .to_string();
+    report.uses_physical_anchors = true;
 }
 
 fn compute_pristine_proxy(
@@ -2642,6 +3044,16 @@ pub struct AutoColorLimits {
     pub d_max: [f32; 3],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline_state: Option<PipelineState>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AutoInvertRollResult {
+    pub roll_id: String,
+    pub total: usize,
+    pub processed: usize,
+    pub succeeded: usize,
+    pub failed: usize,
+    pub failed_ids: Vec<String>,
 }
 
 #[inline]
@@ -2798,23 +3210,6 @@ fn compute_auto_color_limits(
     let points =
         geom.calibration_points
             .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-    let min_x = points
-        .iter()
-        .map(|point| point[0])
-        .fold(f32::INFINITY, f32::min);
-    let max_x = points
-        .iter()
-        .map(|point| point[0])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let min_y = points
-        .iter()
-        .map(|point| point[1])
-        .fold(f32::INFINITY, f32::min);
-    let max_y = points
-        .iter()
-        .map(|point| point[1])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let homography = shader_homography(points);
     let use_linked_color_limits = linked_color_limits && mode == FilmMode::Color;
     let pipeline = FilmPipeline::new(
         [base_color.base_r, base_color.base_g, base_color.base_b],
@@ -2836,14 +3231,6 @@ fn compute_auto_color_limits(
                     geom.crop_rect.x + base_uv[0] * geom.crop_rect.width,
                     geom.crop_rect.y + base_uv[1] * geom.crop_rect.height,
                 ];
-                if inside_calibration_only
-                    && (crop_uv[0] < min_x
-                        || crop_uv[0] > max_x
-                        || crop_uv[1] < min_y
-                        || crop_uv[1] > max_y)
-                {
-                    continue;
-                }
                 let Some(perspective_uv) = apply_perspective_uv(
                     crop_uv,
                     geom.perspective_vertical,
@@ -2853,13 +3240,14 @@ fn compute_auto_color_limits(
                 ) else {
                     continue;
                 };
-                let Some(oriented_uv) = apply_homography(&homography, perspective_uv) else {
-                    continue;
-                };
-                let Some(oriented_uv) = apply_lens_distortion_uv(oriented_uv, geom.lens_distortion)
+                let Some(oriented_uv) =
+                    apply_lens_distortion_uv(perspective_uv, geom.lens_distortion)
                 else {
                     continue;
                 };
+                if inside_calibration_only && !point_in_film_area(crop_uv, &points, 0.0) {
+                    continue;
+                }
                 let source_uv =
                     map_oriented_uv_to_source(oriented_uv, source_width, source_height, geom);
                 let Some(raw) = sample_rgb16_nearest(proxy, source_uv) else {
@@ -3430,23 +3818,26 @@ fn reference_density_extreme(
     image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
     source: DensityAnchorSource,
 ) -> Result<[f32; 3], String> {
-    const MAX_REFERENCE_SAMPLES: usize = 1_000_000;
-    let pixel_count = image.as_raw().len() / 3;
-    if pixel_count == 0 {
+    // The file-based compatibility path has no click geometry. Restrict it
+    // to a central ROI and use a trimmed mean; full-frame 1%/99% tails are
+    // dominated by light panels, borders, sprockets, and edge leaks.
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
         return Err("The reference image contains no pixels.".to_string());
     }
-    let stride = (pixel_count / MAX_REFERENCE_SAMPLES).max(1);
-    let sample_capacity = pixel_count.div_ceil(stride);
-    let mut densities = [
-        Vec::with_capacity(sample_capacity),
-        Vec::with_capacity(sample_capacity),
-        Vec::with_capacity(sample_capacity),
-    ];
-    for pixel in image.as_raw().chunks_exact(3).step_by(stride) {
-        for channel in 0..3 {
-            let transmission = pixel[channel];
-            if transmission.is_finite() {
-                densities[channel].push(-transmission.max(1e-6).log10());
+    let mut densities = [Vec::new(), Vec::new(), Vec::new()];
+    let x0 = (width as f32 * 0.10).round() as u32;
+    let x1 = (width as f32 * 0.90).round().max((x0 + 1) as f32) as u32;
+    let y0 = (height as f32 * 0.10).round() as u32;
+    let y1 = (height as f32 * 0.90).round().max((y0 + 1) as f32) as u32;
+    for y in y0.min(height - 1)..y1.min(height) {
+        for x in x0.min(width - 1)..x1.min(width) {
+            let pixel = image.get_pixel(x, y).0;
+            for channel in 0..3 {
+                let transmission = pixel[channel];
+                if transmission.is_finite() && transmission > 1.0e-6 && transmission < 0.999999 {
+                    densities[channel].push(-transmission.log10());
+                }
             }
         }
     }
@@ -3457,22 +3848,15 @@ fn reference_density_extreme(
                 "The reference image has no finite samples in channel {channel}."
             ));
         }
+        let len = densities[channel].len();
         densities[channel].sort_unstable_by(|left, right| left.total_cmp(right));
-        let index = match source {
-            // Clear film base is the high-transmission / low-density tail.
-            DensityAnchorSource::SampledFilmBase => {
-                ((densities[channel].len() as f32 * 0.01).ceil() as usize)
-                    .saturating_sub(1)
-                    .min(densities[channel].len() - 1)
-            }
-            // Full exposure is the low-transmission / high-density tail.
-            DensityAnchorSource::SampledFullExposure => ((densities[channel].len() as f32 * 0.99)
-                .ceil() as usize)
-                .saturating_sub(1)
-                .min(densities[channel].len() - 1),
-            _ => densities[channel].len() / 2,
+        let (start, end) = match source {
+            DensityAnchorSource::SampledFilmBase => (0, (len / 5).max(1)),
+            DensityAnchorSource::SampledFullExposure => ((len * 4 / 5).min(len - 1), len),
+            _ => (len / 5, (len * 4 / 5).max(len / 5 + 1)),
         };
-        result[channel] = densities[channel][index];
+        let kept = &densities[channel][start.min(len - 1)..end.min(len).max(start + 1).min(len)];
+        result[channel] = kept.iter().copied().sum::<f32>() / kept.len() as f32;
     }
     Ok(result)
 }
@@ -3524,6 +3908,7 @@ pub async fn analyze_roll_density_references(
             d_min_base: Some(base),
             d_max_full_exposure: full_exposure,
             retained_records: Vec::new(),
+            highlight_fraction: None,
         })
     })
     .await
@@ -3645,12 +4030,108 @@ pub async fn sample_roll_density_reference(
             source,
             scope: DensityAnchorScope::Roll,
             confidence: DensityAnchorConfidence::UserSampled,
-            reference_id: Some(format!("{roll_id}:{path}")),
+            // Include the sampled location so repeated clicks on one
+            // reference image remain independent observations.
+            reference_id: Some(format!("{roll_id}:{path}:{x:.4}:{y:.4}")),
             provenance,
         })
     })
     .await
     .map_err(|error| format!("Density sampling worker failed: {error}"))?
+}
+
+fn median_density(values: &mut [f32]) -> Result<f32, String> {
+    median_value_result(values)
+}
+
+fn median_value(mut values: Vec<f32>) -> Option<f32> {
+    median_value_result(&mut values).ok()
+}
+
+fn median_value_result(values: &mut [f32]) -> Result<f32, String> {
+    if values.is_empty() || values.iter().any(|value| !value.is_finite()) {
+        return Err("Density reference samples must be finite and non-empty.".to_string());
+    }
+    values.sort_unstable_by(|left, right| left.total_cmp(right));
+    let middle = values.len() / 2;
+    if values.len() % 2 == 0 {
+        Ok((values[middle - 1] + values[middle]) * 0.5)
+    } else {
+        Ok(values[middle])
+    }
+}
+
+/// Merge independently sampled local regions without mixing reference
+/// contracts. The returned anchor keeps one representative provenance record;
+/// its reference id records that it is an aggregate for this Roll.
+#[tauri::command]
+pub fn aggregate_roll_density_references(
+    roll_id: String,
+    kind: String,
+    samples: Vec<DensityAnchor>,
+) -> Result<DensityAnchor, String> {
+    let expected_source = match kind.as_str() {
+        "base" => DensityAnchorSource::SampledFilmBase,
+        "full" => DensityAnchorSource::SampledFullExposure,
+        _ => return Err("Unknown density reference kind.".to_string()),
+    };
+    if samples.is_empty() {
+        return Err("At least one density reference sample is required.".to_string());
+    }
+    let roll_prefix = format!("{roll_id}:");
+    let provenance = samples[0].provenance.clone();
+    for sample in &samples {
+        if sample.source != expected_source {
+            return Err("Density reference source does not match the requested kind.".to_string());
+        }
+        if sample.scope != DensityAnchorScope::Roll {
+            return Err("Density reference scope must be the current Roll.".to_string());
+        }
+        if sample.confidence == DensityAnchorConfidence::Estimated {
+            return Err("Estimated density references cannot be aggregated.".to_string());
+        }
+        if sample
+            .reference_id
+            .as_deref()
+            .is_none_or(|id| !id.starts_with(&roll_prefix))
+        {
+            return Err("Density reference belongs to a different Roll.".to_string());
+        }
+        if sample.provenance != provenance {
+            return Err("Density references must share one data-domain contract.".to_string());
+        }
+        if sample.provenance.algorithm_version != crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION
+            || sample.provenance.legacy
+            || sample.density.iter().any(|value| !value.is_finite())
+        {
+            return Err("Density reference provenance is invalid.".to_string());
+        }
+    }
+    let mut merged = samples
+        .last()
+        .cloned()
+        .ok_or_else(|| "At least one density reference sample is required.".to_string())?;
+    merged.density = (0..3)
+        .map(|channel| {
+            let mut values = samples
+                .iter()
+                .map(|sample| sample.density[channel])
+                .collect::<Vec<_>>();
+            median_density(&mut values)
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .try_into()
+        .map_err(|_| "Could not form a three-channel density reference.".to_string())?;
+    merged.reference_id = Some(format!("{roll_id}:aggregate:{kind}:{}", samples.len()));
+    merged.confidence = if samples
+        .iter()
+        .any(|sample| sample.confidence == DensityAnchorConfidence::Verified)
+    {
+        DensityAnchorConfidence::Verified
+    } else {
+        DensityAnchorConfidence::UserSampled
+    };
+    Ok(merged)
 }
 
 fn decode_export_source(path: &str) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
@@ -3835,6 +4316,11 @@ fn pipeline_resolver_input_for_kind(
         if roll.density_anchors.d_max_full_exposure.is_some() {
             anchors.d_max_full_exposure = roll.density_anchors.d_max_full_exposure.clone();
         }
+        // The white point is a Roll property as well: copy it so the runtime
+        // state renders every frame with the same fixed mapping.
+        if roll.density_anchors.highlight_fraction.is_some() {
+            anchors.highlight_fraction = roll.density_anchors.highlight_fraction;
+        }
     }
     PipelineResolverInput {
         persisted_contract: persisted.contract,
@@ -3850,6 +4336,15 @@ fn pipeline_resolver_input_for_kind(
 fn state_from_resolution(
     persisted: &PipelineState,
     resolution: &PipelineResolution,
+) -> PipelineState {
+    state_from_resolution_with_frame_base(persisted, resolution, None, None)
+}
+
+fn state_from_resolution_with_frame_base(
+    persisted: &PipelineState,
+    resolution: &PipelineResolution,
+    frame_base: Option<[f32; 3]>,
+    highlight_fraction: Option<f32>,
 ) -> PipelineState {
     let mut state = persisted.clone();
     state.contract = resolution.resolved_path;
@@ -3888,11 +4383,55 @@ fn state_from_resolution(
         report.tone_mapping_mode = persisted.processing_report.tone_mapping_mode.clone();
         report.uses_physical_anchors = persisted.processing_report.uses_physical_anchors;
         report.analysis_data_domain = persisted.processing_report.analysis_data_domain.clone();
+        report.render_route = persisted.processing_report.render_route.clone();
+        report.fallback_reason = persisted.processing_report.fallback_reason.clone();
         report
             .fallback_reasons
             .extend(persisted.processing_report.fallback_reasons.iter().cloned());
     }
     state.processing_report = report;
+    if let Some(mapping) =
+        roll_density_mapping_with_frame_base(&state, frame_base, highlight_fraction)
+    {
+        state.content_range = None;
+        state.render_mapping = mapping;
+        state.processing_report.render_route = "RollAnchoredDirectInvert".to_string();
+        state.processing_report.fallback_reason.clear();
+        apply_roll_anchor_report(&mut state);
+    } else if state.contract != ProcessingContract::LegacyV1 {
+        if state.render_mapping.mode == RenderMode::RollAnchored {
+            // A previously anchored frame must not keep using its fixed
+            // endpoints after anchors become invalid or incomplete.
+            state.content_range = None;
+            state.render_mapping = RenderMapping::default();
+        }
+        state.processing_report.render_route = "FilmAreaSmartAuto".to_string();
+        state.processing_report.uses_physical_anchors = false;
+        state.processing_report.fallback_reason = state
+            .processing_report
+            .fallback_reasons
+            .first()
+            .cloned()
+            .unwrap_or_else(|| {
+                if state.density_anchors.has_roll_base()
+                    || state.density_anchors.has_roll_full_exposure()
+                {
+                    "incomplete_roll_anchors".to_string()
+                } else {
+                    "missing_or_invalid_roll_anchors".to_string()
+                }
+            });
+        if !state
+            .processing_report
+            .fallback_reasons
+            .contains(&state.processing_report.fallback_reason)
+        {
+            state
+                .processing_report
+                .fallback_reasons
+                .push(state.processing_report.fallback_reason.clone());
+        }
+    }
     state
 }
 
@@ -4390,6 +4929,8 @@ pub async fn import_images(
                         runtime_pipeline_state: None,
                         runtime_density_provenance: None,
                         runtime_pipeline_key: None,
+                        runtime_frame_base: None,
+                        runtime_frame_highlight: None,
                         pipeline_state: pipeline_state.clone(),
                         params: params.clone(),
                         geom: normalize_persisted_geometry_for_rendered_image(
@@ -4425,6 +4966,8 @@ pub async fn import_images(
                     runtime_pipeline_state: None,
                     runtime_density_provenance: None,
                     runtime_pipeline_key: None,
+                    runtime_frame_base: None,
+                    runtime_frame_highlight: None,
                     pipeline_state: default_pipeline_state.clone(),
                     params,
                     geom,
@@ -5101,6 +5644,8 @@ mod history_contract_tests {
                 runtime_pipeline_state: None,
                 runtime_density_provenance: None,
                 runtime_pipeline_key: None,
+                runtime_frame_base: None,
+                runtime_frame_highlight: None,
                 pipeline_state: PipelineState::default(),
                 params: TuningParams::default(),
                 geom: GeometryState::default(),
@@ -5377,7 +5922,12 @@ pub async fn switch_active_image(
         &item.file_path,
         None,
     );
-    let mut resolved_state = state_from_resolution(&item.pipeline_state, &resolution);
+    let mut resolved_state = state_from_resolution_with_frame_base(
+        &item.pipeline_state,
+        &resolution,
+        item.runtime_frame_base,
+        item.runtime_frame_highlight,
+    );
     let is_loose = item.is_loose
         || roll
             .as_ref()
@@ -5409,6 +5959,8 @@ pub async fn prepare_proxy(
         mut persisted_state,
         cached_resolution_key,
         is_loose,
+        has_prophoto_estimate,
+        has_capture_corrected,
     ) = {
         let item = read_lock(&item_arc);
         if std::fs::File::open(&item.file_path).is_err() {
@@ -5426,10 +5978,15 @@ pub async fn prepare_proxy(
             item.pipeline_state.clone(),
             item.runtime_pipeline_key.clone(),
             item.is_loose,
+            item.prophoto_estimate_proxy.is_some(),
+            item.relative_transmission_proxy.is_some(),
         )
     };
     let rolls = read_lock(&state.rolls).clone();
     let roll = rolls.iter().find(|roll| roll.roll_id == roll_id);
+    if roll.is_none() {
+        return Err(format!("Roll not found: {roll_id}"));
+    }
     let is_loose = is_loose
         || roll.is_some_and(|roll| roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT");
     mark_loose_smart_auto_compatibility(&mut persisted_state, is_loose);
@@ -5461,8 +6018,19 @@ pub async fn prepare_proxy(
         "{}|smart_auto_compatibility={use_smart_auto_compatibility_proxy}",
         resolution_key(&initial_resolution)
     );
+    let auxiliary_ready = match initial_resolution.resolved_path {
+        ProcessingContract::CaptureCorrectedV11 => has_capture_corrected,
+        ProcessingContract::SmartAutoProPhotoV11
+        | ProcessingContract::RollBaseProPhotoV11
+        | ProcessingContract::RollAnchoredProPhotoV11 => {
+            !use_smart_auto_compatibility_proxy && has_prophoto_estimate
+                || use_smart_auto_compatibility_proxy
+        }
+        _ => true,
+    };
     if current_long_edge >= target_long_edge
         && cached_resolution_key.as_deref() == Some(initial_resolution_key.as_str())
+        && auxiliary_ready
     {
         track_proxy_loaded(&state, &id);
         return Ok(current_long_edge);
@@ -5676,7 +6244,45 @@ pub async fn prepare_proxy(
     } else {
         initial_resolution
     };
-    let mut final_state = state_from_resolution(&persisted_state, &final_resolution);
+    // The roll anchors describe the film, not the scanner exposure of this
+    // frame. Measure the frame's own film base so mask removal stays exact, and
+    // how much of the film span its scene actually reaches so the print is not
+    // pushed towards black.
+    let anchor_base = pipeline_base_density(&persisted_state, &BaseColor::default());
+    let detected_base = prepared
+        .prophoto_estimate
+        .as_ref()
+        .filter(|_| {
+            matches!(
+                final_resolution.resolved_path,
+                ProcessingContract::RollAnchoredProPhotoV11
+                    | ProcessingContract::CaptureCorrectedV11
+            )
+        })
+        .and_then(|estimate| {
+            if anchor_base.iter().all(|value| *value > 0.0) {
+                detect_frame_base_density(estimate, anchor_base)
+            } else {
+                None
+            }
+        });
+    let detected_highlight = detected_base
+        .zip(roll_physical_density_span(
+            &persisted_state.density_anchors,
+            anchor_base,
+        ))
+        .and_then(|(base, span)| {
+            prepared
+                .prophoto_estimate
+                .as_ref()
+                .and_then(|estimate| detect_frame_highlight_fraction(estimate, base, span))
+        });
+    let mut final_state = state_from_resolution_with_frame_base(
+        &persisted_state,
+        &final_resolution,
+        detected_base,
+        detected_highlight,
+    );
     mark_loose_smart_auto_compatibility(&mut final_state, is_loose);
     let final_resolution_key = format!(
         "{}|smart_auto_compatibility={}",
@@ -5697,7 +6303,16 @@ pub async fn prepare_proxy(
             .unwrap_or(0);
         let resolution_changed =
             item.runtime_pipeline_key.as_deref() != Some(final_resolution_key.as_str());
-        if loaded_long_edge > retained_long_edge || resolution_changed {
+        let missing_auxiliary = match contract {
+            ProcessingContract::CaptureCorrectedV11 => item.relative_transmission_proxy.is_none(),
+            ProcessingContract::SmartAutoProPhotoV11
+            | ProcessingContract::RollBaseProPhotoV11
+            | ProcessingContract::RollAnchoredProPhotoV11 => {
+                !use_smart_auto_compatibility_proxy && item.prophoto_estimate_proxy.is_none()
+            }
+            _ => false,
+        };
+        if loaded_long_edge > retained_long_edge || resolution_changed || missing_auxiliary {
             item.original_proxy = None;
             item.proxy_image = Some(prepared.transport);
             item.prophoto_estimate_proxy = prepared.prophoto_estimate;
@@ -5709,6 +6324,8 @@ pub async fn prepare_proxy(
                 prepared.capture_corrected.map(|data| data.quality);
             item.pristine_proxy = None;
         }
+        item.runtime_frame_base = detected_base;
+        item.runtime_frame_highlight = detected_highlight;
         if use_smart_auto_compatibility_proxy {
             item.pipeline_state.processing_report.analysis_data_domain =
                 "legacy_linear_srgb".to_string();
@@ -5739,6 +6356,23 @@ pub async fn analyze_proxy_base_color(
                     && (roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT")
             })
     };
+    // The first frame analysed on a Roll fixes its white point, so later frames
+    // inherit the same mapping instead of each running its own auto exposure.
+    {
+        let (item_roll_id, frame_highlight) = {
+            let item = read_lock(&item_arc);
+            (item.roll_id.clone(), item.runtime_frame_highlight)
+        };
+        let roll_missing = read_lock(&state.rolls)
+            .iter()
+            .find(|roll| roll.roll_id == item_roll_id)
+            .is_some_and(|roll| roll.density_anchors.highlight_fraction.is_none());
+        if roll_missing {
+            if let Some(fraction) = frame_highlight {
+                record_roll_highlight_fraction(&state, &item_roll_id, fraction);
+            }
+        }
+    }
 
     tokio::task::spawn_blocking(move || {
         ensure_current_development_generation(&epoch, generation)?;
@@ -5898,6 +6532,7 @@ pub async fn analyze_proxy_density_limits(
             base_color,
             mode,
             linked_color_limits,
+            frame_render_parameters,
             mut pipeline_state,
         ) = {
             let item = read_lock(&item_arc);
@@ -5915,12 +6550,31 @@ pub async fn analyze_proxy_density_limits(
                 item.base_color.clone(),
                 item.params.film_mode.clone(),
                 is_noritsu_rendered_image(&item.file_path),
+                resolve_frame_render_parameters(&item, &effective),
                 effective,
             )
         };
         let mut observed_content_range = None;
         let mut channel_offsets = [0.0; 3];
-        let mut limits = if pipeline_state.contract == ProcessingContract::LegacyV1
+        let fixed_roll_mapping = roll_density_mapping_with_frame_base(
+            &pipeline_state,
+            frame_render_parameters.0,
+            frame_render_parameters.1,
+        );
+        let mut limits = if let Some(mapping) = fixed_roll_mapping.as_ref() {
+            // Complete anchors are the only source of display endpoints on
+            // this route. In particular, do not call any content percentile
+            // or channel-sharing helper here.
+            pipeline_state.processing_report.render_route = "RollAnchoredDirectInvert".to_string();
+            pipeline_state.processing_report.fallback_reason.clear();
+            pipeline_state.processing_report.tone_mapping_mode = "roll_anchored_fixed".to_string();
+            apply_roll_anchor_report(&mut pipeline_state);
+            AutoColorLimits {
+                d_min: mapping.density_low,
+                d_max: mapping.density_high,
+                pipeline_state: None,
+            }
+        } else if pipeline_state.contract == ProcessingContract::LegacyV1
             || is_smart_auto_compatibility(&pipeline_state)
         {
             compute_auto_color_limits(
@@ -5948,51 +6602,37 @@ pub async fn analyze_proxy_density_limits(
                     )
                 };
             let base = pipeline_base_density(&pipeline_state, &base_color);
-            if pipeline_state.density_anchors.is_fully_anchored() {
-                let full_exposure = pipeline_state
-                    .density_anchors
-                    .d_max_full_exposure
-                    .as_ref()
-                    .expect("complete anchors include full exposure");
-                AutoColorLimits {
-                    d_min: [0.0; 3],
-                    d_max: [
-                        full_exposure.density[0] - base[0],
-                        full_exposure.density[1] - base[1],
-                        full_exposure.density[2] - base[2],
-                    ],
-                    pipeline_state: None,
-                }
+            let mut estimated = compute_content_limits_f32_with_bounds(
+                input,
+                quality,
+                &geom,
+                base,
+                roll_physical_density_span(&pipeline_state.density_anchors, base),
+            )?;
+            observed_content_range = Some((estimated.d_min, estimated.d_max));
+            let (offsets, short_content) = prepare_content_render_limits(
+                &mut estimated,
+                &pipeline_state.density_anchors,
+                base,
+            );
+            channel_offsets = offsets;
+            if short_content {
+                pipeline_state.processing_report.tone_mapping_mode =
+                    "preserve_tone_adaptive_midpoint".to_string();
             } else {
-                let mut estimated = compute_content_limits_f32(input, quality, &geom, base)?;
-                observed_content_range = Some((estimated.d_min, estimated.d_max));
-                if !is_smart_auto_compatibility(&pipeline_state)
-                    && pipeline_state.contract != ProcessingContract::CaptureCorrectedV11
-                    && !pipeline_state.density_anchors.has_roll_base()
-                    && !pipeline_state.density_anchors.has_roll_full_exposure()
-                {
-                    // Smart Auto has no physical channel endpoints. Use one
-                    // luma contrast scale plus bounded channel offsets so the
-                    // film mask is neutralized without independent stretches.
-                    let short_content =
-                        density_luma(estimated.d_max) - density_luma(estimated.d_min) < 0.8;
-                    channel_offsets = share_smart_auto_density_scale(&mut estimated);
-                    preserve_smart_auto_content_span(&mut estimated);
-                    if short_content {
-                        pipeline_state.processing_report.tone_mapping_mode =
-                            "preserve_tone_adaptive_midpoint".to_string();
-                    }
-                }
-                apply_roll_density_anchor_limits(
-                    &mut estimated,
-                    &pipeline_state.density_anchors,
-                    base,
-                );
-                estimated
+                pipeline_state.processing_report.tone_mapping_mode =
+                    "preserve_tone_content_range".to_string();
             }
+            estimated
         };
         if pipeline_state.contract != ProcessingContract::LegacyV1 {
-            if !pipeline_state.density_anchors.is_fully_anchored() {
+            if let Some(mapping) = fixed_roll_mapping {
+                // A complete roll has no per-frame ContentRange. Keeping it
+                // empty is intentional and makes accidental Smart Auto
+                // reuse visible in persisted technical reports.
+                pipeline_state.content_range = None;
+                pipeline_state.render_mapping = mapping;
+            } else {
                 let (analysis_low, analysis_high) =
                     observed_content_range.unwrap_or((limits.d_min, limits.d_max));
                 pipeline_state.content_range = Some(ContentRange {
@@ -6005,12 +6645,12 @@ pub async fn analyze_proxy_density_limits(
                     },
                     percentile_method: "co_sited_2pct_v1".to_string(),
                 });
-                preserve_tone_density_span(&mut limits, &pipeline_state.density_anchors);
+                pipeline_state.processing_report.render_route = "FilmAreaSmartAuto".to_string();
+                pipeline_state.render_mapping.mode = RenderMode::PreserveTone;
+                pipeline_state.render_mapping.density_low = limits.d_min;
+                pipeline_state.render_mapping.density_high = limits.d_max;
+                pipeline_state.render_mapping.channel_offsets = channel_offsets;
             }
-            pipeline_state.render_mapping.mode = RenderMode::PreserveTone;
-            pipeline_state.render_mapping.density_low = limits.d_min;
-            pipeline_state.render_mapping.density_high = limits.d_max;
-            pipeline_state.render_mapping.channel_offsets = channel_offsets;
             let mut item = write_lock(&item_arc);
             let mut persisted = item.pipeline_state.clone();
             persisted.processing_report = pipeline_state.processing_report.clone();
@@ -6025,6 +6665,268 @@ pub async fn analyze_proxy_density_limits(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+/// Apply the fixed mapping for every frame in one Roll. The UI prepares each
+/// proxy before calling this command, so decoding and rendering stay on the
+/// blocking worker while progress events keep the Develop view responsive.
+#[tauri::command]
+pub async fn auto_invert_roll(
+    roll_id: String,
+    frame_id: Option<String>,
+    emit_progress: Option<bool>,
+    state: State<'_, EngineState>,
+    app_handle: tauri::AppHandle,
+) -> Result<AutoInvertRollResult, String> {
+    let cancellation = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state
+        .roll_batch_cancellations
+        .insert(roll_id.clone(), cancellation.clone());
+    let active_id = read_lock(&state.active_id).clone();
+    let roll_image_paths = state
+        .rolls
+        .read()
+        .ok()
+        .and_then(|rolls| {
+            rolls
+                .iter()
+                .find(|roll| roll.roll_id == roll_id)
+                .map(|roll| roll.image_paths.clone())
+        })
+        .unwrap_or_default();
+    let normalized_roll_paths = roll_image_paths
+        .iter()
+        .map(|path| path.replace('\\', "/").to_lowercase())
+        .collect::<Vec<_>>();
+    let requested_frame_id = frame_id.clone();
+    let emit_progress = emit_progress.unwrap_or(true);
+    let item_arcs = state
+        .items
+        .iter()
+        .filter_map(|entry| {
+            let item = read_lock(entry.value());
+            let normalized_path = item.file_path.replace('\\', "/").to_lowercase();
+            let listed_in_roll = normalized_roll_paths.is_empty()
+                || normalized_roll_paths
+                    .iter()
+                    .any(|path| path == &normalized_path);
+            (item.roll_id == roll_id && listed_in_roll)
+                .then(|| (entry.key().clone(), entry.value().clone()))
+        })
+        .filter(|(id, _)| {
+            requested_frame_id
+                .as_deref()
+                .is_none_or(|requested| requested == id)
+        })
+        .collect::<Vec<_>>();
+    let mut item_arcs = item_arcs;
+    item_arcs.sort_by_key(|(id, item_arc)| {
+        let item = read_lock(item_arc);
+        let active_rank = if active_id.as_deref() == Some(id.as_str()) {
+            0usize
+        } else {
+            1usize
+        };
+        let path = item.file_path.replace('\\', "/").to_lowercase();
+        let sequence_rank = normalized_roll_paths
+            .iter()
+            .position(|candidate| candidate == &path)
+            .unwrap_or(usize::MAX);
+        (active_rank, sequence_rank)
+    });
+    let total = item_arcs.len();
+    if total == 0 {
+        state.roll_batch_cancellations.remove(&roll_id);
+        return Err(format!("Roll has no editable frames: {roll_id}"));
+    }
+    // Fix the Roll's white point before rendering anything, so every frame in
+    // this batch shares one mapping. A few frames spread across the Roll act as
+    // the digital equivalent of a darkroom test strip.
+    let mut roll_anchors = read_lock(&state.rolls)
+        .iter()
+        .find(|roll| roll.roll_id == roll_id)
+        .map(|roll| roll.density_anchors.clone())
+        .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
+    if roll_anchors.highlight_fraction.is_none() {
+        let anchor_base = pipeline_base_density(
+            &PipelineState::from_roll_anchors(roll_anchors.clone()),
+            &BaseColor::default(),
+        );
+        let span = roll_physical_density_span(&roll_anchors, anchor_base);
+        if let Some(span) = span {
+            let sample_step = (item_arcs.len() / 5).max(1);
+            let samples: Vec<_> = item_arcs
+                .iter()
+                .step_by(sample_step)
+                .take(5)
+                .map(|(_, item_arc)| item_arc.clone())
+                .collect();
+            let measured = tokio::task::spawn_blocking(move || {
+                let mut fractions = Vec::new();
+                for item_arc in samples {
+                    let (cached, path) = {
+                        let item = read_lock(&item_arc);
+                        (item.runtime_frame_highlight, item.file_path.clone())
+                    };
+                    if let Some(fraction) = cached {
+                        fractions.push(fraction);
+                        continue;
+                    }
+                    let Ok(estimate) =
+                        decode_prophoto_estimate_image_buffer(&path, DecodeMode::DevelopProxy)
+                    else {
+                        continue;
+                    };
+                    let base =
+                        detect_frame_base_density(&estimate, anchor_base).unwrap_or(anchor_base);
+                    if let Some(fraction) = detect_frame_highlight_fraction(&estimate, base, span) {
+                        fractions.push(fraction);
+                    }
+                }
+                fractions
+            })
+            .await
+            .unwrap_or_default();
+            if let Some(fraction) = median_value(measured) {
+                record_roll_highlight_fraction(&state, &roll_id, fraction);
+                roll_anchors.highlight_fraction = Some(fraction.clamp(0.45, 0.85));
+            }
+        }
+    }
+    let worker_cancellation = cancellation.clone();
+    let worker_anchors = roll_anchors;
+    let result = tokio::task::spawn_blocking(move || {
+        let mut result = AutoInvertRollResult {
+            roll_id: roll_id.clone(),
+            total,
+            processed: 0,
+            succeeded: 0,
+            failed: 0,
+            failed_ids: Vec::new(),
+        };
+        if emit_progress {
+            let _ = app_handle.emit(
+                "auto_invert_roll_progress",
+                serde_json::json!({
+                    "roll_id": roll_id,
+                    "total": total,
+                    "processed": 0,
+                    "succeeded": 0,
+                    "failed": 0,
+                    "done": false
+                }),
+            );
+        }
+        for (id, item_arc) in item_arcs {
+            if worker_cancellation.load(Ordering::Acquire) {
+                break;
+            }
+            let outcome = (|| -> Result<(), String> {
+                let mut item = write_lock(&item_arc);
+                let mut pipeline = item.effective_pipeline_state().clone();
+                pipeline.density_anchors = worker_anchors.clone();
+                let (frame_base, highlight_fraction) =
+                    resolve_frame_render_parameters(&item, &pipeline);
+                if item.runtime_frame_base.is_none() {
+                    item.runtime_frame_base = frame_base;
+                }
+                if item.runtime_frame_highlight.is_none() {
+                    item.runtime_frame_highlight = highlight_fraction;
+                }
+                let mapping =
+                    roll_density_mapping_with_frame_base(&pipeline, frame_base, highlight_fraction)
+                        .ok_or_else(|| "complete_roll_anchors_required".to_string())?;
+                if item.proxy_image.is_none() {
+                    return Err("PROXY_NOT_READY".to_string());
+                }
+                pipeline.content_range = None;
+                pipeline.render_mapping = mapping.clone();
+                pipeline.processing_report.render_route = "RollAnchoredDirectInvert".to_string();
+                pipeline.processing_report.tone_mapping_mode = "roll_anchored_fixed".to_string();
+                pipeline.processing_report.fallback_reason.clear();
+                apply_roll_anchor_report(&mut pipeline);
+                let mut params = item.params.clone();
+                params.density.d_min = mapping.density_low;
+                params.density.d_max = mapping.density_high;
+                persist_tuning_parameters(&item.roll_id, &item.file_path, &params)?;
+                persist_pipeline_state(&item.roll_id, &item.file_path, &pipeline)?;
+                item.params = params;
+                item.pipeline_state = pipeline.clone();
+                item.runtime_pipeline_state = Some(pipeline);
+                item.pristine_proxy = Some(compute_pristine_proxy(
+                    item.proxy_image.as_ref().expect("checked above"),
+                    item.prophoto_estimate_proxy.as_ref(),
+                    item.relative_transmission_proxy.as_ref(),
+                    item.relative_transmission_quality.as_ref(),
+                    &item.base_color,
+                    item.effective_pipeline_state(),
+                    item.params.film_mode.clone(),
+                ));
+                let thumbnail = generate_processed_thumbnail(&item)
+                    .ok_or_else(|| "THUMBNAIL_RENDER_FAILED".to_string())?;
+                persist_rendered_thumbnail(&item.roll_id, &item.file_path, &thumbnail)?;
+                item.rendered_thumbnail_base64 = Some(thumbnail);
+                Ok(())
+            })();
+            result.processed += 1;
+            match outcome {
+                Ok(()) => result.succeeded += 1,
+                Err(error) => {
+                    result.failed += 1;
+                    result.failed_ids.push(format!("{id}:{error}"));
+                }
+            }
+            if emit_progress {
+                let _ = app_handle.emit(
+                    "auto_invert_roll_progress",
+                    serde_json::json!({
+                        "roll_id": result.roll_id,
+                        "total": result.total,
+                        "processed": result.processed,
+                        "succeeded": result.succeeded,
+                        "failed": result.failed,
+                        "failed_ids": result.failed_ids,
+                        "done": result.processed == result.total
+                    }),
+                );
+            }
+        }
+        if emit_progress {
+            let _ = app_handle.emit(
+                "auto_invert_roll_progress",
+                serde_json::json!({
+                    "roll_id": result.roll_id,
+                    "total": result.total,
+                    "processed": result.processed,
+                    "succeeded": result.succeeded,
+                    "failed": result.failed,
+                    "failed_ids": result.failed_ids,
+                    "done": true,
+                    "cancelled": worker_cancellation.load(Ordering::Acquire)
+                }),
+            );
+        }
+        Ok::<AutoInvertRollResult, String>(result)
+    })
+    .await
+    .map_err(|error| format!("Roll auto-invert worker failed: {error}"))??;
+    state.roll_batch_cancellations.remove(&result.roll_id);
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn cancel_auto_invert_roll(
+    roll_id: String,
+    state: State<'_, EngineState>,
+) -> Result<bool, String> {
+    Ok(state
+        .roll_batch_cancellations
+        .get(&roll_id)
+        .map(|flag| {
+            flag.store(true, Ordering::Release);
+            true
+        })
+        .unwrap_or(false))
 }
 
 #[tauri::command]
@@ -6067,9 +6969,25 @@ pub async fn reset_image_development(
             } else {
                 let mut report = PipelineProcessingReport::smart_auto();
                 if pipeline.density_anchors.has_roll_base() {
-                    report.base_source = "verified_anchor".to_string();
-                    report.base_confidence = "verified".to_string();
-                    report.uses_physical_anchors = true;
+                    let prophoto_estimate = pipeline
+                        .density_anchors
+                        .d_min_base
+                        .as_ref()
+                        .is_some_and(|anchor| {
+                            anchor.provenance.input_domain
+                                == crate::app_state::DataDomain::ProPhotoEstimate
+                        });
+                    report.base_source = if prophoto_estimate {
+                        "roll_anchor_prophoto_estimate".to_string()
+                    } else {
+                        "roll_anchor_relative_transmission".to_string()
+                    };
+                    report.base_confidence = if prophoto_estimate {
+                        "estimated".to_string()
+                    } else {
+                        "user_sampled".to_string()
+                    };
+                    report.uses_physical_anchors = !prophoto_estimate;
                 }
                 report
             };
@@ -6366,6 +7284,25 @@ fn should_apply_sprocket_mask(crop_uv: [f32; 2], bounds: [f32; 4], sprocket_uv: 
     } else {
         crop_uv[0].min(1.0 - crop_uv[0]) <= (horizontal_edge * 1.75).clamp(0.08, 0.24)
     }
+}
+
+#[inline]
+fn should_apply_sprocket_mask_for_area(
+    crop_uv: [f32; 2],
+    points: &[[f32; 2]; 4],
+    sprocket_uv: [f32; 2],
+) -> bool {
+    let full_frame = points
+        .iter()
+        .zip([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        .all(|(actual, expected)| {
+            (actual[0] - expected[0]).abs() <= 0.001 && (actual[1] - expected[1]).abs() <= 0.001
+        });
+    if !full_frame {
+        return !point_in_film_area(crop_uv, points, 0.0);
+    }
+
+    should_apply_sprocket_mask(crop_uv, [0.0, 0.0, 1.0, 1.0], sprocket_uv)
 }
 
 fn apply_batch_geometry_to_item(
@@ -6752,10 +7689,30 @@ fn sample_rgb32_nearest_checked(
     Some(pixel)
 }
 
+fn point_in_film_area(point: [f32; 2], points: &[[f32; 2]; 4], margin: f32) -> bool {
+    let signed_area = points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(4)
+        .map(|(left, right)| left[0] * right[1] - right[0] * left[1])
+        .sum::<f32>();
+    let orientation = if signed_area >= 0.0 { 1.0 } else { -1.0 };
+
+    points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(4)
+        .all(|(start, end)| {
+            let edge = [end[0] - start[0], end[1] - start[1]];
+            let offset = [point[0] - start[0], point[1] - start[1]];
+            let cross = edge[0] * offset[1] - edge[1] * offset[0];
+            orientation * cross >= margin * edge[0].hypot(edge[1])
+        })
+}
+
 /// Collect co-sited RGB samples through the same geometry map used by the
-/// renderer. A film-area quadrilateral is a semantic region, not merely its
-/// axis-aligned bounding box; this keeps lamp panels and sprocket regions out
-/// of Smart Auto base estimation even when perspective correction is active.
+/// renderer. Film-area points only define the analysis region; they must not
+/// warp the image or implicitly correct perspective.
 fn collect_film_area_rgb32(
     proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
     quality: Option<&crate::raw_backend::QualityMask>,
@@ -6774,27 +7731,10 @@ fn collect_film_area_rgb32(
     let points =
         geom.calibration_points
             .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-    let min_x = points
-        .iter()
-        .map(|point| point[0])
-        .fold(f32::INFINITY, f32::min);
-    let max_x = points
-        .iter()
-        .map(|point| point[0])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let min_y = points
-        .iter()
-        .map(|point| point[1])
-        .fold(f32::INFINITY, f32::min);
-    let max_y = points
-        .iter()
-        .map(|point| point[1])
-        .fold(f32::NEG_INFINITY, f32::max);
     // Do not let nearest-neighbour samples exactly on the selected edge pick
     // up a one-pixel lamp-panel/sprocket fringe. The margin is sub-pixel on a
     // normal proxy and scales with the source resolution.
     let region_margin = 1.0 / source_width.max(source_height).max(1) as f32;
-    let homography = shader_homography(points);
     let mut values = Vec::new();
     for y in 0..sample_height {
         for x in 0..sample_width {
@@ -6806,14 +7746,6 @@ fn collect_film_area_rgb32(
                 geom.crop_rect.x + base_uv[0] * geom.crop_rect.width,
                 geom.crop_rect.y + base_uv[1] * geom.crop_rect.height,
             ];
-            if geom.calibration_points.is_some()
-                && (crop_uv[0] < min_x + region_margin
-                    || crop_uv[0] > max_x - region_margin
-                    || crop_uv[1] < min_y + region_margin
-                    || crop_uv[1] > max_y - region_margin)
-            {
-                continue;
-            }
             let Some(perspective_uv) = apply_perspective_uv(
                 crop_uv,
                 geom.perspective_vertical,
@@ -6823,13 +7755,15 @@ fn collect_film_area_rgb32(
             ) else {
                 continue;
             };
-            let Some(oriented_uv) = apply_homography(&homography, perspective_uv) else {
-                continue;
-            };
-            let Some(oriented_uv) = apply_lens_distortion_uv(oriented_uv, geom.lens_distortion)
+            let Some(oriented_uv) = apply_lens_distortion_uv(perspective_uv, geom.lens_distortion)
             else {
                 continue;
             };
+            if geom.calibration_points.is_some()
+                && !point_in_film_area(crop_uv, &points, region_margin)
+            {
+                continue;
+            }
             let source_uv =
                 map_oriented_uv_to_source(oriented_uv, source_width, source_height, geom);
             let Some(pixel) = sample_rgb32_nearest_checked(proxy, quality, source_uv) else {
@@ -6866,23 +7800,6 @@ fn render_shader_equivalent_core(
     let points =
         geom.calibration_points
             .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-    let homography = shader_homography(points);
-    let min_x = points
-        .iter()
-        .map(|point| point[0])
-        .fold(f32::INFINITY, f32::min);
-    let max_x = points
-        .iter()
-        .map(|point| point[0])
-        .fold(f32::NEG_INFINITY, f32::max);
-    let min_y = points
-        .iter()
-        .map(|point| point[1])
-        .fold(f32::INFINITY, f32::min);
-    let max_y = points
-        .iter()
-        .map(|point| point[1])
-        .fold(f32::NEG_INFINITY, f32::max);
     let sprocket_uv = params
         .sprocket
         .sprocket_uv
@@ -6894,27 +7811,36 @@ fn render_shader_equivalent_core(
     let feather = params.sprocket.sprocket_feather.unwrap_or(0.05);
     let lut_opacity = params.lut.lut_opacity.clamp(0.0, 1.0) * LUT_CONTROL_SCALE;
     let luma_coefficients = DENSITY_LUMA_COEFFICIENTS;
-    let exposure_offsets = if params.film_mode == FilmMode::BW {
-        [params.exposure.exposure; 3]
+    let master_exposure = params.exposure.exposure;
+    let channel_exposure_offsets = if params.film_mode == FilmMode::BW {
+        [0.0; 3]
     } else {
         [
-            params.exposure.exposure + params.exposure.exp_r * CHANNEL_CONTROL_SCALE,
-            params.exposure.exposure + params.exposure.exp_g * CHANNEL_CONTROL_SCALE,
-            params.exposure.exposure + params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
+            params.exposure.exp_r * CHANNEL_CONTROL_SCALE,
+            params.exposure.exp_g * CHANNEL_CONTROL_SCALE,
+            params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
         ]
     };
     let smart_auto_compatibility = is_smart_auto_compatibility(pipeline_state);
+    let roll_anchored = pipeline_state.render_mapping.mode == RenderMode::RollAnchored;
+    let legacy_compatibility =
+        pipeline_state.contract == ProcessingContract::LegacyV1 || smart_auto_compatibility;
+    let pipeline_exposure_offsets = if legacy_compatibility {
+        channel_exposure_offsets.map(|value| value + master_exposure)
+    } else {
+        channel_exposure_offsets
+    };
     let pipeline = if smart_auto_compatibility {
         FilmPipeline::new(
             [base_color.base_r, base_color.base_g, base_color.base_b],
-            exposure_offsets,
+            pipeline_exposure_offsets,
             params.film_mode.clone(),
         )
     } else {
         FilmPipeline::from_state(
             pipeline_state,
             base_color,
-            exposure_offsets,
+            pipeline_exposure_offsets,
             params.film_mode.clone(),
         )
     };
@@ -6948,10 +7874,8 @@ fn render_shader_equivalent_core(
             ) else {
                 return;
             };
-            let Some(warped_uv) = apply_homography(&homography, perspective_uv) else {
-                return;
-            };
-            let Some(warped_uv) = apply_lens_distortion_uv(warped_uv, geom.lens_distortion) else {
+            let Some(warped_uv) = apply_lens_distortion_uv(perspective_uv, geom.lens_distortion)
+            else {
                 return;
             };
             let Some(raw) = sample(warped_uv) else {
@@ -6968,30 +7892,45 @@ fn render_shader_equivalent_core(
             } else {
                 pipeline.process_pixel(&raw)
             };
-            let (d_min, d_max) = if params.film_mode == FilmMode::BW {
+            let (d_min, d_max) = if roll_anchored {
+                (
+                    pipeline_state.render_mapping.density_low,
+                    pipeline_state.render_mapping.density_high,
+                )
+            } else if params.film_mode == FilmMode::BW {
                 ([bw_dmin; 3], [bw_dmax; 3])
             } else {
                 (params.density.d_min, params.density.d_max)
             };
-            let working_gamma = if positive_to_display.is_some() {
-                1.0
-            } else {
+            let working_gamma = if legacy_compatibility {
                 params.density.gamma
+            } else {
+                1.0
+            };
+            let normalize = |value: f32, low: f32, high: f32| {
+                normalize_density_channel(value, low, high, 0.0, 0.0, working_gamma)
             };
             let normalized_working = [
-                normalize_density_channel(density[0], d_min[0], d_max[0], 0.0, 0.0, working_gamma),
-                normalize_density_channel(density[1], d_min[1], d_max[1], 0.0, 0.0, working_gamma),
-                normalize_density_channel(density[2], d_min[2], d_max[2], 0.0, 0.0, working_gamma),
+                normalize(density[0], d_min[0], d_max[0]),
+                normalize(density[1], d_min[1], d_max[1]),
+                normalize(density[2], d_min[2], d_max[2]),
             ];
-            let normalized = positive_to_display
-                .map(|matrix| {
-                    apply_linear_matrix(normalized_working, matrix).map(|value| {
-                        value
-                            .clamp(0.0, 1.0)
-                            .powf(1.0 / params.density.gamma.max(1e-6))
-                    })
-                })
+            let mut positive_linear = positive_to_display
+                .map(|matrix| apply_linear_matrix(normalized_working, matrix))
                 .unwrap_or(normalized_working);
+            if !legacy_compatibility {
+                let exposure_gain = 2.0f32.powf(master_exposure);
+                positive_linear = positive_linear.map(|value| value * exposure_gain);
+            }
+            let normalized = if legacy_compatibility {
+                positive_linear
+            } else {
+                positive_linear.map(|value| {
+                    value
+                        .clamp(0.0, 1.0)
+                        .powf(1.0 / params.density.gamma.max(1e-6))
+                })
+            };
             let (saturation, temperature, tint) = if params.film_mode == FilmMode::Color {
                 (
                     params.tone.saturation,
@@ -7040,9 +7979,9 @@ fn render_shader_equivalent_core(
                     .zip(luma_coefficients)
                     .map(|(value, coefficient)| value * coefficient)
                     .sum::<f32>();
-                if should_apply_sprocket_mask(
+                if should_apply_sprocket_mask_for_area(
                     crop_uv,
-                    [min_x, min_y, max_x, max_y],
+                    &points,
                     sprocket_uv.expect("sprocket target requires a sample point"),
                 ) {
                     let mask = sprocket_white_mask(raw_luma - target_luma, tolerance, feather);
@@ -8444,6 +9383,33 @@ pub async fn batch_export_images(
                                 return;
                             }
                         };
+                        // Match the Develop preview: mask removal uses this
+                        // frame's own film base, and the white point uses the
+                        // fraction of the film span its scene actually reaches.
+                        if matches!(
+                            render_pipeline_state.contract,
+                            ProcessingContract::RollAnchoredProPhotoV11
+                                | ProcessingContract::CaptureCorrectedV11
+                        ) {
+                            let anchor_base =
+                                pipeline_base_density(&render_pipeline_state, base_color);
+                            let frame_base =
+                                detect_frame_base_density(&input, anchor_base).unwrap_or(anchor_base);
+                            if let Some(span) = roll_physical_density_span(
+                                &render_pipeline_state.density_anchors,
+                                anchor_base,
+                            ) {
+                                let highlight =
+                                    detect_frame_highlight_fraction(&input, frame_base, span);
+                                if let Some(mapping) = roll_density_mapping_with_frame_base(
+                                    &render_pipeline_state,
+                                    Some(frame_base),
+                                    highlight,
+                                ) {
+                                    render_pipeline_state.render_mapping = mapping;
+                                }
+                            }
+                        }
                         let rendered_display = render_f32_shader_equivalent(
                             &input,
                             quality_mask.as_ref(),
@@ -9883,11 +10849,16 @@ fn build_roll_calibration_status(
     } else {
         RollToneStatus::Preserve
     };
-    let base = if resolution.usable_density_anchors.has_roll_base() {
-        RollBaseStatus::Sampled
-    } else {
-        RollBaseStatus::Estimated
-    };
+    let base = resolution
+        .usable_density_anchors
+        .d_min_base
+        .as_ref()
+        .filter(|anchor| {
+            anchor.provenance.input_domain != crate::app_state::DataDomain::ProPhotoEstimate
+                && anchor.confidence != DensityAnchorConfidence::Estimated
+        })
+        .map(|_| RollBaseStatus::Sampled)
+        .unwrap_or(RollBaseStatus::Estimated);
     let dmax = if resolution.usable_density_anchors.has_roll_full_exposure() {
         RollDmaxStatus::FullExposure
     } else {
@@ -9895,6 +10866,10 @@ fn build_roll_calibration_status(
     };
     let calibration = if legacy {
         RollCalibrationMode::Legacy
+    } else if pipeline.render_mapping.mode == RenderMode::RollAnchored {
+        // Roll anchors are a display-domain estimate, not a physical Status M
+        // or laboratory density claim.
+        RollCalibrationMode::SmartAuto
     } else if resolution.resolved_path == ProcessingContract::CaptureCorrectedV11 {
         RollCalibrationMode::Configured
     } else {
@@ -9926,6 +10901,16 @@ fn build_roll_calibration_status(
     }
     if calibration == RollCalibrationMode::Configured {
         warnings.push("profile_capture_corrected_density_unvalidated".to_string());
+    }
+    if resolution
+        .usable_density_anchors
+        .d_min_base
+        .as_ref()
+        .is_some_and(|anchor| {
+            anchor.provenance.input_domain == crate::app_state::DataDomain::ProPhotoEstimate
+        })
+    {
+        warnings.push("roll_anchor_prophoto_estimate".to_string());
     }
     if legacy {
         warnings.push("legacy_contract_preserved".to_string());
@@ -10991,6 +11976,9 @@ pub async fn update_roll_density_anchors(
         .find(|roll| roll.roll_id == roll_id)
         .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
     let mut anchors = roll.density_anchors.clone();
+    // New endpoints invalidate the learned white point; it is re-measured from
+    // the Roll's own frames on the next Auto Invert.
+    anchors.highlight_fraction = None;
     if let Some(base) = base {
         replace_base_anchor_preserving_history(&mut anchors, base);
     }
@@ -11029,6 +12017,30 @@ pub async fn update_roll_density_anchors(
                 } else {
                     anchors.prophoto_contract()
                 };
+                pipeline.content_range = None;
+                if let Some(mapping) = fixed_roll_density_mapping(&pipeline) {
+                    pipeline.render_mapping = mapping;
+                    pipeline.processing_report.render_route =
+                        "RollAnchoredDirectInvert".to_string();
+                    pipeline.processing_report.tone_mapping_mode =
+                        "roll_anchored_fixed".to_string();
+                    pipeline.processing_report.fallback_reason.clear();
+                    apply_roll_anchor_report(&mut pipeline);
+                } else if pipeline.contract != ProcessingContract::LegacyV1 {
+                    pipeline.render_mapping = RenderMapping::default();
+                    pipeline.processing_report.render_route = "FilmAreaSmartAuto".to_string();
+                    pipeline.processing_report.fallback_reason =
+                        "incomplete_roll_anchors".to_string();
+                    pipeline
+                        .processing_report
+                        .fallback_reasons
+                        .retain(|reason| reason != "incomplete_roll_anchors");
+                    pipeline
+                        .processing_report
+                        .fallback_reasons
+                        .push("incomplete_roll_anchors".to_string());
+                    pipeline.processing_report.uses_physical_anchors = false;
+                }
                 (entry.key().clone(), item.file_path.clone(), pipeline)
             })
         })
@@ -11041,7 +12053,7 @@ pub async fn update_roll_density_anchors(
     tokio::task::spawn_blocking(move || {
         let mut connection = persistence::open_connection()
             .map_err(|error| format!("Failed to open calibration database: {error}"))?;
-        persistence::save_rolls_and_pipeline_states(
+        persistence::save_rolls_and_pipeline_states_reset_thumbnails(
             &mut connection,
             &persisted_rolls,
             &persisted_states,
@@ -11058,6 +12070,7 @@ pub async fn update_roll_density_anchors(
         if let Some(item) = state.items.get(&id) {
             let mut item = write_lock(item.value());
             item.pipeline_state = pipeline;
+            item.rendered_thumbnail_base64 = None;
             item.runtime_pipeline_state = None;
             item.runtime_density_provenance = None;
             item.runtime_pipeline_key = None;
@@ -11543,6 +12556,8 @@ fn load_all_image_states_from_connection(
             runtime_pipeline_state: None,
             runtime_density_provenance: None,
             runtime_pipeline_key: None,
+            runtime_frame_base: None,
+            runtime_frame_highlight: None,
             pipeline_state,
             params,
             geom,
@@ -11713,29 +12728,37 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     }
     let params = &item.params;
     let base_color = &item.base_color;
-    let exposure_offsets = if params.film_mode == FilmMode::BW {
-        [params.exposure.exposure; 3]
+    let master_exposure = params.exposure.exposure;
+    let channel_exposure_offsets = if params.film_mode == FilmMode::BW {
+        [0.0; 3]
     } else {
         [
-            params.exposure.exposure + params.exposure.exp_r * CHANNEL_CONTROL_SCALE,
-            params.exposure.exposure + params.exposure.exp_g * CHANNEL_CONTROL_SCALE,
-            params.exposure.exposure + params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
+            params.exposure.exp_r * CHANNEL_CONTROL_SCALE,
+            params.exposure.exp_g * CHANNEL_CONTROL_SCALE,
+            params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
         ]
     };
     let mut effective_pipeline = item.effective_pipeline_state().clone();
     mark_loose_smart_auto_compatibility(&mut effective_pipeline, item.is_loose);
     let smart_auto_compatibility = is_smart_auto_compatibility(&effective_pipeline);
+    let legacy_compatibility =
+        effective_pipeline.contract == ProcessingContract::LegacyV1 || smart_auto_compatibility;
+    let pipeline_exposure_offsets = if legacy_compatibility {
+        channel_exposure_offsets.map(|value| value + master_exposure)
+    } else {
+        channel_exposure_offsets
+    };
     let pipeline = if smart_auto_compatibility {
         FilmPipeline::new(
             [base_color.base_r, base_color.base_g, base_color.base_b],
-            exposure_offsets,
+            pipeline_exposure_offsets,
             params.film_mode.clone(),
         )
     } else {
         FilmPipeline::from_state(
             &effective_pipeline,
             base_color,
-            exposure_offsets,
+            pipeline_exposure_offsets,
             params.film_mode.clone(),
         )
     };
@@ -11747,8 +12770,15 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     let pristine_pixels: &[f32] = pristine.as_raw().as_slice();
     let out_pixels: &mut [u8] = thumb_8bit.as_mut();
 
-    let d_min = params.density.d_min;
-    let d_max = params.density.d_max;
+    let roll_anchored = effective_pipeline.render_mapping.mode == RenderMode::RollAnchored;
+    let (d_min, d_max) = if roll_anchored {
+        (
+            effective_pipeline.render_mapping.density_low,
+            effective_pipeline.render_mapping.density_high,
+        )
+    } else {
+        (params.density.d_min, params.density.d_max)
+    };
     let gamma = params.density.gamma;
     let highlights = params.tone.highlights;
     let shadows = params.tone.shadows;
@@ -11776,47 +12806,33 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             let true_density = [in_px[0], in_px[1], in_px[2]];
             let density = pipeline.apply_exposure(&true_density);
 
-            let (effective_dmin, effective_dmax) = if params.film_mode == FilmMode::BW {
+            let (effective_dmin, effective_dmax) = if roll_anchored {
+                (d_min, d_max)
+            } else if params.film_mode == FilmMode::BW {
                 ([bw_dmin; 3], [bw_dmax; 3])
             } else {
                 (d_min, d_max)
             };
-            let working_gamma = if prophoto_to_srgb.is_some() {
-                1.0
-            } else {
-                gamma
+            let working_gamma = if legacy_compatibility { gamma } else { 1.0 };
+            let normalize = |value: f32, low: f32, high: f32| {
+                normalize_density_channel(value, low, high, highlights, shadows, working_gamma)
             };
             let normalized = [
-                normalize_density_channel(
-                    density[0],
-                    effective_dmin[0],
-                    effective_dmax[0],
-                    highlights,
-                    shadows,
-                    working_gamma,
-                ),
-                normalize_density_channel(
-                    density[1],
-                    effective_dmin[1],
-                    effective_dmax[1],
-                    highlights,
-                    shadows,
-                    working_gamma,
-                ),
-                normalize_density_channel(
-                    density[2],
-                    effective_dmin[2],
-                    effective_dmax[2],
-                    highlights,
-                    shadows,
-                    working_gamma,
-                ),
+                normalize(density[0], effective_dmin[0], effective_dmax[0]),
+                normalize(density[1], effective_dmin[1], effective_dmax[1]),
+                normalize(density[2], effective_dmin[2], effective_dmax[2]),
             ];
-            let gamma_corrected = if let Some(matrix) = prophoto_to_srgb {
-                apply_linear_matrix(normalized, matrix)
-                    .map(|value| value.clamp(0.0, 1.0).powf(1.0 / gamma.max(1e-6)))
+            let mut positive_linear = prophoto_to_srgb
+                .map(|matrix| apply_linear_matrix(normalized, matrix))
+                .unwrap_or(normalized);
+            if !legacy_compatibility {
+                let exposure_gain = 2.0f32.powf(master_exposure);
+                positive_linear = positive_linear.map(|value| value * exposure_gain);
+            }
+            let gamma_corrected = if legacy_compatibility {
+                positive_linear
             } else {
-                normalized
+                positive_linear.map(|value| value.clamp(0.0, 1.0).powf(1.0 / gamma.max(1e-6)))
             };
             let mut final_rgb = apply_post_gamma_adjustments_with_luma(
                 gamma_corrected,
@@ -11883,25 +12899,26 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 #[cfg(test)]
 mod import_contract_tests {
     use super::{
-        apply_roll_density_anchor_limits, compute_auto_base, compute_auto_base_f32,
-        compute_auto_color_limits, compute_content_limits_f32, decode_image_buffer,
-        decode_import_preview_base64, decode_prophoto_estimate_image_buffer,
-        decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
-        decode_tiff_for_smart_auto, default_pipeline_state_for_import, is_better_preview_edge,
-        is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
-        is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
+        aggregate_roll_density_references, compute_auto_base, compute_auto_base_f32,
+        compute_auto_color_limits, compute_content_limits_f32,
+        compute_content_limits_f32_with_bounds, decode_image_buffer, decode_import_preview_base64,
+        decode_prophoto_estimate_image_buffer, decode_reduced_dng_for_working_space,
+        decode_reduced_tiff_for_working_space, decode_tiff_for_smart_auto,
+        default_pipeline_state_for_import, density_luma, fixed_roll_density_mapping,
+        is_better_preview_edge, is_lightweight_direct_preview, is_noritsu_rendered_image,
+        is_raw_extension, is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
         libraw_decode_error_message, linearize_scanner_fff, mark_loose_smart_auto_compatibility,
         persist_import_batch, pipeline_base_density, pipeline_has_base,
-        preserve_smart_auto_content_span, preserve_tone_density_span,
+        prepare_content_render_limits, preserve_smart_auto_content_span,
         prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
         render_f32_shader_equivalent, render_shader_equivalent, rgb16_image_from_bytes,
         share_smart_auto_density_scale, srgb_proxy_u16_to_prophoto_f32, AutoColorLimits,
         DecodeMode, IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
-        BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
-        DensityAnchors, FilmItem, FilmMode, GeometryState, PipelineState, ProcessingContract, Roll,
-        TuningParams,
+        BaseColor, DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorProvenance,
+        DensityAnchorScope, DensityAnchorSource, DensityAnchors, FilmItem, FilmMode, GeometryState,
+        PipelineState, ProcessingContract, RenderMapping, RenderMode, Roll, TuningParams,
     };
     use crate::color_science::{
         apply_linear_matrix, compress_linear_srgb_for_density, linear_conversion_matrix,
@@ -11917,6 +12934,150 @@ mod import_contract_tests {
         assert!(is_lightweight_direct_preview("frame.PNG"));
         assert!(!is_lightweight_direct_preview("frame.tiff"));
         assert!(!is_lightweight_direct_preview("frame.dng"));
+    }
+
+    #[test]
+    fn complete_roll_mapping_is_fixed_and_content_independent() {
+        let provenance = DensityAnchorProvenance {
+            input_domain: DataDomain::ProPhotoEstimate,
+            algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+            legacy: false,
+            ..Default::default()
+        };
+        let anchors = DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: [0.2, 0.3, 0.4],
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll:base".into()),
+                provenance: provenance.clone(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: [1.4, 1.8, 2.4],
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll:full".into()),
+                provenance,
+            }),
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+        };
+        let state = PipelineState::from_roll_anchors(anchors);
+        let mapping = fixed_roll_density_mapping(&state).expect("valid anchors");
+        assert_eq!(mapping.mode, RenderMode::RollAnchored);
+        assert_eq!(mapping.density_low, [0.0; 3]);
+        assert!((mapping.density_high[0] - 1.2).abs() < 1.0e-5);
+        assert!((mapping.density_high[1] - 1.5).abs() < 1.0e-5);
+        assert!((mapping.density_high[2] - 2.0).abs() < 1.0e-5);
+        assert_eq!(state.content_range, None);
+    }
+
+    #[test]
+    fn roll_render_uses_persisted_mapping_when_params_are_stale() {
+        let provenance = DensityAnchorProvenance {
+            input_domain: DataDomain::ProPhotoEstimate,
+            algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+            legacy: false,
+            ..Default::default()
+        };
+        let anchors = DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: [0.0; 3],
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll-a:base".into()),
+                provenance: provenance.clone(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: [1.0, 1.5, 2.0],
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll-a:full".into()),
+                provenance,
+            }),
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+        };
+        let mut state = PipelineState::from_roll_anchors(anchors);
+        state.render_mapping = RenderMapping {
+            mode: RenderMode::RollAnchored,
+            density_low: [0.0; 3],
+            density_high: [1.0, 1.5, 2.0],
+            exposure: 0.0,
+            gamma: 1.0,
+            channel_offsets: [0.0; 3],
+        };
+        let source = ImageBuffer::from_pixel(
+            1,
+            1,
+            Rgb([10.0f32.powf(-0.5), 10.0f32.powf(-0.75), 10.0f32.powf(-1.0)]),
+        );
+        let mut stale_params = TuningParams::default();
+        stale_params.density.d_min = [0.25, 0.30, 0.35];
+        stale_params.density.d_max = [2.25, 2.30, 2.35];
+        stale_params.density.gamma = 1.0;
+        let mut mapped_params = stale_params.clone();
+        mapped_params.density.d_min = [0.0; 3];
+        mapped_params.density.d_max = [1.0, 1.5, 2.0];
+        let base = BaseColor {
+            base_r: u16::MAX,
+            base_g: u16::MAX,
+            base_b: u16::MAX,
+        };
+        let stale_render = render_f32_shader_equivalent(
+            &source,
+            None,
+            &stale_params,
+            &GeometryState::default(),
+            &base,
+            &state,
+            None,
+        );
+        let mapped_render = render_f32_shader_equivalent(
+            &source,
+            None,
+            &mapped_params,
+            &GeometryState::default(),
+            &base,
+            &state,
+            None,
+        );
+        assert_eq!(stale_render, mapped_render);
+    }
+
+    #[test]
+    fn density_reference_aggregation_uses_channel_medians_and_preserves_contract() {
+        let provenance = DensityAnchorProvenance {
+            input_domain: DataDomain::ProPhotoEstimate,
+            algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+            legacy: false,
+            ..Default::default()
+        };
+        let sample = |id: &str, density: [f32; 3]| DensityAnchor {
+            density,
+            source: DensityAnchorSource::SampledFilmBase,
+            scope: DensityAnchorScope::Roll,
+            confidence: DensityAnchorConfidence::UserSampled,
+            reference_id: Some(format!("roll-a:{id}")),
+            provenance: provenance.clone(),
+        };
+        let merged = aggregate_roll_density_references(
+            "roll-a".to_string(),
+            "base".to_string(),
+            vec![
+                sample("one", [0.2, 0.3, 0.4]),
+                sample("two", [0.4, 0.5, 0.6]),
+                sample("outlier", [4.0, 5.0, 6.0]),
+            ],
+        )
+        .unwrap();
+        assert_eq!(merged.density, [0.4, 0.5, 0.6]);
+        assert_eq!(merged.provenance.input_domain, DataDomain::ProPhotoEstimate);
+        assert!(merged.reference_id.unwrap().contains(":aggregate:base:3"));
     }
 
     #[test]
@@ -12553,7 +13714,7 @@ mod import_contract_tests {
     }
 
     #[test]
-    fn roll_reference_extremes_use_opposite_density_tails() {
+    fn file_reference_path_uses_a_masked_trimmed_mean() {
         let image = ImageBuffer::from_raw(
             100,
             1,
@@ -12568,8 +13729,9 @@ mod import_contract_tests {
         let base = reference_density_extreme(&image, DensityAnchorSource::SampledFilmBase).unwrap();
         let full =
             reference_density_extreme(&image, DensityAnchorSource::SampledFullExposure).unwrap();
-        assert!(base.iter().all(|value| value < &full[0]));
-        assert!(full.iter().all(|value| *value > 1.0));
+        assert!(base.iter().all(|value| value.is_finite() && *value > 0.0));
+        assert!(base[0] < full[0]);
+        assert!(full[0] < 1.0);
     }
 
     #[test]
@@ -12592,6 +13754,7 @@ mod import_contract_tests {
                 provenance: Default::default(),
             }),
             retained_records: Vec::new(),
+            highlight_fraction: None,
         };
         let rolls = vec![Roll {
             roll_id: "roll-a".into(),
@@ -12642,6 +13805,7 @@ mod import_contract_tests {
             d_min_base: None,
             d_max_full_exposure: Some(sampled(DensityAnchorSource::SampledFullExposure)),
             retained_records: Vec::new(),
+            highlight_fraction: None,
         };
         assert!(!full_only.is_fully_anchored());
         assert_eq!(
@@ -12653,6 +13817,7 @@ mod import_contract_tests {
             d_min_base: Some(estimated_base),
             d_max_full_exposure: full_only.d_max_full_exposure.clone(),
             retained_records: Vec::new(),
+            highlight_fraction: None,
         };
         assert!(!estimated_and_full.is_fully_anchored());
         assert_eq!(
@@ -12664,6 +13829,7 @@ mod import_contract_tests {
             d_min_base: Some(sampled(DensityAnchorSource::SampledFilmBase)),
             d_max_full_exposure: full_only.d_max_full_exposure,
             retained_records: Vec::new(),
+            highlight_fraction: None,
         };
         assert!(complete.is_fully_anchored());
         assert_eq!(
@@ -12673,9 +13839,9 @@ mod import_contract_tests {
     }
 
     #[test]
-    fn partial_roll_anchor_fixes_only_its_own_density_endpoint() {
+    fn complete_roll_anchors_calibrate_content_scale_without_becoming_display_endpoints() {
         let base = DensityAnchor {
-            density: [0.2, 0.3, 0.4],
+            density: [0.5, 0.6, 0.7],
             source: DensityAnchorSource::SampledFilmBase,
             scope: DensityAnchorScope::Roll,
             confidence: DensityAnchorConfidence::UserSampled,
@@ -12683,53 +13849,114 @@ mod import_contract_tests {
             provenance: Default::default(),
         };
         let full = DensityAnchor {
-            density: [2.2, 2.4, 2.6],
+            density: [1.5, 1.8, 2.3],
             source: DensityAnchorSource::SampledFullExposure,
             scope: DensityAnchorScope::Roll,
             confidence: DensityAnchorConfidence::UserSampled,
             reference_id: None,
             provenance: Default::default(),
         };
-        let mut base_only_limits = AutoColorLimits {
-            d_min: [0.12, 0.13, 0.14],
-            d_max: [1.7, 1.8, 1.9],
+        let anchors = DensityAnchors {
+            d_min_base: Some(base.clone()),
+            d_max_full_exposure: Some(full),
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+        };
+        let mut limits = AutoColorLimits {
+            d_min: [0.20, 0.35, 0.48],
+            d_max: [0.95, 1.25, 1.50],
             pipeline_state: None,
         };
-        apply_roll_density_anchor_limits(
-            &mut base_only_limits,
-            &DensityAnchors {
-                d_min_base: Some(base.clone()),
-                d_max_full_exposure: None,
-                retained_records: Vec::new(),
-            },
-            base.density,
-        );
-        assert_eq!(base_only_limits.d_min, [0.0; 3]);
-        assert_eq!(base_only_limits.d_max, [1.7, 1.8, 1.9]);
-
-        let mut full_only_limits = AutoColorLimits {
-            d_min: [0.12, 0.13, 0.14],
-            d_max: [1.7, 1.8, 1.9],
-            pipeline_state: None,
-        };
-        let estimated_base = [0.1, 0.2, 0.3];
-        apply_roll_density_anchor_limits(
-            &mut full_only_limits,
-            &DensityAnchors {
-                d_min_base: None,
-                d_max_full_exposure: Some(full),
-                retained_records: Vec::new(),
-            },
-            estimated_base,
-        );
-        assert_eq!(full_only_limits.d_min, [0.12, 0.13, 0.14]);
-        for (actual, expected) in full_only_limits.d_max.iter().zip([2.1, 2.2, 2.3]) {
-            assert!((actual - expected).abs() < 1e-6);
+        let original = limits.clone();
+        let (_, short_content) = prepare_content_render_limits(&mut limits, &anchors, base.density);
+        assert!(!short_content);
+        assert_ne!(limits.d_min, [0.0; 3]);
+        let physical_span = [1.0, 1.2, 1.6];
+        assert_ne!(limits.d_max, physical_span);
+        let relative_spans = [
+            (limits.d_max[0] - limits.d_min[0]) / physical_span[0],
+            (limits.d_max[1] - limits.d_min[1]) / physical_span[1],
+            (limits.d_max[2] - limits.d_min[2]) / physical_span[2],
+        ];
+        assert!((relative_spans[0] - relative_spans[1]).abs() < 1.0e-6);
+        assert!((relative_spans[1] - relative_spans[2]).abs() < 1.0e-6);
+        for channel in 0..3 {
+            assert!(limits.d_min[channel] <= original.d_min[channel] + 0.2);
+            assert!(limits.d_max[channel] >= original.d_max[channel] - 0.2);
         }
     }
 
     #[test]
-    fn film_area_content_never_moves_a_roll_dmin_anchor() {
+    fn complete_roll_anchors_keep_equal_relative_density_neutral() {
+        let base_density = [0.5, 0.6, 0.7];
+        let physical_span = [1.0, 1.2, 1.6];
+        let anchors = DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: base_density,
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: Default::default(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: [
+                    base_density[0] + physical_span[0],
+                    base_density[1] + physical_span[1],
+                    base_density[2] + physical_span[2],
+                ],
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: Default::default(),
+            }),
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+        };
+        let mut limits = AutoColorLimits {
+            d_min: [0.20, 0.24, 0.32],
+            d_max: [0.80, 0.96, 1.28],
+            pipeline_state: None,
+        };
+        prepare_content_render_limits(&mut limits, &anchors, base_density);
+
+        let neutral_midpoint = [0.50, 0.60, 0.80];
+        let normalized = [0, 1, 2].map(|channel| {
+            (neutral_midpoint[channel] - limits.d_min[channel])
+                / (limits.d_max[channel] - limits.d_min[channel])
+        });
+        let minimum = normalized.into_iter().fold(f32::INFINITY, f32::min);
+        let maximum = normalized.into_iter().fold(f32::NEG_INFINITY, f32::max);
+        assert!(maximum - minimum < 1.0e-6, "normalized={normalized:?}");
+        assert!((density_luma(normalized) - 0.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn physical_anchor_window_rejects_white_backing_from_content_range() {
+        let mut image = ImageBuffer::from_pixel(16, 16, Rgb([0.99, 0.99, 0.99]));
+        for y in 3..13 {
+            for x in 3..13 {
+                let density = 0.35 + ((x + y) % 5) as f32 * 0.08;
+                let transmission = 10.0f32.powf(-density);
+                image.put_pixel(x, y, Rgb([transmission, transmission, transmission]));
+            }
+        }
+        let bounded = compute_content_limits_f32_with_bounds(
+            &image,
+            None,
+            &GeometryState::default(),
+            [0.0; 3],
+            Some([1.2, 1.4, 1.6]),
+        )
+        .unwrap();
+        assert!(bounded.d_min.iter().all(|value| *value >= -0.1));
+        assert!(bounded.d_max.iter().all(|value| *value <= 1.7));
+        assert!(bounded.d_max[0] - bounded.d_min[0] > 0.2);
+    }
+
+    #[test]
+    fn partial_roll_anchor_keeps_content_derived_display_limits() {
         let base = DensityAnchor {
             density: [0.2, 0.3, 0.4],
             source: DensityAnchorSource::SampledFilmBase,
@@ -12742,42 +13969,23 @@ mod import_contract_tests {
             d_min_base: Some(base.clone()),
             d_max_full_exposure: None,
             retained_records: Vec::new(),
-        };
-        for film_area_limits in [[0.05, 0.10, 0.15], [0.65, 0.70, 0.75]] {
-            let mut limits = AutoColorLimits {
-                d_min: film_area_limits,
-                d_max: [1.4, 1.5, 1.6],
-                pipeline_state: None,
-            };
-            apply_roll_density_anchor_limits(&mut limits, &anchors, base.density);
-            assert_eq!(limits.d_min, [0.0; 3]);
-        }
-    }
-
-    #[test]
-    fn preserve_tone_does_not_full_stretch_a_short_tone_photo() {
-        let anchors = DensityAnchors {
-            d_min_base: Some(DensityAnchor {
-                density: [0.2; 3],
-                source: DensityAnchorSource::SampledFilmBase,
-                scope: DensityAnchorScope::Roll,
-                confidence: DensityAnchorConfidence::UserSampled,
-                reference_id: None,
-                provenance: Default::default(),
-            }),
-            d_max_full_exposure: None,
-            retained_records: Vec::new(),
+            highlight_fraction: None,
         };
         let mut limits = AutoColorLimits {
-            d_min: [0.0; 3],
-            d_max: [0.35, 0.45, 0.55],
+            d_min: [0.12, 0.18, 0.24],
+            d_max: [0.92, 1.08, 1.24],
             pipeline_state: None,
         };
-        preserve_tone_density_span(&mut limits, &anchors);
-        assert_eq!(limits.d_min, [0.0; 3]);
-        for maximum in limits.d_max {
-            assert!((maximum - super::PRESERVE_TONE_MIN_DENSITY_SPAN).abs() < 1.0e-6);
-        }
+        prepare_content_render_limits(&mut limits, &anchors, base.density);
+        assert_ne!(limits.d_min, [0.0; 3]);
+        assert_ne!(limits.d_max, [1.9; 3]);
+        let spans = [
+            limits.d_max[0] - limits.d_min[0],
+            limits.d_max[1] - limits.d_min[1],
+            limits.d_max[2] - limits.d_min[2],
+        ];
+        assert!((spans[0] - spans[1]).abs() < 1.0e-6);
+        assert!((spans[1] - spans[2]).abs() < 1.0e-6);
     }
 
     #[test]
@@ -13062,19 +14270,6 @@ mod import_contract_tests {
     fn unprofiled_generic_tiff_is_rejected_from_smart_auto_domain() {
         let error = decode_tiff_for_smart_auto("missing-unprofiled.tiff", 256).unwrap_err();
         assert_eq!(error, "scanner_tiff_input_space_unknown");
-    }
-
-    #[test]
-    fn smart_auto_short_tone_is_not_forced_to_fixed_density_span() {
-        let anchors = DensityAnchors::default();
-        let mut limits = AutoColorLimits {
-            d_min: [0.1; 3],
-            d_max: [0.4; 3],
-            pipeline_state: None,
-        };
-        preserve_tone_density_span(&mut limits, &anchors);
-        assert_eq!(limits.d_min, [0.1; 3]);
-        assert_eq!(limits.d_max, [0.4; 3]);
     }
 
     #[test]
@@ -13542,6 +14737,8 @@ mod import_contract_tests {
             runtime_pipeline_state: None,
             runtime_density_provenance: None,
             runtime_pipeline_key: None,
+            runtime_frame_base: None,
+            runtime_frame_highlight: None,
             pipeline_state: PipelineState::smart_auto(),
             params: TuningParams::default(),
             geom: GeometryState::default(),
@@ -13583,6 +14780,8 @@ mod library_management_contract_tests {
             runtime_pipeline_state: None,
             runtime_density_provenance: None,
             runtime_pipeline_key: None,
+            runtime_frame_base: None,
+            runtime_frame_highlight: None,
             pipeline_state: PipelineState::default(),
             params: TuningParams::default(),
             geom: GeometryState::default(),
@@ -13766,12 +14965,14 @@ mod export_contract_tests {
         co_sited_density_extremes, compute_auto_color_limits, density_histogram_extremes,
         embedded_input_profile, encode_export_buffer, export_dimensions, export_profile_for_output,
         gaussian_blur_rgb16_parallel, normalize_persisted_geometry_for_rendered_image,
-        render_shader_equivalent, reserve_export_path, sanitize_export_file_stem,
-        should_apply_sprocket_mask, validate_export_color_space, write_export_image,
+        point_in_film_area, render_f32_shader_equivalent, render_shader_equivalent,
+        reserve_export_path, sanitize_export_file_stem, should_apply_sprocket_mask,
+        should_apply_sprocket_mask_for_area, validate_export_color_space, write_export_image,
         write_export_image_with_profile, ExportConflictPolicy, ExportFormat,
     };
     use crate::app_state::{
-        BaseColor, DensityAnchors, FilmMode, GeometryState, PipelineState, TuningParams,
+        BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
+        DensityAnchors, FilmMode, GeometryState, PipelineState, ProcessingContract, TuningParams,
     };
     use crate::color_science::ColorSpaceId;
     use image::{ColorType, GenericImageView, ImageBuffer, Rgb};
@@ -13792,6 +14993,57 @@ mod export_contract_tests {
             base_g: u16::MAX,
             base_b: u16::MAX,
         }
+    }
+
+    #[test]
+    fn prophoto_master_exposure_preserves_neutrality_with_channel_spans() {
+        let mut state = PipelineState::smart_auto();
+        state.contract = ProcessingContract::RollAnchoredProPhotoV11;
+        state.processing_report.analysis_data_domain = "linear_prophoto_estimate".to_string();
+        state.density_anchors = DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: [0.0; 3],
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: Default::default(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: [1.0, 1.5, 2.0],
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: Default::default(),
+            }),
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+        };
+
+        let source = ImageBuffer::from_pixel(
+            1,
+            1,
+            Rgb([10.0f32.powf(-0.5), 10.0f32.powf(-0.75), 10.0f32.powf(-1.0)]),
+        );
+        let mut params = TuningParams::default();
+        params.density.d_min = [0.0; 3];
+        params.density.d_max = [1.0, 1.5, 2.0];
+        params.density.gamma = 1.0;
+        params.exposure.exposure = 0.75;
+
+        let rendered = render_f32_shader_equivalent(
+            &source,
+            None,
+            &params,
+            &GeometryState::default(),
+            &white_base(),
+            &state,
+            None,
+        );
+        let pixel = rendered.get_pixel(0, 0);
+        let spread = pixel[0].max(pixel[1]).max(pixel[2]) - pixel[0].min(pixel[1]).min(pixel[2]);
+        assert!(spread <= 2, "neutral exposure introduced a cast: {pixel:?}");
     }
 
     #[test]
@@ -13857,6 +15109,47 @@ mod export_contract_tests {
             render_shader_equivalent(&source, &neutral_params(), &geom, &white_base(), None);
         assert_eq!(output.dimensions(), (2, 2));
         assert!((32000..=33500).contains(&output.get_pixel(0, 0)[0]));
+    }
+
+    #[test]
+    fn film_area_points_do_not_apply_perspective_correction() {
+        let source = ImageBuffer::from_fn(8, 6, |x, y| {
+            let value = 4_000 + (x * 700 + y * 1_100) as u16;
+            Rgb([value, value + 500, value + 1_000])
+        });
+        let expected = render_shader_equivalent(
+            &source,
+            &neutral_params(),
+            &GeometryState::default(),
+            &white_base(),
+            None,
+        );
+        let mut film_area = GeometryState::default();
+        film_area.calibration_points =
+            Some([[0.08, 0.18], [0.94, 0.06], [0.82, 0.91], [0.17, 0.76]]);
+
+        let rendered =
+            render_shader_equivalent(&source, &neutral_params(), &film_area, &white_base(), None);
+
+        assert_eq!(rendered.as_raw(), expected.as_raw());
+    }
+
+    #[test]
+    fn film_area_region_uses_the_quadrilateral_not_its_bounding_box() {
+        let area = [[0.2, 0.1], [0.9, 0.2], [0.8, 0.9], [0.1, 0.8]];
+
+        assert!(point_in_film_area([0.5, 0.5], &area, 0.0));
+        assert!(!point_in_film_area([0.12, 0.12], &area, 0.0));
+        assert!(should_apply_sprocket_mask_for_area(
+            [0.12, 0.12],
+            &area,
+            [0.12, 0.12],
+        ));
+        assert!(!should_apply_sprocket_mask_for_area(
+            [0.5, 0.5],
+            &area,
+            [0.12, 0.12],
+        ));
     }
 
     #[test]
@@ -14139,6 +15432,49 @@ mod export_contract_tests {
     }
 
     #[test]
+    fn roll_prophoto_proxy_sets_prophoto_transport_flag() {
+        let proxy = ImageBuffer::from_pixel(1, 1, Rgb([12_000, 24_000, 36_000]));
+        let base = white_base();
+        for contract in [
+            ProcessingContract::SmartAutoProPhotoV11,
+            ProcessingContract::RollBaseProPhotoV11,
+            ProcessingContract::RollAnchoredProPhotoV11,
+        ] {
+            let mut state = PipelineState::smart_auto();
+            state.contract = contract;
+            state.processing_report.analysis_data_domain = "linear_prophoto_estimate".to_string();
+            if contract != ProcessingContract::SmartAutoProPhotoV11 {
+                state.density_anchors.d_min_base = Some(DensityAnchor {
+                    density: [0.1; 3],
+                    source: DensityAnchorSource::SampledFilmBase,
+                    scope: DensityAnchorScope::Roll,
+                    confidence: DensityAnchorConfidence::UserSampled,
+                    reference_id: Some("roll:base".to_string()),
+                    provenance: Default::default(),
+                });
+            }
+            if contract == ProcessingContract::RollAnchoredProPhotoV11 {
+                state.density_anchors.d_max_full_exposure = Some(DensityAnchor {
+                    density: [1.5; 3],
+                    source: DensityAnchorSource::SampledFullExposure,
+                    scope: DensityAnchorScope::Roll,
+                    confidence: DensityAnchorConfidence::UserSampled,
+                    reference_id: Some("roll:full".to_string()),
+                    provenance: Default::default(),
+                });
+            }
+            let response =
+                build_response_buffer_from_proxy_with_state(&proxy, &base, &state, None, true);
+            let flags = u32::from_le_bytes(response[24..28].try_into().unwrap());
+            assert_ne!(
+                flags & 2,
+                0,
+                "{contract:?} must advertise the ProPhoto transport domain"
+            );
+        }
+    }
+
+    #[test]
     fn export_dimensions_preserve_aspect_ratio_and_respect_upscale_policy() {
         assert_eq!(
             export_dimensions(4000, 3000, "long_edge", 2048, false).unwrap(),
@@ -14314,5 +15650,245 @@ mod export_contract_tests {
             decoded.height()
         );
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+/// Regression coverage for the roll-anchored renderer: the density direction
+/// and the per-frame film base that keeps mask removal exact.
+#[cfg(test)]
+mod roll_render_tests {
+    use super::*;
+    use crate::app_state::{
+        BaseColor, DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorProvenance,
+        DensityAnchorScope, DensityAnchorSource, DensityAnchors, TuningParams,
+    };
+    use image::{ImageBuffer, Rgb};
+
+    fn anchors(base: [f32; 3], full: [f32; 3]) -> DensityAnchors {
+        let provenance = DensityAnchorProvenance {
+            input_domain: DataDomain::ProPhotoEstimate,
+            algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+            raw_decode_version: Some(crate::persistence::RAW_DECODE_VERSION),
+            legacy: false,
+            ..Default::default()
+        };
+        DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: base,
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll:base".into()),
+                provenance: provenance.clone(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: full,
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll:full".into()),
+                provenance,
+            }),
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+        }
+    }
+
+    fn transmittance(density: [f32; 3]) -> Rgb<f32> {
+        Rgb([
+            10.0f32.powf(-density[0]),
+            10.0f32.powf(-density[1]),
+            10.0f32.powf(-density[2]),
+        ])
+    }
+
+    fn synthetic_frame(base: [f32; 3], scene: [f32; 3]) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+        // Upper 3/4 is the scene, the lower band is clear film base with a
+        // little grain, mirroring a strip scan that includes the rebate.
+        ImageBuffer::from_fn(200, 200, |x, y| {
+            if y > 150 {
+                let jitter = ((x % 7) as f32 - 3.0) * 0.002;
+                transmittance([base[0] + jitter, base[1] + jitter, base[2] + jitter])
+            } else {
+                let jitter = ((x + y) % 11) as f32 * 0.01;
+                transmittance([scene[0] + jitter, scene[1] + jitter, scene[2] + jitter])
+            }
+        })
+    }
+
+    #[test]
+    fn frame_base_detection_finds_the_clear_film_band() {
+        let base = [0.62, 0.73, 0.91];
+        let frame = synthetic_frame(base, [1.10, 1.25, 1.50]);
+        let detected = detect_frame_base_density(&frame, [0.55, 0.75, 1.02])
+            .expect("the uniform film base band must be detected");
+        for channel in 0..3 {
+            assert!(
+                (detected[channel] - base[channel]).abs() < 0.02,
+                "channel {channel}: detected {detected:?} for base {base:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn frame_base_detection_rejects_an_implausible_match() {
+        // A frame dominated by a bright sky has no rebate; its dominant peak
+        // sits far away from the roll anchor, so the anchor stays in charge.
+        let frame = ImageBuffer::from_pixel(200, 200, transmittance([2.4, 2.5, 2.6]));
+        assert!(detect_frame_base_density(&frame, [0.55, 0.75, 1.02]).is_none());
+    }
+
+    #[test]
+    fn frame_base_shifts_the_roll_mapping_without_changing_its_span() {
+        let roll_base = [0.55, 0.75, 1.02];
+        let roll_full = [1.74, 2.15, 2.65];
+        let state = PipelineState::from_roll_anchors(anchors(roll_base, roll_full));
+        let frame_base = [0.62, 0.73, 0.91];
+        let mapping = roll_density_mapping_with_frame_base(&state, Some(frame_base), None)
+            .expect("complete anchors produce a mapping");
+        assert_eq!(mapping.mode, RenderMode::RollAnchored);
+        for channel in 0..3 {
+            let span = roll_full[channel] - roll_base[channel];
+            assert!(
+                (mapping.density_low[channel] - (frame_base[channel] - roll_base[channel])).abs()
+                    < 1e-6
+            );
+            assert!(
+                (mapping.density_high[channel] - mapping.density_low[channel] - span).abs() < 1e-6
+            );
+        }
+    }
+
+    #[test]
+    fn roll_render_turns_dense_negative_areas_bright() {
+        let roll_base = [0.55, 0.75, 1.02];
+        let roll_full = [1.74, 2.15, 2.65];
+        let scene = [1.20, 1.35, 1.60];
+        let frame = synthetic_frame(roll_base, scene);
+        let mut state = PipelineState::from_roll_anchors(anchors(roll_base, roll_full));
+        state.render_mapping =
+            roll_density_mapping_with_frame_base(&state, Some(roll_base), None).expect("mapping");
+        state.processing_report.render_route = "RollAnchoredDirectInvert".to_string();
+        let rendered = render_f32_shader_equivalent(
+            &frame,
+            None,
+            &TuningParams::default(),
+            &GeometryState::default(),
+            &BaseColor::default(),
+            &state,
+            None,
+        );
+        let luminance = |x: u32, y: u32| {
+            let pixel = rendered.get_pixel(x, y).0;
+            [0.2126f32, 0.7152, 0.0722]
+                .iter()
+                .zip(pixel)
+                .map(|(weight, value)| weight * value as f32)
+                .sum::<f32>()
+        };
+        let scene_row = luminance(100, 80);
+        let base_row = luminance(100, 180);
+        // The scene is denser than the clear film base, so it must print
+        // brighter. Inverting the ramp a second time swaps these.
+        assert!(
+            scene_row > base_row + 4000.0,
+            "scene {scene_row} should be far brighter than the film base {base_row}"
+        );
+    }
+
+    /// A scene whose brightest content sits at half of the film span must land
+    /// near paper white, not in the middle of the histogram.
+    fn synthetic_scene(base: [f32; 3], ground: f32, sky: f32) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+        ImageBuffer::from_fn(512, 512, |x, y| {
+            let edge = x < 40 || y < 40 || x >= 472 || y >= 472;
+            let relative = if edge {
+                -0.4
+            } else if y < 190 {
+                sky
+            } else {
+                ground
+            };
+            transmittance([base[0] + relative, base[1] + relative, base[2] + relative])
+        })
+    }
+
+    #[test]
+    fn frame_highlight_fraction_measures_scene_headroom() {
+        let base = [0.60, 0.73, 0.91];
+        let span = [1.0, 1.0, 1.0];
+        let frame = synthetic_scene(base, 0.25, 0.60);
+        let fraction = detect_frame_highlight_fraction(&frame, base, span)
+            .expect("a flat scene must produce a highlight estimate");
+        assert!(
+            (fraction - 0.60).abs() < 0.08,
+            "scene highlight 0.60 of the span produced {fraction}"
+        );
+    }
+
+    #[test]
+    fn frame_highlight_fraction_is_clamped_to_a_sane_band() {
+        let base = [0.60, 0.73, 0.91];
+        let span = [1.0, 1.0, 1.0];
+        let dark = detect_frame_highlight_fraction(&synthetic_scene(base, 0.10, 0.15), base, span)
+            .expect("dark scene");
+        assert!((dark - 0.45).abs() < 1.0e-6, "dark scene clamped to {dark}");
+        let bright =
+            detect_frame_highlight_fraction(&synthetic_scene(base, 0.80, 1.30), base, span)
+                .expect("bright scene");
+        assert!(
+            (bright - 0.85).abs() < 1.0e-6,
+            "bright scene clamped to {bright}"
+        );
+    }
+
+    #[test]
+    fn roll_highlight_fraction_sets_the_white_point_for_every_frame() {
+        let roll_base = [0.55, 0.75, 1.02];
+        let roll_full = [1.74, 2.15, 2.65];
+        let mut state = PipelineState::from_roll_anchors(anchors(roll_base, roll_full));
+        state.density_anchors.highlight_fraction = Some(0.50);
+        let mapping = roll_density_mapping_with_frame_base(&state, Some(roll_base), Some(0.80))
+            .expect("complete anchors produce a mapping");
+        for channel in 0..3 {
+            let span = roll_full[channel] - roll_base[channel];
+            assert!(
+                (mapping.density_high[channel] - span * 0.5).abs() < 1.0e-6,
+                "the Roll value must win over the frame value"
+            );
+        }
+        state.density_anchors.highlight_fraction = Some(0.05);
+        let clamped = roll_density_mapping_with_frame_base(&state, None, None).expect("mapping");
+        for channel in 0..3 {
+            let span = roll_full[channel] - roll_base[channel];
+            assert!((clamped.density_high[channel] - span * 0.45).abs() < 1.0e-6);
+        }
+    }
+
+    /// The Roll's white point has to survive capability resolution, otherwise
+    /// the runtime state silently falls back to the leader-only mapping.
+    #[test]
+    fn resolver_input_carries_the_roll_highlight_fraction() {
+        let mut anchors = anchors([0.55, 0.75, 1.02], [1.74, 2.15, 2.65]);
+        anchors.highlight_fraction = Some(0.5);
+        let persisted = PipelineState::from_roll_anchors(anchors.clone());
+        let roll = Roll {
+            roll_id: "roll-highlight".into(),
+            date: String::new(),
+            format: "135".into(),
+            film_stock: "Test".into(),
+            camera: String::new(),
+            image_paths: Vec::new(),
+            density_anchors: anchors,
+            calibration_profile_id: None,
+            scanner_profile_id: None,
+        };
+        let input = pipeline_resolver_input_for_kind(
+            &persisted,
+            Some(&roll),
+            &[],
+            pipeline_image_kind("frame.tif"),
+            None,
+        );
+        assert_eq!(input.density_anchors.highlight_fraction, Some(0.5));
     }
 }

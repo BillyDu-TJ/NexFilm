@@ -207,7 +207,7 @@
                     <span id="library-selection-count" class="text-[11px] text-zinc-400 font-medium">0 selected</span>
                     <button id="btn-select-all" type="button" class="library-toolbar-button" data-i18n="actions.selectAll">Select All</button>
                     <button id="btn-delete-library-images" type="button" class="library-toolbar-button library-toolbar-button-danger" data-i18n="actions.deleteSelected" disabled>Delete Selected</button>
-                    <button id="btn-calibrate-density" type="button" class="library-toolbar-button library-toolbar-button-primary" data-i18n="calibration.action" disabled>Calibrate Film</button>
+                    <button id="btn-calibrate-density" type="button" class="library-toolbar-button library-toolbar-button-primary" data-i18n="calibration.action">Calibrate Film</button>
                 </div>
             </div>
             <div class="view-content library-content flex-1 p-8 overflow-y-auto custom-scrollbar">
@@ -616,8 +616,9 @@
                     <!-- Auto Invert -->
                     <div id="inspector-actions" class="control-group border-t border-[#28282c] pt-6">
                         <div class="inspector-segmented inspector-action-segment">
-                            <button id="btn-auto-color" class="flex-[3] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Auto Invert</button>
-                            <button id="btn-reset-color" class="flex-[1] px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Reset</button>
+                            <button id="btn-auto-color" data-i18n="develop.autoInvert" class="flex-1 px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Auto Invert</button>
+                            <button id="btn-auto-color-roll" data-i18n="develop.autoInvertRoll" class="flex-1 px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Auto Invert Roll</button>
+                            <button id="btn-reset-color" class="flex-none px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Reset</button>
                         </div>
                     </div>
 
@@ -1289,6 +1290,10 @@
                     <div id="density-calibration-hint" class="density-calibration-hint hidden" data-i18n="calibration.clickHint">Click the image to sample an averaged area</div>
                 </div>
                 <div class="density-calibration-controls">
+                    <div id="density-calibration-sources" class="density-calibration-sources hidden">
+                        <strong data-i18n="calibration.selectedReferences">Selected references</strong>
+                        <div id="density-calibration-source-list" class="density-calibration-source-list"></div>
+                    </div>
                     <div class="density-reference-row">
                         <div>
                             <strong data-i18n="calibration.filmBase">Film Base</strong>

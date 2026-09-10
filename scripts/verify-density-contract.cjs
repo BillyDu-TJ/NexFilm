@@ -17,8 +17,38 @@ assertClose(corrected[1], -0.0052 * 0.42 + 0.8933 * 0.58 + 0.0521 * 0.71);
 assertClose(corrected[2], 0.0131 * 0.42 - 0.0011 * 0.58 + 0.9712 * 0.71);
 
 const mainSource = fs.readFileSync(path.join(__dirname, '..', 'ui', 'main.js'), 'utf8');
+const commandSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'commands.rs'), 'utf8');
 const shaderMatrixMatch = mainSource.match(/const mat3 STATUS_M = mat3\(([\s\S]*?)\);/);
 assert.ok(shaderMatrixMatch, 'WebGL STATUS_M matrix was not found');
+// A colour negative gains density where the scene is bright, so every route
+// ramps the density upward from D-min. The shader must not invert the
+// roll-anchored route a second time.
+assert.match(mainSource, /\(density - effective_dmin\) \/ safe_range/);
+assert.doesNotMatch(mainSource, /effective_dmax - density/);
+assert.match(commandSource, /RollAnchoredDirectInvert/);
+assert.match(commandSource, /roll_density_mapping_with_frame_base\(/);
+assert.match(
+    commandSource,
+    /fn detect_frame_base_density\(/,
+    'Roll rendering must measure the film base on each frame',
+);
+assert.match(
+    commandSource,
+    /fn detect_frame_highlight_fraction\(/,
+    'Roll rendering must place the white point from the scene highlights',
+);
+assert.match(
+    commandSource,
+    /highlight_fraction/,
+    'The Roll white point must be persisted with the density anchors',
+);
+assert.match(commandSource, /pipeline_state\.content_range = None/);
+assert.match(mainSource, /pipelineHasCompleteRollAnchors\(currentPipelineState\)\s*&&\s*!hasRenderedPreview/);
+assert.match(
+    mainSource,
+    /autoInvertAppliedActiveImage\s*=\s*true;[\s\S]*proxyHasAnalyzedBase\s*=\s*true;[\s\S]*await reloadDevelopProxy/,
+    'Single-frame Auto Invert must reload the analyzed proxy before rendering',
+);
 const shaderMatrix = shaderMatrixMatch[1]
     .split(',')
     .map(value => Number.parseFloat(value.trim()));

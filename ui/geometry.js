@@ -196,20 +196,13 @@
         return high;
     }
 
-    function mapDisplayPointToSource(point, cropRect, homography, width, height, geom) {
-        if (!homography || homography.length < 9) return null;
+    function mapDisplayPointToSource(point, cropRect, width, height, geom) {
         const crop = cropRect || { x: 0, y: 0, width: 1, height: 1 };
         const cropX = numberOrZero(crop.x) + numberOrZero(point[0]) * numberOrZero(crop.width);
         const cropY = numberOrZero(crop.y) + numberOrZero(point[1]) * numberOrZero(crop.height);
         const perspectivePoint = mapPerspectivePoint([cropX, cropY], geom);
         if (!perspectivePoint) return null;
-        const divisor = homography[2] * perspectivePoint[0] + homography[5] * perspectivePoint[1] + homography[8];
-        if (!Number.isFinite(divisor) || Math.abs(divisor) < 1e-8) return null;
-        const homographyPoint = [
-            (homography[0] * perspectivePoint[0] + homography[3] * perspectivePoint[1] + homography[6]) / divisor,
-            (homography[1] * perspectivePoint[0] + homography[4] * perspectivePoint[1] + homography[7]) / divisor,
-        ];
-        const orientedPoint = mapLensDistortionPoint(homographyPoint, geom);
+        const orientedPoint = mapLensDistortionPoint(perspectivePoint, geom);
         if (!orientedPoint) return null;
         return mapOrientedPointToSource(orientedPoint, width, height, geom);
     }
@@ -369,13 +362,6 @@
         return Math.abs(signedArea) > 0.004;
     }
 
-    function resolveCalibrationRenderPoints(points, isCalibrating) {
-        if (isCalibrating || !isValidCalibrationQuad(points)) {
-            return [[0, 0], [1, 0], [1, 1], [0, 1]];
-        }
-        return points.map(point => [Number(point[0]), Number(point[1])]);
-    }
-
     function translateCalibrationEdge(points, edgeIndex, pointerDelta, viewport) {
         const indices = calibrationEdgeIndices[edgeIndex];
         if (!indices || !isValidCalibrationQuad(points)) return null;
@@ -447,7 +433,6 @@
         invertDisplayPoint,
         calibrationEdgeIndices,
         isValidCalibrationQuad,
-        resolveCalibrationRenderPoints,
         translateCalibrationEdge,
         transformGeometryForQuarterTurn,
         transformGeometryForFlip,

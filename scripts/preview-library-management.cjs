@@ -30,13 +30,22 @@ const mock = `
         calibration_points: null, calibration_confirmed: false
     };
     const rollAnchoredPipeline = {
-        contract: 'roll_anchored_prophoto_v11',
+        contract: 'roll_anchored_pro_photo_v11',
+        processing_report: {
+            render_route: 'RollAnchoredDirectInvert',
+            analysis_data_domain: 'linear_prophoto_estimate',
+            base_source: 'roll_anchor_prophoto_estimate',
+            base_confidence: 'estimated',
+            uses_physical_anchors: false,
+            fallback_reason: '',
+            fallback_reasons: []
+        },
         density_anchors: {
             d_min_base: { density: [0.12, 0.13, 0.14], source: 'sampled_film_base', scope: 'roll', confidence: 'user_sampled', reference_id: 'film-base.tif' },
             d_max_full_exposure: { density: [2.1, 2.2, 2.3], source: 'sampled_full_exposure', scope: 'roll', confidence: 'user_sampled', reference_id: 'full-exposure.tif' }
         },
         content_range: null,
-        render_mapping: { mode: 'preserve_tone', density_low: [0.1, 0.1, 0.1], density_high: [2, 2, 2] }
+        render_mapping: { mode: 'roll_anchored', density_low: [0, 0, 0], density_high: [1.98, 2.07, 2.16], exposure: 0, gamma: 1, channel_offsets: [0, 0, 0] }
     };
     const loosePipeline = {
         contract: 'smart_auto_prophoto_v11',
@@ -82,7 +91,9 @@ const mock = `
             const item = items.find(candidate => candidate.id === args.id);
             return { params: clone(params), geom: clone(geom), base_analyzed: item?.roll_id === 'roll-a', pipeline_state: clone(item?.pipeline_state || loosePipeline) };
         }
-        if (command === 'get_embedded_preview') return items.find(item => item.id === args.id)?.thumbnail_base64 || '';
+        if (command === 'get_embedded_preview' || command === 'get_density_calibration_preview') {
+            return items.find(item => item.id === args.id)?.thumbnail_base64 || '';
+        }
         if (command === 'sample_roll_density_reference') {
             return {
                 density: args.kind === 'base' ? [0.12, 0.13, 0.14] : [2.1, 2.2, 2.3],
@@ -104,6 +115,14 @@ const mock = `
             return clone(anchors);
         }
         if (command === 'prepare_proxy') return true;
+        if (command === 'aggregate_roll_density_references') return clone((args.samples || [])[args.samples.length - 1]);
+        if (command === 'auto_invert_roll') {
+            const rollItems = items.filter(item => item.roll_id === args.rollId
+                && (!args.frameId || item.id === args.frameId));
+            rollItems.forEach(item => { item.rendered_thumbnail_base64 = item.thumbnail_base64; item.thumbnail_kind = 'rendered'; });
+            return { roll_id: args.rollId, total: rollItems.length, processed: rollItems.length, succeeded: rollItems.length, failed: 0, failed_ids: [] };
+        }
+        if (command === 'cancel_auto_invert_roll') return true;
         if (command === 'analyze_proxy_base_color') return null;
         if (command === 'analyze_proxy_density_limits') {
             const item = items.find(candidate => candidate.id === args.id);

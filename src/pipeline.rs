@@ -267,6 +267,7 @@ mod tests {
                 provenance: Default::default(),
             }),
             retained_records: Vec::new(),
+            highlight_fraction: None,
         };
         assert!(anchors.is_fully_anchored());
         let state = PipelineState::capture_corrected(anchors, false);
@@ -332,6 +333,7 @@ mod tests {
             }),
             d_max_full_exposure: None,
             retained_records: Vec::new(),
+            highlight_fraction: None,
         };
         state.contract = ProcessingContract::RollBaseProPhotoV11;
         let pipeline =

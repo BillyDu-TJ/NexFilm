@@ -1419,8 +1419,10 @@ body[data-theme="dark"] {
 
 #inspector-actions .inspector-action-segment {
     display: grid !important;
-    grid-template-columns: minmax(0, 3.3fr) minmax(0, 1fr) !important;
-    gap: 10px !important;
+    /* Auto Invert, whole-roll batch and Reset stay on one line: the two
+     * invert actions share the row and Reset keeps a narrower pill. */
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.2fr) minmax(0, 0.75fr) !important;
+    gap: 6px !important;
     padding: 3px !important;
     overflow: hidden !important;
     border-radius: 11px !important;
@@ -1432,14 +1434,21 @@ body[data-theme="dark"] {
     min-width: 0 !important;
     min-height: 27px !important;
     margin: 0 !important;
-    padding: 6px 10px !important;
+    padding: 6px 8px !important;
     border: 0 !important;
     border-radius: 9px !important;
     outline: 0 !important;
     box-shadow: none !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0 !important;
+    text-transform: none !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
 }
 
-#inspector-actions #btn-auto-color {
+#inspector-actions #btn-auto-color,
+#inspector-actions #btn-auto-color-roll {
     background: var(--ui-brand) !important;
     color: #ffffff !important;
 }

@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::app_state::{
-    DataDomain, DensityAnchor, DensityAnchors, PipelineProcessingReport, PipelineStageRecord,
-    PipelineStageStatus, ProcessingContract, DENSITY_ANCHOR_ALGORITHM_VERSION,
+    DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
+    DensityAnchors, PipelineProcessingReport, PipelineStageRecord, PipelineStageStatus,
+    ProcessingContract, DENSITY_ANCHOR_ALGORITHM_VERSION,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -76,11 +77,30 @@ fn capability(layer: &str, status: PipelineStageStatus, detail: &str) -> LayerCa
 
 fn anchor_mismatch(
     anchor: &DensityAnchor,
+    expected_source: DensityAnchorSource,
     expected_domain: DataDomain,
     profile: Option<&ResolverProfile>,
     raw_decode_version: i64,
 ) -> Option<&'static str> {
     let provenance = &anchor.provenance;
+    if anchor.source != expected_source {
+        return Some("anchor_source_mismatch");
+    }
+    if anchor.scope != DensityAnchorScope::Roll {
+        return Some("anchor_scope_mismatch");
+    }
+    if anchor.confidence == DensityAnchorConfidence::Estimated {
+        return Some("anchor_confidence_estimated");
+    }
+    if anchor.density.iter().any(|value| !value.is_finite()) {
+        return Some("anchor_density_non_finite");
+    }
+    if provenance.algorithm_version != DENSITY_ANCHOR_ALGORITHM_VERSION {
+        return Some("anchor_algorithm_version_mismatch");
+    }
+    if provenance.legacy {
+        return Some("anchor_legacy_unverified");
+    }
     if provenance.input_domain != expected_domain {
         return Some("anchor_input_domain_mismatch");
     }
@@ -98,12 +118,6 @@ fn anchor_mismatch(
         if provenance.raw_decode_version != Some(raw_decode_version) {
             return Some("anchor_raw_decode_version_mismatch");
         }
-        if provenance.algorithm_version != DENSITY_ANCHOR_ALGORITHM_VERSION {
-            return Some("anchor_algorithm_version_mismatch");
-        }
-        if provenance.legacy {
-            return Some("anchor_legacy_unverified");
-        }
     }
     None
 }
@@ -116,26 +130,48 @@ fn filter_anchors(
 ) -> (DensityAnchors, Vec<String>) {
     let mut usable = DensityAnchors::default();
     let mut rejected = Vec::new();
-    for (name, anchor, target) in [
+    for (name, anchor, expected_source, target) in [
         (
             "d_min_base",
             anchors.d_min_base.as_ref(),
+            DensityAnchorSource::SampledFilmBase,
             &mut usable.d_min_base,
         ),
         (
             "d_max_full_exposure",
             anchors.d_max_full_exposure.as_ref(),
+            DensityAnchorSource::SampledFullExposure,
             &mut usable.d_max_full_exposure,
         ),
     ] {
         if let Some(anchor) = anchor {
-            if let Some(reason) =
-                anchor_mismatch(anchor, expected_domain, profile, raw_decode_version)
-            {
+            if let Some(reason) = anchor_mismatch(
+                anchor,
+                expected_source,
+                expected_domain,
+                profile,
+                raw_decode_version,
+            ) {
                 rejected.push(format!("density_anchor_rejected|{name}|{reason}"));
             } else {
                 *target = Some(anchor.clone());
             }
+        }
+    }
+    if let (Some(base), Some(full)) = (
+        usable.d_min_base.as_ref(),
+        usable.d_max_full_exposure.as_ref(),
+    ) {
+        if (0..3).any(|channel| {
+            full.density[channel] - base.density[channel] <= 1.0e-4
+                || !full.density[channel].is_finite()
+                || !base.density[channel].is_finite()
+        }) {
+            usable.d_max_full_exposure = None;
+            rejected.push(
+                "density_anchor_rejected|d_max_full_exposure|anchor_channel_span_invalid"
+                    .to_string(),
+            );
         }
     }
     (usable, rejected)
@@ -456,6 +492,55 @@ mod tests {
         let result = resolve_pipeline(&input);
         assert!(result.usable_density_anchors.d_min_base.is_some());
         assert!(result.rejected_anchor_reasons.is_empty());
+    }
+
+    #[test]
+    fn invalid_prophoto_anchor_metadata_cannot_promote_roll_anchored_path() {
+        let mut input = input(None);
+        let mut base = anchor(DataDomain::ProPhotoEstimate, None);
+        base.provenance.algorithm_version = "density_anchor_v1".to_string();
+        let mut full = base.clone();
+        full.source = DensityAnchorSource::SampledFullExposure;
+        full.density = [1.0, 1.1, 1.2];
+        input.density_anchors = DensityAnchors {
+            d_min_base: Some(base),
+            d_max_full_exposure: Some(full),
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+        };
+        let result = resolve_pipeline(&input);
+        assert_eq!(
+            result.resolved_path,
+            ProcessingContract::SmartAutoProPhotoV11
+        );
+        assert!(result
+            .rejected_anchor_reasons
+            .iter()
+            .all(|reason| reason.contains("anchor_algorithm_version_mismatch")));
+    }
+
+    #[test]
+    fn invalid_channel_span_rejects_only_the_full_exposure_endpoint() {
+        let mut input = input(None);
+        let base = anchor(DataDomain::ProPhotoEstimate, None);
+        let mut full = base.clone();
+        full.source = DensityAnchorSource::SampledFullExposure;
+        full.density = [0.1, 1.1, 1.2];
+        input.density_anchors = DensityAnchors {
+            d_min_base: Some(base),
+            d_max_full_exposure: Some(full),
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+        };
+        let result = resolve_pipeline(&input);
+        assert_eq!(
+            result.resolved_path,
+            ProcessingContract::RollBaseProPhotoV11
+        );
+        assert!(result
+            .rejected_anchor_reasons
+            .iter()
+            .any(|reason| reason.contains("anchor_channel_span_invalid")));
     }
 
     #[test]
