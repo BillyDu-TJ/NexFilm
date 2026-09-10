@@ -14804,28 +14804,45 @@ mod import_contract_tests {
         ab_print_rendered_cast("smart-auto base-relative", &base_relative_render, &geom);
 
         // Where does the densest red content actually sit? If it lands on the
-        // rebate or the edge lettering, the analysis area is leaking.
+        // rebate or the edge lettering, the analysis area is leaking; if it is
+        // genuine scene content, the red window is legitimate and the gap is
+        // the film response itself.
         {
-            let mut best = (f32::INFINITY, [0.0f32; 2]);
+            let points =
+                geom.calibration_points
+                    .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+            let mut densest: Vec<(f32, [f32; 2])> = Vec::new();
             for (index, pixel) in estimate.as_raw().chunks_exact(3).enumerate() {
                 if pixel[0] <= 0.0 {
                     continue;
                 }
-                if pixel[0] < best.0 {
-                    let x = index as u32 % estimate.width();
-                    let y = index as u32 / estimate.width();
-                    best = (
-                        pixel[0],
-                        [
-                            x as f32 / estimate.width() as f32,
-                            y as f32 / estimate.height() as f32,
-                        ],
-                    );
-                }
+                let x = index as u32 % estimate.width();
+                let y = index as u32 / estimate.width();
+                densest.push((
+                    pixel[0],
+                    [
+                        x as f32 / estimate.width() as f32,
+                        y as f32 / estimate.height() as f32,
+                    ],
+                ));
             }
+            densest.sort_by(|left, right| left.0.total_cmp(&right.0));
+            for (rank, (transmission, uv)) in densest.iter().take(5).enumerate() {
+                println!(
+                    "[DIAG] {stem} darkest red #{rank}: T={:.4} uv=({:.3},{:.3}) in_area={}",
+                    transmission,
+                    uv[0],
+                    uv[1],
+                    point_in_film_area(*uv, &points, 0.0)
+                );
+            }
+            let inside = densest
+                .iter()
+                .filter(|(_, uv)| point_in_film_area(*uv, &points, 0.0))
+                .count();
             println!(
-                "[DIAG] {stem} densest red transmission={:.4} at uv=({:.3},{:.3})",
-                best.0, best.1[0], best.1[1]
+                "[DIAG] {stem} darkest-red samples inside the analysis area: {inside}/{}",
+                densest.len()
             );
         }
 
