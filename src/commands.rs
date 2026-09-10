@@ -14803,6 +14803,61 @@ mod import_contract_tests {
         );
         ab_print_rendered_cast("smart-auto base-relative", &base_relative_render, &geom);
 
+        // Decisive check: tint the same negative warm and render both paths.
+        // A grey-world alignment cancels the tint (the render barely moves);
+        // a film-base alignment keeps it, because the tint really is in the
+        // scene. Per-frame casts on colour-dominant scenes come from the
+        // difference between those two behaviours.
+        for (label, tint) in [
+            ("untinted", [1.0f32, 1.0, 1.0]),
+            ("warm", [1.18, 1.0, 0.85]),
+        ] {
+            let tinted_linear = ImageBuffer::<Rgb<u16>, Vec<u16>>::from_fn(
+                linear.width(),
+                linear.height(),
+                |x, y| {
+                    let pixel = linear.get_pixel(x, y).0;
+                    Rgb([
+                        ((f32::from(pixel[0]) * tint[0]).clamp(0.0, 65535.0)) as u16,
+                        ((f32::from(pixel[1]) * tint[1]).clamp(0.0, 65535.0)) as u16,
+                        ((f32::from(pixel[2]) * tint[2]).clamp(0.0, 65535.0)) as u16,
+                    ])
+                },
+            );
+            let mut tinted_estimate = estimate.clone();
+            tinted_estimate
+                .as_mut()
+                .par_chunks_exact_mut(3)
+                .for_each(|pixel| {
+                    for channel in 0..3 {
+                        pixel[channel] *= tint[channel];
+                    }
+                });
+            let legacy_tinted_base = compute_auto_base(&tinted_linear);
+            let legacy_tinted = compute_auto_color_limits(
+                &tinted_linear,
+                &geom,
+                &legacy_tinted_base,
+                mode.clone(),
+                false,
+            )
+            .unwrap();
+            let mut legacy_tinted_params = TuningParams::default();
+            legacy_tinted_params.density.d_min = legacy_tinted.d_min;
+            legacy_tinted_params.density.d_max = legacy_tinted.d_max;
+            let legacy_render_tinted = render_shader_equivalent(
+                &tinted_linear,
+                &legacy_tinted_params,
+                &geom,
+                &legacy_tinted_base,
+                None,
+            );
+            let (smart_render_tinted, _, _, _) = render_smart_auto(&tinted_estimate, None);
+            print!("[DIAG] {stem} tint={label} v1.0.2 ");
+            ab_print_rendered_cast("v1.0.2", &legacy_render_tinted, &geom);
+            ab_print_rendered_cast("smart-auto", &smart_render_tinted, &geom);
+        }
+
         // Where does the densest red content actually sit? If it lands on the
         // rebate or the edge lettering, the analysis area is leaking; if it is
         // genuine scene content, the red window is legitimate and the gap is
