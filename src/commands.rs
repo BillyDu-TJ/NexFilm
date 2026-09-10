@@ -2463,7 +2463,7 @@ fn anchor_matches_resolved_contract(anchor: &DensityAnchor, state: &PipelineStat
 }
 
 fn share_smart_auto_density_scale(limits: &mut AutoColorLimits) -> [f32; 3] {
-    const MAX_CHANNEL_OFFSET: f32 = 0.30;
+    const MAX_CHANNEL_OFFSET: f32 = 0.60;
     let low = density_luma(limits.d_min);
     let high = density_luma(limits.d_max);
     if !low.is_finite() || !high.is_finite() || high <= low + 1.0e-6 {
@@ -3496,6 +3496,56 @@ fn decode_tiff_for_smart_auto(
 /// and are excluded, so this only describes ordinary profile-less RGB TIFFs.
 fn tiff_smart_auto_input_is_estimated(path: &str) -> bool {
     is_tiff_extension(path) && !is_scanner_fff_tiff(path) && embedded_input_profile(path).is_none()
+}
+
+/// Convert one encoded sample of a profiled TIFF into the Smart Auto working
+/// space. Kept separate from the file plumbing so the gamut behaviour can be
+/// tested directly.
+fn encoded_pixel_to_prophoto_estimate(encoded: [f32; 3], source_profile: ColorSpaceId) -> [f32; 3] {
+    let to_prophoto = linear_conversion_matrix(source_profile, ColorSpaceId::ProPhotoRgb);
+    compress_linear_srgb_for_density(convert_encoded_to_linear_rgb_with_matrix(
+        encoded,
+        source_profile,
+        to_prophoto,
+    ))
+}
+
+/// Convert a TIFF that carries an embedded ICC profile straight into the Smart
+/// Auto working space.
+///
+/// Routing such a file through the 16-bit linear-sRGB transport first would
+/// clamp it per channel, and the orange mask of a colour negative deliberately
+/// sits outside the sRGB gamut: on a real merged scan that clamped 84.7% of the
+/// red channel against 0.95% in the file itself, which is what produced the
+/// cyan highlights and magenta shadows. Returns an error when the file has no
+/// embedded profile, is a scanner FFF, or cannot be read by the streaming
+/// decoder, so the caller can keep the estimate-input fallback.
+fn decode_profiled_tiff_prophoto_estimate(
+    path: &str,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    if is_scanner_fff_tiff(path) {
+        return Err("scanner_fff_uses_scanner_linear_path".to_string());
+    }
+    let source_profile =
+        embedded_input_profile(path).ok_or_else(|| "no_embedded_profile".to_string())?;
+    let encoded = decode_uncompressed_tiff_reduced(path, target_long_edge)?;
+    let mut estimate = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
+    estimate
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(encoded.as_raw().par_chunks_exact(3))
+        .for_each(|(target, pixel)| {
+            target.copy_from_slice(&encoded_pixel_to_prophoto_estimate(
+                [
+                    f32::from(pixel[0]) / 65535.0,
+                    f32::from(pixel[1]) / 65535.0,
+                    f32::from(pixel[2]) / 65535.0,
+                ],
+                source_profile,
+            ));
+        });
+    Ok(estimate)
 }
 
 fn decode_reduced_dng_for_working_space(
@@ -6189,9 +6239,14 @@ pub async fn prepare_proxy(
                     // A profile-less or unusual TIFF still has to be importable;
                     // the generic decoder reads whatever the streaming reader
                     // cannot, matching the legacy branch's behaviour.
-                    let linear = decode_tiff_for_smart_auto(&decode_path, target_long_edge)
-                        .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
-                    linear_srgb_u16_to_prophoto_f32(&linear)
+                    match decode_profiled_tiff_prophoto_estimate(&decode_path, target_long_edge) {
+                        Ok(estimate) => estimate,
+                        Err(_) => {
+                            let linear = decode_tiff_for_smart_auto(&decode_path, target_long_edge)
+                                .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
+                            linear_srgb_u16_to_prophoto_f32(&linear)
+                        }
+                    }
                 } else {
                     decode_scanner_profiled_estimate_image_buffer(
                         &decode_path,
@@ -12957,14 +13012,14 @@ mod import_contract_tests {
         aggregate_roll_density_references, compute_auto_base, compute_auto_base_f32,
         compute_auto_color_limits, compute_content_limits_f32,
         compute_content_limits_f32_with_bounds, decode_image_buffer, decode_import_preview_base64,
-        decode_prophoto_estimate_image_buffer, decode_prophoto_estimate_image_buffer_with_policy,
-        decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
-        decode_tiff_for_smart_auto, decode_uncompressed_tiff_reduced,
-        default_pipeline_state_for_import, density_luma, embedded_input_profile,
-        fixed_roll_density_mapping, is_better_preview_edge, is_lightweight_direct_preview,
-        is_noritsu_rendered_image, is_raw_extension, is_scanner_fff_tiff,
-        is_smart_auto_compatibility, is_tiff_extension, libraw_decode_error_message,
-        linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff,
+        decode_profiled_tiff_prophoto_estimate, decode_prophoto_estimate_image_buffer,
+        decode_prophoto_estimate_image_buffer_with_policy, decode_reduced_dng_for_working_space,
+        decode_reduced_tiff_for_working_space, decode_tiff_for_smart_auto,
+        decode_uncompressed_tiff_reduced, default_pipeline_state_for_import, density_luma,
+        embedded_input_profile, encoded_pixel_to_prophoto_estimate, fixed_roll_density_mapping,
+        is_better_preview_edge, is_lightweight_direct_preview, is_noritsu_rendered_image,
+        is_raw_extension, is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
+        libraw_decode_error_message, linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff,
         mark_loose_smart_auto_compatibility, persist_import_batch, pipeline_base_density,
         pipeline_has_base, point_in_film_area, prepare_content_render_limits,
         preserve_smart_auto_content_span, prophoto_estimate_to_transport_proxy,
@@ -14534,13 +14589,18 @@ mod import_contract_tests {
         // film-edge lettering.
         let mut geom = GeometryState::default();
         geom.calibration_points = Some([
-            [0.055, 0.045],
-            [0.925, 0.035],
-            [0.935, 0.930],
-            [0.050, 0.940],
+            [0.095, 0.080],
+            [0.890, 0.070],
+            [0.900, 0.900],
+            [0.090, 0.910],
         ]);
         let linear = decode_tiff_for_smart_auto(&frame, EDGE).unwrap();
-        let estimate = linear_srgb_u16_to_prophoto_f32(&linear);
+        // Follow the production branch: a profiled TIFF is converted straight
+        // into the working space, only profile-less files take the u16 route.
+        let estimate = match decode_profiled_tiff_prophoto_estimate(&frame, EDGE) {
+            Ok(estimate) => estimate,
+            Err(_) => linear_srgb_u16_to_prophoto_f32(&linear),
+        };
         let mode = FilmMode::Color;
         println!(
             "[DIAG] {stem} proxy={}x{} icc={:?} estimated_input={}",
@@ -14551,6 +14611,50 @@ mod import_contract_tests {
         );
         ab_print_proxy_stats("decoded linear sRGB", &linear);
         ab_print_proxy_stats_f32("prophoto estimate", &estimate);
+
+        // Optional: sample a reference rendering (e.g. a Negative Lab Pro
+        // export) on a coarse grid so the target colours are on record.
+        if let Ok(reference) = std::env::var("NEXFILM_REFERENCE_FRAME") {
+            if let Ok(image) = image::open(&reference) {
+                let rgb = image.to_rgb8();
+                println!(
+                    "[DIAG] reference {} {}x{}",
+                    reference,
+                    rgb.width(),
+                    rgb.height()
+                );
+                for row in 0..6 {
+                    let mut line = String::new();
+                    for column in 0..6 {
+                        let center_x = (((column as f32 + 0.5) / 6.0) * rgb.width() as f32)
+                            .min(rgb.width() as f32 - 1.0)
+                            as u32;
+                        let center_y = (((row as f32 + 0.5) / 6.0) * rgb.height() as f32)
+                            .min(rgb.height() as f32 - 1.0)
+                            as u32;
+                        let mut sum = [0.0f32; 3];
+                        let mut samples = 0.0f32;
+                        for offset_y in 0..16 {
+                            for offset_x in 0..16 {
+                                let x = (center_x + offset_x).min(rgb.width() - 1);
+                                let y = (center_y + offset_y).min(rgb.height() - 1);
+                                let pixel = rgb.get_pixel(x, y).0;
+                                for channel in 0..3 {
+                                    sum[channel] += f32::from(pixel[channel]);
+                                }
+                                samples += 1.0;
+                            }
+                        }
+                        let mean = sum.map(|value| value / samples);
+                        line.push_str(&format!(
+                            "({:>3.0},{:>3.0},{:>3.0}) ",
+                            mean[0], mean[1], mean[2]
+                        ));
+                    }
+                    println!("[DIAG]   row {row}: {line}");
+                }
+            }
+        }
 
         // Save the decoded negative itself (gamma-encoded for viewing) so the
         // scene layout can be checked against the rendered positive.
@@ -14679,6 +14783,97 @@ mod import_contract_tests {
             base_relative_offsets[0], base_relative_offsets[1], base_relative_offsets[2]
         );
         ab_print_rendered_cast("smart-auto base-relative", &base_relative_render, &geom);
+
+        // Where does the densest red content actually sit? If it lands on the
+        // rebate or the edge lettering, the analysis area is leaking.
+        {
+            let mut best = (f32::INFINITY, [0.0f32; 2]);
+            for (index, pixel) in estimate.as_raw().chunks_exact(3).enumerate() {
+                if pixel[0] <= 0.0 {
+                    continue;
+                }
+                if pixel[0] < best.0 {
+                    let x = index as u32 % estimate.width();
+                    let y = index as u32 / estimate.width();
+                    best = (
+                        pixel[0],
+                        [
+                            x as f32 / estimate.width() as f32,
+                            y as f32 / estimate.height() as f32,
+                        ],
+                    );
+                }
+            }
+            println!(
+                "[DIAG] {stem} densest red transmission={:.4} at uv=({:.3},{:.3})",
+                best.0, best.1[0], best.1[1]
+            );
+        }
+
+        // Direction check: in a colour negative the scene-bright area is the
+        // dense one, so a dense patch must render bright and a clear patch dark.
+        {
+            let mut sample = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(8, 8);
+            for y in 0..8u32 {
+                for x in 0..8u32 {
+                    let value = if x < 4 { 0.05 } else { 0.90 };
+                    sample.put_pixel(x, y, Rgb([value, value, value]));
+                }
+            }
+            let (rendered, _, _, _) = render_smart_auto(&sample, None);
+            println!(
+                "[DIAG] {stem} direction check: dense patch renders {:.3}, clear patch renders {:.3}",
+                f32::from(rendered.get_pixel(1, 1).0[0]) / 65535.0,
+                f32::from(rendered.get_pixel(6, 6).0[0]) / 65535.0
+            );
+        }
+
+        // Prototype: convert the embedded profile straight into the Smart Auto
+        // working space. The orange mask of a colour negative lies outside the
+        // sRGB gamut, so routing through linear sRGB clips it per channel; the
+        // ProPhoto working space contains it.
+        if let Some(source_profile) = embedded_input_profile(&frame) {
+            let encoded = decode_uncompressed_tiff_reduced(&frame, EDGE).unwrap();
+            let to_prophoto = linear_conversion_matrix(source_profile, ColorSpaceId::ProPhotoRgb);
+            let mut direct =
+                ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
+            direct
+                .as_mut()
+                .par_chunks_exact_mut(3)
+                .zip(encoded.as_raw().par_chunks_exact(3))
+                .for_each(|(target, pixel)| {
+                    let rgb = [
+                        f32::from(pixel[0]) / 65535.0,
+                        f32::from(pixel[1]) / 65535.0,
+                        f32::from(pixel[2]) / 65535.0,
+                    ];
+                    let linear =
+                        convert_encoded_to_linear_rgb_with_matrix(rgb, source_profile, to_prophoto);
+                    target.copy_from_slice(&compress_linear_srgb_for_density(linear));
+                });
+            ab_print_proxy_stats_f32("prophoto estimate (direct)", &direct);
+            let (direct_render, direct_limits, direct_offsets, _) =
+                render_smart_auto(&direct, None);
+            ab_save_preview(
+                output_root.join(format!("{stem}-direct-prophoto.jpg")),
+                &direct_render,
+            );
+            println!(
+                "[DIAG] {stem} direct limits: d_min=({:.3},{:.3},{:.3}) d_max=({:.3},{:.3},{:.3}) offsets=({:.3},{:.3},{:.3})",
+                direct_limits.d_min[0], direct_limits.d_min[1], direct_limits.d_min[2],
+                direct_limits.d_max[0], direct_limits.d_max[1], direct_limits.d_max[2],
+                direct_offsets[0], direct_offsets[1], direct_offsets[2]
+            );
+            ab_print_rendered_cast("direct prophoto", &direct_render, &geom);
+            for (region, uv) in [
+                ("sky", [0.50, 0.13]),
+                ("recess", [0.55, 0.55]),
+                ("road", [0.30, 0.80]),
+            ] {
+                print!("[DIAG] {stem} direct ");
+                ab_probe_u16(region, &direct_render, uv);
+            }
+        }
 
         // Prototype: keep the embedded-profile conversion in f32 instead of
         // clamping it into the u16 linear-sRGB transport, which is what clips
@@ -15209,6 +15404,30 @@ mod import_contract_tests {
     }
 
     #[test]
+    #[test]
+    fn profiled_tiff_conversion_keeps_the_mask_inside_every_channel() {
+        // Adobe RGB sample of a colour negative's orange mask, taken from the
+        // merged pano fixture.
+        let encoded = [0.9929, 0.7916, 0.7066];
+        let to_srgb = linear_conversion_matrix(ColorSpaceId::AdobeRgb, ColorSpaceId::SRgb);
+        let via_srgb =
+            convert_encoded_to_linear_rgb_with_matrix(encoded, ColorSpaceId::AdobeRgb, to_srgb);
+        assert!(
+            via_srgb[0] > 1.0,
+            "the mask must lie outside the sRGB gamut: {via_srgb:?}"
+        );
+
+        let estimate = encoded_pixel_to_prophoto_estimate(encoded, ColorSpaceId::AdobeRgb);
+        assert!(
+            estimate.iter().all(|value| *value > 0.0 && *value < 1.0),
+            "the working space must contain the mask without clamping: {estimate:?}"
+        );
+        assert!(
+            estimate[0] > estimate[1] && estimate[1] > estimate[2],
+            "the mask keeps its warm ordering: {estimate:?}"
+        );
+    }
+
     fn scanner_fff_keeps_the_tiff_branch_and_is_never_treated_as_an_estimate() {
         let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("test_picture")
@@ -15249,7 +15468,10 @@ mod import_contract_tests {
         assert!((spans[0] - spans[1]).abs() < 1.0e-6);
         assert!((spans[1] - spans[2]).abs() < 1.0e-6);
         assert!(offsets[0] < offsets[1] && offsets[1] < offsets[2]);
-        assert!(offsets.iter().all(|value| value.abs() <= 0.30));
+        // The bound only exists to stop a strongly coloured subject from driving
+        // an unbounded grey-world shift; a strongly masked colour negative needs
+        // more than the historical 0.30 before it is neutralised.
+        assert!(offsets.iter().all(|value| value.abs() <= 0.60));
         assert_ne!(limits.d_min[0], limits.d_min[2]);
     }
 
