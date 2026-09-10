@@ -624,12 +624,15 @@ pub(crate) fn decode_capture_corrected_input(
 /// Compatibility backend: LibRaw dcraw_process remains responsible for camera
 /// WB and demosaic. Its output is a Camera RGB estimate used only to build the
 /// Smart Auto ProPhoto Estimate path.
-pub(crate) fn decode_smart_auto_rgb<P: AsRef<Path>>(
+pub(crate) fn decode_smart_auto_rgb_with_policy<P: AsRef<Path>>(
     path: P,
     options: &DecodeOptions,
+    white_balance: WhiteBalancePolicy,
 ) -> Result<CameraRgbEstimate, String> {
-    let decoded =
-        extract_camera_rgb_with_options(path, options).map_err(|error| error.to_string())?;
+    // Smart Auto runs the normalized-as-shot balance so the film mask keeps its
+    // headroom instead of being clipped into the transport ceiling.
+    let decoded = extract_camera_rgb_with_policy(path, options, white_balance)
+        .map_err(|error| error.to_string())?;
     let colors = decoded.colors as usize;
     if colors < 3 {
         return Err(format!("LibRaw Smart Auto output has {colors} channels"));
@@ -662,6 +665,65 @@ pub(crate) fn decode_smart_auto_rgb<P: AsRef<Path>>(
         pixels,
         camera_to_srgb: decoded.camera_to_srgb,
         label: "Smart Auto / ProPhoto Estimate source",
+    })
+}
+
+/// How the decode stage should choose the per-channel white-balance gains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WhiteBalancePolicy {
+    /// Honour `DecodeOptions::use_camera_wb`, i.e. LibRaw's as-shot multipliers
+    /// or its fixed daylight fallback. Kept for the A/B diagnostics.
+    #[allow(dead_code)]
+    FromOptions,
+    /// Keep the camera's as-shot *ratio* but scale every channel so the
+    /// strongest one is unity. Per-channel gains cancel in the base-relative
+    /// density domain, so this preserves the colour while guaranteeing that
+    /// decoding can only attenuate: no channel is pushed into the 16-bit
+    /// ceiling, which is what clipped the highlights of film negatives.
+    NormalizedAsShot,
+}
+
+/// The multipliers LibRaw resolved for a file, before any policy is applied.
+/// Currently read by the manual white-balance diagnostics; the same values are
+/// what a future processing report will surface to explain a decode.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RawWhiteBalance {
+    /// The camera's as-shot balance, i.e. its AsShotNeutral, when the file
+    /// records one.
+    pub(crate) as_shot: Option<[f32; 4]>,
+    /// The fixed daylight balance LibRaw falls back to when as-shot white
+    /// balance is switched off. This is not "no white balance".
+    pub(crate) daylight: [f32; 4],
+}
+
+/// Turn LibRaw's as-shot multipliers into a ratio whose strongest channel is
+/// exactly one. `None` means the metadata is unusable and the caller should fall
+/// back to an identity balance, i.e. a true "no white balance" decode.
+pub(crate) fn normalized_as_shot_gains(cam_mul: [f32; 4]) -> Option<[f32; 4]> {
+    let channels = [cam_mul[0], cam_mul[1], cam_mul[2]];
+    if channels
+        .iter()
+        .any(|value| !value.is_finite() || *value <= 0.0)
+    {
+        return None;
+    }
+    let maximum = channels.iter().copied().fold(0.0f32, f32::max);
+    (maximum > 0.0).then(|| {
+        // The fourth slot is the second green site on a Bayer sensor. It has to
+        // follow the first green, otherwise the two green sites are scaled
+        // differently and the demosaic produces a colour cast from noise.
+        let second_green = if cam_mul[3].is_finite() && cam_mul[3] > 0.0 {
+            cam_mul[3]
+        } else {
+            cam_mul[1]
+        };
+        [
+            channels[0] / maximum,
+            channels[1] / maximum,
+            channels[2] / maximum,
+            second_green / maximum,
+        ]
     })
 }
 
@@ -721,6 +783,19 @@ mod non_macos {
         libraw_version: [c_char; 64],
     }
 
+    #[repr(C)]
+    struct NexFilmRawWhiteBalance {
+        cam_mul: [f32; 4],
+        pre_mul: [f32; 4],
+        camera_wb_valid: i32,
+    }
+
+    impl NexFilmRawWhiteBalance {
+        fn as_shot(&self) -> Option<[f32; 4]> {
+            (self.camera_wb_valid != 0).then_some(self.cam_mul)
+        }
+    }
+
     impl Default for NexFilmRawMosaicInfo {
         fn default() -> Self {
             Self {
@@ -777,6 +852,15 @@ mod non_macos {
             data: *mut LibRawData,
             output: *mut c_ushort,
             capacity: usize,
+        ) -> c_int;
+        fn nexfilm_raw_white_balance(
+            data: *mut LibRawData,
+            output: *mut NexFilmRawWhiteBalance,
+        ) -> c_int;
+        fn nexfilm_raw_set_user_mul(
+            data: *mut LibRawData,
+            multipliers: *const f32,
+            count: c_int,
         ) -> c_int;
     }
 
@@ -907,12 +991,71 @@ mod non_macos {
         })
     }
 
+    /// Multipliers LibRaw resolved while opening the file. Exposed so reports
+    /// and diagnostics can explain which balance a decode actually used.
+    #[allow(dead_code)]
+    pub(crate) fn read_white_balance<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<super::RawWhiteBalance, String> {
+        let processor = Processor(unsafe { libraw_init(0) });
+        if processor.0.is_null() {
+            return Err("Failed to initialize LibRaw".to_string());
+        }
+        open_file(processor.0, path.as_ref())?;
+        check(unsafe { libraw_unpack(processor.0) })?;
+        let mut white_balance = NexFilmRawWhiteBalance {
+            cam_mul: [0.0; 4],
+            pre_mul: [0.0; 4],
+            camera_wb_valid: 0,
+        };
+        let status = unsafe { nexfilm_raw_white_balance(processor.0, &mut white_balance) };
+        if status != 0 {
+            return Err(format!(
+                "LibRaw white-balance metadata read failed ({status})"
+            ));
+        }
+        Ok(super::RawWhiteBalance {
+            as_shot: white_balance.as_shot(),
+            daylight: white_balance.pre_mul,
+        })
+    }
+
+    /// Read LibRaw's as-shot multipliers and install a ratio whose strongest
+    /// channel is unity. Decoding can then only attenuate, so the orange mask of
+    /// a colour negative is never pushed into the 16-bit ceiling.
+    fn apply_normalized_as_shot_white_balance(processor: &Processor) -> Result<(), String> {
+        let mut white_balance = NexFilmRawWhiteBalance {
+            cam_mul: [0.0; 4],
+            pre_mul: [0.0; 4],
+            camera_wb_valid: 0,
+        };
+        let status = unsafe { nexfilm_raw_white_balance(processor.0, &mut white_balance) };
+        if status != 0 {
+            return Err(format!(
+                "LibRaw white-balance metadata read failed ({status})"
+            ));
+        }
+        // Without usable as-shot metadata, fall back to an identity balance:
+        // that is a true "no white balance" decode, not LibRaw's fixed daylight
+        // fallback which silently re-scales the channels.
+        let gains = white_balance
+            .as_shot()
+            .and_then(super::normalized_as_shot_gains)
+            .unwrap_or([1.0; 4]);
+        let status = unsafe { nexfilm_raw_set_user_mul(processor.0, gains.as_ptr(), 4) };
+        if status != 0 {
+            return Err(format!("LibRaw white-balance override failed ({status})"));
+        }
+        Ok(())
+    }
+
     /// Decode after LibRaw's black-level, white-balance and demosaic stages,
     /// but before its output-gamut matrix. The latter is applied by the caller
     /// in f32 so signed matrix results are not clipped to unsigned 16-bit.
-    pub(crate) fn extract_camera_rgb_with_options<P: AsRef<Path>>(
+    pub(crate) fn extract_camera_rgb_with_policy<P: AsRef<Path>>(
         path: P,
         options: &DecodeOptions,
+        white_balance: super::WhiteBalancePolicy,
     ) -> Result<CameraRgbData, String> {
         let processor = Processor(unsafe { libraw_init(0) });
         if processor.0.is_null() {
@@ -932,6 +1075,9 @@ mod non_macos {
             }
         }
         check(unsafe { libraw_unpack(processor.0) })?;
+        if white_balance == super::WhiteBalancePolicy::NormalizedAsShot {
+            apply_normalized_as_shot_white_balance(&processor)?;
+        }
         check(unsafe { libraw_dcraw_process(processor.0) })?;
 
         let mut camera_to_srgb = [0.0; 9];
@@ -965,8 +1111,10 @@ mod non_macos {
 }
 
 #[cfg(not(target_os = "macos"))]
+#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use non_macos::{
-    decode_raw_mosaic, extract_camera_rgb_with_options, DecodeOptions, ImageFormat, RawProcessor,
+    decode_raw_mosaic, extract_camera_rgb_with_policy, read_white_balance, DecodeOptions,
+    ImageFormat, RawProcessor,
 };
 
 #[cfg(target_os = "macos")]
@@ -1182,9 +1330,63 @@ mod macos {
         }
     }
 
-    pub(crate) fn extract_camera_rgb_with_options<P: AsRef<Path>>(
+    /// Multipliers LibRaw resolved while opening the file; see the non-macOS
+    /// counterpart for why this is exposed.
+    #[allow(dead_code)]
+    pub(crate) fn read_white_balance<P: AsRef<Path>>(path: P) -> Result<super::RawWhiteBalance> {
+        let mut processor = RawProcessor::new()?;
+        processor.open_file(path)?;
+        let status = unsafe { ffi::libraw_unpack(processor.data) };
+        processor.check(status)?;
+        let (cam_mul, pre_mul) = unsafe {
+            (
+                [
+                    (*processor.data).rawdata.color.cam_mul[0],
+                    (*processor.data).rawdata.color.cam_mul[1],
+                    (*processor.data).rawdata.color.cam_mul[2],
+                    (*processor.data).rawdata.color.cam_mul[3],
+                ],
+                [
+                    (*processor.data).rawdata.color.pre_mul[0],
+                    (*processor.data).rawdata.color.pre_mul[1],
+                    (*processor.data).rawdata.color.pre_mul[2],
+                    (*processor.data).rawdata.color.pre_mul[3],
+                ],
+            )
+        };
+        let as_shot = (cam_mul[0] > 0.0 && cam_mul[1] > 0.0 && cam_mul[2] > 0.0).then_some(cam_mul);
+        Ok(super::RawWhiteBalance {
+            as_shot,
+            daylight: pre_mul,
+        })
+    }
+
+    /// Installs a white-balance ratio whose strongest channel is unity, using the
+    /// as-shot multipliers LibRaw resolved while opening the file.
+    fn apply_normalized_as_shot_white_balance(processor: &RawProcessor) -> Result<()> {
+        let cam_mul = unsafe {
+            [
+                (*processor.data).rawdata.color.cam_mul[0],
+                (*processor.data).rawdata.color.cam_mul[1],
+                (*processor.data).rawdata.color.cam_mul[2],
+                (*processor.data).rawdata.color.cam_mul[3],
+            ]
+        };
+        let gains = super::normalized_as_shot_gains(cam_mul).unwrap_or([1.0; 4]);
+        unsafe {
+            for (index, value) in gains.iter().enumerate() {
+                (*processor.data).params.user_mul[index] = *value;
+            }
+            (*processor.data).params.use_camera_wb = 0;
+            (*processor.data).params.use_auto_wb = 0;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn extract_camera_rgb_with_policy<P: AsRef<Path>>(
         path: P,
         options: &DecodeOptions,
+        white_balance: super::WhiteBalancePolicy,
     ) -> Result<CameraRgbData> {
         let mut processor = RawProcessor::new()?;
         processor.open_file(path)?;
@@ -1193,6 +1395,9 @@ mod macos {
         processor.set_decode_options(&camera_options);
         let status = unsafe { ffi::libraw_unpack(processor.data) };
         processor.check(status)?;
+        if white_balance == super::WhiteBalancePolicy::NormalizedAsShot {
+            apply_normalized_as_shot_white_balance(&processor)?;
+        }
         let status = unsafe { ffi::libraw_dcraw_process(processor.data) };
         processor.check(status)?;
 
@@ -1361,14 +1566,39 @@ mod macos {
 }
 
 #[cfg(target_os = "macos")]
+#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use macos::{
-    decode_raw_mosaic, extract_camera_rgb_with_options, CameraRgbData, DecodeOptions, ImageFormat,
-    RawProcessor,
+    decode_raw_mosaic, extract_camera_rgb_with_policy, read_white_balance, CameraRgbData,
+    DecodeOptions, ImageFormat, RawProcessor,
 };
 
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+
+    #[test]
+    fn normalized_as_shot_gains_only_attenuate() {
+        // A Hasselblad CFV 100C style AsShotNeutral: the camera boosts green and
+        // blue relative to red, so the ratio is kept but never amplified.
+        let gains = normalized_as_shot_gains([0.83, 1.0, 1.54, 1.0]).unwrap();
+        assert!((gains[2] - 1.0).abs() < 1.0e-6);
+        assert!(gains[0] < gains[1] && gains[1] < gains[2]);
+        assert!(gains.iter().all(|value| *value <= 1.0 && *value > 0.0));
+        // The ratio between channels is what carries colour information.
+        assert!((gains[0] / gains[2] - 0.83 / 1.54).abs() < 1.0e-6);
+        // The second green site must follow the first, or the demosaic sees two
+        // differently scaled greens.
+        assert!((gains[1] - gains[3]).abs() < 1.0e-6);
+        let split_green = normalized_as_shot_gains([3.32, 1.0, 1.54, 0.0]).unwrap();
+        assert!((split_green[3] - split_green[1]).abs() < 1.0e-6);
+        assert!(split_green.iter().all(|value| *value <= 1.0 + 1.0e-6));
+
+        // Unusable metadata has to fall back to a true no-balance decode rather
+        // than to LibRaw's fixed daylight multipliers.
+        assert!(normalized_as_shot_gains([0.0, 0.0, 0.0, 0.0]).is_none());
+        assert!(normalized_as_shot_gains([-1.0, 1.0, 1.0, 1.0]).is_none());
+        assert!(normalized_as_shot_gains([f32::NAN, 1.0, 1.0, 1.0]).is_none());
+    }
 
     fn metadata() -> RawMetadata {
         RawMetadata {

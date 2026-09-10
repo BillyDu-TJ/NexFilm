@@ -563,3 +563,41 @@ Auto Invert 应在内部返回处理报告，至少包括使用的 Capture/Densi
 - 真实素材可达到的最高等级是 `Capture Characterized`。dark/open/flat 只能达到 `Capture Corrected Experimental`；本阶段仍没有 `Density Calibrated`、数字 mask、胶片 H-D 曲线或新的 Status M 矩阵。
 - Scanner Input Profile 可从本地 JSON 导入、绑定到 Roll，并在代理与导出中按“线性扫描 RGB -> Scanner Profile -> ProPhoto”应用；其 `Scanner Input Estimate/Characterized` 等级独立于 Capture/Density。
 - 自动化测试覆盖拟合数学、artifact digest、Profile 篡改回退、Roll 绑定迁移和整图 Scanner 变换；真实相机、灯板、透射目标与独立密度计仍需按 checklist 验证。
+
+## 19. 解码端白平衡与通道归一化
+
+### 19.1 本阶段实现：归一化 as-shot 白平衡（方案 B）
+
+背景：`use_camera_wb = 0` 并不等于"关闭白平衡"。LibRaw 此时会回退到相机固定的日光倍率 `pre_mul`，对底片翻拍而言这等于换了一套与拍摄意图无关的通道倍率。实测在 `test_picture\哈苏fff\任务 _1343.fff` 与尼康 RAW 上，这套回退把红通道推入 16bit 上限，`≥98% 满量程` 的像素占比从 3.65% / 4.63% / 4.92% 升到 28.73% / 20.35% / 19.49%，表现为红色溢出与亮部去饱和。
+
+实现方式：解码时读取 LibRaw 解析出的 as-shot 倍率 `cam_mul`，按最大值归一化成不超过 1 的比例，通过 `params.user_mul` 显式写入，同时关闭 `use_camera_wb` 与 `use_auto_wb`；第 4 个分量（Bayer 第二绿色位）跟随第一绿色，避免两个绿色位被不同缩放。逐通道倍率在"以片基为参考"的密度域里会整体抵消，因此保留 as-shot 比例即可保住颜色，而归一化只是保证解码只做衰减、不会把任何通道推进上限。
+
+| 样本 | 红通道 ≥98% 上限占比（日光回退 → 归一化 as-shot） |
+| --- | --- |
+| `任务 _1343.fff` | 28.73% → 3.65% |
+| `_DSC7357.NEF` | 20.35% → 4.63% |
+| `_DSC7333.NEF` | 19.49% → 4.92% |
+| `任务 _1233.fff` | 0.00% → 0.00% |
+
+哈苏 `任务 _1233.fff` 在三种策略下红通道上限占比均为 0；完整 Smart Auto 渲染的 R/G 由 1.013 变为 1.000、B/G 由 1.078 变为 1.061，观感与上一版一致，说明该样本的良好效果不依赖具体的白平衡策略。`RAW_DECODE_VERSION` 因此提升到 11，旧 DensityAnchors 与已校验 CalibrationProfile 按既有回退逻辑失效并重新分析。
+
+### 19.2 后续必改：以片基为参考的通道归一化（方案 D，P6 前置）
+
+现象：`test_picture\lr合并\_DSC7583-Pano.tif`（尼康 LR 合并、内嵌 Adobe RGB）在当前 Smart Auto 下天空偏青、受光墙面偏品红，只有中灰路面接近中性；用户提供的 NLP 参考 `DSC7583-Pano.jpg` 是轻微偏紫的蓝天加中性建筑。
+
+已定位的成因（均有实测证据）：
+
+1. 该 TIFF 的蓝通道在天空被裁到 0：全帧 30.5% 的像素 B 恰为 0，同一位置 R 为 0.80–0.93、G 为 0.13–0.41，属于输入侧动态范围裁切，不是渲染造成。
+2. 解码把 Adobe RGB 转线性 sRGB 时逐通道 clamp：红色有 84.7% 的像素被裁到上限，而文件本身只有 0.95% 到达满值。橙色色罩与大量亮部都落在 sRGB 色域之外，逐通道裁切破坏了通道比例。
+3. 由于存在被裁通道，`compute_content_limits_f32` 会整帧丢弃这些像素，各通道的内容窗口因此来自不同集合；Smart Auto 现有的通道对齐只有固定 ±0.30 的偏移，无法弥合这种量级的差异。
+
+方案 D 的改造内容：
+
+1. 让片基参考参与密度换算，成为逐通道显示零点；片基取自 Film Area 内最亮分位，若画面包含片边则优先使用橙色色罩区域。
+2. 通道归一化改为在密度域按片基对齐并共享跨度，偏移上限由片基质量决定，而不是固定 ±0.30。
+3. 被裁通道（透射率触底或触顶）不再整帧丢弃，而是按"至少/至多该密度"参与统计，并在处理报告中标记为受限通道。
+4. 带 ICC 的 TIFF 改走 f32 转换路径，保留色域外数值并交给密度域压缩处理，不再先量化到 u16 线性 sRGB 再逐通道 clamp。
+
+验收：`_DSC7583-Pano.tif` 的天空不得偏青、墙面与路面保持中性，并对照 `DSC7583-Pano.jpg` 的 NLP 结果；同时哈苏 `任务 _1233.fff`、尼康 NEF 与扫描仪样张不得回归。
+
+复现工具（均为 `#[ignore]` 的手动诊断，可用 `NEXFILM_DIAG_FRAME` / `NEXFILM_WB_AB_FRAME` 指定样本）：`camera_raw_as_shot_white_balance_headroom_ab`、`loose_raw_render_diagnostic`、`loose_tiff_render_diagnostic`。

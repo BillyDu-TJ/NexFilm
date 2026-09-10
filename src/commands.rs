@@ -2385,9 +2385,10 @@ fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
     }
 }
 
-/// Loose Smart Auto has no verified roll-level endpoint. Keep that path on
-/// the v1.0.2 compatibility math so its automatic range and rendered pixels
-/// remain stable while anchored/calibrated contracts use their declared domain.
+/// Recognise the persisted marker left by imports that ran on the retired
+/// v1.0.2 compatibility source. New frames never write it, so this only
+/// answers true for records that still need to be read back on the old math
+/// (see `migrate_loose_smart_auto_domain` for the one-time upgrade).
 fn is_smart_auto_compatibility(state: &PipelineState) -> bool {
     state.contract == ProcessingContract::SmartAutoProPhotoV11
         && !state.density_anchors.has_roll_base()
@@ -2402,9 +2403,7 @@ fn mark_loose_smart_auto_compatibility(state: &mut PipelineState, is_loose: bool
     {
         return;
     }
-    if is_loose {
-        state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
-    } else if state.processing_report.analysis_data_domain == "legacy_linear_srgb" {
+    if !is_loose && state.processing_report.analysis_data_domain == "legacy_linear_srgb" {
         // A Loose frame can later be promoted into a normal Roll. Do not let
         // its compatibility marker keep the promoted frame on Status M.
         state.processing_report.analysis_data_domain = "linear_prophoto_estimate".to_string();
@@ -3484,10 +3483,19 @@ fn decode_tiff_for_smart_auto(
     path: &str,
     target_long_edge: u32,
 ) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
-    if !is_scanner_fff_tiff(path) && embedded_input_profile(path).is_none() {
-        return Err("scanner_tiff_input_space_unknown".to_string());
-    }
+    // A camera-scanned TIFF used to be rejected outright here when it packed no
+    // ICC profile, which turned a file that the legacy path had always accepted
+    // into a hard import failure. Such a file is read as sRGB (see
+    // `decode_reduced_tiff_for_working_space`) and flagged as an estimated
+    // input domain through `tiff_smart_auto_input_is_estimated`.
     decode_reduced_tiff_for_working_space(path, target_long_edge)
+}
+
+/// True when a TIFF has to be read as an estimated sRGB input because it packs
+/// no embedded ICC profile. Scanner FFF frames are scanner-linear by contract
+/// and are excluded, so this only describes ordinary profile-less RGB TIFFs.
+fn tiff_smart_auto_input_is_estimated(path: &str) -> bool {
+    is_tiff_extension(path) && !is_scanner_fff_tiff(path) && embedded_input_profile(path).is_none()
 }
 
 fn decode_reduced_dng_for_working_space(
@@ -3666,11 +3674,14 @@ fn decode_image_buffer(
         ));
     }
 
-    // RAW_DECODE_VERSION 8 contract: camera FFF files, including tethered
+    // RAW_DECODE_VERSION 11 contract: camera FFF files, including tethered
     // Hasselblad digital-back captures, use LibRaw instead of the Flextight
-    // scanner path. LibRaw performs black subtraction, camera white balance and
-    // demosaic in camera RGB, but its signed output-gamut matrix is applied here
-    // in f32. This avoids LibRaw's unsigned-16 CLIP after convert_to_rgb().
+    // scanner path. LibRaw performs black subtraction and demosaic in camera
+    // RGB, but its signed output-gamut matrix is applied here in f32. This
+    // avoids LibRaw's unsigned-16 CLIP after convert_to_rgb(). White balance is
+    // installed explicitly as the as-shot ratio normalized so the strongest
+    // channel is unity: the channel balance is preserved, but decoding can only
+    // attenuate, so no channel is pushed into the 16-bit ceiling.
     let options = crate::raw_backend::DecodeOptions {
         half_size: mode == DecodeMode::DevelopProxy,
         demosaic_quality: 3,
@@ -3678,10 +3689,14 @@ fn decode_image_buffer(
         no_auto_bright: true,
         output_color: 0,
         linear_gamma: true,
-        use_camera_wb: true,
+        use_camera_wb: false,
     };
-    let decoded = crate::raw_backend::extract_camera_rgb_with_options(path, &options)
-        .map_err(|error| libraw_decode_error_message(path, error))?;
+    let decoded = crate::raw_backend::extract_camera_rgb_with_policy(
+        path,
+        &options,
+        crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
+    )
+    .map_err(|error| libraw_decode_error_message(path, error))?;
 
     let camera_rgb = rgb16_image_from_bytes(
         decoded.width as u32,
@@ -3722,6 +3737,18 @@ fn decode_prophoto_estimate_image_buffer(
     path: &str,
     mode: DecodeMode,
 ) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    decode_prophoto_estimate_image_buffer_with_policy(
+        path,
+        mode,
+        crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
+    )
+}
+
+fn decode_prophoto_estimate_image_buffer_with_policy(
+    path: &str,
+    mode: DecodeMode,
+    white_balance: crate::raw_backend::WhiteBalancePolicy,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
     if !is_raw_extension(path) {
         let source = decode_image_buffer(path, mode)?;
         let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
@@ -3751,10 +3778,11 @@ fn decode_prophoto_estimate_image_buffer(
         no_auto_bright: true,
         output_color: 0,
         linear_gamma: true,
-        use_camera_wb: true,
+        use_camera_wb: false,
     };
-    let decoded = crate::raw_backend::decode_smart_auto_rgb(path, &options)
-        .map_err(|error| libraw_decode_error_message(path, error))?;
+    let decoded =
+        crate::raw_backend::decode_smart_auto_rgb_with_policy(path, &options, white_balance)
+            .map_err(|error| libraw_decode_error_message(path, error))?;
     let srgb_to_prophoto = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
     let mut converted =
         ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(decoded.width, decoded.height, decoded.pixels)
@@ -4479,13 +4507,10 @@ fn default_pipeline_state_for_import_with_profiles(
     profiles: &[CalibrationProfileView],
 ) -> PipelineState {
     if loose {
-        // Loose Import has no capture, film-stock, or roll-reference metadata.
-        // Keep the Smart Auto state visible to the UI, while explicitly
-        // selecting the legacy source domain until a measured/anchored path
-        // is available.
-        let mut state = PipelineState::smart_auto();
-        state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
-        return state;
+        // Loose Import has no capture, film-stock, or roll-reference metadata,
+        // so it runs the same unanchored Smart Auto path as a Roll without
+        // anchors: a ProPhoto estimate with a per-frame Film Area analysis.
+        return PipelineState::smart_auto();
     }
     rolls
         .iter()
@@ -6154,8 +6179,18 @@ pub async fn prepare_proxy(
                     let linear = decode_reduced_dng_for_working_space(&decode_path, target_long_edge)
                         .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
                     linear_srgb_u16_to_prophoto_f32(&linear)
-                } else if is_tiff_extension(&decode_path) || is_scanner_fff_tiff(&decode_path) {
+                } else if is_scanner_fff_tiff(&decode_path) {
+                    // Scanner FFF has no ICC tag for its device RGB and must
+                    // never be handed to LibRaw, so keep it on the TIFF decoder
+                    // without the generic-image fallback below.
                     let linear = decode_tiff_for_smart_auto(&decode_path, target_long_edge)?;
+                    linear_srgb_u16_to_prophoto_f32(&linear)
+                } else if is_tiff_extension(&decode_path) {
+                    // A profile-less or unusual TIFF still has to be importable;
+                    // the generic decoder reads whatever the streaming reader
+                    // cannot, matching the legacy branch's behaviour.
+                    let linear = decode_tiff_for_smart_auto(&decode_path, target_long_edge)
+                        .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
                     linear_srgb_u16_to_prophoto_f32(&linear)
                 } else {
                     decode_scanner_profiled_estimate_image_buffer(
@@ -6284,6 +6319,26 @@ pub async fn prepare_proxy(
         detected_highlight,
     );
     mark_loose_smart_auto_compatibility(&mut final_state, is_loose);
+    if final_resolution.resolved_path != ProcessingContract::LegacyV1
+        && tiff_smart_auto_input_is_estimated(&file_path)
+    {
+        // The pixels are usable but their source domain could only be assumed,
+        // so record it next to the other analysis provenance instead of
+        // silently treating the estimate as a measured input space.
+        let report = &mut final_state.processing_report;
+        if !report
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason == "scanner_tiff_input_space_estimated")
+        {
+            report
+                .fallback_reasons
+                .push("scanner_tiff_input_space_estimated".to_string());
+        }
+        if report.fallback_reason.is_empty() {
+            report.fallback_reason = "scanner_tiff_input_space_estimated".to_string();
+        }
+    }
     let final_resolution_key = format!(
         "{}|smart_auto_compatibility={}",
         resolution_key(&final_resolution),
@@ -12902,18 +12957,22 @@ mod import_contract_tests {
         aggregate_roll_density_references, compute_auto_base, compute_auto_base_f32,
         compute_auto_color_limits, compute_content_limits_f32,
         compute_content_limits_f32_with_bounds, decode_image_buffer, decode_import_preview_base64,
-        decode_prophoto_estimate_image_buffer, decode_reduced_dng_for_working_space,
-        decode_reduced_tiff_for_working_space, decode_tiff_for_smart_auto,
-        default_pipeline_state_for_import, density_luma, fixed_roll_density_mapping,
-        is_better_preview_edge, is_lightweight_direct_preview, is_noritsu_rendered_image,
-        is_raw_extension, is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
-        libraw_decode_error_message, linearize_scanner_fff, mark_loose_smart_auto_compatibility,
-        persist_import_batch, pipeline_base_density, pipeline_has_base,
-        prepare_content_render_limits, preserve_smart_auto_content_span,
-        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
-        render_f32_shader_equivalent, render_shader_equivalent, rgb16_image_from_bytes,
-        share_smart_auto_density_scale, srgb_proxy_u16_to_prophoto_f32, AutoColorLimits,
-        DecodeMode, IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
+        decode_prophoto_estimate_image_buffer, decode_prophoto_estimate_image_buffer_with_policy,
+        decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
+        decode_tiff_for_smart_auto, decode_uncompressed_tiff_reduced,
+        default_pipeline_state_for_import, density_luma, embedded_input_profile,
+        fixed_roll_density_mapping, is_better_preview_edge, is_lightweight_direct_preview,
+        is_noritsu_rendered_image, is_raw_extension, is_scanner_fff_tiff,
+        is_smart_auto_compatibility, is_tiff_extension, libraw_decode_error_message,
+        linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff,
+        mark_loose_smart_auto_compatibility, persist_import_batch, pipeline_base_density,
+        pipeline_has_base, point_in_film_area, prepare_content_render_limits,
+        preserve_smart_auto_content_span, prophoto_estimate_to_transport_proxy,
+        raw_decode_failure_hint, reference_density_extreme, render_f32_shader_equivalent,
+        render_shader_equivalent, rgb16_image_from_bytes, roll_physical_density_span,
+        share_smart_auto_density_scale, srgb_proxy_u16_to_prophoto_f32,
+        tiff_smart_auto_input_is_estimated, AutoColorLimits, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
+        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
         BaseColor, DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorProvenance,
@@ -12921,8 +12980,9 @@ mod import_contract_tests {
         PipelineState, ProcessingContract, RenderMapping, RenderMode, Roll, TuningParams,
     };
     use crate::color_science::{
-        apply_linear_matrix, compress_linear_srgb_for_density, linear_conversion_matrix,
-        ColorSpaceId, DENSITY_CAPTURE_PROFILE,
+        apply_linear_matrix, compress_linear_srgb_for_density,
+        convert_encoded_to_linear_rgb_with_matrix, linear_conversion_matrix, ColorSpaceId,
+        DENSITY_CAPTURE_PROFILE,
     };
     use base64::Engine as _;
     use image::{ImageBuffer, Rgb};
@@ -13342,6 +13402,7 @@ mod import_contract_tests {
     fn ab_decode_raw_transport(
         path: &std::path::Path,
         output_color: i32,
+        use_camera_wb: bool,
     ) -> image::ImageBuffer<image::Rgb<u16>, Vec<u16>> {
         let options = crate::raw_backend::DecodeOptions {
             half_size: true,
@@ -13350,7 +13411,7 @@ mod import_contract_tests {
             no_auto_bright: true,
             output_color,
             linear_gamma: true,
-            use_camera_wb: true,
+            use_camera_wb,
         };
         let decoded = crate::raw_backend::RawProcessor::extract_image_with_options(path, &options)
             .unwrap_or_else(|error| {
@@ -13366,8 +13427,16 @@ mod import_contract_tests {
         .unwrap_or_else(|error| panic!("{} (output_color={output_color}): {error}", path.display()))
     }
 
+    #[derive(Clone, Copy, PartialEq)]
+    enum AbWhiteBalance {
+        AsShot,
+        Daylight,
+        NormalizedAsShot,
+    }
+
     fn ab_decode_camera_f32(
         path: &std::path::Path,
+        white_balance: AbWhiteBalance,
     ) -> image::ImageBuffer<image::Rgb<u16>, Vec<u16>> {
         let options = crate::raw_backend::DecodeOptions {
             half_size: true,
@@ -13376,9 +13445,15 @@ mod import_contract_tests {
             no_auto_bright: true,
             output_color: 0,
             linear_gamma: true,
-            use_camera_wb: true,
+            use_camera_wb: white_balance == AbWhiteBalance::AsShot,
         };
-        let decoded = crate::raw_backend::extract_camera_rgb_with_options(path, &options)
+        let policy = match white_balance {
+            AbWhiteBalance::NormalizedAsShot => {
+                crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot
+            }
+            _ => crate::raw_backend::WhiteBalancePolicy::FromOptions,
+        };
+        let decoded = crate::raw_backend::extract_camera_rgb_with_policy(path, &options, policy)
             .unwrap_or_else(|error| panic!("{} (camera-rgb): {error}", path.display()));
         let camera = rgb16_image_from_bytes(
             decoded.width as u32,
@@ -13408,6 +13483,311 @@ mod import_contract_tests {
                 }
             });
         output
+    }
+
+    struct AbChannelStats {
+        minimum: u16,
+        p01: u16,
+        p50: u16,
+        p99: u16,
+        maximum: u16,
+        full_percent: f64,
+        zero_percent: f64,
+        /// Share of samples at or above 98% of full scale. The density
+        /// compression keeps exact 65535 values rare, so this is the metric
+        /// that actually shows a channel running out of headroom.
+        ceiling_percent: f64,
+        headroom_stops: f64,
+    }
+
+    /// Per-channel histogram statistics of a 16-bit transport, used to compare
+    /// the camera RAW channel headroom with and without as-shot white balance.
+    fn ab_channel_stats(
+        image: &image::ImageBuffer<image::Rgb<u16>, Vec<u16>>,
+    ) -> [AbChannelStats; 3] {
+        let mut histograms = [[0u32; 65536]; 3];
+        for pixel in image.as_raw().chunks_exact(3) {
+            for (channel, value) in pixel.iter().enumerate() {
+                histograms[channel][usize::from(*value)] += 1;
+            }
+        }
+        let total = u64::from(image.width()) * u64::from(image.height());
+        std::array::from_fn(|channel| {
+            let histogram = &histograms[channel];
+            let percentile = |fraction: f64| -> u16 {
+                let target = ((total as f64 * fraction).ceil() as u64).max(1);
+                let mut accumulated = 0u64;
+                for (value, count) in histogram.iter().enumerate() {
+                    accumulated += u64::from(*count);
+                    if accumulated >= target {
+                        return value as u16;
+                    }
+                }
+                u16::MAX
+            };
+            let maximum = (0..65536)
+                .rev()
+                .find(|value| histogram[*value] > 0)
+                .unwrap_or(0) as u16;
+            AbChannelStats {
+                minimum: (0..65536).find(|value| histogram[*value] > 0).unwrap_or(0) as u16,
+                p01: percentile(0.01),
+                p50: percentile(0.50),
+                p99: percentile(0.99),
+                maximum,
+                full_percent: 100.0 * f64::from(histogram[usize::from(u16::MAX)])
+                    / total.max(1) as f64,
+                zero_percent: 100.0 * f64::from(histogram[0]) / total.max(1) as f64,
+                ceiling_percent: 100.0 * f64::from(histogram[64_222..].iter().sum::<u32>())
+                    / total.max(1) as f64,
+                headroom_stops: if maximum == 0 {
+                    0.0
+                } else {
+                    (65_535.0f64 / f64::from(maximum)).log2()
+                },
+            }
+        })
+    }
+
+    fn ab_print_channel_stats(label: &str, stats: &[AbChannelStats; 3]) {
+        println!("[WB A/B] {label}");
+        for (channel, name) in ["R", "G", "B"].into_iter().enumerate() {
+            let stat = &stats[channel];
+            println!(
+                "[WB A/B]   {name}: min={} p01={} p50={} p99={} max={} full={:.4}% ceiling>={:.3}% zero={:.4}% headroom={:.2} stops",
+                stat.minimum,
+                stat.p01,
+                stat.p50,
+                stat.p99,
+                stat.maximum,
+                stat.full_percent,
+                stat.ceiling_percent,
+                stat.zero_percent,
+                stat.headroom_stops
+            );
+        }
+    }
+
+    fn ab_print_proxy_stats(label: &str, image: &image::ImageBuffer<image::Rgb<u16>, Vec<u16>>) {
+        let stats = ab_channel_stats(image);
+        println!("[DIAG] {label} (u16)");
+        for (channel, name) in ["R", "G", "B"].into_iter().enumerate() {
+            let stat = &stats[channel];
+            println!(
+                "[DIAG]   {name}: min={} p01={} p50={} p99={} max={} ceiling98={:.3}% zero={:.3}%",
+                stat.minimum,
+                stat.p01,
+                stat.p50,
+                stat.p99,
+                stat.maximum,
+                stat.ceiling_percent,
+                stat.zero_percent
+            );
+        }
+    }
+
+    fn ab_print_proxy_stats_f32(
+        label: &str,
+        image: &image::ImageBuffer<image::Rgb<f32>, Vec<f32>>,
+    ) {
+        let mut means = [0.0f64; 3];
+        let mut minima = [f32::INFINITY; 3];
+        let mut maxima = [f32::NEG_INFINITY; 3];
+        for pixel in image.as_raw().chunks_exact(3) {
+            for channel in 0..3 {
+                means[channel] += f64::from(pixel[channel]);
+                minima[channel] = minima[channel].min(pixel[channel]);
+                maxima[channel] = maxima[channel].max(pixel[channel]);
+            }
+        }
+        let total = (f64::from(image.width()) * f64::from(image.height())).max(1.0);
+        println!("[DIAG] {label} (f32)");
+        for (channel, name) in ["R", "G", "B"].into_iter().enumerate() {
+            println!(
+                "[DIAG]   {name}: min={:.4} mean={:.4} max={:.4}",
+                minima[channel],
+                means[channel] / total,
+                maxima[channel]
+            );
+        }
+    }
+
+    /// Rendered pixels are already display-referred sRGB, so the mean ratios
+    /// between channels are a usable cast indicator: 1.000 means neutral.
+    /// Only samples inside the Film Area are averaged, otherwise the orange
+    /// rebate dominates a small preview.
+    fn ab_print_rendered_cast(
+        label: &str,
+        image: &image::ImageBuffer<image::Rgb<u16>, Vec<u16>>,
+        geom: &GeometryState,
+    ) {
+        let points =
+            geom.calibration_points
+                .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        let mut means = [0.0f64; 3];
+        let mut total = 0.0f64;
+        for (index, pixel) in image.as_raw().chunks_exact(3).enumerate() {
+            let x = (index as u32 % image.width()) as f32
+                / image.width().saturating_sub(1).max(1) as f32;
+            let y = (index as u32 / image.width()) as f32
+                / image.height().saturating_sub(1).max(1) as f32;
+            if !point_in_film_area([x, y], &points, 0.0) {
+                continue;
+            }
+            for (channel, value) in pixel.iter().enumerate() {
+                means[channel] += f64::from(*value);
+            }
+            total += 1.0;
+        }
+        let total = total.max(1.0);
+        means = means.map(|value| value / total);
+        let green = means[1].max(1.0);
+        println!(
+            "[DIAG] {label} rendered (Film Area): mean=({:.0},{:.0},{:.0}) R/G={:.3} B/G={:.3} R-B={:.0}",
+            means[0],
+            means[1],
+            means[2],
+            means[0] / green,
+            means[2] / green,
+            means[0] - means[2]
+        );
+    }
+
+    fn ab_probe_region(
+        label: &str,
+        width: u32,
+        height: u32,
+        uv: [f32; 2],
+        sample: impl Fn(u32, u32) -> [f64; 3],
+    ) -> [f64; 3] {
+        const RADIUS: i32 = 12;
+        let center_x = (uv[0] * width as f32) as i32;
+        let center_y = (uv[1] * height as f32) as i32;
+        let mut sum = [0.0f64; 3];
+        let mut count = 0.0f64;
+        for y in (center_y - RADIUS).max(0)..(center_y + RADIUS).min(height as i32 - 1) {
+            for x in (center_x - RADIUS).max(0)..(center_x + RADIUS).min(width as i32 - 1) {
+                let value = sample(x as u32, y as u32);
+                for channel in 0..3 {
+                    sum[channel] += value[channel];
+                }
+                count += 1.0;
+            }
+        }
+        let mean = sum.map(|value| value / count.max(1.0));
+        println!(
+            "[DIAG]   {label} @({:.2},{:.2}) = ({:.4}, {:.4}, {:.4})",
+            uv[0], uv[1], mean[0], mean[1], mean[2]
+        );
+        mean
+    }
+
+    fn ab_probe_u16(
+        label: &str,
+        image: &image::ImageBuffer<image::Rgb<u16>, Vec<u16>>,
+        uv: [f32; 2],
+    ) -> [f64; 3] {
+        ab_probe_region(label, image.width(), image.height(), uv, |x, y| {
+            let pixel = image.get_pixel(x, y).0;
+            [
+                f64::from(pixel[0]) / 65535.0,
+                f64::from(pixel[1]) / 65535.0,
+                f64::from(pixel[2]) / 65535.0,
+            ]
+        })
+    }
+
+    fn ab_probe_f32(
+        label: &str,
+        image: &image::ImageBuffer<image::Rgb<f32>, Vec<f32>>,
+        uv: [f32; 2],
+    ) -> [f64; 3] {
+        ab_probe_region(label, image.width(), image.height(), uv, |x, y| {
+            let pixel = image.get_pixel(x, y).0;
+            [
+                f64::from(pixel[0]),
+                f64::from(pixel[1]),
+                f64::from(pixel[2]),
+            ]
+        })
+    }
+
+    /// Write an 8-bit JPEG preview so diagnostics stay viewable; a 16-bit PNG
+    /// of a full-size render is both huge and awkward to inspect.
+    fn ab_save_preview(
+        path: std::path::PathBuf,
+        image: &image::ImageBuffer<image::Rgb<u16>, Vec<u16>>,
+    ) {
+        let eight_bit = image::ImageBuffer::<Rgb<u8>, Vec<u8>>::from_fn(
+            image.width(),
+            image.height(),
+            |x, y| {
+                let pixel = image.get_pixel(x, y).0;
+                Rgb([
+                    (pixel[0] / 257) as u8,
+                    (pixel[1] / 257) as u8,
+                    (pixel[2] / 257) as u8,
+                ])
+            },
+        );
+        eight_bit
+            .save(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    }
+
+    /// Manual A/B for task B: decode the same camera RAW with LibRaw's as-shot
+    /// white balance enabled and disabled, and report the per-channel headroom.
+    /// Override the fixture with `NEXFILM_WB_AB_FRAME`.
+    #[test]
+    #[ignore = "manual camera-RAW as-shot WB headroom A/B; decodes large fixtures"]
+    fn camera_raw_as_shot_white_balance_headroom_ab() {
+        let frame = std::env::var("NEXFILM_WB_AB_FRAME").unwrap_or_else(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("test_picture")
+                .join("哈苏fff")
+                .join("任务 _1233.fff")
+                .to_string_lossy()
+                .to_string()
+        });
+        let path = std::path::Path::new(&frame);
+        assert!(path.is_file(), "fixture is missing: {frame}");
+
+        if let Ok(white_balance) = crate::raw_backend::read_white_balance(path) {
+            println!(
+                "[WB A/B] metadata: as-shot={:?} daylight={:?}",
+                white_balance.as_shot, white_balance.daylight
+            );
+        }
+
+        // Measure exactly what the decode hands to the pipeline: LibRaw output
+        // through the signed camera-to-sRGB matrix and the density-domain
+        // compression, before the final ProPhoto transport matrix.
+        let as_shot = ab_channel_stats(&ab_decode_camera_f32(path, AbWhiteBalance::AsShot));
+        let daylight = ab_channel_stats(&ab_decode_camera_f32(path, AbWhiteBalance::Daylight));
+        let normalized = ab_channel_stats(&ab_decode_camera_f32(
+            path,
+            AbWhiteBalance::NormalizedAsShot,
+        ));
+        ab_print_channel_stats("LibRaw as-shot white balance", &as_shot);
+        ab_print_channel_stats("LibRaw daylight fallback (use_camera_wb = 0)", &daylight);
+        ab_print_channel_stats("normalized as-shot ratio (plan B)", &normalized);
+
+        // Deliberately no assertion here: the measured effect is fixture
+        // dependent, because LibRaw falls back to the camera's fixed daylight
+        // white balance when as-shot WB is switched off. On a capture the
+        // photographer balanced on the film base, that fallback pushes red back
+        // up, so this stays a reporting tool for the acceptance table.
+        for (channel, name) in ["R", "G", "B"].into_iter().enumerate() {
+            println!(
+                "[WB A/B] {name}: p50 as-shot={} daylight={} normalized={} | ceiling as-shot={:.4}% daylight={:.4}% normalized={:.4}%",
+                as_shot[channel].p50,
+                daylight[channel].p50,
+                normalized[channel].p50,
+                as_shot[channel].ceiling_percent,
+                daylight[channel].ceiling_percent,
+                normalized[channel].ceiling_percent
+            );
+        }
     }
 
     #[test]
@@ -13448,7 +13828,7 @@ mod import_contract_tests {
             let current_auto =
                 ab_render_variant(&output_root, frame, "a-current-srgb", &current_small);
 
-            let transport = ab_decode_raw_transport(path.as_path(), 4);
+            let transport = ab_decode_raw_transport(path.as_path(), 4, false);
             let transport_stats = ab_endpoint_stats(&transport);
 
             let mut signed_min = [f32::INFINITY; 3];
@@ -13557,7 +13937,7 @@ mod import_contract_tests {
             );
 
             for (variant, output_color) in [("e-camera-rgb", 0), ("f-aces-ap0", 6)] {
-                let raw = ab_decode_raw_transport(path.as_path(), output_color);
+                let raw = ab_decode_raw_transport(path.as_path(), output_color, false);
                 let raw_stats = ab_endpoint_stats(&raw);
                 let raw_small = image::imageops::resize(
                     &raw,
@@ -13571,7 +13951,7 @@ mod import_contract_tests {
                 println!("frame={frame} {variant} endpoints={raw_stats:?} auto={raw_auto:?}");
             }
 
-            let camera_f32 = ab_decode_camera_f32(path.as_path());
+            let camera_f32 = ab_decode_camera_f32(path.as_path(), AbWhiteBalance::NormalizedAsShot);
             let camera_f32_stats = ab_endpoint_stats(&camera_f32);
             let camera_f32_small = image::imageops::resize(
                 &camera_f32,
@@ -13767,16 +14147,15 @@ mod import_contract_tests {
             calibration_profile_id: None,
             scanner_profile_id: None,
         }];
+        let loose = default_pipeline_state_for_import(true, "roll-a", &rolls);
+        assert_eq!(loose.contract, ProcessingContract::SmartAutoProPhotoV11);
         assert_eq!(
-            default_pipeline_state_for_import(true, "roll-a", &rolls).contract,
-            ProcessingContract::SmartAutoProPhotoV11
+            loose.processing_report.analysis_data_domain,
+            "linear_prophoto_estimate"
         );
-        assert_eq!(
-            default_pipeline_state_for_import(true, "roll-a", &rolls)
-                .processing_report
-                .analysis_data_domain,
-            "legacy_linear_srgb"
-        );
+        // Loose Import shares the unanchored Smart Auto math, so it must not be
+        // recognised as the retired v1.0.2 compatibility source.
+        assert!(!is_smart_auto_compatibility(&loose));
         assert_eq!(
             default_pipeline_state_for_import(false, "roll-a", &rolls).contract,
             ProcessingContract::RollAnchoredProPhotoV11
@@ -14041,6 +14420,384 @@ mod import_contract_tests {
         }
     }
 
+    /// Manual colour diagnostic for a loose RAW frame: renders the Smart Auto
+    /// path under two white-balance policies and reports the resulting cast.
+    #[test]
+    #[ignore = "manual loose RAW render diagnostic; decodes local fixtures"]
+    fn loose_raw_render_diagnostic() {
+        use crate::raw_backend::WhiteBalancePolicy;
+        const EDGE: u32 = 1400;
+        let frame = std::env::var("NEXFILM_DIAG_FRAME").unwrap_or_else(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("test_picture")
+                .join("哈苏fff")
+                .join("任务 _1233.fff")
+                .to_string_lossy()
+                .to_string()
+        });
+        let output_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("diag-loose-raw");
+        std::fs::create_dir_all(&output_root).unwrap();
+        let stem = std::path::Path::new(&frame)
+            .file_stem()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| "frame".to_string());
+        let geom = GeometryState::default();
+
+        for (label, white_balance) in [
+            ("daylight", WhiteBalancePolicy::FromOptions),
+            ("normalized-as-shot", WhiteBalancePolicy::NormalizedAsShot),
+        ] {
+            let mut estimate = decode_prophoto_estimate_image_buffer_with_policy(
+                &frame,
+                DecodeMode::DevelopProxy,
+                white_balance,
+            )
+            .unwrap();
+            let (width, height) = estimate.dimensions();
+            let ratio = (EDGE as f32 / width.max(height) as f32).min(1.0);
+            if ratio < 0.999 {
+                estimate = image::imageops::resize(
+                    &estimate,
+                    (width as f32 * ratio).max(1.0) as u32,
+                    (height as f32 * ratio).max(1.0) as u32,
+                    image::imageops::FilterType::Lanczos3,
+                );
+            }
+            let mut state = default_pipeline_state_for_import(true, "LOOSE_DEFAULT", &[]);
+            state.processing_report.base_source = "content_estimate".to_string();
+            state.processing_report.base_confidence = "0.500".to_string();
+            let base = pipeline_base_density(&state, &BaseColor::default());
+            let mut limits = compute_content_limits_f32_with_bounds(
+                &estimate,
+                None,
+                &geom,
+                base,
+                roll_physical_density_span(&state.density_anchors, base),
+            )
+            .unwrap();
+            let (offsets, _) =
+                prepare_content_render_limits(&mut limits, &state.density_anchors, base);
+            state.render_mapping.mode = RenderMode::PreserveTone;
+            state.render_mapping.density_low = limits.d_min;
+            state.render_mapping.density_high = limits.d_max;
+            state.render_mapping.channel_offsets = offsets;
+            let mut params = TuningParams::default();
+            params.density.d_min = limits.d_min;
+            params.density.d_max = limits.d_max;
+            let rendered = render_f32_shader_equivalent(
+                &estimate,
+                None,
+                &params,
+                &geom,
+                &BaseColor::default(),
+                &state,
+                None,
+            );
+            ab_save_preview(output_root.join(format!("{stem}-{label}.jpg")), &rendered);
+            ab_print_rendered_cast(label, &rendered, &geom);
+            for (region, uv) in [("sky", [0.5, 0.15]), ("subject", [0.5, 0.6])] {
+                print!("[DIAG] {stem} {label} ");
+                ab_probe_u16(region, &rendered, uv);
+            }
+        }
+    }
+
+    /// Manual colour diagnostic for a loose TIFF: renders the retired legacy
+    /// path and the current Smart Auto path side by side and prints how far the
+    /// rendered channels drift from neutral. Override the input with
+    /// `NEXFILM_DIAG_FRAME`.
+    #[test]
+    #[ignore = "manual loose TIFF render diagnostic; reads local fixtures"]
+    fn loose_tiff_render_diagnostic() {
+        const EDGE: u32 = 1200;
+        let frame = std::env::var("NEXFILM_DIAG_FRAME").unwrap_or_else(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("test_picture")
+                .join("lr合并")
+                .join("_DSC7583-Pano.tif")
+                .to_string_lossy()
+                .to_string()
+        });
+        let output_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("diag-loose-tiff");
+        std::fs::create_dir_all(&output_root).unwrap();
+        let stem = std::path::Path::new(&frame)
+            .file_stem()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| "frame".to_string());
+
+        // Approximates the gate that automatic Film Area detection finds on a
+        // merged pano: everything outside it is the orange rebate and the
+        // film-edge lettering.
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([
+            [0.055, 0.045],
+            [0.925, 0.035],
+            [0.935, 0.930],
+            [0.050, 0.940],
+        ]);
+        let linear = decode_tiff_for_smart_auto(&frame, EDGE).unwrap();
+        let estimate = linear_srgb_u16_to_prophoto_f32(&linear);
+        let mode = FilmMode::Color;
+        println!(
+            "[DIAG] {stem} proxy={}x{} icc={:?} estimated_input={}",
+            linear.width(),
+            linear.height(),
+            embedded_input_profile(&frame),
+            tiff_smart_auto_input_is_estimated(&frame)
+        );
+        ab_print_proxy_stats("decoded linear sRGB", &linear);
+        ab_print_proxy_stats_f32("prophoto estimate", &estimate);
+
+        // Save the decoded negative itself (gamma-encoded for viewing) so the
+        // scene layout can be checked against the rendered positive.
+        let negative_preview =
+            ImageBuffer::<Rgb<u16>, Vec<u16>>::from_fn(linear.width(), linear.height(), |x, y| {
+                let pixel = linear.get_pixel(x, y).0;
+                Rgb([
+                    ((f32::from(pixel[0]) / 65535.0).powf(1.0 / 2.2) * 65535.0) as u16,
+                    ((f32::from(pixel[1]) / 65535.0).powf(1.0 / 2.2) * 65535.0) as u16,
+                    ((f32::from(pixel[2]) / 65535.0).powf(1.0 / 2.2) * 65535.0) as u16,
+                ])
+            });
+        ab_save_preview(
+            output_root.join(format!("{stem}-negative.jpg")),
+            &negative_preview,
+        );
+
+        let legacy_base = compute_auto_base(&linear);
+        let legacy_limits =
+            compute_auto_color_limits(&linear, &geom, &legacy_base, mode, false).unwrap();
+        let mut legacy_params = TuningParams::default();
+        legacy_params.density.d_min = legacy_limits.d_min;
+        legacy_params.density.d_max = legacy_limits.d_max;
+        let legacy_render =
+            render_shader_equivalent(&linear, &legacy_params, &geom, &legacy_base, None);
+        ab_save_preview(
+            output_root.join(format!("{stem}-legacy.jpg")),
+            &legacy_render,
+        );
+
+        let mut state = default_pipeline_state_for_import(true, "LOOSE_DEFAULT", &[]);
+        state.processing_report.base_source = "content_estimate".to_string();
+        state.processing_report.base_confidence = "0.500".to_string();
+        let render_smart_auto = |estimate: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+                                 estimated_base: Option<[f32; 3]>|
+         -> (
+            ImageBuffer<Rgb<u16>, Vec<u16>>,
+            AutoColorLimits,
+            [f32; 3],
+            PipelineState,
+        ) {
+            let mut state = state.clone();
+            if let Some(density) = estimated_base {
+                // Experiment: treat the Film-Area base as the display zero
+                // reference (still not a physical anchor).
+                state.density_anchors.d_min_base = Some(DensityAnchor {
+                    density,
+                    source: DensityAnchorSource::EstimatedFromContent,
+                    scope: DensityAnchorScope::Frame,
+                    confidence: DensityAnchorConfidence::Estimated,
+                    reference_id: None,
+                    provenance: DensityAnchorProvenance {
+                        input_domain: DataDomain::ProPhotoEstimate,
+                        algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION
+                            .to_string(),
+                        legacy: false,
+                        ..Default::default()
+                    },
+                });
+            }
+            let base = pipeline_base_density(&state, &BaseColor::default());
+            let mut limits = compute_content_limits_f32_with_bounds(
+                estimate,
+                None,
+                &geom,
+                base,
+                roll_physical_density_span(&state.density_anchors, base),
+            )
+            .unwrap();
+            let (offsets, _short_content) =
+                prepare_content_render_limits(&mut limits, &state.density_anchors, base);
+            state.render_mapping.mode = RenderMode::PreserveTone;
+            state.render_mapping.density_low = limits.d_min;
+            state.render_mapping.density_high = limits.d_max;
+            state.render_mapping.channel_offsets = offsets;
+            let mut params = TuningParams::default();
+            params.density.d_min = limits.d_min;
+            params.density.d_max = limits.d_max;
+            let rendered = render_f32_shader_equivalent(
+                estimate,
+                None,
+                &params,
+                &geom,
+                &BaseColor::default(),
+                &state,
+                None,
+            );
+            (rendered, limits, offsets, state)
+        };
+        let (smart_auto_render, limits, offsets, _) = render_smart_auto(&estimate, None);
+        ab_save_preview(
+            output_root.join(format!("{stem}-smart-auto.jpg")),
+            &smart_auto_render,
+        );
+
+        println!(
+            "[DIAG] {stem} limits: d_min=({:.3},{:.3},{:.3}) d_max=({:.3},{:.3},{:.3}) offsets=({:.3},{:.3},{:.3})",
+            limits.d_min[0], limits.d_min[1], limits.d_min[2],
+            limits.d_max[0], limits.d_max[1], limits.d_max[2],
+            offsets[0], offsets[1], offsets[2]
+        );
+        ab_print_rendered_cast("legacy", &legacy_render, &geom);
+        ab_print_rendered_cast("smart-auto", &smart_auto_render, &geom);
+
+        // Experiment: use the Film-Area base as the per-channel density
+        // reference instead of the zero reference the Smart Auto path uses now.
+        let (estimated_base_density, estimated_confidence) =
+            compute_auto_base_f32(&estimate, &geom).unwrap();
+        println!(
+            "[DIAG] {stem} estimated base density=({:.3},{:.3},{:.3}) confidence={:.3}",
+            estimated_base_density[0],
+            estimated_base_density[1],
+            estimated_base_density[2],
+            estimated_confidence
+        );
+        let (base_relative_render, base_relative_limits, base_relative_offsets, _) =
+            render_smart_auto(&estimate, Some(estimated_base_density));
+        ab_save_preview(
+            output_root.join(format!("{stem}-smart-auto-based.jpg")),
+            &base_relative_render,
+        );
+        println!(
+            "[DIAG] {stem} base-relative limits: d_min=({:.3},{:.3},{:.3}) d_max=({:.3},{:.3},{:.3}) offsets=({:.3},{:.3},{:.3})",
+            base_relative_limits.d_min[0], base_relative_limits.d_min[1], base_relative_limits.d_min[2],
+            base_relative_limits.d_max[0], base_relative_limits.d_max[1], base_relative_limits.d_max[2],
+            base_relative_offsets[0], base_relative_offsets[1], base_relative_offsets[2]
+        );
+        ab_print_rendered_cast("smart-auto base-relative", &base_relative_render, &geom);
+
+        // Prototype: keep the embedded-profile conversion in f32 instead of
+        // clamping it into the u16 linear-sRGB transport, which is what clips
+        // the wide-gamut red of a colour negative.
+        if let Some(source_profile) = embedded_input_profile(&frame) {
+            let encoded = decode_uncompressed_tiff_reduced(&frame, EDGE).unwrap();
+            let to_srgb = linear_conversion_matrix(source_profile, ColorSpaceId::SRgb);
+            let to_prophoto =
+                linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
+            let mut wide =
+                ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
+            wide.as_mut()
+                .par_chunks_exact_mut(3)
+                .zip(encoded.as_raw().par_chunks_exact(3))
+                .for_each(|(target, pixel)| {
+                    let rgb = [
+                        f32::from(pixel[0]) / 65535.0,
+                        f32::from(pixel[1]) / 65535.0,
+                        f32::from(pixel[2]) / 65535.0,
+                    ];
+                    let linear =
+                        convert_encoded_to_linear_rgb_with_matrix(rgb, source_profile, to_srgb);
+                    let srgb = compress_linear_srgb_for_density(linear);
+                    target.copy_from_slice(&apply_linear_matrix(srgb, to_prophoto));
+                });
+            ab_print_proxy_stats_f32("prophoto estimate (f32 conversion)", &wide);
+            let (wide_render, wide_limits, _, _) = render_smart_auto(&wide, None);
+            ab_save_preview(
+                output_root.join(format!("{stem}-smart-auto-f32.jpg")),
+                &wide_render,
+            );
+            println!(
+                "[DIAG] {stem} f32 limits: d_min=({:.3},{:.3},{:.3}) d_max=({:.3},{:.3},{:.3})",
+                wide_limits.d_min[0],
+                wide_limits.d_min[1],
+                wide_limits.d_min[2],
+                wide_limits.d_max[0],
+                wide_limits.d_max[1],
+                wide_limits.d_max[2]
+            );
+            ab_print_rendered_cast("smart-auto-f32", &wide_render, &geom);
+        }
+
+        // Named scene regions: the sky should be a light blue/white, the
+        // concrete facade and the road neutral, the dry grass olive.
+        for (label, uv) in [
+            ("sky", [0.50, 0.13]),
+            ("cloud", [0.72, 0.10]),
+            ("facade", [0.55, 0.55]),
+            ("road", [0.30, 0.80]),
+            ("grass", [0.12, 0.78]),
+        ] {
+            println!("[DIAG] {stem} region '{label}'");
+            ab_probe_u16("  decoded", &linear, uv);
+            ab_probe_f32("  estimate", &estimate, uv);
+            ab_probe_u16("  legacy render", &legacy_render, uv);
+            ab_probe_u16("  smart-auto render", &smart_auto_render, uv);
+        }
+    }
+
+    #[test]
+    fn loose_smart_auto_analysis_still_follows_the_film_area() {
+        // A loose frame has no film base or leader sample, so the declared Film
+        // Area is the only thing that can separate the mask, the light panel and
+        // the scene. Moving or cropping it therefore has to move both the
+        // estimated base and the content range.
+        let mut proxy = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_pixel(32, 32, Rgb([0.92; 3]));
+        for y in 8..24 {
+            for x in 8..24 {
+                let value = 0.30 + ((x + y) % 9) as f32 * 0.03;
+                proxy.put_pixel(x, y, Rgb([value, value * 0.92, value * 1.08]));
+            }
+        }
+        let mut wide = GeometryState::default();
+        wide.calibration_points = Some([[0.10, 0.10], [0.90, 0.10], [0.90, 0.90], [0.10, 0.90]]);
+        let mut tight = GeometryState::default();
+        tight.calibration_points = Some([[0.28, 0.28], [0.72, 0.28], [0.72, 0.72], [0.28, 0.72]]);
+
+        let (wide_base, wide_confidence) = compute_auto_base_f32(&proxy, &wide).unwrap();
+        let (tight_base, tight_confidence) = compute_auto_base_f32(&proxy, &tight).unwrap();
+        assert!(wide_confidence > 0.0 && tight_confidence > 0.0);
+        assert!(wide_base.iter().all(|value| *value > 0.0));
+        assert!(
+            (0..3).any(|channel| (wide_base[channel] - tight_base[channel]).abs() > 1.0e-3),
+            "moving the Film Area must move the measured base: {wide_base:?} vs {tight_base:?}"
+        );
+
+        let wide_limits = compute_content_limits_f32(&proxy, None, &wide, wide_base).unwrap();
+        let tight_limits = compute_content_limits_f32(&proxy, None, &tight, tight_base).unwrap();
+        let range_moved = |left: &AutoColorLimits, right: &AutoColorLimits| {
+            (0..3).any(|channel| {
+                (left.d_min[channel] - right.d_min[channel]).abs() > 1.0e-3
+                    || (left.d_max[channel] - right.d_max[channel]).abs() > 1.0e-3
+            })
+        };
+        assert!(
+            range_moved(&wide_limits, &tight_limits),
+            "moving the Film Area must move the content range: {wide_limits:?} vs {tight_limits:?}"
+        );
+
+        let mut cropped = wide.clone();
+        cropped.crop_rect.x = 0.30;
+        cropped.crop_rect.y = 0.30;
+        cropped.crop_rect.width = 0.40;
+        cropped.crop_rect.height = 0.40;
+        let cropped_limits = compute_content_limits_f32(&proxy, None, &cropped, wide_base).unwrap();
+        assert!(
+            range_moved(&wide_limits, &cropped_limits),
+            "cropping the frame must move the content range: {wide_limits:?} vs {cropped_limits:?}"
+        );
+
+        // Without a Film Area there is no trustworthy base candidate, which is
+        // why the content-driven zero-reference mapping takes over.
+        let (no_area_base, no_area_confidence) =
+            compute_auto_base_f32(&proxy, &GeometryState::default()).unwrap();
+        assert_eq!(no_area_base, [0.0; 3]);
+        assert_eq!(no_area_confidence, 0.0);
+    }
+
     #[test]
     fn smart_auto_content_limits_skip_invalid_samples_without_epsilon_repair() {
         let mut image = ImageBuffer::from_fn(8, 8, |x, y| {
@@ -14266,10 +15023,101 @@ mod import_contract_tests {
         assert!(maximum - minimum < 500.0, "channel means: {means:?}");
     }
 
+    /// Minimal little-endian, single-strip, uncompressed RGB16 TIFF without an
+    /// ICC profile: the shape the streaming TIFF decoder accepts.
+    fn write_unprofiled_rgb16_tiff(path: &std::path::Path, width: u32, height: u32) {
+        fn push_entry(bytes: &mut Vec<u8>, tag: u16, type_code: u16, count: u32, value: u32) {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&type_code.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        const IFD_OFFSET: u32 = 8;
+        const SHORT: u16 = 3;
+        const LONG: u16 = 4;
+        let entry_count: u16 = 11;
+        let bits_offset = IFD_OFFSET + 2 + u32::from(entry_count) * 12 + 4;
+        let pixel_offset = bits_offset + 12;
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"II");
+        bytes.extend_from_slice(&42u16.to_le_bytes());
+        bytes.extend_from_slice(&IFD_OFFSET.to_le_bytes());
+        bytes.extend_from_slice(&entry_count.to_le_bytes());
+        push_entry(&mut bytes, 256, LONG, 1, width);
+        push_entry(&mut bytes, 257, LONG, 1, height);
+        push_entry(&mut bytes, 258, LONG, 3, bits_offset);
+        push_entry(&mut bytes, 259, SHORT, 1, 1);
+        push_entry(&mut bytes, 262, SHORT, 1, 2);
+        push_entry(&mut bytes, 273, LONG, 1, pixel_offset);
+        push_entry(&mut bytes, 274, SHORT, 1, 1);
+        push_entry(&mut bytes, 277, SHORT, 1, 3);
+        push_entry(&mut bytes, 278, LONG, 1, height);
+        push_entry(&mut bytes, 279, LONG, 1, width * height * 6);
+        push_entry(&mut bytes, 284, SHORT, 1, 1);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&16u32.to_le_bytes());
+        }
+        for y in 0..height {
+            for x in 0..width {
+                for channel in 0..3u32 {
+                    let value = (4_000 + x * 1_000 + y * 137 + channel * 3_000) as u16;
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
     #[test]
-    fn unprofiled_generic_tiff_is_rejected_from_smart_auto_domain() {
-        let error = decode_tiff_for_smart_auto("missing-unprofiled.tiff", 256).unwrap_err();
-        assert_eq!(error, "scanner_tiff_input_space_unknown");
+    fn unprofiled_generic_tiff_is_read_as_an_estimated_srgb_input() {
+        // Writing a plain uncompressed RGB16 TIFF keeps the regression
+        // independent of the gitignored capture fixtures under `test_picture`.
+        let directory =
+            std::env::temp_dir().join(format!("nexfilm-unprofiled-tiff-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("unprofiled-rgb16.tif");
+        write_unprofiled_rgb16_tiff(&path, 6, 4);
+        let path_string = path.to_string_lossy().to_string();
+
+        assert!(embedded_input_profile(&path_string).is_none());
+        assert!(tiff_smart_auto_input_is_estimated(&path_string));
+
+        // The retired contract rejected this file outright, which turned a file
+        // the legacy path had always accepted into a hard import failure.
+        let decoded = decode_tiff_for_smart_auto(&path_string, 256)
+            .expect("an unprofiled RGB TIFF must still decode");
+        assert_eq!(decoded.dimensions(), (6, 4));
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn scanner_fff_keeps_the_tiff_branch_and_is_never_treated_as_an_estimate() {
+        let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("哈苏fff");
+        let scanner = fixture_root.join("1 001-可以反相.fff");
+        if scanner.is_file() {
+            let path = scanner.to_string_lossy().to_string();
+            assert!(is_scanner_fff_tiff(&path));
+            // `.fff` is also a LibRaw extension, so the scanner container check
+            // has to win before the branch falls through to LibRaw.
+            assert!(is_raw_extension(&path));
+            assert!(is_tiff_extension(&path) || is_scanner_fff_tiff(&path));
+            assert!(!tiff_smart_auto_input_is_estimated(&path));
+        }
+        // A Hasselblad digital-back capture uses the same extension but must
+        // stay on the LibRaw path instead.
+        let camera = fixture_root.join("任务 _1233.fff");
+        if camera.is_file() {
+            let path = camera.to_string_lossy().to_string();
+            assert!(!is_scanner_fff_tiff(&path));
+            assert!(is_raw_extension(&path));
+        }
     }
 
     #[test]
@@ -15412,7 +16260,10 @@ mod export_contract_tests {
     }
 
     #[test]
-    fn loose_smart_auto_proxy_uses_legacy_transport_flag_and_base_density() {
+    fn persisted_legacy_loose_record_keeps_the_compatibility_transport_flag() {
+        // Records written before the Smart Auto migration still carry the
+        // v1.0.2 marker, so reading them back has to keep both the legacy
+        // transport flag and the base-density fallback.
         let proxy = ImageBuffer::from_pixel(1, 1, Rgb([12_000, 24_000, 36_000]));
         let mut state = PipelineState::smart_auto();
         state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
@@ -15429,6 +16280,23 @@ mod export_contract_tests {
                 0.0
             );
         }
+    }
+
+    #[test]
+    fn loose_smart_auto_proxy_advertises_the_prophoto_transport_domain() {
+        let proxy = ImageBuffer::from_pixel(1, 1, Rgb([12_000, 24_000, 36_000]));
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.base_source = "content_estimate".to_string();
+        state.processing_report.base_confidence = "0.500".to_string();
+        let response =
+            build_response_buffer_from_proxy_with_state(&proxy, &white_base(), &state, None, true);
+        let flags = u32::from_le_bytes(response[24..28].try_into().unwrap());
+        assert_ne!(
+            flags & 2,
+            0,
+            "loose Smart Auto must advertise the ProPhoto transport domain"
+        );
+        assert_ne!(flags & 1, 0, "analyzed base must still be reported");
     }
 
     #[test]

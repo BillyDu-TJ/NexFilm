@@ -73,6 +73,46 @@ int nexfilm_raw_mosaic_info(libraw_data_t *data, NexFilmRawMosaicInfo *out) {
   return 0;
 }
 
+struct NexFilmRawWhiteBalance {
+  float cam_mul[4];
+  float pre_mul[4];
+  int32_t camera_wb_valid;
+};
+
+// Reads the multipliers LibRaw resolved while opening the file: cam_mul is the
+// camera's as-shot white balance (AsShotNeutral), pre_mul the fixed daylight
+// balance LibRaw falls back to when as-shot WB is switched off.
+int nexfilm_raw_white_balance(libraw_data_t *data, NexFilmRawWhiteBalance *out) {
+  if (!data || !out) {
+    return -1;
+  }
+  std::memset(out, 0, sizeof(*out));
+  const libraw_colordata_t &color = data->rawdata.color;
+  for (int channel = 0; channel < 4; ++channel) {
+    out->cam_mul[channel] = color.cam_mul[channel];
+    out->pre_mul[channel] = color.pre_mul[channel];
+  }
+  out->camera_wb_valid = color.cam_mul[0] > 0.0f && color.cam_mul[1] > 0.0f &&
+                                 color.cam_mul[2] > 0.0f
+                             ? 1
+                             : 0;
+  return 0;
+}
+
+// Writes explicit per-channel multipliers and disables both of LibRaw's own
+// white-balance choices, so the caller decides the channel balance exactly.
+int nexfilm_raw_set_user_mul(libraw_data_t *data, const float *mul, int32_t count) {
+  if (!data || !mul || count < 3) {
+    return -1;
+  }
+  for (int32_t channel = 0; channel < count && channel < 4; ++channel) {
+    data->params.user_mul[channel] = mul[channel];
+  }
+  data->params.use_camera_wb = 0;
+  data->params.use_auto_wb = 0;
+  return 0;
+}
+
 int nexfilm_copy_raw_mosaic(libraw_data_t *data, uint16_t *out, size_t capacity) {
   if (!data || !out || !data->rawdata.raw_image) {
     return -1;

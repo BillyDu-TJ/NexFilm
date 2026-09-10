@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const DATABASE_PATH: &str = "nexfilm_user.db";
 pub const LEGACY_MATH_VERSION: i64 = 3;
 pub const MATH_VERSION: i64 = 5;
-pub const RAW_DECODE_VERSION: i64 = 9;
+pub const RAW_DECODE_VERSION: i64 = 11;
 pub const LAST_USED_CALIBRATION_PROFILE_KEY: &str = "last_used_calibration_profile_id";
 
 /// Development builds intentionally keep the database beside the repository so
@@ -228,6 +228,7 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
     migrate_legacy_thumbnails(connection)?;
     migrate_raw_decode_settings(connection)?;
     migrate_density_contract(connection)?;
+    migrate_loose_smart_auto_domain(connection)?;
     migrate_p11_calibration_contract(connection)?;
     Ok(())
 }
@@ -501,6 +502,84 @@ pub fn math_version_for_contract(contract: ProcessingContract) -> i64 {
         ProcessingContract::LegacyV1 => LEGACY_MATH_VERSION,
         _ => MATH_VERSION,
     }
+}
+
+/// Loose Import used to be pinned to the retired v1.0.2 linear-sRGB source, so
+/// every frame it produced carries `legacy_linear_srgb` plus a base measured in
+/// that domain. Imports and analysis now run the same ProPhoto Estimate Smart
+/// Auto path as an unanchored Roll, so the persisted marker has to be rewritten
+/// once or those frames would stay on Status M forever.
+///
+/// The rewrite is idempotent: it only matches rows that still carry the marker,
+/// keeps projects persisted as LegacyV1 exactly as they are, and clears the
+/// per-frame state that was derived from the old domain (base colour and the
+/// rendered thumbnail) so the next analysis starts fresh instead of reusing
+/// endpoints measured on the wrong source.
+fn migrate_loose_smart_auto_domain(connection: &Connection) -> rusqlite::Result<()> {
+    let mut statement = connection.prepare(
+        "SELECT rowid, pipeline_state FROM image_states
+         WHERE pipeline_state LIKE '%legacy_linear_srgb%'",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut migrations = Vec::new();
+    for row in rows {
+        let (row_id, original) = row?;
+        let Ok(mut state) = serde_json::from_str::<PipelineState>(&original) else {
+            // An unreadable row is left alone: the loader reports the parse
+            // failure, and silently rewriting it would hide the corruption.
+            continue;
+        };
+        if state.contract == ProcessingContract::LegacyV1
+            || state.processing_report.analysis_data_domain != "legacy_linear_srgb"
+        {
+            continue;
+        }
+        state.processing_report.analysis_data_domain = "linear_prophoto_estimate".to_string();
+        if state.processing_report.base_source == "compatibility_base" {
+            state.processing_report.base_source = "unresolved".to_string();
+            state.processing_report.base_confidence = "low".to_string();
+        }
+        if !state
+            .processing_report
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason == "loose_smart_auto_domain_migrated")
+        {
+            state
+                .processing_report
+                .fallback_reasons
+                .push("loose_smart_auto_domain_migrated".to_string());
+        }
+        state.processing_report.fallback_reason = "loose_smart_auto_domain_migrated".to_string();
+        let normalized = serde_json::to_string(&state)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        migrations.push((row_id, normalized));
+    }
+    drop(statement);
+
+    if migrations.is_empty() {
+        return Ok(());
+    }
+    let default_base = serde_json::to_string(&BaseColor::default())
+        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+    for (row_id, pipeline_state) in &migrations {
+        connection.execute(
+            "UPDATE image_states
+             SET pipeline_state = ?1,
+                 base_color = ?2,
+                 rendered_thumb_base64 = NULL,
+                 updated_at = ?3
+             WHERE rowid = ?4",
+            rusqlite::params![pipeline_state, default_base, now_timestamp(), row_id],
+        )?;
+    }
+    eprintln!(
+        "[Pipeline Migration] moved {} loose frame(s) from legacy_linear_srgb to linear_prophoto_estimate; base colour and rendered thumbnails cleared for re-analysis",
+        migrations.len()
+    );
+    Ok(())
 }
 
 pub fn now_timestamp() -> i64 {
@@ -1408,6 +1487,107 @@ mod tests {
         assert_eq!(rendered, None);
         assert_eq!(math_version, LEGACY_MATH_VERSION);
         assert_eq!(raw_version, RAW_DECODE_VERSION);
+    }
+
+    #[test]
+    fn loose_smart_auto_domain_migration_moves_legacy_markers_once() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+        let analyzed_base = BaseColor {
+            base_r: 60_000,
+            base_g: 50_000,
+            base_b: 40_000,
+        };
+        let mut loose_state = PipelineState::smart_auto();
+        loose_state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
+        loose_state.processing_report.base_source = "compatibility_base".to_string();
+        loose_state.processing_report.base_confidence = "high".to_string();
+        let mut legacy_project_state = PipelineState::smart_auto();
+        legacy_project_state.contract = ProcessingContract::LegacyV1;
+        legacy_project_state.processing_report.analysis_data_domain =
+            "legacy_linear_srgb".to_string();
+
+        for (file_path, state) in [
+            ("loose.dng", &loose_state),
+            ("legacy-project.dng", &legacy_project_state),
+        ] {
+            connection
+                .execute(
+                    "INSERT INTO image_states (
+                        roll_id, file_path, rendered_thumb_base64, params, geom, base_color,
+                        pipeline_state, math_version, raw_decode_version
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                    rusqlite::params![
+                        "LOOSE_DEFAULT",
+                        file_path,
+                        "stale-positive",
+                        serde_json::to_string(&TuningParams::default()).unwrap(),
+                        serde_json::to_string(&GeometryState::default()).unwrap(),
+                        serde_json::to_string(&analyzed_base).unwrap(),
+                        serde_json::to_string(state).unwrap(),
+                        math_version_for_contract(state.contract),
+                        RAW_DECODE_VERSION,
+                    ],
+                )
+                .unwrap();
+        }
+
+        migrate_loose_smart_auto_domain(&connection).unwrap();
+
+        let read = |file_path: &str| -> (String, Option<String>, String) {
+            connection
+                .query_row(
+                    "SELECT pipeline_state, rendered_thumb_base64, base_color
+                     FROM image_states WHERE file_path = ?1",
+                    [file_path],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap()
+        };
+
+        let (migrated, migrated_thumb, migrated_base) = read("loose.dng");
+        let migrated_state: PipelineState = serde_json::from_str(&migrated).unwrap();
+        assert_eq!(
+            migrated_state.processing_report.analysis_data_domain,
+            "linear_prophoto_estimate"
+        );
+        // The compatibility base was measured in the old domain and must not be
+        // reused as if it were a ProPhoto estimate.
+        assert_eq!(migrated_state.processing_report.base_source, "unresolved");
+        assert_eq!(migrated_state.processing_report.base_confidence, "low");
+        assert_eq!(
+            migrated_state.processing_report.fallback_reason,
+            "loose_smart_auto_domain_migrated"
+        );
+        assert!(migrated_state
+            .processing_report
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason == "loose_smart_auto_domain_migrated"));
+        assert_eq!(migrated_thumb, None);
+        let migrated_base: BaseColor = serde_json::from_str(&migrated_base).unwrap();
+        assert_eq!(migrated_base, BaseColor::default());
+
+        // A project persisted as LegacyV1 keeps its contract, domain, analyzed
+        // base, and rendered thumbnail exactly as they were.
+        let (untouched, untouched_thumb, untouched_base) = read("legacy-project.dng");
+        let untouched_state: PipelineState = serde_json::from_str(&untouched).unwrap();
+        assert_eq!(untouched_state.contract, ProcessingContract::LegacyV1);
+        assert_eq!(
+            untouched_state.processing_report.analysis_data_domain,
+            "legacy_linear_srgb"
+        );
+        assert_eq!(untouched_thumb.as_deref(), Some("stale-positive"));
+        let untouched_base: BaseColor = serde_json::from_str(&untouched_base).unwrap();
+        assert_eq!(untouched_base, analyzed_base);
+
+        // Re-running the migration must not touch anything again.
+        let before = read("loose.dng");
+        migrate_loose_smart_auto_domain(&connection).unwrap();
+        let after = read("loose.dng");
+        assert_eq!(before.0, after.0);
+        assert_eq!(before.1, after.1);
+        assert_eq!(before.2, after.2);
     }
 
     #[test]
