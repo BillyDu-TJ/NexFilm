@@ -1842,7 +1842,7 @@ fn compute_frame_base_density_f32(
     for pixel in proxy.as_raw().chunks_exact(3) {
         if pixel
             .iter()
-            .any(|value| !value.is_finite() || *value <= 0.0)
+            .any(|value| !value.is_finite() || *value <= 0.0 || *value >= 0.98)
         {
             continue;
         }
@@ -2440,9 +2440,8 @@ fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
 }
 
 /// Recognise the persisted marker left by imports that ran on the retired
-/// v1.0.2 compatibility source. New frames never write it, so this only
-/// answers true for records that still need to be read back on the old math
-/// (see `migrate_loose_smart_auto_domain` for the one-time upgrade).
+/// v1.0.2 compatibility source, i.e. scanner-produced loose frames that keep the
+/// historical density recipe (see `uses_scan_density_recipe`).
 fn is_smart_auto_compatibility(state: &PipelineState) -> bool {
     state.contract == ProcessingContract::SmartAutoProPhotoV11
         && !state.density_anchors.has_roll_base()
@@ -2450,14 +2449,28 @@ fn is_smart_auto_compatibility(state: &PipelineState) -> bool {
         && state.processing_report.analysis_data_domain == "legacy_linear_srgb"
 }
 
-fn mark_loose_smart_auto_compatibility(state: &mut PipelineState, is_loose: bool) {
+/// Scanner-produced inputs keep the v1.0.2 density recipe: the scanner has
+/// already rendered the film into a display-referred space, and the historical
+/// maths (linear-sRGB working space, per-channel base subtraction and the
+/// Status M crosstalk) is what a scanned library has been validated with.
+/// Camera RAW keeps the ProPhoto estimate path, which was introduced for that
+/// case: it preserves the camera matrix and transport headroom that a scanner
+/// scan does not need.
+pub(crate) fn uses_scan_density_recipe(path: &str) -> bool {
+    !(is_raw_extension(path) && !is_dng_extension(path) && !is_scanner_fff_tiff(path))
+}
+
+fn mark_loose_smart_auto_compatibility(state: &mut PipelineState, is_loose: bool, path: &str) {
     if state.contract != ProcessingContract::SmartAutoProPhotoV11
         || state.density_anchors.has_roll_base()
         || state.density_anchors.has_roll_full_exposure()
     {
         return;
     }
-    if !is_loose && state.processing_report.analysis_data_domain == "legacy_linear_srgb" {
+    if is_loose && uses_scan_density_recipe(path) {
+        // A scanner scan is rendered on the recipe its library was built with.
+        state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
+    } else if !is_loose && state.processing_report.analysis_data_domain == "legacy_linear_srgb" {
         // A Loose frame can later be promoted into a normal Roll. Do not let
         // its compatibility marker keep the promoted frame on Status M.
         state.processing_report.analysis_data_domain = "linear_prophoto_estimate".to_string();
@@ -6058,7 +6071,8 @@ pub async fn switch_active_image(
     item.base_color = base_color;
     item.pipeline_state = pipeline_state;
     let item_is_loose = item.is_loose;
-    mark_loose_smart_auto_compatibility(&mut item.pipeline_state, item_is_loose);
+    let item_path = item.file_path.clone();
+    mark_loose_smart_auto_compatibility(&mut item.pipeline_state, item_is_loose, &item_path);
 
     // Return the current resolved capability, not the persisted request. This
     // keeps UI caches and every processing entry point on the resolver's
@@ -6086,7 +6100,7 @@ pub async fn switch_active_image(
         || roll
             .as_ref()
             .is_some_and(|roll| roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT");
-    mark_loose_smart_auto_compatibility(&mut resolved_state, is_loose);
+    mark_loose_smart_auto_compatibility(&mut resolved_state, is_loose, &item.file_path);
     item.runtime_pipeline_state = Some(resolved_state.clone());
 
     *state.active_id.write().map_err(|e| e.to_string())? = Some(id.clone());
@@ -6143,7 +6157,7 @@ pub async fn prepare_proxy(
     }
     let is_loose = is_loose
         || roll.is_some_and(|roll| roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT");
-    mark_loose_smart_auto_compatibility(&mut persisted_state, is_loose);
+    mark_loose_smart_auto_compatibility(&mut persisted_state, is_loose, &file_path);
     let profiles = load_calibration_profile_views()?;
     let scanner_profiles = {
         let connection = persistence::open_connection()
@@ -6452,7 +6466,7 @@ pub async fn prepare_proxy(
         detected_base,
         detected_highlight,
     );
-    mark_loose_smart_auto_compatibility(&mut final_state, is_loose);
+    mark_loose_smart_auto_compatibility(&mut final_state, is_loose, &file_path);
     if final_resolution.resolved_path != ProcessingContract::LegacyV1
         && tiff_smart_auto_input_is_estimated(&file_path)
     {
@@ -6568,7 +6582,7 @@ pub async fn analyze_proxy_base_color(
         let (base_color, runtime_pipeline_state, persisted_pipeline_state) = {
             let item = read_lock(&item_arc);
             let mut effective = item.effective_pipeline_state().clone();
-            mark_loose_smart_auto_compatibility(&mut effective, is_loose_roll);
+            mark_loose_smart_auto_compatibility(&mut effective, is_loose_roll, &item.file_path);
             if pipeline_has_base(&effective, &item.base_color) {
                 return Ok(());
             }
@@ -6684,7 +6698,7 @@ pub async fn analyze_proxy_base_color(
         let mut item = write_lock(&item_arc);
         ensure_current_development_generation(&epoch, generation)?;
         let mut effective = item.effective_pipeline_state().clone();
-        mark_loose_smart_auto_compatibility(&mut effective, is_loose_roll);
+        mark_loose_smart_auto_compatibility(&mut effective, is_loose_roll, &item.file_path);
         if pipeline_has_base(&effective, &item.base_color) {
             return Ok(());
         }
@@ -6734,7 +6748,7 @@ pub async fn analyze_proxy_density_limits(
         ) = {
             let item = read_lock(&item_arc);
             let mut effective = item.effective_pipeline_state().clone();
-            mark_loose_smart_auto_compatibility(&mut effective, is_loose_roll);
+            mark_loose_smart_auto_compatibility(&mut effective, is_loose_roll, &item.file_path);
             if !pipeline_has_base(&effective, &item.base_color) {
                 return Err("BASE_COLOR_NOT_ANALYZED".to_string());
             }
@@ -7684,7 +7698,7 @@ pub fn get_proxy_response_buffer(state: &EngineState, id: &str) -> Result<Vec<u8
                         && (roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT")
                 });
             let mut pipeline_state = item.effective_pipeline_state().clone();
-            mark_loose_smart_auto_compatibility(&mut pipeline_state, is_loose);
+            mark_loose_smart_auto_compatibility(&mut pipeline_state, is_loose, &item.file_path);
             build_response_buffer_from_proxy_with_state(
                 proxy,
                 &item.base_color,
@@ -9357,7 +9371,7 @@ pub async fn batch_export_images(
                             roll_id, file_path
                         )
                     })?;
-            mark_loose_smart_auto_compatibility(&mut pipeline_state, is_loose);
+            mark_loose_smart_auto_compatibility(&mut pipeline_state, is_loose, &file_path);
             snapshots.push(ExportItemSnapshot {
                 id,
                 file_path,
@@ -9401,6 +9415,7 @@ pub async fn batch_export_images(
         mark_loose_smart_auto_compatibility(
             &mut snapshot.pipeline_state,
             roll.is_some_and(|roll| roll.format == "Loose" || roll.roll_id == "LOOSE_DEFAULT"),
+            &snapshot.file_path,
         );
         snapshot.scanner_profile = roll
             .and_then(|roll| roll.scanner_profile_id.as_deref())
@@ -12936,7 +12951,7 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
         ]
     };
     let mut effective_pipeline = item.effective_pipeline_state().clone();
-    mark_loose_smart_auto_compatibility(&mut effective_pipeline, item.is_loose);
+    mark_loose_smart_auto_compatibility(&mut effective_pipeline, item.is_loose, &item.file_path);
     let smart_auto_compatibility = is_smart_auto_compatibility(&effective_pipeline);
     let legacy_compatibility =
         effective_pipeline.contract == ProcessingContract::LegacyV1 || smart_auto_compatibility;
@@ -13098,14 +13113,15 @@ mod import_contract_tests {
     use super::{
         aggregate_roll_density_references, base_color_from_density, compute_auto_base,
         compute_auto_base_f32, compute_auto_color_limits, compute_content_limits_f32,
-        compute_content_limits_f32_with_bounds, decode_image_buffer, decode_import_preview_base64,
-        decode_profiled_tiff_prophoto_estimate, decode_prophoto_estimate_image_buffer,
-        decode_prophoto_estimate_image_buffer_with_policy, decode_reduced_dng_for_working_space,
-        decode_reduced_tiff_for_working_space, decode_tiff_for_smart_auto,
-        decode_uncompressed_tiff_reduced, default_pipeline_state_for_import, density_luma,
-        embedded_input_profile, encoded_pixel_to_prophoto_estimate, fixed_roll_density_mapping,
-        is_better_preview_edge, is_lightweight_direct_preview, is_noritsu_rendered_image,
-        is_raw_extension, is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
+        compute_content_limits_f32_with_bounds, compute_frame_base_density_f32,
+        decode_image_buffer, decode_import_preview_base64, decode_profiled_tiff_prophoto_estimate,
+        decode_prophoto_estimate_image_buffer, decode_prophoto_estimate_image_buffer_with_policy,
+        decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
+        decode_tiff_for_smart_auto, decode_uncompressed_tiff_reduced,
+        default_pipeline_state_for_import, density_luma, embedded_input_profile,
+        encoded_pixel_to_prophoto_estimate, fixed_roll_density_mapping, is_better_preview_edge,
+        is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
+        is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
         libraw_decode_error_message, linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff,
         mark_loose_smart_auto_compatibility, persist_import_batch, pipeline_base_density,
         pipeline_has_base, point_in_film_area, prepare_content_render_limits,
@@ -13113,8 +13129,8 @@ mod import_contract_tests {
         raw_decode_failure_hint, reference_density_extreme, render_f32_shader_equivalent,
         render_shader_equivalent, rgb16_image_from_bytes, roll_physical_density_span,
         share_smart_auto_density_scale, srgb_proxy_u16_to_prophoto_f32,
-        tiff_smart_auto_input_is_estimated, AutoColorLimits, DecodeMode, IMPORT_PREVIEW_LONG_EDGE,
-        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
+        tiff_smart_auto_input_is_estimated, uses_scan_density_recipe, AutoColorLimits, DecodeMode,
+        IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
         BaseColor, DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorProvenance,
@@ -14691,6 +14707,50 @@ mod import_contract_tests {
                 print!("[DIAG] {stem} {label} ");
                 ab_probe_u16(region, &rendered, uv);
             }
+            // The v1.0.2 math on the same frame, for comparison: linear-sRGB
+            // working space, per-channel base subtraction and the Status M
+            // crosstalk matrix, with no display-space matrix.
+            if let Ok(legacy_proxy) =
+                decode_image_buffer(&frame, DecodeMode::DevelopProxy).map(|image| {
+                    let ratio = (EDGE as f32 / image.width().max(image.height()) as f32).min(1.0);
+                    if ratio < 0.999 {
+                        image::imageops::resize(
+                            &image,
+                            (image.width() as f32 * ratio).max(1.0) as u32,
+                            (image.height() as f32 * ratio).max(1.0) as u32,
+                            image::imageops::FilterType::Lanczos3,
+                        )
+                    } else {
+                        image
+                    }
+                })
+            {
+                let legacy_base = compute_auto_base(&legacy_proxy);
+                if let Ok(legacy_limits) = compute_auto_color_limits(
+                    &legacy_proxy,
+                    &geom,
+                    &legacy_base,
+                    FilmMode::Color,
+                    false,
+                ) {
+                    let mut legacy_params = TuningParams::default();
+                    legacy_params.density.d_min = legacy_limits.d_min;
+                    legacy_params.density.d_max = legacy_limits.d_max;
+                    let legacy_render = render_shader_equivalent(
+                        &legacy_proxy,
+                        &legacy_params,
+                        &geom,
+                        &legacy_base,
+                        None,
+                    );
+                    ab_save_preview(
+                        output_root.join(format!("{stem}-{label}-v102.jpg")),
+                        &legacy_render,
+                    );
+                    ab_print_rendered_cast(&format!("{label} v1.0.2"), &legacy_render, &geom);
+                }
+            }
+
             // Same frame with a display encoding instead of writing the linear
             // density straight to the display buffer.
             let mut gamma_params = params.clone();
@@ -14957,12 +15017,14 @@ mod import_contract_tests {
         );
         ab_print_rendered_cast("smart-auto base-relative", &base_relative_render, &geom);
 
-        // Base-estimator comparison: subtract a per-channel film base (the way
-        // v1.0.2 does) instead of aligning on the content centres, and compare
-        // whole-frame and film-area-scoped estimates against the v1.0.2
-        // benchmark.
-        for (label, scoped_to_area) in [("whole-frame base", false), ("film-area base", true)] {
-            let base_density = ab_frame_base_density(&estimate, &geom, scoped_to_area);
+        // Display-transform comparison: the new path converts the normalised
+        // working values through the adapted ProPhoto(D50)->sRGB(D65) matrix,
+        // which strongly reshapes saturated values; the v1.0.2 path displays its
+        // working values directly. Render both to see which matches.
+        for (label, apply_display_matrix) in
+            [("display matrix", true), ("no display matrix", false)]
+        {
+            let base_density = compute_frame_base_density_f32(&estimate).unwrap().0;
             let mut limits = compute_content_limits_f32_with_bounds(
                 &estimate,
                 None,
@@ -14977,8 +15039,8 @@ mod import_contract_tests {
                 limits.d_min[channel] = low;
                 limits.d_max[channel] = high;
             }
-            let mut base_state = state.clone();
-            base_state.density_anchors.d_min_base = Some(DensityAnchor {
+            let mut variant_state = state.clone();
+            variant_state.density_anchors.d_min_base = Some(DensityAnchor {
                 density: base_density,
                 source: DensityAnchorSource::EstimatedFromContent,
                 scope: DensityAnchorScope::Frame,
@@ -14992,27 +15054,44 @@ mod import_contract_tests {
                     ..Default::default()
                 },
             });
-            base_state.render_mapping.mode = RenderMode::PreserveTone;
-            base_state.render_mapping.density_low = limits.d_min;
-            base_state.render_mapping.density_high = limits.d_max;
-            base_state.render_mapping.channel_offsets = [0.0; 3];
+            variant_state.render_mapping.mode = RenderMode::PreserveTone;
+            variant_state.render_mapping.density_low = limits.d_min;
+            variant_state.render_mapping.density_high = limits.d_max;
+            variant_state.render_mapping.channel_offsets = [0.0; 3];
             let mut params = TuningParams::default();
             params.density.d_min = limits.d_min;
             params.density.d_max = limits.d_max;
-            let rendered = render_f32_shader_equivalent(
-                &estimate,
-                None,
-                &params,
-                &geom,
+            let _ = &params;
+            let pipeline = crate::pipeline::FilmPipeline::from_state(
+                &variant_state,
                 &BaseColor::default(),
-                &base_state,
-                None,
+                [0.0; 3],
+                mode.clone(),
             );
+            let display_matrix =
+                linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb);
+            let mut rendered =
+                ImageBuffer::<Rgb<u16>, Vec<u16>>::new(estimate.width(), estimate.height());
+            rendered
+                .as_mut()
+                .par_chunks_exact_mut(3)
+                .zip(estimate.as_raw().par_chunks_exact(3))
+                .for_each(|(target, pixel)| {
+                    let density = pipeline.compute_true_density(&[pixel[0], pixel[1], pixel[2]]);
+                    let normalized = std::array::from_fn(|channel| {
+                        let span = limits.d_max[channel] - limits.d_min[channel];
+                        ((density[channel] - limits.d_min[channel]) / span).clamp(0.0, 1.0)
+                    });
+                    let rgb = if apply_display_matrix {
+                        apply_linear_matrix(normalized, display_matrix)
+                    } else {
+                        normalized
+                    };
+                    for (channel, value) in rgb.iter().enumerate() {
+                        target[channel] = (value.clamp(0.0, 1.0) * 65535.0).round() as u16;
+                    }
+                });
             ab_save_preview(output_root.join(format!("{stem}-{label}.jpg")), &rendered);
-            println!(
-                "[DIAG] {stem} {label}: base=({:.3},{:.3},{:.3}) window=({:.3}..{:.3})",
-                base_density[0], base_density[1], base_density[2], low, high
-            );
             ab_print_rendered_cast(label, &rendered, &geom);
         }
 
@@ -15708,7 +15787,6 @@ mod import_contract_tests {
     }
 
     #[test]
-    #[test]
     fn profiled_tiff_conversion_keeps_the_mask_inside_every_channel() {
         // Adobe RGB sample of a colour negative's orange mask, taken from the
         // merged pano fixture.
@@ -15814,13 +15892,55 @@ mod import_contract_tests {
     }
 
     #[test]
+    fn loose_density_recipe_follows_the_input_class() {
+        // A scanner scans the film into a display-referred space, so it keeps the
+        // historical density maths; camera RAW keeps the ProPhoto estimate.
+        assert!(uses_scan_density_recipe("scan.tif"));
+        assert!(uses_scan_density_recipe("scan.tiff"));
+        assert!(uses_scan_density_recipe("lab-scan.jpg"));
+        assert!(uses_scan_density_recipe("epson-scanner.dng"));
+        assert!(!uses_scan_density_recipe("frame.NEF"));
+        assert!(!uses_scan_density_recipe("frame.raf"));
+        assert!(!uses_scan_density_recipe("camera.CR3"));
+
+        let scanner_fff = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("哈苏fff")
+            .join("1 001-可以反相.fff");
+        if scanner_fff.is_file() {
+            assert!(uses_scan_density_recipe(
+                scanner_fff.to_string_lossy().as_ref()
+            ));
+        }
+    }
+
+    #[test]
+    fn loose_frames_mark_the_recipe_their_input_class_needs() {
+        let mut scanner = PipelineState::smart_auto();
+        mark_loose_smart_auto_compatibility(&mut scanner, true, "scan.tif");
+        assert!(is_smart_auto_compatibility(&scanner));
+
+        let mut camera = PipelineState::smart_auto();
+        mark_loose_smart_auto_compatibility(&mut camera, true, "frame.NEF");
+        assert!(!is_smart_auto_compatibility(&camera));
+        assert_eq!(
+            camera.processing_report.analysis_data_domain,
+            "linear_prophoto_estimate"
+        );
+
+        // Promoting a loose frame onto a Roll always drops the marker.
+        mark_loose_smart_auto_compatibility(&mut scanner, false, "scan.tif");
+        assert!(!is_smart_auto_compatibility(&scanner));
+    }
+
+    #[test]
     fn loose_smart_auto_compatibility_marker_is_cleared_when_promoted() {
         let mut state = PipelineState::smart_auto();
         state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
         state.processing_report.base_source = "compatibility_base".to_string();
         state.processing_report.base_confidence = "high".to_string();
 
-        mark_loose_smart_auto_compatibility(&mut state, false);
+        mark_loose_smart_auto_compatibility(&mut state, false, "scan.tif");
 
         assert_eq!(
             state.processing_report.analysis_data_domain,
