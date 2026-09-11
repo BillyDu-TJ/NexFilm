@@ -39,6 +39,13 @@ cc = "1.0"
 # Keep image processing responsive in `cargo tauri dev` while retaining debug symbols.
 [profile.dev]
 opt-level = 1
+# This crate is large enough that Rust's incremental cache has handed the linker
+# object files referencing LLVM's internal `anon.*.llvm.*` globals without their
+# definitions, which fails the debug link with LNK2019/LNK1120 even though the
+# source compiles. The release profile never uses incremental compilation, which
+# is why the same commit links there. Full recompilation is cheap here because
+# commands.rs dominates the build anyway.
+incremental = false
 
 [profile.dev.package."*"]
 opt-level = 3
