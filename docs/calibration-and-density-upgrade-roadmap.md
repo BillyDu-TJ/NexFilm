@@ -686,3 +686,20 @@ Auto Invert 应在内部返回处理报告，至少包括使用的 Capture/Densi
 3. 无任何可用片基参考时，保守地不做中性化，并在处理报告里标注"缺少片基参考"。
 
 回归基准：`test_picture\尼康扫描仪tiff\5.3-*.tif`、`test_picture\诺日士jpg\*.jpg` 等散片，以 v1.0.2 的通道比（例如 `5.3-1.tif`：R/G 1.028、B/G 0.774）与区域采样作为下限；哈苏 `任务 _1233.fff` 与尼康 NEF 不得回退。
+
+### 19.9 已实施：片基作为散片的密度参考（本轮修复）
+
+改动：
+
+1. `pipeline_base_density` 与 `FilmPipeline::from_state` 对无锚点的 Smart Auto 帧改用**逐帧片基**作为密度参考，不再返回零参考（`crate::pipeline::frame_base_density`）。
+2. `prepare_content_render_limits` 在片基可用时**不再做内容中心（灰世界）对齐**，只保留三通道共享跨度（`share_smart_auto_density_scale_without_offsets`）。
+3. 片基估计分两档：已确认 Film Area 时用 `compute_auto_base_f32`；没有 Film Area 时新增 `compute_frame_base_density_f32`——整帧逐通道最亮 1%，与 v1.0.2 的估计口径一致，避免"没有片框就没有中性参考"。
+4. 没有可信片基时（`base_source` 未解析或为 compatibility fallback）保持原零参考行为，并保留既有的 `smart_auto_no_trusted_film_base` 报告原因。
+
+验证：
+
+- **根因消除**：同样是人为给底片加暖色（×1.18 R / ×0.85 B），修复前 Smart Auto 输出逐位不变，修复后 R/G 由 0.967 变为 0.516、B/G 由 0.457 变为 0.672，即渲染重新响应整幅色彩 ✓。
+- 无 Film Area 的帧（片基估计为 0）行为不变；哈苏 `任务 _1233.fff` 在没有 Film Area 时数值不变（R/G 1.000、B/G 1.061）。
+- 全部单测（196）、11 个 UI 契约脚本通过。
+
+仍存在的差异（待用户按观感裁决）：密度运算仍在 **ProPhoto 工作空间**进行，而 v1.0.2 在**线性 sRGB 空间**进行。同一张钨丝灯场景（`5.3-1.tif`）修复后为 R/G 0.967、B/G 0.457，v1.0.2 为 R/G 1.028、B/G 0.774。由于该场景本身就是暖光，孰优需要目视判断；若用户认为仍需与 v1.0.2 完全一致，则要把散片的密度运算移回源空间（线性 sRGB），这会取消 ProPhoto 工作空间对散片的色彩贡献。

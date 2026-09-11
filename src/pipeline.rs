@@ -88,17 +88,11 @@ impl FilmPipeline {
             .as_ref()
             .map(|anchor| anchor.density)
             .unwrap_or_else(|| {
-                if state.contract != ProcessingContract::LegacyV1 {
-                    // Smart Auto's estimated candidate is analysis metadata;
-                    // the content-driven render mapping uses a neutral zero
-                    // reference until a physical D-min is verified.
-                    return [0.0; 3];
-                }
-                [
-                    density_from_u16(base_color.base_r),
-                    density_from_u16(base_color.base_g),
-                    density_from_u16(base_color.base_b),
-                ]
+                // A loose or unanchored Smart Auto frame has no physical anchor
+                // but does carry a per-frame film-base estimate, and that
+                // estimate is its neutral reference. Anything without one keeps
+                // the zero reference.
+                frame_base_density(state, base_color).unwrap_or([0.0; 3])
             });
         Self::new_prophoto(base_density, exp_offset, mode, state.contract)
     }
@@ -193,6 +187,35 @@ impl FilmPipeline {
 #[inline]
 fn density_from_u16(value: u16) -> f32 {
     -(value as f32 / 65535.0).max(1e-6).log10()
+}
+
+/// Per-channel film-base density carried by a persisted `BaseColor` estimate.
+pub(crate) fn base_density_from_base_color(base_color: &BaseColor) -> [f32; 3] {
+    [
+        density_from_u16(base_color.base_r),
+        density_from_u16(base_color.base_g),
+        density_from_u16(base_color.base_b),
+    ]
+}
+
+/// The per-frame film-base density this state should subtract, when it has a
+/// trusted one. Retired compatibility records keep their own Status M maths.
+pub(crate) fn frame_base_density(
+    state: &PipelineState,
+    base_color: &BaseColor,
+) -> Option<[f32; 3]> {
+    if state.contract == ProcessingContract::LegacyV1
+        || state.density_anchors.d_min_base.is_some()
+        || state.processing_report.analysis_data_domain == "legacy_linear_srgb"
+        || *base_color == BaseColor::default()
+    {
+        return None;
+    }
+    let source = state.processing_report.base_source.as_str();
+    if source.is_empty() || source == "unresolved" || source == "compatibility_fallback" {
+        return None;
+    }
+    Some(base_density_from_base_color(base_color))
 }
 
 #[cfg(test)]
@@ -343,23 +366,34 @@ mod tests {
     }
 
     #[test]
-    fn smart_auto_estimate_does_not_become_render_base() {
+    fn smart_auto_frame_estimate_is_the_render_base() {
+        // A loose frame has no physical anchor, but the per-frame film-base
+        // estimate is its neutral reference: subtracting it per channel is what
+        // removes the mask. Aligning on the content instead cancelled
+        // scene-wide colour and gave colour-dominant scenes an opposite cast.
         let mut state = PipelineState::smart_auto();
         state.processing_report.base_source = "content_estimate".to_string();
-        let pipeline = FilmPipeline::from_state(
-            &state,
-            &BaseColor {
-                base_r: 10000,
-                base_g: 20000,
-                base_b: 30000,
-            },
-            [0.0; 3],
-            FilmMode::Color,
-        );
+        let base_color = BaseColor {
+            base_r: 10000,
+            base_g: 20000,
+            base_b: 30000,
+        };
+        let pipeline = FilmPipeline::from_state(&state, &base_color, [0.0; 3], FilmMode::Color);
+        let density = pipeline.compute_true_density(&[0.5, 0.5, 0.5]);
+        for (channel, value) in density.iter().enumerate() {
+            let expected = -0.5f32.log10()
+                - crate::pipeline::base_density_from_base_color(&base_color)[channel];
+            assert!((*value - expected).abs() < 1e-6, "{channel}: {density:?}");
+        }
+        // The estimate still never becomes a persisted physical anchor.
+        assert!(state.density_anchors.d_min_base.is_none());
+
+        // Without a trusted estimate the render keeps the zero reference.
+        state.processing_report.base_source = "unresolved".to_string();
+        let pipeline = FilmPipeline::from_state(&state, &base_color, [0.0; 3], FilmMode::Color);
         let density = pipeline.compute_true_density(&[0.5, 0.5, 0.5]);
         let expected = -0.5f32.log10();
         assert!(density.iter().all(|value| (*value - expected).abs() < 1e-6));
-        assert!(state.density_anchors.d_min_base.is_none());
     }
 
     #[test]

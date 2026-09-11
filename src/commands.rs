@@ -1828,6 +1828,44 @@ fn compute_auto_base(proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> BaseColor {
     }
 }
 
+/// Per-channel film-base candidate from the whole frame's brightest samples, in
+/// the Smart Auto working domain.
+///
+/// The retired v1.0.2 path estimated the base this way, and a loose frame
+/// without a confirmed Film Area still needs a neutral reference: the film base
+/// is the most transmissive part of the film, so the brightest percentile per
+/// channel is the base rather than the brightest scene content.
+fn compute_frame_base_density_f32(
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+) -> Result<([f32; 3], f32), String> {
+    let mut channels: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    for pixel in proxy.as_raw().chunks_exact(3) {
+        if pixel
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+        {
+            continue;
+        }
+        for channel in 0..3 {
+            channels[channel].push(pixel[channel]);
+        }
+    }
+    let sampled = channels[0].len();
+    if sampled == 0 {
+        return Err("The frame contains no usable film-base samples.".to_string());
+    }
+    let tail = ((sampled as f32 * 0.01).ceil() as usize).clamp(1, sampled);
+    let density = std::array::from_fn(|channel| {
+        let values = &mut channels[channel];
+        values.sort_unstable_by(|left, right| right.total_cmp(left));
+        let mean = values.iter().take(tail).sum::<f32>() / tail as f32;
+        -mean.max(1.0e-6).log10()
+    });
+    let confidence =
+        (sampled as f32 / (proxy.width() * proxy.height()).max(1) as f32).clamp(0.0, 1.0);
+    Ok((density, confidence))
+}
+
 fn compute_auto_base_f32(
     proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
     geom: &GeometryState,
@@ -2355,14 +2393,30 @@ fn pipeline_base_density(state: &PipelineState, base_color: &BaseColor) -> [f32;
         .map(|anchor| anchor.density)
         .unwrap_or_else(|| {
             if state.contract != ProcessingContract::LegacyV1 {
-                // Smart Auto's candidate is analysis metadata only. The
-                // content-driven fallback uses a zero reference and maps the
-                // observed scene range directly for display.
-                return [0.0; 3];
+                // A loose or unanchored Smart Auto frame has no physical anchor,
+                // but it does have a per-frame film-base estimate. That estimate
+                // is the neutral reference: subtracting it removes the mask per
+                // channel. Aligning the channels on the content instead made the
+                // result depend on whatever the photograph happened to contain,
+                // which cancelled scene-wide colour and pushed colour-dominant
+                // scenes to the opposite cast.
+                return smart_auto_frame_base_density(state, base_color).unwrap_or([0.0; 3]);
             }
-            [base_color.base_r, base_color.base_g, base_color.base_b]
-                .map(|value| -(value as f32 / 65535.0).max(1e-6).log10())
+            crate::pipeline::base_density_from_base_color(base_color)
         })
+}
+
+/// The per-frame film-base estimate a Smart Auto state should subtract, when it
+/// has one. `None` means there is no trusted base, and the caller keeps the
+/// zero-reference behaviour with a reported fallback reason.
+fn smart_auto_frame_base_density(
+    state: &PipelineState,
+    base_color: &BaseColor,
+) -> Option<[f32; 3]> {
+    if is_smart_auto_compatibility(state) {
+        return None;
+    }
+    crate::pipeline::frame_base_density(state, base_color)
 }
 
 fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
@@ -2494,6 +2548,21 @@ fn share_smart_auto_density_scale(limits: &mut AutoColorLimits) -> [f32; 3] {
     offsets
 }
 
+/// Keep one shared density scale for all channels without any per-channel
+/// shift. Used when the frame's own film base already supplies the neutral
+/// reference, so the content must not be allowed to re-balance the channels.
+fn share_smart_auto_density_scale_without_offsets(limits: &mut AutoColorLimits) {
+    let low = density_luma(limits.d_min);
+    let high = density_luma(limits.d_max);
+    if !low.is_finite() || !high.is_finite() || high <= low + 1.0e-6 {
+        return;
+    }
+    for channel in 0..3 {
+        limits.d_min[channel] = low;
+        limits.d_max[channel] = high;
+    }
+}
+
 fn preserve_content_span(limits: &mut AutoColorLimits, minimum_span: f32) {
     let low = limits.d_min[0];
     let high = limits.d_max[0];
@@ -2555,7 +2624,17 @@ fn prepare_content_render_limits(
     }
 
     let observed_span = density_luma(limits.d_max) - density_luma(limits.d_min);
-    let channel_offsets = share_smart_auto_density_scale(limits);
+    // When the frame carries a film-base estimate, subtracting it already
+    // removed the mask, so the channels must not be realigned on the content: a
+    // grey-world shift would re-introduce exactly the cast the base just
+    // removed and make the result depend on what the photograph contains. Only
+    // the shared density scale is kept.
+    let channel_offsets = if base_density.iter().any(|value| *value > 0.0) {
+        share_smart_auto_density_scale_without_offsets(limits);
+        [0.0; 3]
+    } else {
+        share_smart_auto_density_scale(limits)
+    };
     preserve_smart_auto_content_span(limits);
     (channel_offsets, observed_span < MIN_DISPLAY_DENSITY_SPAN)
 }
@@ -6548,7 +6627,15 @@ pub async fn analyze_proxy_base_color(
                         "detected_film_base",
                     )
                 } else {
-                    let (density, confidence) = compute_auto_base_f32(input, &item.geom)?;
+                    // A confirmed Film Area keeps the base inside the gate; a
+                    // loose frame without one falls back to the whole-frame
+                    // estimate the v1.0.2 path used, so it still gets a neutral
+                    // reference instead of a content-derived one.
+                    let (density, confidence) = if item.geom.calibration_points.is_some() {
+                        compute_auto_base_f32(input, &item.geom)?
+                    } else {
+                        compute_frame_base_density_f32(input)?
+                    };
                     (
                         density,
                         confidence,
@@ -13009,8 +13096,8 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 #[cfg(test)]
 mod import_contract_tests {
     use super::{
-        aggregate_roll_density_references, compute_auto_base, compute_auto_base_f32,
-        compute_auto_color_limits, compute_content_limits_f32,
+        aggregate_roll_density_references, base_color_from_density, compute_auto_base,
+        compute_auto_base_f32, compute_auto_color_limits, compute_content_limits_f32,
         compute_content_limits_f32_with_bounds, decode_image_buffer, decode_import_preview_base64,
         decode_profiled_tiff_prophoto_estimate, decode_prophoto_estimate_image_buffer,
         decode_prophoto_estimate_image_buffer_with_policy, decode_reduced_dng_for_working_space,
@@ -13706,6 +13793,50 @@ mod import_contract_tests {
             means[2] / green,
             means[0] - means[2]
         );
+    }
+
+    /// Per-channel film-base density from the frame's brightest samples, the way
+    /// the v1.0.2 path estimates it. `scoped_to_area` restricts the samples to
+    /// the declared Film Area.
+    fn ab_frame_base_density(
+        image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+        geom: &GeometryState,
+        scoped_to_area: bool,
+    ) -> [f32; 3] {
+        let points =
+            geom.calibration_points
+                .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
+        let mut channels = [Vec::new(), Vec::new(), Vec::new()];
+        for (index, pixel) in image.as_raw().chunks_exact(3).enumerate() {
+            if pixel
+                .iter()
+                .any(|value| !value.is_finite() || *value <= 0.0)
+            {
+                continue;
+            }
+            if scoped_to_area {
+                let x = (index as u32 % image.width()) as f32
+                    / image.width().saturating_sub(1).max(1) as f32;
+                let y = (index as u32 / image.width()) as f32
+                    / image.height().saturating_sub(1).max(1) as f32;
+                if !point_in_film_area([x, y], &points, 0.0) {
+                    continue;
+                }
+            }
+            for channel in 0..3 {
+                channels[channel].push(pixel[channel]);
+            }
+        }
+        std::array::from_fn(|channel| {
+            let values = &mut channels[channel];
+            if values.is_empty() {
+                return 0.0;
+            }
+            values.sort_unstable_by(|left, right| right.total_cmp(left));
+            let tail = ((values.len() as f32 * 0.01).ceil() as usize).clamp(1, values.len());
+            let mean = values.iter().take(tail).sum::<f32>() / tail as f32;
+            -mean.max(1.0e-6).log10()
+        })
     }
 
     fn ab_probe_region(
@@ -14523,7 +14654,11 @@ mod import_contract_tests {
             let mut state = default_pipeline_state_for_import(true, "LOOSE_DEFAULT", &[]);
             state.processing_report.base_source = "content_estimate".to_string();
             state.processing_report.base_confidence = "0.500".to_string();
-            let base = pipeline_base_density(&state, &BaseColor::default());
+            // Mirror production: the analysed frame base is the density
+            // reference for an unanchored Smart Auto frame.
+            let (analyzed_base_density, _) = compute_auto_base_f32(&estimate, &geom).unwrap();
+            let analyzed_base_color = base_color_from_density(analyzed_base_density);
+            let base = pipeline_base_density(&state, &analyzed_base_color);
             let mut limits = compute_content_limits_f32_with_bounds(
                 &estimate,
                 None,
@@ -14546,7 +14681,7 @@ mod import_contract_tests {
                 None,
                 &params,
                 &geom,
-                &BaseColor::default(),
+                &analyzed_base_color,
                 &state,
                 None,
             );
@@ -14565,7 +14700,7 @@ mod import_contract_tests {
                 None,
                 &gamma_params,
                 &geom,
-                &BaseColor::default(),
+                &analyzed_base_color,
                 &state,
                 None,
             );
@@ -14692,6 +14827,21 @@ mod import_contract_tests {
         );
 
         let legacy_base = compute_auto_base(&linear);
+        println!(
+            "[DIAG] {stem} v1.0.2 base u16=({},{},{}) density=({:.3},{:.3},{:.3})",
+            legacy_base.base_r,
+            legacy_base.base_g,
+            legacy_base.base_b,
+            -(f32::from(legacy_base.base_r) / 65535.0)
+                .max(1.0e-6)
+                .log10(),
+            -(f32::from(legacy_base.base_g) / 65535.0)
+                .max(1.0e-6)
+                .log10(),
+            -(f32::from(legacy_base.base_b) / 65535.0)
+                .max(1.0e-6)
+                .log10()
+        );
         let legacy_limits =
             compute_auto_color_limits(&linear, &geom, &legacy_base, mode.clone(), false).unwrap();
         let mut legacy_params = TuningParams::default();
@@ -14707,6 +14857,8 @@ mod import_contract_tests {
         let mut state = default_pipeline_state_for_import(true, "LOOSE_DEFAULT", &[]);
         state.processing_report.base_source = "content_estimate".to_string();
         state.processing_report.base_confidence = "0.500".to_string();
+        let (analyzed_base_density, _) = compute_auto_base_f32(&estimate, &geom).unwrap();
+        let analyzed_base_color = base_color_from_density(analyzed_base_density);
         let render_smart_auto = |estimate: &ImageBuffer<Rgb<f32>, Vec<f32>>,
                                  estimated_base: Option<[f32; 3]>|
          -> (
@@ -14734,7 +14886,9 @@ mod import_contract_tests {
                     },
                 });
             }
-            let base = pipeline_base_density(&state, &BaseColor::default());
+            // Mirror the production path: the analysed frame base is the
+            // reference, and the channels are not realigned on the content.
+            let base = pipeline_base_density(&state, &analyzed_base_color);
             let mut limits = compute_content_limits_f32_with_bounds(
                 estimate,
                 None,
@@ -14757,7 +14911,7 @@ mod import_contract_tests {
                 None,
                 &params,
                 &geom,
-                &BaseColor::default(),
+                &analyzed_base_color,
                 &state,
                 None,
             );
@@ -14802,6 +14956,65 @@ mod import_contract_tests {
             base_relative_offsets[0], base_relative_offsets[1], base_relative_offsets[2]
         );
         ab_print_rendered_cast("smart-auto base-relative", &base_relative_render, &geom);
+
+        // Base-estimator comparison: subtract a per-channel film base (the way
+        // v1.0.2 does) instead of aligning on the content centres, and compare
+        // whole-frame and film-area-scoped estimates against the v1.0.2
+        // benchmark.
+        for (label, scoped_to_area) in [("whole-frame base", false), ("film-area base", true)] {
+            let base_density = ab_frame_base_density(&estimate, &geom, scoped_to_area);
+            let mut limits = compute_content_limits_f32_with_bounds(
+                &estimate,
+                None,
+                &geom,
+                base_density,
+                roll_physical_density_span(&state.density_anchors, base_density),
+            )
+            .unwrap();
+            let low = crate::core_math::density_luma(limits.d_min);
+            let high = crate::core_math::density_luma(limits.d_max);
+            for channel in 0..3 {
+                limits.d_min[channel] = low;
+                limits.d_max[channel] = high;
+            }
+            let mut base_state = state.clone();
+            base_state.density_anchors.d_min_base = Some(DensityAnchor {
+                density: base_density,
+                source: DensityAnchorSource::EstimatedFromContent,
+                scope: DensityAnchorScope::Frame,
+                confidence: DensityAnchorConfidence::Estimated,
+                reference_id: None,
+                provenance: DensityAnchorProvenance {
+                    input_domain: DataDomain::ProPhotoEstimate,
+                    algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION
+                        .to_string(),
+                    legacy: false,
+                    ..Default::default()
+                },
+            });
+            base_state.render_mapping.mode = RenderMode::PreserveTone;
+            base_state.render_mapping.density_low = limits.d_min;
+            base_state.render_mapping.density_high = limits.d_max;
+            base_state.render_mapping.channel_offsets = [0.0; 3];
+            let mut params = TuningParams::default();
+            params.density.d_min = limits.d_min;
+            params.density.d_max = limits.d_max;
+            let rendered = render_f32_shader_equivalent(
+                &estimate,
+                None,
+                &params,
+                &geom,
+                &BaseColor::default(),
+                &base_state,
+                None,
+            );
+            ab_save_preview(output_root.join(format!("{stem}-{label}.jpg")), &rendered);
+            println!(
+                "[DIAG] {stem} {label}: base=({:.3},{:.3},{:.3}) window=({:.3}..{:.3})",
+                base_density[0], base_density[1], base_density[2], low, high
+            );
+            ab_print_rendered_cast(label, &rendered, &geom);
+        }
 
         // Decisive check: tint the same negative warm and render both paths.
         // A grey-world alignment cancels the tint (the render barely moves);
