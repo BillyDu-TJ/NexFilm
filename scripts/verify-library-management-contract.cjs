@@ -47,6 +47,31 @@ assert.match(
     /function progressCardStack\(\)[\s\S]*?fixed bottom-6 right-6 z-\[100\] flex w-72 flex-col items-end gap-3/,
     'Progress cards must stack in one column',
 );
+// A full-resolution frame takes seconds: the export card names the frame it is
+// working on, and the backend reports the frame before it starts decoding it.
+assert.match(
+    main,
+    /export-progress-file/,
+    'Export progress must name the frame being written',
+);
+const commandSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'commands.rs'), 'utf8');
+assert.match(
+    commandSource,
+    /export_snapshots\.iter\(\)\.for_each\(\|snapshot\| \{[\s\S]{0,900}?"stage": "decoding"/,
+    'The export must report each frame before it starts decoding',
+);
+// Orientation belongs to the renderer: a flipped frame must export the same way
+// up as the Develop preview shows it, and the filmstrip thumbnail must match.
+assert.match(
+    commandSource,
+    /fn render_f32_shader_equivalent\([\s\S]{0,1200}?map_oriented_uv_to_source\(uv, source_width, source_height, geom\)/,
+    'The export renderer must apply the frame geometry',
+);
+assert.match(
+    commandSource,
+    /let oriented_thumb = orient_display_image\(thumb_8bit, &item\.geom\)/,
+    'The filmstrip thumbnail must apply the frame geometry',
+);
 assert.match(
     main,
     /currentRollViewId = rollId;[\s\S]*?historyRollViewId = rollId;/,

@@ -3581,6 +3581,41 @@ fn map_oriented_uv_to_source(
     source_height: u32,
     geom: &GeometryState,
 ) -> [f32; 2] {
+    map_oriented_uv_to_source_impl(uv, source_width, source_height, geom)
+}
+
+/// Apply the frame's quarter turns and flips to a display-referred image.
+///
+/// This is the image-space counterpart of `map_oriented_uv_to_source`: rotating
+/// and then flipping a rendered frame produces exactly the pixels the renderer
+/// picks when it walks the oriented grid. The filmstrip thumbnail needs it to
+/// show the frame the user graded; without it a flipped frame looked upside down
+/// in the Library and the filmstrip while the preview and the export were the
+/// other way up.
+fn orient_display_image(image: image::RgbImage, geom: &GeometryState) -> image::RgbImage {
+    let mut current = image;
+    match geom.rotate_90_count.rem_euclid(4) {
+        1 => current = image::imageops::rotate90(&current),
+        2 => current = image::imageops::rotate180(&current),
+        3 => current = image::imageops::rotate270(&current),
+        _ => {}
+    }
+    if geom.flip_h {
+        current = image::imageops::flip_horizontal(&current);
+    }
+    if geom.flip_v {
+        current = image::imageops::flip_vertical(&current);
+    }
+    current
+}
+
+#[inline]
+fn map_oriented_uv_to_source_impl(
+    uv: [f32; 2],
+    source_width: u32,
+    source_height: u32,
+    geom: &GeometryState,
+) -> [f32; 2] {
     let source_width = source_width.max(1) as f32;
     let source_height = source_height.max(1) as f32;
     let angle = if geom.angle.abs() > 0.01 {
@@ -9228,10 +9263,24 @@ fn render_f32_shader_equivalent(
     pipeline_state: &PipelineState,
     lut: Option<&ParsedLut>,
 ) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    // The core renderer crops and samples, but it does not place the frame: the
+    // WebGL preview applies the quarter turns, flips and angle through its
+    // geometry matrix, and this renderer has to do the same or a flipped frame
+    // exports upside down. A quarter turn also swaps the output's aspect.
+    let (source_width, source_height) = (source.width(), source.height());
+    let turned = geom.rotate_90_count.rem_euclid(2) == 1;
+    let (layout_width, layout_height) = if turned {
+        (source_height, source_width)
+    } else {
+        (source_width, source_height)
+    };
     render_shader_equivalent_core(
-        source.width(),
-        source.height(),
-        |uv| sample_rgb32_nearest_checked(source, quality, uv),
+        layout_width,
+        layout_height,
+        |uv| {
+            let source_uv = map_oriented_uv_to_source(uv, source_width, source_height, geom);
+            sample_rgb32_nearest_checked(source, quality, source_uv)
+        },
         params,
         geom,
         base_color,
@@ -10475,6 +10524,22 @@ pub async fn batch_export_images(
         // several decoded/rotated/graded 16-bit buffers cannot coexist.
         export_snapshots.iter().for_each(|snapshot| {
             let file_path = snapshot.file_path.clone();
+            // Say which frame is being worked on before the decode starts. A
+            // full-resolution frame takes seconds, and a counter that only
+            // moves once the file is written reads as a frozen export.
+            let _ = progress_app.emit(
+                "export_progress",
+                serde_json::json!({
+                    "processed": processed_count.load(std::sync::atomic::Ordering::SeqCst),
+                    "total": count,
+                    "id": snapshot.id,
+                    "file": std::path::Path::new(&file_path)
+                        .file_name()
+                        .map(|name| name.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    "stage": "decoding",
+                }),
+            );
             let params_owned = snapshot.params.clone();
             let geom_owned = snapshot.geom.clone();
             let base_color_owned = snapshot.base_color.clone();
@@ -14029,22 +14094,26 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             out_px[2] = (final_rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8;
         });
 
-    let (orig_width, orig_height) = (width, height);
-    let cx = (item.geom.crop_rect.x * orig_width as f32)
+    // The filmstrip and the Cards show this thumbnail: it has to carry the same
+    // geometry as the Develop preview and the export, otherwise a flipped frame
+    // looks upside down everywhere except in the renderer the user graded.
+    let oriented_thumb = orient_display_image(thumb_8bit, &item.geom);
+    let (oriented_width, oriented_height) = oriented_thumb.dimensions();
+    let cx = (item.geom.crop_rect.x * oriented_width as f32)
         .max(0.0)
-        .min(orig_width as f32) as u32;
-    let cy = (item.geom.crop_rect.y * orig_height as f32)
+        .min(oriented_width as f32) as u32;
+    let cy = (item.geom.crop_rect.y * oriented_height as f32)
         .max(0.0)
-        .min(orig_height as f32) as u32;
-    let cw = (item.geom.crop_rect.width * orig_width as f32)
+        .min(oriented_height as f32) as u32;
+    let cw = (item.geom.crop_rect.width * oriented_width as f32)
         .max(1.0)
-        .min((orig_width - cx) as f32) as u32;
-    let ch = (item.geom.crop_rect.height * orig_height as f32)
+        .min((oriented_width - cx) as f32) as u32;
+    let ch = (item.geom.crop_rect.height * oriented_height as f32)
         .max(1.0)
-        .min((orig_height - cy) as f32) as u32;
+        .min((oriented_height - cy) as f32) as u32;
 
-    let mut cropped_thumb = thumb_8bit;
-    if cw < orig_width || ch < orig_height {
+    let mut cropped_thumb = oriented_thumb;
+    if cw < oriented_width || ch < oriented_height {
         cropped_thumb = image::imageops::crop(&mut cropped_thumb, cx, cy, cw, ch).to_image();
     }
 
@@ -19747,6 +19816,143 @@ mod roll_render_tests {
 
     /// A scene whose brightest content sits at half of the film span must land
     /// near paper white, not in the middle of the histogram.
+    /// The filmstrip thumbnail must show the frame the renderer produces.
+    #[test]
+    fn thumbnail_geometry_matches_the_render_mapping() {
+        let source = RgbImage::from_fn(6, 4, |x, y| Rgb([(y * 6 + x) as u8, 0, 0]));
+        for geom in [
+            GeometryState::default(),
+            GeometryState {
+                rotate_90_count: 1,
+                ..Default::default()
+            },
+            GeometryState {
+                rotate_90_count: 2,
+                ..Default::default()
+            },
+            GeometryState {
+                rotate_90_count: 3,
+                ..Default::default()
+            },
+            GeometryState {
+                flip_h: true,
+                ..Default::default()
+            },
+            GeometryState {
+                flip_v: true,
+                ..Default::default()
+            },
+            GeometryState {
+                rotate_90_count: 1,
+                flip_v: true,
+                ..Default::default()
+            },
+            GeometryState {
+                rotate_90_count: 2,
+                flip_h: true,
+                ..Default::default()
+            },
+        ] {
+            let oriented = orient_display_image(source.clone(), &geom);
+            let (width, height) = oriented.dimensions();
+            let expected = if geom.rotate_90_count.rem_euclid(2) == 0 {
+                (6, 4)
+            } else {
+                (4, 6)
+            };
+            assert_eq!((width, height), expected, "geom {geom:?}");
+            for y in 0..height {
+                for x in 0..width {
+                    let uv = [
+                        (x as f32 + 0.5) / width as f32,
+                        (y as f32 + 0.5) / height as f32,
+                    ];
+                    let source_uv = map_oriented_uv_to_source(uv, 6, 4, &geom);
+                    let source_x = (source_uv[0] * 6.0).floor().clamp(0.0, 5.0) as u32;
+                    let source_y = (source_uv[1] * 4.0).floor().clamp(0.0, 3.0) as u32;
+                    assert_eq!(
+                        oriented.get_pixel(x, y),
+                        source.get_pixel(source_x, source_y),
+                        "geom {geom:?} maps ({x},{y}) to ({source_x},{source_y})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The renderer must place the frame exactly like the thumbnail does, or an
+    /// export of a flipped frame comes out upside down compared with a preview.
+    #[test]
+    fn export_render_places_the_frame_with_the_frame_geometry() {
+        let params = TuningParams::default();
+        let base = BaseColor {
+            base_r: u16::MAX,
+            base_g: u16::MAX,
+            base_b: u16::MAX,
+        };
+        let mut state = PipelineState::smart_auto();
+        state.render_mapping = RenderMapping {
+            mode: RenderMode::RollAnchored,
+            density_low: [0.0; 3],
+            density_high: [1.0; 3],
+            exposure: 0.0,
+            gamma: 1.0,
+            channel_offsets: [0.0; 3],
+        };
+        // One dense pixel in the source's top-left corner.
+        let source = ImageBuffer::from_fn(6, 4, |x, y| {
+            if x == 0 && y == 0 {
+                Rgb([1.0e-3f32, 1.0e-3, 1.0e-3])
+            } else {
+                Rgb([1.0f32, 1.0, 1.0])
+            }
+        });
+        let marker = RgbImage::from_fn(6, 4, |x, y| {
+            if x == 0 && y == 0 {
+                Rgb([255u8, 255, 255])
+            } else {
+                Rgb([0u8, 0, 0])
+            }
+        });
+        for geom in [
+            GeometryState::default(),
+            GeometryState {
+                flip_v: true,
+                ..Default::default()
+            },
+            GeometryState {
+                flip_h: true,
+                ..Default::default()
+            },
+            GeometryState {
+                rotate_90_count: 2,
+                ..Default::default()
+            },
+            GeometryState {
+                rotate_90_count: 1,
+                flip_v: true,
+                ..Default::default()
+            },
+        ] {
+            let rendered =
+                render_f32_shader_equivalent(&source, None, &params, &geom, &base, &state, None);
+            let white = (0..rendered.height())
+                .flat_map(|y| (0..rendered.width()).map(move |x| (x, y)))
+                .filter(|(x, y)| rendered.get_pixel(*x, *y)[0] > 30_000)
+                .collect::<Vec<_>>();
+            let oriented = orient_display_image(marker.clone(), &geom);
+            let expected = (0..oriented.height())
+                .flat_map(|y| (0..oriented.width()).map(move |x| (x, y)))
+                .filter(|(x, y)| oriented.get_pixel(*x, *y)[0] > 128)
+                .collect::<Vec<_>>();
+            assert_eq!(expected.len(), 1, "geom {geom:?} marker");
+            assert_eq!(
+                white, expected,
+                "geom {geom:?} places the frame differently"
+            );
+        }
+    }
+
     fn synthetic_scene(base: [f32; 3], ground: f32, sky: f32) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
         ImageBuffer::from_fn(512, 512, |x, y| {
             let edge = x < 40 || y < 40 || x >= 472 || y >= 472;

@@ -5962,7 +5962,7 @@ function pruneProgressCardStack() {
     if (stack && stack.children.length === 0) stack.remove();
 }
 
-function showExportProgress(processed, total) {
+function showExportProgress(processed, total, file) {
     if (!exportProgressToast) {
         exportProgressToast = document.createElement('div');
         exportProgressToast.className = 'w-full border border-[#3A3A3C] bg-[#1C1C1E] p-4 shadow-2xl';
@@ -5970,13 +5970,19 @@ function showExportProgress(processed, total) {
             <div class="mb-3 flex items-center justify-between text-[11px] font-bold tracking-widest text-zinc-200">
         <span>${i18nText('export.exporting')}</span><span id="export-progress-text">0 / 0</span>
             </div>
-            <div class="h-1.5 overflow-hidden bg-zinc-800"><div id="export-progress-bar" class="h-full bg-zinc-200" style="width:0%"></div></div>`;
+            <div class="h-1.5 overflow-hidden bg-zinc-800"><div id="export-progress-bar" class="h-full bg-zinc-200" style="width:0%"></div></div>
+            <div id="export-progress-file" class="mt-3 truncate text-[11px] text-zinc-400"></div>`;
         progressCardStack().appendChild(exportProgressToast);
     }
     const safeTotal = Math.max(1, total || 0);
     const percent = Math.min(100, Math.max(0, (processed / safeTotal) * 100));
     exportProgressToast.querySelector('#export-progress-text').textContent = `${processed} / ${total}`;
     exportProgressToast.querySelector('#export-progress-bar').style.width = `${percent}%`;
+    // A frame takes seconds: name it, so the card shows work in progress even
+    // while the counter has not moved yet.
+    if (typeof file === 'string' && file) {
+        exportProgressToast.querySelector('#export-progress-file').textContent = file;
+    }
 }
 
 function clearExportProgress() {
@@ -5986,8 +5992,8 @@ function clearExportProgress() {
 }
 
 listen('export_progress', (event) => {
-    const { processed = 0, total = 0 } = event.payload || {};
-    showExportProgress(processed, total);
+    const { processed = 0, total = 0, file = '' } = event.payload || {};
+    showExportProgress(processed, total, file);
 });
 
 function openExportModal() {
