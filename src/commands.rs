@@ -3214,14 +3214,53 @@ fn detect_frame_highlight_fraction(
     base_density: [f32; 3],
     span: [f32; 3],
 ) -> Option<f32> {
+    let interior = film_block_luma_profile(proxy, base_density)?;
+    let span_luma = density_luma(span);
+    if !span_luma.is_finite() || span_luma <= 1.0e-4 {
+        return None;
+    }
+    let highlight_luma = interior[highlight_block_index(interior.len())];
+    let fraction = highlight_luma / span_luma;
+    if !fraction.is_finite() {
+        return None;
+    }
+    Some(fraction.clamp(ROLL_HIGHLIGHT_FLOOR, ROLL_HIGHLIGHT_CEILING))
+}
+
+/// Which picture blocks set one frame's highlight.
+///
+/// The blocks are already 32x32 averages, and blocks touching the light table,
+/// the blocking card or the frame rim are dropped, so the statistic only has to
+/// survive a stray specular. Taking the percentile of the *blocks* that used to
+/// stand here (0.95) put the white point below the picture's brightest areas on
+/// every frame: measured on real scans, 6-14% of the picture pixels sat above
+/// that endpoint, and the clouds came out as flat white. A near-maximum block
+/// reads the picture's actual highlight instead; the frame-level maximum over
+/// the Roll is what keeps every frame below it clipping-free.
+const HIGHLIGHT_BLOCK_QUANTILE: f32 = 0.999;
+
+/// Bounds for the Roll's content white point, as a fraction of the measured
+/// base-to-leader span. The floor keeps an underexposed negative from being
+/// mapped to near-black. The ceiling is the film's own maximum density (the
+/// fully exposed leader): content measured above it means the leader reference
+/// was sampled low, not that the mapping should reach past the film.
+const ROLL_HIGHLIGHT_FLOOR: f32 = 0.45;
+const ROLL_HIGHLIGHT_CEILING: f32 = 1.0;
+
+fn highlight_block_index(block_count: usize) -> usize {
+    ((block_count - 1) as f32 * HIGHLIGHT_BLOCK_QUANTILE).round() as usize
+}
+
+/// Sorted block-average luminance of the picture area, in density units
+/// relative to this frame's own film base.
+fn film_block_luma_profile(
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    base_density: [f32; 3],
+) -> Option<Vec<f32>> {
     const BLOCK: u32 = 32;
     const MIN_FILM_SHARE: f32 = 0.9;
     let (width, height) = proxy.dimensions();
     if width < BLOCK * 4 || height < BLOCK * 4 {
-        return None;
-    }
-    let span_luma = density_luma(span);
-    if !span_luma.is_finite() || span_luma <= 1.0e-4 {
         return None;
     }
     let blocks_x = width / BLOCK;
@@ -3309,15 +3348,7 @@ fn detect_frame_highlight_fraction(
         return None;
     }
     interior.sort_unstable_by(|left, right| left.total_cmp(right));
-    let index = ((interior.len() - 1) as f32 * 0.95).round() as usize;
-    let highlight_luma = interior[index];
-    let fraction = highlight_luma / span_luma;
-    if !fraction.is_finite() {
-        return None;
-    }
-    // Keep a floor so underexposed negatives are still lifted, and a ceiling so
-    // a bright frame cannot blow out every highlight of the Roll.
-    Some(fraction.clamp(0.45, 0.85))
+    Some(interior)
 }
 
 /// Resolve the density mapping used by every complete roll-anchor renderer.
@@ -3378,7 +3409,7 @@ fn roll_density_mapping_with_frame_base(
         .highlight_fraction
         .or(highlight_fraction)
         .filter(|value| value.is_finite())
-        .map(|value| value.clamp(0.45, 0.85))
+        .map(|value| value.clamp(ROLL_HIGHLIGHT_FLOOR, ROLL_HIGHLIGHT_CEILING))
         .unwrap_or(1.0);
     Some(RenderMapping {
         mode: RenderMode::RollAnchored,
@@ -3404,7 +3435,7 @@ fn record_roll_highlight_fraction(state: &EngineState, roll_id: &str, fraction: 
     if !fraction.is_finite() {
         return;
     }
-    let fraction = fraction.clamp(0.45, 0.85);
+    let fraction = fraction.clamp(ROLL_HIGHLIGHT_FLOOR, ROLL_HIGHLIGHT_CEILING);
     let mut rolls = write_lock(&state.rolls);
     let Some(roll) = rolls.iter_mut().find(|roll| roll.roll_id == roll_id) else {
         return;
@@ -7696,7 +7727,8 @@ pub async fn auto_invert_roll(
         });
         if let Some(fraction) = cached.filter(|value| value.is_finite()) {
             record_roll_highlight_fraction(&state, &roll_id, fraction);
-            roll_anchors.highlight_fraction = Some(fraction.clamp(0.45, 0.85));
+            roll_anchors.highlight_fraction =
+                Some(fraction.clamp(ROLL_HIGHLIGHT_FLOOR, ROLL_HIGHLIGHT_CEILING));
         }
     }
     let worker_cancellation = cancellation.clone();
@@ -7953,7 +7985,9 @@ async fn measure_roll_highlight_fraction(
             return Ok(Some(existing));
         }
     }
-    Ok(Some(brightest.clamp(0.45, 0.85)))
+    Ok(Some(
+        brightest.clamp(ROLL_HIGHLIGHT_FLOOR, ROLL_HIGHLIGHT_CEILING),
+    ))
 }
 
 /// Measure every frame's share of the Roll span and keep the brightest one.
@@ -19741,6 +19775,33 @@ mod roll_render_tests {
     }
 
     #[test]
+    fn frame_highlight_fraction_reads_the_brightest_picture_area() {
+        // A small bright area is what a cloud or a sunlit wall looks like: a
+        // 95th percentile of the picture blocks sat far below it and blew every
+        // highlight of the Roll out to white.
+        let base = [0.60, 0.73, 0.91];
+        let span = [1.0, 1.0, 1.0];
+        let frame = ImageBuffer::from_fn(512, 512, |x, y| {
+            let edge = x < 40 || y < 40 || x >= 472 || y >= 472;
+            let patch = (300..364).contains(&x) && (300..364).contains(&y);
+            let relative = if edge {
+                -0.4
+            } else if patch {
+                1.0
+            } else {
+                0.30
+            };
+            transmittance([base[0] + relative, base[1] + relative, base[2] + relative])
+        });
+        let fraction = detect_frame_highlight_fraction(&frame, base, span)
+            .expect("a scene with one bright area must produce an estimate");
+        assert!(
+            (fraction - 1.0).abs() < 0.05,
+            "the brightest picture area sets the highlight, got {fraction}"
+        );
+    }
+
+    #[test]
     fn frame_highlight_fraction_is_clamped_to_a_sane_band() {
         let base = [0.60, 0.73, 0.91];
         let span = [1.0, 1.0, 1.0];
@@ -19751,8 +19812,8 @@ mod roll_render_tests {
             detect_frame_highlight_fraction(&synthetic_scene(base, 0.80, 1.30), base, span)
                 .expect("bright scene");
         assert!(
-            (bright - 0.85).abs() < 1.0e-6,
-            "bright scene clamped to {bright}"
+            (bright - 1.0).abs() < 1.0e-6,
+            "a scene above the film's own maximum density stops at the leader: {bright}"
         );
     }
 

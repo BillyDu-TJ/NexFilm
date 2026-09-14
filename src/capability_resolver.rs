@@ -174,6 +174,12 @@ fn filter_anchors(
             );
         }
     }
+    // The Roll's content white point travels with its endpoints. Dropping it
+    // here made every state rebuilt from a resolution (the export snapshot, the
+    // runtime pipeline state) fall back to the frame's own highlight, so an
+    // exported frame was rendered with a different, brighter white point than
+    // the preview the user had just graded.
+    usable.highlight_fraction = anchors.highlight_fraction;
     (usable, rejected)
 }
 
@@ -492,6 +498,30 @@ mod tests {
         let result = resolve_pipeline(&input);
         assert!(result.usable_density_anchors.d_min_base.is_some());
         assert!(result.rejected_anchor_reasons.is_empty());
+    }
+
+    #[test]
+    fn roll_white_point_survives_resolution() {
+        // The Roll's white point is part of its anchors: a resolved state that
+        // lost it rendered the frame with its own highlight instead, which is
+        // how an export ended up brighter than the graded preview.
+        let mut input = input(None);
+        let base = anchor(DataDomain::ProPhotoEstimate, None);
+        let mut full = base.clone();
+        full.source = DensityAnchorSource::SampledFullExposure;
+        full.density = [1.0, 1.1, 1.2];
+        input.density_anchors = DensityAnchors {
+            d_min_base: Some(base),
+            d_max_full_exposure: Some(full),
+            retained_records: Vec::new(),
+            highlight_fraction: Some(0.85),
+        };
+        let result = resolve_pipeline(&input);
+        assert_eq!(
+            result.resolved_path,
+            ProcessingContract::RollAnchoredProPhotoV11
+        );
+        assert_eq!(result.usable_density_anchors.highlight_fraction, Some(0.85));
     }
 
     #[test]

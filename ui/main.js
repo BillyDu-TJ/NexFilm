@@ -452,7 +452,6 @@ let lastSelectionScope = null;
 let isDensityReferenceSelectionMode = false;
 let densityCalibrationDraft = null;
 let activeDensitySampleKind = null;
-let densityCalibrationPreviewRequest = 0;
 
 function updateImageSelection(targetId, event, orderedIds, scope) {
     if (isDensityReferenceSelectionMode && scope === 'library') {
@@ -706,8 +705,10 @@ function updateLibrarySelectionUI() {
     btnCalibrateDensity.textContent = i18nText(
         isDensityReferenceSelectionMode ? 'calibration.confirmSelection' : 'calibration.action'
     );
-    btnCalibrateDensity.disabled = importInProgress
-        || (isDensityReferenceSelectionMode && selectedCalibrationItems.length === 0);
+    // The button always stays clickable: in selection mode it confirms the
+    // picked frames, and clicking it with nothing picked explains what to do
+    // instead of leaving a dead button behind.
+    btnCalibrateDensity.disabled = importInProgress || allLibraryItems.length === 0;
     btnCalibrateDensity.classList.toggle('is-selecting', isDensityReferenceSelectionMode);
     btnDeleteRollImages.disabled = importInProgress || selectedTargets.length === 0;
     btnDeleteRollImages.textContent = selectedTargets.length > 0
@@ -756,9 +757,15 @@ btnSelectAll.addEventListener('click', () => {
 
 function setDensityReferenceSelectionMode(enabled) {
     isDensityReferenceSelectionMode = enabled;
-    selectedLibraryIds.clear();
-    lastSelectedLibraryId = null;
-    lastSelectionScope = enabled ? 'density-reference' : null;
+    if (enabled) {
+        // The frames the user already picked stay picked: entering the mode
+        // must not throw the selection away and ask for it a second time.
+        lastSelectionScope = 'density-reference';
+    } else {
+        selectedLibraryIds.clear();
+        lastSelectedLibraryId = null;
+        lastSelectionScope = null;
+    }
     viewLibrary.classList.toggle('density-reference-selection', enabled);
     updateLibrarySelectionUI();
 }
@@ -869,31 +876,23 @@ async function selectDensityCalibrationSource(itemId) {
     if (!densityCalibrationDraft || densityCalibrationDraft.itemId === itemId) return;
     const item = findKnownItem(itemId);
     if (!item || !densityCalibrationDraft.itemIds.includes(itemId)) return;
-    const request = ++densityCalibrationPreviewRequest;
     densityCalibrationDraft.itemId = itemId;
-    densityCalibrationDraft.previewLoading = true;
+    densityCalibrationDraft.previewLoading = false;
     activeDensitySampleKind = null;
     densityBaseMarker.classList.add('hidden');
     densityFullMarker.classList.add('hidden');
-    densityCalibrationImage.src = getThumbnailSrc(itemId) || '';
+    // Calibrating is about placing two points, not about waiting for a decode.
+    // Show the import-stage preview of the whole frame, which is already in
+    // memory and shares the frame's geometry, and let the sampling command
+    // decode in the background only where it actually needs pixels. Swapping
+    // the picture under the user's cursor while a RAW decode finishes is what
+    // made the click land on a different image than the one that was on screen.
+    const source = item.embedded_thumbnail_base64 || item.thumbnail_base64 || '';
+    densityCalibrationImage.src = source.startsWith('data:')
+        ? source
+        : `data:image/jpeg;base64,${source}`;
     renderDensityCalibrationSources();
     renderDensityCalibrationState();
-    try {
-        // Calibration inspection must use a full RAW decode, never a library
-        // thumbnail, camera-embedded JPEG, or half-size develop proxy.
-        const preview = await invoke('get_density_calibration_preview', { id: item.id });
-        if (!densityCalibrationDraft || request !== densityCalibrationPreviewRequest
-            || densityCalibrationDraft.itemId !== itemId) return;
-        densityCalibrationImage.src = preview.startsWith('data:') ? preview : `data:image/jpeg;base64,${preview}`;
-    } catch (error) {
-        showToast(i18nText('calibration.openFailed', { error }), 'error');
-    } finally {
-        if (densityCalibrationDraft && request === densityCalibrationPreviewRequest
-            && densityCalibrationDraft.itemId === itemId) {
-            densityCalibrationDraft.previewLoading = false;
-            renderDensityCalibrationState();
-        }
-    }
 }
 
 function openDensityCalibration(items) {
@@ -929,7 +928,6 @@ function openDensityCalibration(items) {
 function closeDensityCalibration() {
     densityCalibrationModal.classList.remove('is-open');
     densityCalibrationModal.setAttribute('aria-hidden', 'true');
-    densityCalibrationPreviewRequest += 1;
     activeDensitySampleKind = null;
     densityCalibrationDraft = null;
     densityCalibrationSourceList.replaceChildren();
@@ -943,7 +941,12 @@ btnCalibrateDensity.addEventListener('click', () => {
     const items = allLibraryItems.filter(item =>
         selectedLibraryIds.has(item.id) && item.status !== 'importing' && !item.file_missing
     );
-    if (items.length === 0) return;
+    if (items.length === 0) {
+        // Stay in selection mode: the user only has to pick the film base and
+        // leader frames, then press Confirm again.
+        showToast(i18nText('calibration.selectFramesFirst'), 'info');
+        return;
+    }
     openDensityCalibration(items);
     setDensityReferenceSelectionMode(false);
 });
@@ -962,8 +965,15 @@ densityCalibrationImage.addEventListener('click', async event => {
     if (!sourcePoint) return;
     const { x, y } = sourcePoint;
     const button = kind === 'base' ? btnSampleDensityBase : btnSampleDensityFull;
-    button.disabled = true;
     const status = kind === 'base' ? densityBaseStatus : densityFullStatus;
+    // Record the position first: the sample runs in the background, and the
+    // user keeps the marker and the rest of the calibration view while the
+    // frame's pixels are decoded behind them.
+    setDensitySampleMarker(kind, x, y);
+    activeDensitySampleKind = null;
+    densityCalibrationDraft.previewLoading = true;
+    renderDensityCalibrationState();
+    button.disabled = true;
     status.textContent = i18nText('calibration.sampling');
     try {
         const anchor = await invoke('sample_roll_density_reference', {
@@ -979,12 +989,11 @@ densityCalibrationImage.addEventListener('click', async event => {
         });
         densityCalibrationDraft.samples[kind] = nextSamples;
         densityCalibrationDraft[kind] = merged;
-        setDensitySampleMarker(kind, x, y);
-        activeDensitySampleKind = null;
     } catch (error) {
         showToast(i18nText('calibration.sampleFailed', { error }), 'error');
     } finally {
         button.disabled = false;
+        if (densityCalibrationDraft) densityCalibrationDraft.previewLoading = false;
         renderDensityCalibrationState();
     }
 });
@@ -1139,6 +1148,11 @@ function switchView(viewName) {
     if (viewName !== 'history') {
         isDeleteMode = false;
         selectedRollIds.clear();
+    }
+    // Leaving the Library ends the film-base/leader selection: the button must
+    // never come back as a disabled "Confirm" that waits for a new selection.
+    if (isDensityReferenceSelectionMode && viewName !== 'library') {
+        setDensityReferenceSelectionMode(false);
     }
     updateRollDeletionUI();
     const views = [
@@ -5929,16 +5943,35 @@ exportQuality.addEventListener('input', () => {
     saveCurrentExportPreferences();
 });
 
+// Both the Roll batch and the export report progress in the same corner. They
+// share one column so a running batch can never sit exactly on top of the
+// export card and look like it is the export that stopped moving.
+function progressCardStack() {
+    let stack = document.getElementById('progress-card-stack');
+    if (!stack) {
+        stack = document.createElement('div');
+        stack.id = 'progress-card-stack';
+        stack.className = 'fixed bottom-6 right-6 z-[100] flex w-72 flex-col items-end gap-3';
+        document.body.appendChild(stack);
+    }
+    return stack;
+}
+
+function pruneProgressCardStack() {
+    const stack = document.getElementById('progress-card-stack');
+    if (stack && stack.children.length === 0) stack.remove();
+}
+
 function showExportProgress(processed, total) {
     if (!exportProgressToast) {
         exportProgressToast = document.createElement('div');
-        exportProgressToast.className = 'fixed bottom-6 right-6 z-[100] w-72 border border-[#3A3A3C] bg-[#1C1C1E] p-4 shadow-2xl';
+        exportProgressToast.className = 'w-full border border-[#3A3A3C] bg-[#1C1C1E] p-4 shadow-2xl';
         exportProgressToast.innerHTML = `
             <div class="mb-3 flex items-center justify-between text-[11px] font-bold tracking-widest text-zinc-200">
         <span>${i18nText('export.exporting')}</span><span id="export-progress-text">0 / 0</span>
             </div>
             <div class="h-1.5 overflow-hidden bg-zinc-800"><div id="export-progress-bar" class="h-full bg-zinc-200" style="width:0%"></div></div>`;
-        document.body.appendChild(exportProgressToast);
+        progressCardStack().appendChild(exportProgressToast);
     }
     const safeTotal = Math.max(1, total || 0);
     const percent = Math.min(100, Math.max(0, (processed / safeTotal) * 100));
@@ -5949,6 +5982,7 @@ function showExportProgress(processed, total) {
 function clearExportProgress() {
     if (exportProgressToast) exportProgressToast.remove();
     exportProgressToast = null;
+    pruneProgressCardStack();
 }
 
 listen('export_progress', (event) => {
@@ -6769,8 +6803,8 @@ function renderAutoInvertRollProgress(progress) {
     const percent = total > 0 ? Math.round(processed / total * 100) : 0;
     if (!autoInvertRollProgress) {
         autoInvertRollProgress = document.createElement('div');
-        autoInvertRollProgress.className = 'fixed bottom-6 right-6 z-[100] w-72 border border-[#3A3A3C] bg-[#1C1C1E] p-4 shadow-2xl';
-        document.body.appendChild(autoInvertRollProgress);
+        autoInvertRollProgress.className = 'w-full border border-[#3A3A3C] bg-[#1C1C1E] p-4 shadow-2xl';
+        progressCardStack().appendChild(autoInvertRollProgress);
         autoInvertRollProgress.addEventListener('click', event => {
             if (!event.target.closest('[data-cancel-roll-invert]')) return;
             autoInvertRollCancelRequested = true;
@@ -6780,7 +6814,12 @@ function renderAutoInvertRollProgress(progress) {
     const title = progress?.phase === 'highlight'
         ? i18nText('develop.calibratingRollWhitePoint')
         : i18nText('develop.processingRoll');
-    const resultSummary = i18nText('develop.rollProgress', { succeeded, failed });
+    // The white-point pass walks the whole Roll before the first frame is
+    // rendered. Say what it is doing and drop the success counters, which are
+    // still zero and make the card look stuck.
+    const resultSummary = progress?.phase === 'highlight'
+        ? i18nText('develop.rollWhitePointProgress', { count: total })
+        : i18nText('develop.rollProgress', { succeeded, failed });
     const cancelLabel = i18nText('actions.cancel');
     autoInvertRollProgress.innerHTML = `
         <div class="mb-3 flex items-center justify-between text-[11px] font-bold tracking-widest text-zinc-200">
@@ -6795,6 +6834,7 @@ function renderAutoInvertRollProgress(progress) {
         setTimeout(() => {
             if (autoInvertRollProgress?.parentNode) autoInvertRollProgress.parentNode.removeChild(autoInvertRollProgress);
             autoInvertRollProgress = null;
+            pruneProgressCardStack();
             updateAutoInvertAvailability();
         }, 1200);
     }

@@ -37,8 +37,15 @@ assert.match(
 );
 assert.match(
     main,
-    /autoInvertRollProgress\.className\s*=\s*'fixed bottom-6 right-6 z-\[100\] w-72 border border-\[#3A3A3C\] bg-\[#1C1C1E\] p-4 shadow-2xl'/,
-    'Roll progress must use the export-style lower-right panel',
+    /progressCardStack\(\)\.appendChild\(autoInvertRollProgress\)/,
+    'Roll progress must share the export-style lower-right panel column',
+);
+// A batch and an export can run at the same time; sharing one column keeps the
+// two cards from covering each other, which made the export look frozen.
+assert.match(
+    main,
+    /function progressCardStack\(\)[\s\S]*?fixed bottom-6 right-6 z-\[100\] flex w-72 flex-col items-end gap-3/,
+    'Progress cards must stack in one column',
 );
 assert.match(
     main,
@@ -149,8 +156,15 @@ assert.match(
 );
 assert.match(
     main,
-    /isDensityReferenceSelectionMode[\s\S]*?selectedCalibrationItems\.length === 0/,
-    'Density calibration confirmation must accept one or more selected images',
+    /if \(items\.length === 0\) \{[\s\S]{0,400}?showToast\(i18nText\('calibration\.selectFramesFirst'\)/,
+    'Confirming without a selection must explain what to pick instead of doing nothing',
+);
+// Entering the selection must not throw away the frames the user already
+// picked, which is what made the flow ask for the selection twice.
+assert.match(
+    main,
+    /function setDensityReferenceSelectionMode\(enabled\) \{[\s\S]*?if \(enabled\) \{[\s\S]*?lastSelectionScope = 'density-reference';[\s\S]*?\} else \{[\s\S]*?selectedLibraryIds\.clear\(\);/,
+    'Entering the density reference selection must keep the existing selection',
 );
 const librarySelectionUi = main.match(
     /function updateLibrarySelectionUI\(\) \{[\s\S]*?\n\}/,
@@ -193,10 +207,24 @@ assert.match(
     /function densityCalibrationSourcePoint\(clientX, clientY\)[\s\S]*?geometry\.offsetX[\s\S]*?geometry\.renderedWidth/,
     'Density calibration clicks must map back to source coordinates',
 );
+// Calibration is about placing two points. It must show the preview that is
+// already in memory and let the sampling command decode in the background,
+// instead of blocking the modal on a RAW decode and swapping the picture under
+// the user's cursor.
+assert.doesNotMatch(
+    main,
+    /await invoke\('get_density_calibration_preview'/,
+    'Opening the calibration view must not wait for a RAW decode',
+);
 assert.match(
     main,
-    /const preview = await invoke\('get_density_calibration_preview', \{ id: item\.id \}\)/,
-    'Density calibration must request its dedicated full-decode preview',
+    /const source = item\.embedded_thumbnail_base64 \|\| item\.thumbnail_base64/,
+    'Calibration must show the frame preview that is already loaded',
+);
+assert.match(
+    main,
+    /setDensitySampleMarker\(kind, x, y\);[\s\S]*?await invoke\('sample_roll_density_reference'/,
+    'A calibration click must record its position before the sample is decoded',
 );
 assert.doesNotMatch(
     css,

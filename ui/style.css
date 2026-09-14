@@ -1135,6 +1135,10 @@ body[data-theme="light"] .text-zinc-400,
 body[data-theme="light"] .text-zinc-500,
 body[data-theme="light"] .text-zinc-600 { color: var(--muted) !important; }
 body[data-theme="light"] .bg-zinc-800, body[data-theme="light"] .bg-zinc-900 { background: var(--control) !important; }
+/* Batch and export progress fills are zinc-200, which is invisible on the
+   light theme's gray track. Paint them with the text colour instead, so the
+   bar shows the same progress in both themes. */
+body[data-theme="light"] .bg-zinc-200 { background: var(--text) !important; }
 body[data-theme="light"] [id$="-modal"] { background: rgba(30, 30, 28, .24) !important; }
 body[data-theme="light"] .sponsor-modal { background: rgba(30, 30, 28, .24) !important; }
 
