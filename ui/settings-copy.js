@@ -5,7 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
     const SETTING_FIELDS = {
         filmMode: { params: ['film_mode'] },
-        densityLimits: { params: ['d_min', 'd_max'] },
+        densityLimits: { params: ['d_min', 'd_max', 'd_min_offset', 'd_max_offset'] },
         printerRed: { params: ['exp_r'] },
         printerGreen: { params: ['exp_g'] },
         printerBlue: { params: ['exp_b'] },

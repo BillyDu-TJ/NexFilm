@@ -561,7 +561,121 @@ pub struct PipelineStageRecord {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// Working primaries the decoded pixels are expressed in. The input class may
+/// choose this value; it never chooses the density maths that consumes it.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputPrimaries {
+    Srgb,
+    DisplayP3,
+    AdobeRgb1998,
+    Rec2020,
+    ProPhotoRgb,
+    AcesCg,
+    /// Three-channel camera data that has not been mapped to a known space.
+    CameraNative,
+    /// Scanner RGB described by the device identification or a bound Profile.
+    ScannerDevice,
+    Unknown,
+}
+
+/// Encoding curve of the decoded samples, before they are linearised.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputTransferCurve {
+    Linear,
+    Srgb,
+    Gamma18,
+    Gamma20,
+    Gamma22,
+    /// Curve recorded by the scanner container or Input Profile.
+    ScannerDevice,
+    /// Raw sensor samples; the RAW decoder owns the transfer function.
+    CameraRaw,
+    Unknown,
+}
+
+/// Whether the samples are proportional to film transmission or already
+/// rendered for display by the capture device.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputReference {
+    LinearTransmission,
+    DisplayReferred,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputDomainSource {
+    EmbeddedIcc,
+    ScannerInputProfile,
+    ScannerContainerRecord,
+    RawMetadata,
+    DeviceIdentification,
+    /// No declaration was available; the file was read as sRGB.
+    FallbackSrgb,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum InputDomainConfidence {
+    /// The file states the domain in a form we can act on (ICC, container record).
+    Verified,
+    /// The domain follows from documented device behaviour rather than the file.
+    Declared,
+    /// The domain had to be assumed.
+    Estimated,
+}
+
+/// Explicit, per-frame record of the input domain. Every input class resolves
+/// one of these before the shared density stage, so a suffix, an import mode or
+/// a wrong provenance guess can only change this record and the conversion that
+/// produced it - never the density maths, neutralisation or display mapping.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InputDomainRecord {
+    pub primaries: InputPrimaries,
+    pub transfer: InputTransferCurve,
+    pub reference: InputReference,
+    /// Black/white normalisation contract the samples were decoded with.
+    pub normalization: String,
+    pub source: InputDomainSource,
+    pub confidence: InputDomainConfidence,
+    /// True when the domain had to be assumed rather than read from the file.
+    pub estimated: bool,
+    #[serde(default)]
+    pub detail: String,
+}
+
+impl Default for InputDomainRecord {
+    fn default() -> Self {
+        // Priority 5 of the input-domain order: fall back to sRGB and say so.
+        Self {
+            primaries: InputPrimaries::Srgb,
+            transfer: InputTransferCurve::Srgb,
+            reference: InputReference::DisplayReferred,
+            normalization: "full_range_unit".to_string(),
+            source: InputDomainSource::FallbackSrgb,
+            confidence: InputDomainConfidence::Estimated,
+            estimated: true,
+            detail: String::new(),
+        }
+    }
+}
+
+impl InputDomainRecord {
+    pub fn label(&self) -> String {
+        format!(
+            "{:?}/{:?}/{:?}/{:?}",
+            self.primaries, self.transfer, self.reference, self.source
+        )
+    }
+
+    pub fn is_estimated(&self) -> bool {
+        self.estimated || self.confidence == InputDomainConfidence::Estimated
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct PipelineProcessingReport {
     #[serde(default)]
     pub stages: Vec<PipelineStageRecord>,
@@ -587,6 +701,42 @@ pub struct PipelineProcessingReport {
     pub render_route: String,
     #[serde(default)]
     pub fallback_reason: String,
+    /// Input-domain resolution for this frame's pixels. Persisted with the
+    /// frame and surfaced in the technical report.
+    #[serde(default)]
+    pub input_domain: InputDomainRecord,
+    /// Per-channel density response measured for this frame's content window,
+    /// with the bounded gains the display mapping applied. `None` on routes
+    /// that do not measure a content window (roll anchors, legacy recipes).
+    #[serde(default)]
+    pub channel_response: Option<ChannelResponseRecord>,
+}
+
+/// Per-channel density response of one frame's content window.
+///
+/// A capture or an upstream renderer can compress a single channel so the
+/// frame covers far less density in it than in the others. Recording the
+/// measurement next to the gains keeps that visible in the technical report
+/// instead of leaving a frame that was compensated indistinguishable from one
+/// the capture left balanced.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChannelResponseRecord {
+    /// Density span the content covers in R, G and B, above the display
+    /// mapping's shared window origin.
+    pub spans: [f32; 3],
+    /// Largest span divided by the smallest. 1.0 means the channels responded
+    /// alike; the merged camera scans that needed correction measured 3.8.
+    pub imbalance: f32,
+    /// Display span multiplier applied to R, G and B. All ones means the frame
+    /// kept the shared window untouched.
+    pub gains: [f32; 3],
+}
+
+impl ChannelResponseRecord {
+    /// True when the display mapping moved at least one channel's span.
+    pub fn is_compensated(&self) -> bool {
+        self.gains.iter().any(|gain| (*gain - 1.0).abs() > 1.0e-6)
+    }
 }
 
 impl PipelineProcessingReport {
@@ -610,6 +760,8 @@ impl PipelineProcessingReport {
             analysis_data_domain: "linear_prophoto_estimate".to_string(),
             render_route: "FilmAreaSmartAuto".to_string(),
             fallback_reason: String::new(),
+            input_domain: InputDomainRecord::default(),
+            channel_response: None,
         }
     }
 
@@ -969,6 +1121,13 @@ impl Default for FilmMode {
 pub struct DensityParams {
     pub d_min: [f32; 3],
     pub d_max: [f32; 3],
+    /// Manual Master D-Min/D-Max trim from the Develop panel. The value is a
+    /// scalar shift applied to the endpoints the active route derived, so a
+    /// frame can be adjusted without rewriting the Roll's density anchors.
+    #[serde(default)]
+    pub d_min_offset: f32,
+    #[serde(default)]
+    pub d_max_offset: f32,
     pub gamma: f32,
 }
 
@@ -977,6 +1136,8 @@ impl Default for DensityParams {
         Self {
             d_min: [0.1, 0.1, 0.1],
             d_max: [2.0, 2.0, 2.0],
+            d_min_offset: 0.0,
+            d_max_offset: 0.0,
             gamma: 1.0,
         }
     }

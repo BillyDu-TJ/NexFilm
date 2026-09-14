@@ -42,6 +42,36 @@ assert.match(
     /highlight_fraction/,
     'The Roll white point must be persisted with the density anchors',
 );
+// The Master D-Min/D-Max sliders stay adjustable on the Roll Anchored route:
+// the manual trim is applied on top of the sampled anchors instead of being
+// locked out, and the same trim reaches the Rust renderer.
+assert.match(mainSource, /currentDMinOffset = current;/);
+assert.match(mainSource, /d_min_offset: currentDMinOffset/);
+assert.doesNotMatch(
+    mainSource,
+    /masterDmin\.el\.disabled\s*=/,
+    'The Master D-Min slider must stay adjustable after Roll sampling',
+);
+assert.doesNotMatch(
+    mainSource,
+    /masterDmax\.el\.disabled\s*=/,
+    'The Master D-Max slider must stay adjustable after Roll sampling',
+);
+assert.match(commandSource, /params\.density\.d_min_offset/);
+// There is exactly one density maths for every input class, and it carries no
+// per-channel display response: the shared density window plus the working-space
+// conversion is the whole mapping. A per-channel film-response curve was tried
+// and removed because it changed an already-validated look.
+assert.doesNotMatch(
+    commandSource,
+    /display_response|DisplayResponse/,
+    'The unified pipeline must not carry a per-channel display response',
+);
+assert.doesNotMatch(
+    mainSource,
+    /display_response|u_display_response/,
+    'The WebGL shader must not apply a per-channel display response',
+);
 assert.match(commandSource, /pipeline_state\.content_range = None/);
 assert.match(mainSource, /pipelineHasCompleteRollAnchors\(currentPipelineState\)\s*&&\s*!hasRenderedPreview/);
 assert.match(

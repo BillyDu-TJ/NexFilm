@@ -55,6 +55,18 @@ assert.equal(rotateOnly.geom.flip_h, true);
 assert.equal(rotateOnly.geom.rotate_90_count, 1);
 assert.equal(rotateOnly.geom.angle, 0);
 
+const densityLimits = createCopyPayload(
+    { ...sourceParams, d_min_offset: 0.05, d_max_offset: -0.05 },
+    sourceGeom,
+    ['densityLimits']
+);
+assert.deepEqual(densityLimits.params, {
+    d_min: [0.2, 0.2, 0.2],
+    d_max: [2, 2, 2],
+    d_min_offset: 0.05,
+    d_max_offset: -0.05
+});
+
 const perspectiveOnly = mergeCopyPayload(
     currentParams,
     currentGeom,

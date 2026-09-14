@@ -270,8 +270,20 @@ const copySettingsGroups = Array.from(document.querySelectorAll('.copy-settings-
 
 let currentDMin = [0.1, 0.1, 0.1];
 let currentDMax = [2.0, 2.0, 2.0];
+// Master D-Min/D-Max sliders are a manual trim on top of the endpoints the
+// active route derived. Keeping them apart lets a sampled Roll keep its fixed
+// mapping while the preview stays adjustable.
+let currentDMinOffset = 0;
+let currentDMaxOffset = 0;
 const CHANNEL_CONTROL_SCALE = 0.5;
 const LUT_CONTROL_SCALE = 0.5;
+
+function effectiveDensityEndpoints() {
+    return {
+        dMin: currentDMin.map(value => value + currentDMinOffset),
+        dMax: currentDMax.map(value => value + currentDMaxOffset),
+    };
+}
 
 const sliders = {
     masterDmin: { el: document.getElementById('master-dmin'), val: document.getElementById('val-master-dmin') },
@@ -1345,6 +1357,8 @@ function captureEditState() {
             film_mode: mode,
             d_min: currentDMin.slice(),
             d_max: currentDMax.slice(),
+            d_min_offset: currentDMinOffset,
+            d_max_offset: currentDMaxOffset,
             exposure: parseFloat(sliders.exposure.el.value),
             gamma: parseFloat(sliders.gamma.el.value),
             saturation: parseFloat(sliders.saturation.el.value),
@@ -1824,6 +1838,8 @@ function saveCurrentState() {
         film_mode: mode,
         d_min: currentDMin.slice(),
         d_max: currentDMax.slice(),
+        d_min_offset: currentDMinOffset,
+        d_max_offset: currentDMaxOffset,
         exposure: parseFloat(sliders.exposure.el.value),
         gamma: parseFloat(sliders.gamma.el.value),
         saturation: parseFloat(sliders.saturation.el.value),
@@ -1955,12 +1971,10 @@ function pipelineRequiresFilmArea(state = currentPipelineState) {
 }
 
 function updatePipelineStatus() {
-    const rollAnchored = pipelineHasCompleteRollAnchors() && Boolean(currentRollViewId);
-    // Roll Anchored uses the persisted per-channel span. The legacy master
-    // density sliders cannot change that fixed mapping and would otherwise
-    // suggest a per-frame endpoint edit that the renderer ignores.
-    if (sliders.masterDmin?.el) sliders.masterDmin.el.disabled = rollAnchored;
-    if (sliders.masterDmax?.el) sliders.masterDmax.el.disabled = rollAnchored;
+    // A complete Roll keeps its sampled density anchors as the baseline, but
+    // the Master D-Min/D-Max sliders still trim this frame on top of them.
+    // Both the WebGL preview and the Rust render apply that trim, so the
+    // controls stay enabled on the Roll Anchored route.
     if (btnAutoColor) {
         btnAutoColor.title = i18nText('develop.autoInvert');
         btnAutoColor.setAttribute('aria-label', btnAutoColor.title);
@@ -2944,8 +2958,15 @@ function renderWebGL() {
             proxyHasAnalyzedBase ? currentBaseDensity[1] : 0.0,
             proxyHasAnalyzedBase ? currentBaseDensity[2] : 0.0,
         );
-    gl.uniform3f(u_dmin_loc, currentDMin[0], currentDMin[1], currentDMin[2]);
-    gl.uniform3f(u_dmax_loc, currentDMax[0], currentDMax[1], currentDMax[2]);
+    const densityEndpoints = effectiveDensityEndpoints();
+    gl.uniform3f(
+        u_dmin_loc,
+        densityEndpoints.dMin[0], densityEndpoints.dMin[1], densityEndpoints.dMin[2]
+    );
+    gl.uniform3f(
+        u_dmax_loc,
+        densityEndpoints.dMax[0], densityEndpoints.dMax[1], densityEndpoints.dMax[2]
+    );
     gl.uniform1f(u_master_exposure_loc, expVal);
     gl.uniform3f(
         u_exposure_loc,
@@ -3304,17 +3325,28 @@ function setMode(mode) {
 }
 
 function updateDMinMaxDisplay() {
-    document.getElementById('val-dmin').innerHTML = `<span class="text-red-400">${currentDMin[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMin[1].toFixed(3)}</span><span class="text-blue-400">${currentDMin[2].toFixed(3)}</span>`;
-    document.getElementById('val-dmax').innerHTML = `<span class="text-red-400">${currentDMax[0].toFixed(3)}</span><span class="text-emerald-400">${currentDMax[1].toFixed(3)}</span><span class="text-blue-400">${currentDMax[2].toFixed(3)}</span>`;
+    const { dMin, dMax } = effectiveDensityEndpoints();
+    document.getElementById('val-dmin').innerHTML = `<span class="text-red-400">${dMin[0].toFixed(3)}</span><span class="text-emerald-400">${dMin[1].toFixed(3)}</span><span class="text-blue-400">${dMin[2].toFixed(3)}</span>`;
+    document.getElementById('val-dmax').innerHTML = `<span class="text-red-400">${dMax[0].toFixed(3)}</span><span class="text-emerald-400">${dMax[1].toFixed(3)}</span><span class="text-blue-400">${dMax[2].toFixed(3)}</span>`;
+}
+
+function applyMasterDensityOffsetSliders() {
+    sliders.masterDmin.el.value = currentDMinOffset;
+    sliders.masterDmin.val.textContent = formatSliderValue('masterDmin', currentDMinOffset);
+    lastMasterDmin = currentDMinOffset;
+    sliders.masterDmax.el.value = currentDMaxOffset;
+    sliders.masterDmax.val.textContent = formatSliderValue('masterDmax', currentDMaxOffset);
+    lastMasterDmax = currentDMaxOffset;
 }
 
 function updateUIFromParams(params, geom) {
     current_geom = NexFilmGeometry.normalizeGeometryState(geom || current_geom);
     currentDMin = params.d_min.slice();
     currentDMax = params.d_max.slice();
+    currentDMinOffset = Number(params.d_min_offset) || 0;
+    currentDMaxOffset = Number(params.d_max_offset) || 0;
     updateDMinMaxDisplay();
-    sliders.masterDmin.el.value = 0; sliders.masterDmin.val.textContent = "0.00"; lastMasterDmin = 0;
-    sliders.masterDmax.el.value = 0; sliders.masterDmax.val.textContent = "0.00"; lastMasterDmax = 0;
+    applyMasterDensityOffsetSliders();
     
     sliders.exposure.el.value = params.exposure;
     sliders.gamma.el.value = params.gamma;
@@ -6001,18 +6033,16 @@ let lastMasterDmin = 0;
 let lastMasterDmax = 0;
 
 sliders.masterDmin.el.addEventListener('input', (e) => {
-    let current = parseFloat(e.target.value);
-    let delta = current - lastMasterDmin;
+    const current = parseFloat(e.target.value);
+    currentDMinOffset = current;
     lastMasterDmin = current;
-    currentDMin[0] += delta; currentDMin[1] += delta; currentDMin[2] += delta;
     sliders.masterDmin.val.textContent = formatSliderValue('masterDmin', current);
     updateDMinMaxDisplay(); requestRender();
 });
 sliders.masterDmax.el.addEventListener('input', (e) => {
-    let current = parseFloat(e.target.value);
-    let delta = current - lastMasterDmax;
+    const current = parseFloat(e.target.value);
+    currentDMaxOffset = current;
     lastMasterDmax = current;
-    currentDMax[0] += delta; currentDMax[1] += delta; currentDMax[2] += delta;
     sliders.masterDmax.val.textContent = formatSliderValue('masterDmax', current);
     updateDMinMaxDisplay(); requestRender();
 });
@@ -7243,10 +7273,10 @@ btnResetColor.addEventListener('click', async () => {
 
     currentDMin = [0.1, 0.1, 0.1];
     currentDMax = [2.0, 2.0, 2.0];
+    currentDMinOffset = 0;
+    currentDMaxOffset = 0;
     updateDMinMaxDisplay();
-    
-    sliders.masterDmin.el.value = 0; sliders.masterDmin.val.textContent = "0.00"; lastMasterDmin = 0;
-    sliders.masterDmax.el.value = 0; sliders.masterDmax.val.textContent = "0.00"; lastMasterDmax = 0;
+    applyMasterDensityOffsetSliders();
     
     sliders.exposure.el.value = 0;
     sliders.gamma.el.value = 1;

@@ -73,6 +73,8 @@ const mock = `
         if (command === 'get_user_cameras') return ['Nikon F3', 'Contax RTS II'];
         if (command === 'get_user_films') return ['Kodak Gold 200', 'Fujifilm C400'];
         if (command === 'get_builtin_luts') return [];
+        if (command === 'get_calibration_profiles') return [];
+        if (command === 'get_scanner_profiles') return [];
         if (command === 'promote_roll') { libraryRollId = args.rollId; return null; }
         if (command === 'delete_rolls') {
             const ids = new Set(args.rollIds || []);

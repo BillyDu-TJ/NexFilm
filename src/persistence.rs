@@ -228,7 +228,7 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
     migrate_legacy_thumbnails(connection)?;
     migrate_raw_decode_settings(connection)?;
     migrate_density_contract(connection)?;
-    migrate_loose_smart_auto_domain(connection)?;
+    migrate_retired_density_recipe(connection)?;
     migrate_p11_calibration_contract(connection)?;
     Ok(())
 }
@@ -504,22 +504,21 @@ pub fn math_version_for_contract(contract: ProcessingContract) -> i64 {
     }
 }
 
-/// Loose Import used to be pinned to the retired v1.0.2 linear-sRGB source, so
-/// every frame it produced carries `legacy_linear_srgb` plus a base measured in
-/// that domain. Imports and analysis now run the same ProPhoto Estimate Smart
-/// Auto path as an unanchored Roll, so the persisted marker has to be rewritten
-/// once or those frames would stay on Status M forever.
+/// The previous release routed scanner-produced inputs onto the retired v1.0.2
+/// density recipe by tagging them `legacy_linear_srgb` and measuring their film
+/// base in that domain. A frame's input class now selects only its input domain,
+/// so every record that still carries the retired marker has to be moved onto the
+/// shared density maths once.
 ///
 /// The rewrite is idempotent: it only matches rows that still carry the marker,
-/// keeps projects persisted as LegacyV1 exactly as they are, and clears the
-/// per-frame state that was derived from the old domain (base colour and the
-/// rendered thumbnail) so the next analysis starts fresh instead of reusing
-/// endpoints measured on the wrong source.
-fn migrate_loose_smart_auto_domain(connection: &Connection) -> rusqlite::Result<()> {
-    let mut statement = connection.prepare(
-        "SELECT rowid, roll_id, file_path, pipeline_state FROM image_states
-         WHERE roll_id = 'LOOSE_DEFAULT'",
-    )?;
+/// keeps projects persisted as LegacyV1 exactly as they are, and clears every
+/// cache derived from the old domain (base colour, the measured frame base and
+/// highlight fraction, the resolver key, and the rendered thumbnail) so the next
+/// analysis starts fresh instead of reusing endpoints measured on the wrong
+/// source.
+fn migrate_retired_density_recipe(connection: &Connection) -> rusqlite::Result<()> {
+    let mut statement =
+        connection.prepare("SELECT rowid, roll_id, file_path, pipeline_state FROM image_states")?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, i64>(0)?,
@@ -529,7 +528,7 @@ fn migrate_loose_smart_auto_domain(connection: &Connection) -> rusqlite::Result<
     })?;
     let mut migrations = Vec::new();
     for row in rows {
-        let (row_id, file_path, original) = row?;
+        let (row_id, _file_path, original) = row?;
         let Ok(mut state) = serde_json::from_str::<PipelineState>(&original) else {
             // An unreadable row is left alone: the loader reports the parse
             // failure, and silently rewriting it would hide the corruption.
@@ -538,19 +537,10 @@ fn migrate_loose_smart_auto_domain(connection: &Connection) -> rusqlite::Result<
         if state.contract == ProcessingContract::LegacyV1 {
             continue;
         }
-        // Loose frames carry the recipe their input class needs: a scanner scan
-        // keeps the historical density maths, camera RAW uses the ProPhoto
-        // estimate. Records analysed under the other recipe are moved over and
-        // their derived caches are cleared so the next analysis starts fresh.
-        let desired_domain = if crate::commands::uses_scan_density_recipe(&file_path) {
-            "legacy_linear_srgb"
-        } else {
-            "linear_prophoto_estimate"
-        };
-        if state.processing_report.analysis_data_domain == desired_domain {
+        if state.processing_report.analysis_data_domain != "legacy_linear_srgb" {
             continue;
         }
-        state.processing_report.analysis_data_domain = desired_domain.to_string();
+        state.processing_report.analysis_data_domain = "linear_prophoto_estimate".to_string();
         if state.processing_report.base_source == "compatibility_base" {
             state.processing_report.base_source = "unresolved".to_string();
             state.processing_report.base_confidence = "low".to_string();
@@ -559,14 +549,14 @@ fn migrate_loose_smart_auto_domain(connection: &Connection) -> rusqlite::Result<
             .processing_report
             .fallback_reasons
             .iter()
-            .any(|reason| reason == "loose_density_recipe_migrated")
+            .any(|reason| reason == "retired_density_recipe_migrated")
         {
             state
                 .processing_report
                 .fallback_reasons
-                .push("loose_density_recipe_migrated".to_string());
+                .push("retired_density_recipe_migrated".to_string());
         }
-        state.processing_report.fallback_reason = "loose_density_recipe_migrated".to_string();
+        state.processing_report.fallback_reason = "retired_density_recipe_migrated".to_string();
         let normalized = serde_json::to_string(&state)
             .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
         migrations.push((row_id, normalized));
@@ -590,7 +580,7 @@ fn migrate_loose_smart_auto_domain(connection: &Connection) -> rusqlite::Result<
         )?;
     }
     eprintln!(
-        "[Pipeline Migration] moved {} loose frame(s) onto the density recipe their input class needs; base colour and rendered thumbnails cleared for re-analysis",
+        "[Pipeline Migration] moved {} frame(s) off the retired v1.0.2 density recipe onto the shared density maths; base colour, frame base/highlight and rendered thumbnails cleared for re-analysis",
         migrations.len()
     );
     Ok(())
@@ -1504,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn loose_density_recipe_migration_moves_records_onto_the_right_recipe() {
+    fn retired_density_recipe_migration_moves_every_tagged_frame_onto_the_shared_maths() {
         let connection = Connection::open_in_memory().unwrap();
         init_schema(&connection).unwrap();
         let analyzed_base = BaseColor {
@@ -1512,30 +1502,33 @@ mod tests {
             base_g: 50_000,
             base_b: 40_000,
         };
-        // Camera RAW analysed on the scanner recipe has to move to the ProPhoto
-        // estimate; a scanner scan analysed on the estimate has to move back.
-        let mut raw_state = PipelineState::smart_auto();
-        raw_state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
-        raw_state.processing_report.base_source = "compatibility_base".to_string();
-        raw_state.processing_report.base_confidence = "high".to_string();
-        let mut scan_state = PipelineState::smart_auto();
-        scan_state.processing_report.analysis_data_domain = "linear_prophoto_estimate".to_string();
-        scan_state.processing_report.base_source = "content_estimate".to_string();
-        scan_state.processing_report.base_confidence = "0.500".to_string();
-        // A scanner scan that is already on the right recipe stays untouched.
-        let mut settled_scan_state = PipelineState::smart_auto();
-        settled_scan_state.processing_report.analysis_data_domain =
+        // Every frame the previous release tagged with the retired recipe moves
+        // onto the shared density maths, whether it came from a scanner or from
+        // a camera: the input class no longer selects the density maths.
+        let mut retired_scan_state = PipelineState::smart_auto();
+        retired_scan_state.processing_report.analysis_data_domain =
             "legacy_linear_srgb".to_string();
-        settled_scan_state.processing_report.base_source = "compatibility_base".to_string();
+        retired_scan_state.processing_report.base_source = "compatibility_base".to_string();
+        retired_scan_state.processing_report.base_confidence = "high".to_string();
+        let mut retired_camera_state = PipelineState::smart_auto();
+        retired_camera_state.processing_report.analysis_data_domain =
+            "legacy_linear_srgb".to_string();
+        retired_camera_state.processing_report.base_source = "compatibility_base".to_string();
+        // A frame already on the shared estimate keeps its caches.
+        let mut settled_state = PipelineState::smart_auto();
+        settled_state.processing_report.analysis_data_domain =
+            "linear_prophoto_estimate".to_string();
+        settled_state.processing_report.base_source = "content_estimate".to_string();
+        settled_state.processing_report.base_confidence = "0.500".to_string();
         let mut legacy_project_state = PipelineState::smart_auto();
         legacy_project_state.contract = ProcessingContract::LegacyV1;
         legacy_project_state.processing_report.analysis_data_domain =
             "legacy_linear_srgb".to_string();
 
         for (file_path, state) in [
-            ("frame.NEF", &raw_state),
-            ("scan.tif", &scan_state),
-            ("settled-scan.tif", &settled_scan_state),
+            ("scan.tif", &retired_scan_state),
+            ("frame.NEF", &retired_camera_state),
+            ("settled.tif", &settled_state),
             ("legacy-project.dng", &legacy_project_state),
         ] {
             connection
@@ -1559,7 +1552,7 @@ mod tests {
                 .unwrap();
         }
 
-        migrate_loose_smart_auto_domain(&connection).unwrap();
+        migrate_retired_density_recipe(&connection).unwrap();
 
         let read = |file_path: &str| -> (String, Option<String>, String) {
             connection
@@ -1572,7 +1565,7 @@ mod tests {
                 .unwrap()
         };
 
-        let (migrated, migrated_thumb, migrated_base) = read("frame.NEF");
+        let (migrated, migrated_thumb, migrated_base) = read("scan.tif");
         let migrated_state: PipelineState = serde_json::from_str(&migrated).unwrap();
         assert_eq!(
             migrated_state.processing_report.analysis_data_domain,
@@ -1584,35 +1577,36 @@ mod tests {
         assert_eq!(migrated_state.processing_report.base_confidence, "low");
         assert_eq!(
             migrated_state.processing_report.fallback_reason,
-            "loose_density_recipe_migrated"
+            "retired_density_recipe_migrated"
         );
         assert!(migrated_state
             .processing_report
             .fallback_reasons
             .iter()
-            .any(|reason| reason == "loose_density_recipe_migrated"));
+            .any(|reason| reason == "retired_density_recipe_migrated"));
         assert_eq!(migrated_thumb, None);
         let migrated_base: BaseColor = serde_json::from_str(&migrated_base).unwrap();
         assert_eq!(migrated_base, BaseColor::default());
 
-        // A scanner scan settles on the historical recipe, and its caches are
-        // cleared so it is re-analysed there.
-        let (scan_migrated, scan_thumb, scan_base) = read("scan.tif");
-        let scan_migrated: PipelineState = serde_json::from_str(&scan_migrated).unwrap();
+        // Camera RAW tagged by the retired routing moves the same way, so a
+        // provenance guess can no longer split one density maths into two.
+        let (raw_migrated, raw_thumb, raw_base) = read("frame.NEF");
+        let raw_migrated: PipelineState = serde_json::from_str(&raw_migrated).unwrap();
         assert_eq!(
-            scan_migrated.processing_report.analysis_data_domain,
-            "legacy_linear_srgb"
+            raw_migrated.processing_report.analysis_data_domain,
+            "linear_prophoto_estimate"
         );
-        assert_eq!(scan_thumb, None);
-        let scan_base: BaseColor = serde_json::from_str(&scan_base).unwrap();
-        assert_eq!(scan_base, BaseColor::default());
+        assert_eq!(raw_migrated.processing_report.base_source, "unresolved");
+        assert_eq!(raw_thumb, None);
+        let raw_base: BaseColor = serde_json::from_str(&raw_base).unwrap();
+        assert_eq!(raw_base, BaseColor::default());
 
-        // A scan that already sits on the right recipe keeps its caches.
-        let (settled, settled_thumb, _) = read("settled-scan.tif");
+        // A frame that already sits on the shared recipe keeps its caches.
+        let (settled, settled_thumb, _) = read("settled.tif");
         let settled: PipelineState = serde_json::from_str(&settled).unwrap();
         assert_eq!(
             settled.processing_report.analysis_data_domain,
-            "legacy_linear_srgb"
+            "linear_prophoto_estimate"
         );
         assert_eq!(settled_thumb.as_deref(), Some("stale-positive"));
 
@@ -1630,9 +1624,9 @@ mod tests {
         assert_eq!(untouched_base, analyzed_base);
 
         // Re-running the migration must not touch anything again.
-        let before = read("frame.NEF");
-        migrate_loose_smart_auto_domain(&connection).unwrap();
-        let after = read("frame.NEF");
+        let before = read("scan.tif");
+        migrate_retired_density_recipe(&connection).unwrap();
+        let after = read("scan.tif");
         assert_eq!(before.0, after.0);
         assert_eq!(before.1, after.1);
         assert_eq!(before.2, after.2);
