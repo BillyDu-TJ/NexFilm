@@ -55,6 +55,56 @@ pub fn neutral_density_bounds(d_min: [f32; 3], d_max: [f32; 3]) -> (f32, f32) {
     (density_luma(d_min), density_luma(d_max))
 }
 
+/// Apply the Master D-Min/D-Max trim to the display endpoints.
+///
+/// The endpoints are per channel: a sampled Roll measures its own base-to-leader
+/// span in every channel, so the three channels rarely share one span. Adding
+/// the same raw density offset to all of them therefore changes each channel's
+/// gain by a different relative amount, which tints the print (raising D-Max by
+/// one uniform offset visibly turns the frame green). Scaling each channel's
+/// offset by its share of the span keeps the trim equal in normalised display
+/// units, where every channel receives the same exposure and contrast move.
+pub fn trim_density_endpoints(
+    d_min: [f32; 3],
+    d_max: [f32; 3],
+    min_offset: f32,
+    max_offset: f32,
+) -> ([f32; 3], [f32; 3]) {
+    let span = [
+        d_max[0] - d_min[0],
+        d_max[1] - d_min[1],
+        d_max[2] - d_min[2],
+    ];
+    let span_luma = density_luma(span);
+    if !span_luma.is_finite() || span_luma <= 1.0e-4 {
+        // A collapsed window has no share to scale by; keep the plain shift so
+        // the sliders stay usable instead of producing infinities.
+        return (
+            [
+                d_min[0] + min_offset,
+                d_min[1] + min_offset,
+                d_min[2] + min_offset,
+            ],
+            [
+                d_max[0] + max_offset,
+                d_max[1] + max_offset,
+                d_max[2] + max_offset,
+            ],
+        );
+    }
+    let mut trimmed = (d_min, d_max);
+    for channel in 0..3 {
+        let scale = if span[channel].is_finite() {
+            span[channel] / span_luma
+        } else {
+            1.0
+        };
+        trimmed.0[channel] = d_min[channel] + min_offset * scale;
+        trimmed.1[channel] = d_max[channel] + max_offset * scale;
+    }
+    trimmed
+}
+
 #[inline]
 pub fn neutralize_rgb(rgb: [f32; 3]) -> [f32; 3] {
     let luma = density_luma(rgb);
@@ -284,7 +334,7 @@ mod tests {
     use super::{
         apply_homography, apply_lens_distortion_uv, apply_perspective_uv,
         apply_post_gamma_adjustments, density_luma, neutral_density_bounds, neutralize_rgb,
-        normalize_density_channel, shader_homography, sprocket_white_mask,
+        normalize_density_channel, shader_homography, sprocket_white_mask, trim_density_endpoints,
     };
 
     #[test]
@@ -361,6 +411,66 @@ mod tests {
         let neutral = neutralize_rgb([0.8, 0.5, 0.2]);
         assert!((neutral[0] - neutral[1]).abs() < 1e-6);
         assert!((neutral[1] - neutral[2]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn master_density_trim_stays_channel_neutral_across_unequal_spans() {
+        // A sampled Roll measures a different span per channel.
+        let d_min = [0.05, 0.02, -0.01];
+        let d_max = [1.25, 1.52, 1.99];
+        let min_offset = -0.03;
+        let max_offset = 0.09;
+        let span_luma = density_luma([
+            d_max[0] - d_min[0],
+            d_max[1] - d_min[1],
+            d_max[2] - d_min[2],
+        ]);
+        let (trimmed_min, trimmed_max) =
+            trim_density_endpoints(d_min, d_max, min_offset, max_offset);
+        // A pixel that sits halfway through every channel's window must stay
+        // halfway through it: the trim is exposure and contrast, never colour.
+        let mut normalized_after = [0.0f32; 3];
+        for channel in 0..3 {
+            let density = d_min[channel] + 0.5 * (d_max[channel] - d_min[channel]);
+            let before = (density - d_min[channel]) / (d_max[channel] - d_min[channel]);
+            let after =
+                (density - trimmed_min[channel]) / (trimmed_max[channel] - trimmed_min[channel]);
+            normalized_after[channel] = after;
+            assert!((before - 0.5).abs() < 1e-6);
+        }
+        let expected =
+            (0.5 - min_offset / span_luma) / (1.0 + (max_offset - min_offset) / span_luma);
+        for channel in 0..3 {
+            assert!(
+                (normalized_after[channel] - expected).abs() < 1e-6,
+                "channel {channel} moved to {} instead of {expected}",
+                normalized_after[channel]
+            );
+        }
+        // The plain uniform shift this replaced would have split the channels.
+        let shifted = [
+            (d_min[0] + 0.5 * (d_max[0] - d_min[0]) - (d_min[0] + min_offset))
+                / ((d_max[0] + max_offset) - (d_min[0] + min_offset)),
+            (d_min[1] + 0.5 * (d_max[1] - d_min[1]) - (d_min[1] + min_offset))
+                / ((d_max[1] + max_offset) - (d_min[1] + min_offset)),
+            (d_min[2] + 0.5 * (d_max[2] - d_min[2]) - (d_min[2] + min_offset))
+                / ((d_max[2] + max_offset) - (d_min[2] + min_offset)),
+        ];
+        assert!((shifted[0] - shifted[2]).abs() > 1e-3);
+    }
+
+    #[test]
+    fn master_density_trim_keeps_the_plain_shift_on_equal_spans() {
+        // Every route that derives one shared window per channel must keep its
+        // historical behaviour.
+        let (trimmed_min, trimmed_max) = trim_density_endpoints([0.1; 3], [2.0; 3], -0.2, 0.2);
+        for channel in 0..3 {
+            assert!((trimmed_min[channel] - -0.1).abs() < 1e-6);
+            assert!((trimmed_max[channel] - 2.2).abs() < 1e-6);
+        }
+        let (collapsed_min, collapsed_max) = trim_density_endpoints([0.5; 3], [0.5; 3], 0.05, 0.05);
+        assert!((collapsed_min[0] - 0.55).abs() < 1e-6);
+        assert!((collapsed_max[0] - 0.55).abs() < 1e-6);
     }
 
     #[test]

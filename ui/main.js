@@ -279,10 +279,15 @@ const CHANNEL_CONTROL_SCALE = 0.5;
 const LUT_CONTROL_SCALE = 0.5;
 
 function effectiveDensityEndpoints() {
-    return {
-        dMin: currentDMin.map(value => value + currentDMinOffset),
-        dMax: currentDMax.map(value => value + currentDMaxOffset),
-    };
+    // The trim is scaled per channel so the Master sliders cannot tint the
+    // frame. The shader applies the same scale, and the endpoints shown next to
+    // the sliders are the ones actually rendered.
+    return NexFilmDensity.trimDensityEndpoints(
+        currentDMin,
+        currentDMax,
+        currentDMinOffset,
+        currentDMaxOffset,
+    );
 }
 
 const sliders = {
@@ -1914,6 +1919,8 @@ let thumbnailDisplayPixels = null;
 let u_base_density_loc;
 let u_dmin_loc;
 let u_dmax_loc;
+let u_dmin_trim_loc;
+let u_dmax_trim_loc;
 let u_master_exposure_loc;
 let u_exposure_loc;
 let u_gamma_loc;
@@ -2031,6 +2038,10 @@ function initWebGL() {
     uniform vec3 u_base_density;
     uniform vec3 u_dmin;
     uniform vec3 u_dmax;
+    // Master D-Min/D-Max trim, scaled per channel so the sliders stay a
+    // neutral exposure/contrast move instead of tinting the print.
+    uniform float u_dmin_trim;
+    uniform float u_dmax_trim;
     // New pipelines apply the master EV after channel normalization so it is neutral.
     uniform float u_master_exposure;
     // RGB printer-light controls remain density-domain channel offsets.
@@ -2269,6 +2280,11 @@ function initWebGL() {
             effective_dmin = vec3(bw_dmin);
             effective_dmax = vec3(bw_dmax);
         }
+        vec3 endpoint_span = effective_dmax - effective_dmin;
+        float endpoint_span_luma = getLuma(endpoint_span);
+        vec3 trim_scale = endpoint_span_luma > 1e-4 ? endpoint_span / endpoint_span_luma : vec3(1.0);
+        effective_dmin += u_dmin_trim * trim_scale;
+        effective_dmax += u_dmax_trim * trim_scale;
         vec3 density_range = effective_dmax - effective_dmin;
         bvec3 valid_range = greaterThan(abs(density_range), vec3(1e-6));
         vec3 safe_range = mix(vec3(1.0), density_range, valid_range);
@@ -2388,6 +2404,8 @@ function initWebGL() {
     u_base_density_loc = gl.getUniformLocation(shaderProgram, "u_base_density");
     u_dmin_loc = gl.getUniformLocation(shaderProgram, "u_dmin");
     u_dmax_loc = gl.getUniformLocation(shaderProgram, "u_dmax");
+    u_dmin_trim_loc = gl.getUniformLocation(shaderProgram, "u_dmin_trim");
+    u_dmax_trim_loc = gl.getUniformLocation(shaderProgram, "u_dmax_trim");
     u_master_exposure_loc = gl.getUniformLocation(shaderProgram, "u_master_exposure");
     u_exposure_loc = gl.getUniformLocation(shaderProgram, "u_exposure");
     u_gamma_loc = gl.getUniformLocation(shaderProgram, "u_gamma");
@@ -2958,15 +2976,16 @@ function renderWebGL() {
             proxyHasAnalyzedBase ? currentBaseDensity[1] : 0.0,
             proxyHasAnalyzedBase ? currentBaseDensity[2] : 0.0,
         );
-    const densityEndpoints = effectiveDensityEndpoints();
     gl.uniform3f(
         u_dmin_loc,
-        densityEndpoints.dMin[0], densityEndpoints.dMin[1], densityEndpoints.dMin[2]
+        currentDMin[0], currentDMin[1], currentDMin[2]
     );
     gl.uniform3f(
         u_dmax_loc,
-        densityEndpoints.dMax[0], densityEndpoints.dMax[1], densityEndpoints.dMax[2]
+        currentDMax[0], currentDMax[1], currentDMax[2]
     );
+    gl.uniform1f(u_dmin_trim_loc, currentDMinOffset);
+    gl.uniform1f(u_dmax_trim_loc, currentDMaxOffset);
     gl.uniform1f(u_master_exposure_loc, expVal);
     gl.uniform3f(
         u_exposure_loc,
@@ -5156,10 +5175,6 @@ function publishThumbnailUpdate(id, thumbnail, { rendered = true } = {}) {
 
 async function selectImage(id, { force = false } = {}) {
     if (activeId === id && !force) return;
-    if (autoInvertRollProgress && currentRollViewId) {
-        autoInvertRollCancelRequested = true;
-        void invoke('cancel_auto_invert_roll', { rollId: currentRollViewId }).catch(() => {});
-    }
     const myToken = ++currentImageRequestToken;
     calibrationRevision++;
     calibrationDragState = null;
@@ -6741,6 +6756,10 @@ async function reloadDevelopProxy(geomSnapshot = current_geom, options = {}) {
 
 let autoInvertRollProgress = null;
 let autoInvertRollCancelRequested = false;
+// The batch owns this token instead of the Develop operation revision: looking
+// at another frame while the Roll is running must not stop the work, and only
+// cancelling or starting another batch may.
+let autoInvertRollRevision = 0;
 
 function renderAutoInvertRollProgress(progress) {
     const total = Math.max(0, Number(progress?.total) || 0);
@@ -6758,11 +6777,14 @@ function renderAutoInvertRollProgress(progress) {
             if (currentRollViewId) void invoke('cancel_auto_invert_roll', { rollId: currentRollViewId });
         });
     }
+    const title = progress?.phase === 'highlight'
+        ? i18nText('develop.calibratingRollWhitePoint')
+        : i18nText('develop.processingRoll');
     const resultSummary = i18nText('develop.rollProgress', { succeeded, failed });
     const cancelLabel = i18nText('actions.cancel');
     autoInvertRollProgress.innerHTML = `
         <div class="mb-3 flex items-center justify-between text-[11px] font-bold tracking-widest text-zinc-200">
-            <span>${i18nText('develop.processingRoll')}</span><span>${processed} / ${total}</span>
+            <span>${title}</span><span>${processed} / ${total}</span>
         </div>
         <div class="h-1.5 overflow-hidden bg-zinc-800"><div class="h-full bg-zinc-200" style="width:${percent}%"></div></div>
         <div class="mt-3 flex items-center justify-between gap-3 text-[11px] text-zinc-400">
@@ -6823,14 +6845,46 @@ async function refreshRollFilmstripThumbnails(rollId) {
 listen('auto_invert_roll_progress', event => {
     const progress = event.payload || event;
     renderAutoInvertRollProgress(progress);
-    if (progress?.processed > 0 && progress?.roll_id) {
+    if (progress?.processed > 0 && progress?.roll_id && progress.phase !== 'highlight') {
         void refreshRollFilmstripThumbnails(progress.roll_id);
     }
 });
 
+// Bring the Develop view back in sync with a frame the Roll batch just
+// rendered. A frame the user selects while the batch runs must not stay on the
+// staging negative, and the batch may have installed a new Roll mapping.
+async function syncActiveFrameAfterRollInvert(rollId) {
+    if (!activeId) return;
+    const activeState = await invoke('switch_active_image', {
+        id: activeId,
+        rollId,
+        generation: developOperationRevision,
+    });
+    imageStates.set(activeId, {
+        params: activeState.params,
+        geom: activeState.geom,
+        pipeline_state: activeState.pipeline_state,
+    });
+    currentPipelineState = activeState.pipeline_state || currentPipelineState;
+    currentPipelineContract = currentPipelineState.contract || currentPipelineContract;
+    currentDMin = currentPipelineState.render_mapping?.density_low?.slice() || currentDMin;
+    currentDMax = currentPipelineState.render_mapping?.density_high?.slice() || currentDMax;
+    updateDMinMaxDisplay();
+    updatePipelineStatus();
+    autoInvertAppliedActiveImage = true;
+    proxyHasAnalyzedBase = true;
+    const activeItem = findKnownItem(activeId);
+    if (activeItem?.rendered_thumbnail_base64) {
+        showThumbnailPlaceholder(getThumbnailSrc(activeId), { rendered: true });
+        previewCanvas.style.display = 'none';
+    }
+}
+
 async function runAutoInvertRoll(rollId) {
     if (!rollId || !pipelineHasCompleteRollAnchors()) return false;
-    const generation = ++developOperationRevision;
+    // A batch is not bound to the Develop view: selecting another frame while
+    // it runs must leave the work alone.
+    const batchToken = ++autoInvertRollRevision;
     const fetchedFrameItems = await invoke('get_roll_filmstrip', { rollId });
     if (!Array.isArray(fetchedFrameItems) || fetchedFrameItems.length === 0) {
         showToast(i18nText('develop.rollNoFrames'), 'error');
@@ -6846,16 +6900,38 @@ async function runAutoInvertRoll(rollId) {
     });
     rememberItems(frameItems);
     autoInvertRollCancelRequested = false;
-    renderAutoInvertRollProgress({ total: frameItems.length, processed: 0, succeeded: 0, failed: 0 });
     btnAutoColor.disabled = true;
     btnAutoColorRoll.disabled = true;
     try {
+        // The Roll shares one white point, so it has to be measured on every
+        // frame before the first frame is rendered: a sample of a few frames
+        // can only under-estimate where the brightest frame sits, and a white
+        // point below it clips that frame's highlights.
+        renderAutoInvertRollProgress({
+            total: frameItems.length,
+            processed: 0,
+            succeeded: 0,
+            failed: 0,
+            phase: 'highlight',
+        });
+        const fraction = await invoke('calibrate_roll_highlight_fraction', {
+            rollId,
+            emitProgress: true,
+        });
+        if (typeof fraction === 'number' && Number.isFinite(fraction)) {
+            const roll = allRolls.find(candidate => candidate.roll_id === rollId);
+            if (roll?.density_anchors) roll.density_anchors.highlight_fraction = fraction;
+        }
+        if (autoInvertRollCancelRequested || batchToken !== autoInvertRollRevision) {
+            renderAutoInvertRollProgress({ total: frameItems.length, processed: 0, succeeded: 0, failed: 0, done: true, cancelled: true });
+            return false;
+        }
         // Process exactly one frame at a time. Preparation is part of that
         // frame's work, so the first result and progress event are visible
         // immediately instead of waiting for the entire roll to prewarm.
         const result = { roll_id: rollId, total: frameItems.length, processed: 0, succeeded: 0, failed: 0, failed_ids: [] };
         for (const frame of frameItems) {
-            if (autoInvertRollCancelRequested || generation !== developOperationRevision) break;
+            if (autoInvertRollCancelRequested || batchToken !== autoInvertRollRevision) break;
             try {
                 await invoke('prepare_proxy', { id: frame.id, targetLongEdge: PREVIEW_PROXY_BASE_LONG_EDGE });
                 const frameResult = await invoke('auto_invert_roll', {
@@ -6874,34 +6950,21 @@ async function runAutoInvertRoll(rollId) {
             }
             renderAutoInvertRollProgress({ ...result, done: false });
             await refreshRollFilmstripThumbnails(rollId);
+            // Keep looking at the frame the user selected while the Roll keeps
+            // running: it must not stay on the staging negative.
+            if (frame.id === activeId && !autoInvertRollCancelRequested) {
+                try {
+                    await syncActiveFrameAfterRollInvert(rollId);
+                } catch (error) {
+                    console.debug('Active frame refresh after roll invert skipped', error);
+                }
+            }
         }
         renderAutoInvertRollProgress({ ...result, done: true, cancelled: autoInvertRollCancelRequested });
         await refreshRollFilmstripThumbnails(rollId);
         await renderLibraryAndFilmstrip(true);
         if (activeId && frameItems.some(frame => frame.id === activeId)) {
-            const activeState = await invoke('switch_active_image', {
-                id: activeId,
-                rollId,
-                generation,
-            });
-            imageStates.set(activeId, {
-                params: activeState.params,
-                geom: activeState.geom,
-                pipeline_state: activeState.pipeline_state,
-            });
-            currentPipelineState = activeState.pipeline_state || currentPipelineState;
-            currentPipelineContract = currentPipelineState.contract || currentPipelineContract;
-            currentDMin = currentPipelineState.render_mapping?.density_low?.slice() || currentDMin;
-            currentDMax = currentPipelineState.render_mapping?.density_high?.slice() || currentDMax;
-            updateDMinMaxDisplay();
-            updatePipelineStatus();
-            autoInvertAppliedActiveImage = true;
-            proxyHasAnalyzedBase = true;
-            const activeItem = findKnownItem(activeId);
-            if (activeItem?.rendered_thumbnail_base64) {
-                showThumbnailPlaceholder(getThumbnailSrc(activeId), { rendered: true });
-                previewCanvas.style.display = 'none';
-            }
+            await syncActiveFrameAfterRollInvert(rollId);
         }
         showToast(i18nText('develop.rollAutoInvertComplete', {
             succeeded: result.succeeded,
@@ -6913,7 +6976,7 @@ async function runAutoInvertRoll(rollId) {
         showToast(i18nText('develop.rollAutoInvertFailed', { error }), 'error');
         return false;
     } finally {
-        if (generation === developOperationRevision) updateAutoInvertAvailability();
+        if (batchToken === autoInvertRollRevision) updateAutoInvertAvailability();
     }
 }
 

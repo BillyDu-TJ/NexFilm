@@ -4,6 +4,7 @@ const path = require('node:path');
 const {
     applyStatusMToPrintingDensity,
     getNeutralExposureOffsets,
+    trimDensityEndpoints,
 } = require('../ui/density-math.js');
 
 function assertClose(actual, expected, epsilon = 1e-12) {
@@ -37,16 +38,52 @@ assert.match(
     /fn detect_frame_highlight_fraction\(/,
     'Roll rendering must place the white point from the scene highlights',
 );
+// The Roll white point is one value shared by every frame, so it has to come
+// from the brightest frame of the Roll. Sampling a few frames can only
+// under-estimate it, and a white point below a frame's highlights clips them.
+assert.match(
+    commandSource,
+    /fn measure_roll_highlight_frames\(/,
+    'The Roll white point must be measured frame by frame on the whole Roll',
+);
+assert.doesNotMatch(
+    commandSource,
+    /median_value\(/,
+    'A sampled median cannot be the Roll white point',
+);
+assert.doesNotMatch(
+    commandSource,
+    /let sample_step = \(item_arcs\.len\(\) \/ 5\)/,
+    'The Roll white point must not be sampled from five frames',
+);
 assert.match(
     commandSource,
     /highlight_fraction/,
     'The Roll white point must be persisted with the density anchors',
+);
+assert.match(
+    commandSource,
+    /current\.max\(fraction\)/,
+    'The Roll white point must keep the brightest frame',
 );
 // The Master D-Min/D-Max sliders stay adjustable on the Roll Anchored route:
 // the manual trim is applied on top of the sampled anchors instead of being
 // locked out, and the same trim reaches the Rust renderer.
 assert.match(mainSource, /currentDMinOffset = current;/);
 assert.match(mainSource, /d_min_offset: currentDMinOffset/);
+// The trim is a whole-frame exposure/contrast move, and a sampled Roll gives
+// every channel a different span: the slider amount is scaled by each channel's
+// share of the span, in the shader and in the Rust renderers alike, so the same
+// raw offset cannot tint the frame green.
+assert.match(mainSource, /u_dmin_trim/);
+assert.match(mainSource, /endpoint_span \/ endpoint_span_luma/);
+assert.match(mainSource, /gl\.uniform1f\(u_dmax_trim_loc, currentDMaxOffset\)/);
+assert.match(commandSource, /fn trim_density_endpoints|trim_density_endpoints\(/);
+assert.doesNotMatch(
+    commandSource,
+    /\.map\(\|value\| value \+ density_max_offset\)/,
+    'The Master trim must not be a uniform raw density shift',
+);
 assert.doesNotMatch(
     mainSource,
     /masterDmin\.el\.disabled\s*=/,
@@ -94,5 +131,53 @@ const greenExposure = 0.035;
 const offsets = getNeutralExposureOffsets(sampleDensity, greenExposure);
 assertClose(corrected[0] + offsets[0], corrected[1] + offsets[1]);
 assertClose(corrected[2] + offsets[2], corrected[1] + offsets[1]);
+
+// A Roll batch owns its own token: looking at another frame while it runs must
+// leave the work alone, and only the progress card's cancel button or a newer
+// batch may stop it.
+const selectImageStart = mainSource.indexOf('async function selectImage(');
+const selectImageTail = mainSource.slice(selectImageStart + 10);
+const selectImageBody = mainSource.slice(
+    selectImageStart,
+    selectImageStart + 10 + selectImageTail.search(/\n(?:async )?function /)
+);
+assert.ok(selectImageBody.length > 200, 'selectImage body was not found');
+assert.doesNotMatch(
+    selectImageBody,
+    /cancel_auto_invert_roll/,
+    'Selecting a frame must not cancel the Roll batch',
+);
+assert.match(mainSource, /let autoInvertRollRevision = 0;/);
+assert.match(mainSource, /batchToken !== autoInvertRollRevision\) break;/);
+assert.match(
+    mainSource,
+    /invoke\('calibrate_roll_highlight_fraction'[\s\S]*?for \(const frame of frameItems\)/,
+    'The Roll white point must be measured before the frames are rendered',
+);
+
+// The Master trim is scaled per channel, so a neutral frame stays neutral even
+// though a sampled Roll measures a different span in every channel. The plain
+// uniform shift the sliders used to apply splits the channels instead.
+const rollLow = [0.02, -0.01, -0.05];
+const rollHigh = [1.22, 1.54, 1.95];
+const trimmedRoll = trimDensityEndpoints(rollLow, rollHigh, -0.03, 0.09);
+const normalizedRoll = [0, 1, 2].map(channel => {
+    const span = rollHigh[channel] - rollLow[channel];
+    const density = rollLow[channel] + 0.5 * span;
+    return (density - trimmedRoll.dMin[channel]) / (trimmedRoll.dMax[channel] - trimmedRoll.dMin[channel]);
+});
+assert.ok(
+    Math.max(...normalizedRoll) - Math.min(...normalizedRoll) < 1e-9,
+    `the Master trim split a neutral frame: ${normalizedRoll}`,
+);
+const shiftedRoll = [0, 1, 2].map(channel => {
+    const span = rollHigh[channel] - rollLow[channel];
+    const density = rollLow[channel] + 0.5 * span;
+    return (density - (rollLow[channel] - 0.03)) / ((rollHigh[channel] + 0.09) - (rollLow[channel] - 0.03));
+});
+assert.ok(
+    Math.max(...shiftedRoll) - Math.min(...shiftedRoll) > 1e-3,
+    'a uniform raw density shift must split the channels',
+);
 
 console.log('Density-domain white balance contract verified.');

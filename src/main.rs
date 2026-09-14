@@ -98,6 +98,7 @@ fn main() {
             nexfilm_engine::commands::analyze_proxy_base_color,
             nexfilm_engine::commands::analyze_proxy_density_limits,
             nexfilm_engine::commands::auto_invert_roll,
+            nexfilm_engine::commands::calibrate_roll_highlight_fraction,
             nexfilm_engine::commands::cancel_auto_invert_roll,
             nexfilm_engine::commands::analyze_roll_density_references,
             nexfilm_engine::commands::sample_roll_density_reference,

@@ -118,6 +118,12 @@ const mock = `
         }
         if (command === 'prepare_proxy') return true;
         if (command === 'aggregate_roll_density_references') return clone((args.samples || [])[args.samples.length - 1]);
+        if (command === 'calibrate_roll_highlight_fraction') {
+            // The preview has no pixels to measure; report the value the Roll
+            // would already carry so the batch can continue.
+            const roll = rolls.find(candidate => candidate.roll_id === args.rollId);
+            return roll?.density_anchors?.highlight_fraction ?? 0.6;
+        }
         if (command === 'auto_invert_roll') {
             const rollItems = items.filter(item => item.roll_id === args.rollId
                 && (!args.frameId || item.id === args.frameId));

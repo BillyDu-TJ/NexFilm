@@ -29,7 +29,7 @@ use crate::color_science::{
 use crate::core_math::{
     apply_lens_distortion_uv, apply_perspective_uv, apply_post_gamma_adjustments_with_luma,
     density_luma, neutral_density_bounds, normalize_density_channel, sprocket_white_mask,
-    DENSITY_LUMA_COEFFICIENTS,
+    trim_density_endpoints, DENSITY_LUMA_COEFFICIENTS,
 };
 use crate::persistence::{self, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
@@ -4933,10 +4933,6 @@ fn median_density(values: &mut [f32]) -> Result<f32, String> {
     median_value_result(values)
 }
 
-fn median_value(mut values: Vec<f32>) -> Option<f32> {
-    median_value_result(&mut values).ok()
-}
-
 fn median_value_result(values: &mut [f32]) -> Result<f32, String> {
     if values.is_empty() || values.iter().any(|value| !value.is_finite()) {
         return Err("Density reference samples must be finite and non-empty.".to_string());
@@ -7680,58 +7676,27 @@ pub async fn auto_invert_roll(
         state.roll_batch_cancellations.remove(&roll_id);
         return Err(format!("Roll has no editable frames: {roll_id}"));
     }
-    // Fix the Roll's white point before rendering anything, so every frame in
-    // this batch shares one mapping. A few frames spread across the Roll act as
-    // the digital equivalent of a darkroom test strip.
+    // Every frame of this batch shares the Roll's white point. The UI measures
+    // it on the whole Roll before the first frame is rendered, which is the
+    // digital equivalent of a darkroom test strip.
     let mut roll_anchors = read_lock(&state.rolls)
         .iter()
         .find(|roll| roll.roll_id == roll_id)
         .map(|roll| roll.density_anchors.clone())
         .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
     if roll_anchors.highlight_fraction.is_none() {
-        let anchor_base = pipeline_base_density(
-            &PipelineState::from_roll_anchors(roll_anchors.clone()),
-            &BaseColor::default(),
-        );
-        let span = roll_physical_density_span(&roll_anchors, anchor_base);
-        if let Some(span) = span {
-            let sample_step = (item_arcs.len() / 5).max(1);
-            let samples: Vec<_> = item_arcs
-                .iter()
-                .step_by(sample_step)
-                .take(5)
-                .map(|(_, item_arc)| item_arc.clone())
-                .collect();
-            let measured = tokio::task::spawn_blocking(move || {
-                let mut fractions = Vec::new();
-                for item_arc in samples {
-                    let (cached, path) = {
-                        let item = read_lock(&item_arc);
-                        (item.runtime_frame_highlight, item.file_path.clone())
-                    };
-                    if let Some(fraction) = cached {
-                        fractions.push(fraction);
-                        continue;
-                    }
-                    let Ok(estimate) =
-                        decode_prophoto_estimate_image_buffer(&path, DecodeMode::DevelopProxy)
-                    else {
-                        continue;
-                    };
-                    let base =
-                        detect_frame_base_density(&estimate, anchor_base).unwrap_or(anchor_base);
-                    if let Some(fraction) = detect_frame_highlight_fraction(&estimate, base, span) {
-                        fractions.push(fraction);
-                    }
-                }
-                fractions
-            })
-            .await
-            .unwrap_or_default();
-            if let Some(fraction) = median_value(measured) {
-                record_roll_highlight_fraction(&state, &roll_id, fraction);
-                roll_anchors.highlight_fraction = Some(fraction.clamp(0.45, 0.85));
-            }
+        // Fallback for a caller that rendered a frame without calibrating the
+        // Roll first: the frame it asked for already carries its own
+        // measurement, so the Roll still gets one shared white point without
+        // decoding every frame here. The UI measures the whole Roll before a
+        // batch, so this only covers direct calls.
+        let cached = item_arcs.iter().find_map(|(_, item_arc)| {
+            let item = read_lock(item_arc);
+            item.runtime_frame_highlight
+        });
+        if let Some(fraction) = cached.filter(|value| value.is_finite()) {
+            record_roll_highlight_fraction(&state, &roll_id, fraction);
+            roll_anchors.highlight_fraction = Some(fraction.clamp(0.45, 0.85));
         }
     }
     let worker_cancellation = cancellation.clone();
@@ -7853,6 +7818,199 @@ pub async fn auto_invert_roll(
     .map_err(|error| format!("Roll auto-invert worker failed: {error}"))??;
     state.roll_batch_cancellations.remove(&result.roll_id);
     Ok(result)
+}
+
+/// Measure the Roll's content white point on every frame of the Roll.
+///
+/// `DensityAnchors.highlight_fraction` records where the Roll's brightest scene
+/// content sits inside the measured base-to-leader span, and every frame shares
+/// that one display mapping. It therefore has to describe the brightest frame,
+/// not a typical frame: a white point below one frame's highlights clips them,
+/// and the user can only answer that by raising D-Max by hand. Reading every
+/// frame makes "the Roll's brightest content" the value the mapping uses.
+///
+/// The per-frame measurement is cached on the frame, so a second pass over the
+/// same session costs no decoding work.
+#[tauri::command]
+pub async fn calibrate_roll_highlight_fraction(
+    roll_id: String,
+    emit_progress: Option<bool>,
+    state: State<'_, EngineState>,
+    app_handle: tauri::AppHandle,
+) -> Result<Option<f32>, String> {
+    let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    state
+        .roll_batch_cancellations
+        .insert(roll_id.clone(), cancellation.clone());
+    let result = measure_roll_highlight_fraction(
+        &roll_id,
+        emit_progress.unwrap_or(true),
+        &cancellation,
+        &state,
+        Some(&app_handle),
+    )
+    .await;
+    state.roll_batch_cancellations.remove(&roll_id);
+    let fraction = result?;
+    if let Some(fraction) = fraction {
+        record_roll_highlight_fraction(&state, &roll_id, fraction);
+    }
+    Ok(fraction)
+}
+
+async fn measure_roll_highlight_fraction(
+    roll_id: &str,
+    emit_progress: bool,
+    cancellation: &Arc<std::sync::atomic::AtomicBool>,
+    state: &EngineState,
+    app_handle: Option<&tauri::AppHandle>,
+) -> Result<Option<f32>, String> {
+    let roll = read_lock(&state.rolls)
+        .iter()
+        .find(|roll| roll.roll_id == roll_id)
+        .cloned()
+        .ok_or_else(|| format!("Roll not found: {roll_id}"))?;
+    let anchor_base = pipeline_base_density(
+        &PipelineState::from_roll_anchors(roll.density_anchors.clone()),
+        &BaseColor::default(),
+    );
+    // Without a base and a fully exposed leader there is no span to place a
+    // scene white point inside.
+    let Some(span) = roll_physical_density_span(&roll.density_anchors, anchor_base) else {
+        return Ok(None);
+    };
+    let normalized_roll_paths = roll
+        .image_paths
+        .iter()
+        .map(|path| path.replace('\\', "/").to_lowercase())
+        .collect::<Vec<_>>();
+    let mut item_arcs = state
+        .items
+        .iter()
+        .filter_map(|entry| {
+            let item = read_lock(entry.value());
+            let normalized_path = item.file_path.replace('\\', "/").to_lowercase();
+            let listed_in_roll = normalized_roll_paths.is_empty()
+                || normalized_roll_paths
+                    .iter()
+                    .any(|path| path == &normalized_path);
+            (item.roll_id == roll_id && listed_in_roll).then(|| entry.value().clone())
+        })
+        .collect::<Vec<_>>();
+    item_arcs.sort_by_key(|item_arc| {
+        let item = read_lock(item_arc);
+        let path = item.file_path.replace('\\', "/").to_lowercase();
+        normalized_roll_paths
+            .iter()
+            .position(|candidate| candidate == &path)
+            .unwrap_or(usize::MAX)
+    });
+    let total = item_arcs.len();
+    if total == 0 {
+        return Ok(None);
+    }
+    let worker_cancellation = cancellation.clone();
+    let worker_roll_id = roll_id.to_string();
+    let worker_app_handle = app_handle.cloned();
+    let (brightest, measured) = tokio::task::spawn_blocking(move || {
+        measure_roll_highlight_frames(
+            &item_arcs,
+            anchor_base,
+            span,
+            &worker_cancellation,
+            |processed| {
+                if let Some(app_handle) = worker_app_handle.as_ref().filter(|_| emit_progress) {
+                    let _ = app_handle.emit(
+                        "auto_invert_roll_progress",
+                        serde_json::json!({
+                            "roll_id": worker_roll_id,
+                            "phase": "highlight",
+                            "total": total,
+                            "processed": processed,
+                            "succeeded": 0,
+                            "failed": 0,
+                            "done": false
+                        }),
+                    );
+                }
+            },
+        )
+    })
+    .await
+    .map_err(|error| format!("Roll white point worker failed: {error}"))?;
+    if cancellation.load(Ordering::Acquire) {
+        // A cancelled pass only sees part of the Roll, and a partial maximum is
+        // exactly the under-estimate this measurement exists to remove.
+        return Ok(None);
+    }
+    let Some(brightest) = brightest else {
+        return Ok(roll.density_anchors.highlight_fraction);
+    };
+    if measured < total {
+        if let Some(existing) = roll.density_anchors.highlight_fraction {
+            // A frame that could not be measured hides part of the Roll, and a
+            // hidden brighter frame is exactly what a lower value would clip.
+            return Ok(Some(existing));
+        }
+    }
+    Ok(Some(brightest.clamp(0.45, 0.85)))
+}
+
+/// Measure every frame's share of the Roll span and keep the brightest one.
+///
+/// A frame that was already prepared carries its measurement, so a repeat pass
+/// over the same session only walks memory. `on_frame` receives the number of
+/// frames finished so far and drives the progress events.
+fn measure_roll_highlight_frames(
+    item_arcs: &[Arc<RwLock<FilmItem>>],
+    anchor_base: [f32; 3],
+    span: [f32; 3],
+    cancellation: &Arc<std::sync::atomic::AtomicBool>,
+    mut on_frame: impl FnMut(usize),
+) -> (Option<f32>, usize) {
+    let mut brightest: Option<f32> = None;
+    let mut measured = 0usize;
+    for (index, item_arc) in item_arcs.iter().enumerate() {
+        if cancellation.load(Ordering::Acquire) {
+            break;
+        }
+        let (cached_highlight, path, frame_id) = {
+            let item = read_lock(item_arc);
+            (
+                item.runtime_frame_highlight,
+                item.file_path.clone(),
+                item.id.clone(),
+            )
+        };
+        let fraction = match cached_highlight {
+            Some(fraction) => Some(fraction),
+            None => match decode_prophoto_estimate_image_buffer(&path, DecodeMode::DevelopProxy) {
+                Ok(estimate) => {
+                    let detected_base = detect_frame_base_density(&estimate, anchor_base);
+                    let base = detected_base.unwrap_or(anchor_base);
+                    let fraction = detect_frame_highlight_fraction(&estimate, base, span);
+                    let mut item = write_lock(item_arc);
+                    // Keep the measurement with the frame so the render pass
+                    // does not have to measure it a second time.
+                    item.runtime_frame_base = detected_base;
+                    if fraction.is_some() {
+                        item.runtime_frame_highlight = fraction;
+                    }
+                    fraction
+                }
+                Err(error) => {
+                    eprintln!("[Roll White Point] Frame {frame_id} could not be measured: {error}");
+                    None
+                }
+            },
+        };
+        if let Some(fraction) = fraction.filter(|value| value.is_finite()) {
+            brightest = Some(brightest.map_or(fraction, |current: f32| current.max(fraction)));
+            measured += 1;
+        }
+        on_frame(index + 1);
+    }
+    (brightest, measured)
 }
 
 #[tauri::command]
@@ -8873,8 +9031,8 @@ fn render_shader_equivalent_core(
             } else {
                 (params.density.d_min, params.density.d_max)
             };
-            let d_min = d_min.map(|value| value + density_min_offset);
-            let d_max = d_max.map(|value| value + density_max_offset);
+            let (d_min, d_max) =
+                trim_density_endpoints(d_min, d_max, density_min_offset, density_max_offset);
             let working_gamma = if legacy_compatibility {
                 params.density.gamma
             } else {
@@ -13785,8 +13943,12 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             } else {
                 (d_min, d_max)
             };
-            let effective_dmin = effective_dmin.map(|value| value + density_min_offset);
-            let effective_dmax = effective_dmax.map(|value| value + density_max_offset);
+            let (effective_dmin, effective_dmax) = trim_density_endpoints(
+                effective_dmin,
+                effective_dmax,
+                density_min_offset,
+                density_max_offset,
+            );
             let working_gamma = if legacy_compatibility { gamma } else { 1.0 };
             let normalize = |value: f32, low: f32, high: f32| {
                 normalize_density_channel(value, low, high, highlights, shadows, working_gamma)
@@ -13888,22 +14050,23 @@ mod import_contract_tests {
         is_noritsu_rendered_image, is_raw_extension, is_scanner_fff_tiff,
         is_smart_auto_compatibility, is_tiff_extension, libraw_decode_error_message,
         linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff, measure_content_channel_spans,
-        persist_import_batch, pipeline_base_density, pipeline_has_base, point_in_film_area,
-        prepare_content_render_limits, prepare_content_render_limits_with_spans,
-        preserve_smart_auto_content_span, prophoto_estimate_to_transport_proxy,
-        raw_decode_failure_hint, reference_density_extreme, render_f32_shader_equivalent,
-        render_shader_equivalent, render_shader_equivalent_with_state, resolve_input_domain,
+        measure_roll_highlight_frames, persist_import_batch, pipeline_base_density,
+        pipeline_has_base, point_in_film_area, prepare_content_render_limits,
+        prepare_content_render_limits_with_spans, preserve_smart_auto_content_span,
+        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
+        render_f32_shader_equivalent, render_shader_equivalent, resolve_input_domain,
         rgb16_image_from_bytes, roll_physical_density_span, share_smart_auto_density_scale,
         share_smart_auto_density_scale_without_offsets, srgb_proxy_u16_to_prophoto_f32,
-        tiff_smart_auto_input_is_estimated, AutoColorLimits, DecodeMode,
+        tiff_smart_auto_input_is_estimated, trim_density_endpoints, AutoColorLimits, DecodeMode,
         CHANNEL_RESPONSE_BALANCED_RATIO, CHANNEL_RESPONSE_FULL_RATIO, CHANNEL_RESPONSE_MAX_GAIN,
         CHANNEL_RESPONSE_MIN_SPAN, IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX,
         PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
         BaseColor, DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorProvenance,
-        DensityAnchorScope, DensityAnchorSource, DensityAnchors, FilmItem, FilmMode, GeometryState,
-        PipelineState, ProcessingContract, RenderMapping, RenderMode, Roll, TuningParams,
+        DensityAnchorScope, DensityAnchorSource, DensityAnchors, EngineState, FilmItem, FilmMode,
+        GeometryState, PipelineState, ProcessingContract, RenderMapping, RenderMode, Roll,
+        TuningParams,
     };
     use crate::color_science::{
         apply_linear_matrix, compress_linear_srgb_for_density,
@@ -13913,6 +14076,7 @@ mod import_contract_tests {
     use base64::Engine as _;
     use image::{ImageBuffer, Rgb};
     use rayon::prelude::*;
+    use std::sync::{Arc, RwLock};
 
     #[test]
     fn import_only_directly_decodes_small_encoded_images() {
@@ -14086,9 +14250,13 @@ mod import_contract_tests {
         let mut trimmed_params = TuningParams::default();
         trimmed_params.density.d_min_offset = offset;
         trimmed_params.density.d_max_offset = offset;
+        // The Roll measures its own span per channel, so the slider amount is
+        // applied as each channel's share of it.
+        let (trimmed_low, trimmed_high) =
+            trim_density_endpoints([0.0; 3], [1.0, 1.5, 2.0], offset, offset);
         let mut shifted_state = state.clone();
-        shifted_state.render_mapping.density_low = [0.0 + offset; 3];
-        shifted_state.render_mapping.density_high = [1.0 + offset, 1.5 + offset, 2.0 + offset];
+        shifted_state.render_mapping.density_low = trimmed_low;
+        shifted_state.render_mapping.density_high = trimmed_high;
 
         let trimmed_render = render_f32_shader_equivalent(
             &source,
@@ -14117,8 +14285,8 @@ mod import_contract_tests {
             &state,
             None,
         );
-        // The Master trim must move the Roll endpoints by exactly the slider
-        // amount, and the sampled anchors themselves stay untouched.
+        // The Master trim must move exactly the endpoints the shader and the
+        // thumbnails use, and the sampled anchors themselves stay untouched.
         assert_eq!(trimmed_render, shifted_render);
         assert_ne!(trimmed_render, untrimmed_render);
         assert_eq!(state.render_mapping.density_low, [0.0; 3]);
@@ -15369,6 +15537,172 @@ mod import_contract_tests {
         let maximum = normalized.into_iter().fold(f32::NEG_INFINITY, f32::max);
         assert!(maximum - minimum < 1.0e-6, "normalized={normalized:?}");
         assert!((density_luma(normalized) - 0.5).abs() < 1.0e-6);
+    }
+
+    fn test_film_item(id: &str, roll_id: &str, path: &str) -> FilmItem {
+        FilmItem {
+            id: id.to_string(),
+            roll_id: roll_id.to_string(),
+            file_path: path.to_string(),
+            embedded_thumbnail_base64: String::new(),
+            rendered_thumbnail_base64: None,
+            original_proxy: None,
+            proxy_image: None,
+            prophoto_estimate_proxy: None,
+            relative_transmission_proxy: None,
+            relative_transmission_quality: None,
+            pristine_proxy: None,
+            base_color: BaseColor::default(),
+            runtime_pipeline_state: None,
+            runtime_density_provenance: None,
+            runtime_pipeline_key: None,
+            runtime_frame_base: None,
+            runtime_frame_highlight: None,
+            pipeline_state: PipelineState::default(),
+            params: TuningParams::default(),
+            geom: GeometryState::default(),
+            is_loose: false,
+            in_library: false,
+        }
+    }
+
+    #[test]
+    fn roll_white_point_is_the_brightest_frame_not_a_sample_average() {
+        let state = EngineState::new();
+        let anchors = DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: [0.20, 0.24, 0.30],
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: Default::default(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: [1.30, 1.62, 2.10],
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: Default::default(),
+            }),
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+        };
+        // Every frame of a Roll shares one white point, so that white point has
+        // to describe the brightest frame. Under the previous sample-of-five
+        // rule the middle frame (0.58) became the white point, which put
+        // frame-b's highlights above the display endpoint.
+        let frames = [("frame-a", 0.52f32), ("frame-b", 0.74), ("frame-c", 0.58)];
+        let mut item_arcs = Vec::new();
+        for (id, fraction) in frames {
+            let mut item = test_film_item(id, "roll-white-point", &format!("{id}.tif"));
+            item.runtime_frame_highlight = Some(fraction);
+            let arc = Arc::new(RwLock::new(item));
+            state.items.insert(id.to_string(), arc.clone());
+            item_arcs.push(arc);
+        }
+        let anchor_base = pipeline_base_density(
+            &PipelineState::from_roll_anchors(anchors.clone()),
+            &BaseColor::default(),
+        );
+        let span = roll_physical_density_span(&anchors, anchor_base).expect("complete anchors");
+        let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (brightest, measured) =
+            measure_roll_highlight_frames(&item_arcs, anchor_base, span, &cancellation, |_| {});
+        assert_eq!(measured, frames.len());
+        assert!((brightest.expect("a Roll white point") - 0.74).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn master_density_trim_keeps_a_sampled_roll_neutral() {
+        let anchors = DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: [0.0; 3],
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: Default::default(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: [1.0, 1.5, 2.0],
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: Default::default(),
+            }),
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+        };
+        let mut state = PipelineState::from_roll_anchors(anchors);
+        state.render_mapping = RenderMapping {
+            mode: RenderMode::RollAnchored,
+            density_low: [0.0; 3],
+            density_high: [1.0, 1.5, 2.0],
+            exposure: 0.0,
+            gamma: 1.0,
+            channel_offsets: [0.0; 3],
+        };
+        // A frame whose density sits halfway through every channel's window.
+        let source = ImageBuffer::from_pixel(
+            1,
+            1,
+            Rgb([10.0f32.powf(-0.5), 10.0f32.powf(-0.75), 10.0f32.powf(-1.0)]),
+        );
+        let base = BaseColor {
+            base_r: u16::MAX,
+            base_g: u16::MAX,
+            base_b: u16::MAX,
+        };
+        let untrimmed = render_f32_shader_equivalent(
+            &source,
+            None,
+            &TuningParams::default(),
+            &GeometryState::default(),
+            &base,
+            &state,
+            None,
+        );
+        let mut trimmed_params = TuningParams::default();
+        trimmed_params.density.d_min_offset = -0.03;
+        trimmed_params.density.d_max_offset = 0.09;
+        let trimmed = render_f32_shader_equivalent(
+            &source,
+            None,
+            &trimmed_params,
+            &GeometryState::default(),
+            &base,
+            &state,
+            None,
+        );
+        let channel_spread = |pixel: &image::Rgb<u16>| {
+            let maximum = pixel.0.iter().copied().max().unwrap_or(0);
+            let minimum = pixel.0.iter().copied().min().unwrap_or(0);
+            maximum - minimum
+        };
+        assert!(channel_spread(untrimmed.get_pixel(0, 0)) <= 1);
+        assert!(
+            channel_spread(trimmed.get_pixel(0, 0)) <= 1,
+            "the Master trim turned a neutral frame into {:?}",
+            trimmed.get_pixel(0, 0)
+        );
+        // The plain uniform shift this replaced splits the three channels,
+        // which is the green cast the sliders used to introduce.
+        let mut shifted_state = state.clone();
+        shifted_state.render_mapping.density_low = [-0.03; 3];
+        shifted_state.render_mapping.density_high = [1.09, 1.59, 2.09];
+        let shifted = render_f32_shader_equivalent(
+            &source,
+            None,
+            &TuningParams::default(),
+            &GeometryState::default(),
+            &base,
+            &shifted_state,
+            None,
+        );
+        assert!(channel_spread(shifted.get_pixel(0, 0)) > 4);
     }
 
     #[test]
