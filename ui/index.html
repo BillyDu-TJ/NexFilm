@@ -721,7 +721,7 @@
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Exposure</label>
                                     <span id="val-exposure" class="text-[10px] font-mono text-zinc-400">0.00</span>
                                 </div>
-                                <input type="range" id="exposure" class="w-full custom-range silver-track" min="-1.50" max="1.50" step="0.001" value="0.00" disabled>
+                                <input type="range" id="exposure" class="w-full custom-range silver-track" min="-0.60" max="0.60" step="0.001" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
@@ -729,6 +729,13 @@
                                     <span id="val-gamma" class="text-[10px] font-mono text-zinc-400">1.00</span>
                                 </div>
                                 <input type="range" id="gamma" class="w-full custom-range silver-track" min="0.10" max="3.00" step="0.002" value="1.00" disabled>
+                            </div>
+                            <div class="slider-container">
+                                <div class="flex justify-between items-center mb-2">
+                                    <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Contrast</label>
+                                    <span id="val-contrast" class="text-[10px] font-mono text-zinc-400">0.00</span>
+                                </div>
+                                <input type="range" id="contrast" class="w-full custom-range silver-track" min="-0.50" max="0.50" step="0.01" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
@@ -742,14 +749,14 @@
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Highlights</label>
                                     <span id="val-highlights" class="text-[10px] font-mono text-zinc-400">0.00</span>
                                 </div>
-                                <input type="range" id="highlights" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
+                                <input type="range" id="highlights" class="w-full custom-range silver-track" min="-0.75" max="0.75" step="0.01" value="0.00" disabled>
                             </div>
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
                                     <label class="text-[11px] font-medium text-zinc-300 tracking-wide">Shadows</label>
                                     <span id="val-shadows" class="text-[10px] font-mono text-zinc-400">0.00</span>
                                 </div>
-                                <input type="range" id="shadows" class="w-full custom-range silver-track" min="-1.00" max="1.00" step="0.01" value="0.00" disabled>
+                                <input type="range" id="shadows" class="w-full custom-range silver-track" min="-0.75" max="0.75" step="0.01" value="0.00" disabled>
                             </div>
                             <div class="color-balance-group" aria-labelledby="color-balance-title">
                                 <div id="color-balance-title" class="color-balance-title">Color Balance</div>
@@ -948,6 +955,7 @@
                         <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="develop.aesthetics">Aesthetics</span></label></legend>
                         <label><input type="checkbox" value="exposure" class="copy-setting-option"><span data-i18n="fields.exposure">Exposure</span></label>
                         <label><input type="checkbox" value="gamma" class="copy-setting-option"><span data-i18n="fields.gamma">Gamma</span></label>
+                        <label><input type="checkbox" value="contrast" class="copy-setting-option"><span data-i18n="fields.contrast">Contrast</span></label>
                         <label><input type="checkbox" value="highlights" class="copy-setting-option"><span data-i18n="fields.highlights">Highlights</span></label>
                         <label><input type="checkbox" value="shadows" class="copy-setting-option"><span data-i18n="fields.shadows">Shadows</span></label>
                         <label><input type="checkbox" value="saturation" class="copy-setting-option"><span data-i18n="fields.saturation">Saturation</span></label>

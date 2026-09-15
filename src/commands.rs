@@ -8333,12 +8333,125 @@ pub async fn update_geometry(
     tokio::task::spawn_blocking(move || {
         let mut item = write_lock(&item_arc);
         ensure_current_development_generation(&epoch, generation)?;
+        let framing_changed = geometry_framing_changed(&item.geom, &geom);
         persist_geometry(&item.roll_id, &item.file_path, &geom)?;
         item.geom = geom;
+        if framing_changed {
+            // The stored render was produced from the previous framing. Keeping
+            // it would let the Library, the Develop placeholder, and the crop
+            // layout show a crop the user has already changed, so drop it and
+            // fall back to the import preview until the next capture arrives.
+            clear_stored_rendered_thumbnail(&mut item)?;
+        }
         Ok(())
     })
     .await
     .map_err(|error| format!("Geometry persistence worker failed: {error}"))?
+}
+
+/// Geometry fields that decide what the rendered frame looks like. A write that
+/// only touches, for example, the constrain flag leaves the stored render valid.
+fn geometry_framing_changed(
+    previous: &crate::app_state::GeometryState,
+    next: &crate::app_state::GeometryState,
+) -> bool {
+    previous.crop_rect != next.crop_rect
+        || (previous.angle - next.angle).abs() > 1e-4
+        || previous.rotate_90_count.rem_euclid(4) != next.rotate_90_count.rem_euclid(4)
+        || previous.flip_h != next.flip_h
+        || previous.flip_v != next.flip_v
+        || previous.calibration_points != next.calibration_points
+        || previous.calibration_confirmed != next.calibration_confirmed
+        || (previous.perspective_vertical - next.perspective_vertical).abs() > 1e-4
+        || (previous.perspective_horizontal - next.perspective_horizontal).abs() > 1e-4
+        || (previous.perspective_aspect - next.perspective_aspect).abs() > 1e-4
+        || (previous.perspective_scale - next.perspective_scale).abs() > 1e-4
+        || (previous.lens_distortion - next.lens_distortion).abs() > 1e-4
+}
+
+/// Drop a rendered thumbnail that no longer matches the persisted geometry. The
+/// expected value guards against clearing a capture that arrived after this
+/// geometry change was queued.
+fn clear_stored_rendered_thumbnail(item: &mut crate::app_state::FilmItem) -> Result<(), String> {
+    let Some(expected) = item.rendered_thumbnail_base64.clone() else {
+        return Ok(());
+    };
+    let connection = persistence::open_connection()
+        .map_err(|error| format!("Failed to open image database: {error}"))?;
+    let changed = connection
+        .execute(
+            "UPDATE image_states
+             SET rendered_thumb_base64 = NULL, thumbnail_base64 = embedded_thumb_base64,
+                 updated_at = ?1
+             WHERE roll_id = ?2 AND file_path = ?3 AND rendered_thumb_base64 = ?4",
+            rusqlite::params![
+                persistence::now_timestamp(),
+                item.roll_id,
+                item.file_path,
+                expected,
+            ],
+        )
+        .map_err(|error| format!("Failed to clear stale rendered thumbnail: {error}"))?;
+    if changed == 1 {
+        item.rendered_thumbnail_base64 = None;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod geometry_thumbnail_invalidation_tests {
+    use super::geometry_framing_changed;
+    use crate::app_state::{CropRect, GeometryState};
+
+    #[test]
+    fn crop_and_angles_invalidate_the_stored_render() {
+        let base = GeometryState::default();
+
+        let mut cropped = base.clone();
+        cropped.crop_rect = CropRect {
+            x: 0.1,
+            y: 0.1,
+            width: 0.5,
+            height: 0.5,
+        };
+        assert!(geometry_framing_changed(&base, &cropped));
+
+        let mut rotated = base.clone();
+        rotated.angle = 3.0;
+        assert!(geometry_framing_changed(&base, &rotated));
+
+        let mut turned = base.clone();
+        turned.rotate_90_count = 1;
+        assert!(geometry_framing_changed(&base, &turned));
+
+        let mut flipped = base.clone();
+        flipped.flip_v = true;
+        assert!(geometry_framing_changed(&base, &flipped));
+
+        let mut area = base.clone();
+        area.calibration_points = Some([[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]]);
+        area.calibration_confirmed = true;
+        assert!(geometry_framing_changed(&base, &area));
+
+        let mut scaled = base.clone();
+        scaled.perspective_scale = 1.1;
+        assert!(geometry_framing_changed(&base, &scaled));
+    }
+
+    #[test]
+    fn a_repeated_write_or_a_constrain_toggle_keeps_the_stored_render() {
+        let base = GeometryState::default();
+        assert!(!geometry_framing_changed(&base, &base.clone()));
+
+        let mut constrained = base.clone();
+        constrained.constrain_crop = true;
+        assert!(!geometry_framing_changed(&base, &constrained));
+
+        // A full extra turn is the same framing and must not discard the render.
+        let mut extra_turn = base.clone();
+        extra_turn.rotate_90_count = 4;
+        assert!(!geometry_framing_changed(&base, &extra_turn));
+    }
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -9144,6 +9257,7 @@ fn render_shader_equivalent_core(
                 normalized,
                 params.tone.highlights,
                 params.tone.shadows,
+                params.tone.contrast,
                 saturation,
                 temperature,
                 tint,
@@ -14073,6 +14187,7 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
                 gamma_corrected,
                 0.0,
                 0.0,
+                params.tone.contrast,
                 saturation,
                 temperature,
                 tint,

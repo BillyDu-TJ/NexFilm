@@ -1,4 +1,6 @@
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
     getPreviewTransform,
     proxyPixelTransformChanged,
@@ -8,8 +10,17 @@ const {
     normalizeGeometryState,
     mapPerspectivePoint,
     getConstrainedPerspectiveScale,
+    getOrientedDimensions,
     transformGeometryForQuarterTurn,
     transformGeometryForFlip,
+    mapOrientedPointToSource,
+    mapSourcePointToOriented,
+    anchorPointForAngleChange,
+    anchorQuadForAngleChange,
+    anchorRectForAngleChange,
+    getDisplayFrame,
+    orientedPointToDisplay,
+    orientedRectToDisplay,
 } = require('../ui/geometry.js');
 
 assert.equal(normalizeGeometryState({}).perspective_scale, 1);
@@ -116,5 +127,95 @@ assert.deepEqual(transformGeometryForFlip(identity, true, false).calibrationPoin
 const flipped = transformGeometryForFlip(geometry, true, false);
 assertRectClose(flipped.cropRect, { x: 0.6, y: 0.2, width: 0.3, height: 0.4 });
 assert.deepEqual(flipped.calibrationPoints, [[0.19999999999999996, 0.1], [0.9, 0.2], [0.8, 0.9], [0.09999999999999998, 0.75]]);
+
+// --- Rotation must keep the crop and the film area on the picture ----------
+// The oriented frame is normalised by the rotated bounding box, so a fixed crop
+// rect or film-area quad would slide and rescale over the picture as the fine
+// angle changes. Rotating has to re-place both through the picture's own frame.
+const flat = { angle: 0, rotate_90_count: 0, flip_h: false, flip_v: false };
+const turned = { angle: 24, rotate_90_count: 0, flip_h: false, flip_v: false };
+const frameSource = { width: 3000, height: 2000 };
+
+const anchoredCrop = anchorRectForAngleChange(
+    { x: 0.2, y: 0.2, width: 0.5, height: 0.5 },
+    frameSource.width,
+    frameSource.height,
+    flat,
+    turned
+);
+const flatCentre = mapOrientedPointToSource(
+    [0.45, 0.45],
+    frameSource.width,
+    frameSource.height,
+    flat
+);
+const turnedCentre = mapOrientedPointToSource(
+    [anchoredCrop.x + anchoredCrop.width / 2, anchoredCrop.y + anchoredCrop.height / 2],
+    frameSource.width,
+    frameSource.height,
+    turned
+);
+assertClose(turnedCentre[0], flatCentre[0], 1e-9);
+assertClose(turnedCentre[1], flatCentre[1], 1e-9);
+const turnedExtent = getOrientedDimensions(frameSource.width, frameSource.height, turned);
+assertClose(anchoredCrop.width * turnedExtent.width, 0.5 * frameSource.width, 1);
+assertClose(anchoredCrop.height * turnedExtent.height, 0.5 * frameSource.height, 1);
+
+const filmArea = [[0.1, 0.1], [0.9, 0.12], [0.88, 0.9], [0.12, 0.88]];
+const anchoredFilmArea = anchorQuadForAngleChange(
+    filmArea,
+    frameSource.width,
+    frameSource.height,
+    flat,
+    turned
+);
+filmArea.forEach((point, index) => {
+    const picture = mapOrientedPointToSource(point, frameSource.width, frameSource.height, flat);
+    const restored = mapOrientedPointToSource(
+        anchoredFilmArea[index],
+        frameSource.width,
+        frameSource.height,
+        turned
+    );
+    assertClose(restored[0], picture[0], 1e-9);
+    assertClose(restored[1], picture[1], 1e-9);
+});
+
+// --- One display frame for the picture and the editing overlays ------------
+const displayCrop = { x: 0.3, y: 0.2, width: 0.4, height: 0.5 };
+assert.deepEqual(getDisplayFrame({ crop_rect: displayCrop }, true), { x: 0, y: 0, width: 1, height: 1 });
+assert.deepEqual(getDisplayFrame({ crop_rect: displayCrop }, false), displayCrop);
+assert.deepEqual(orientedPointToDisplay([0.3, 0.2], displayCrop), [0, 0]);
+const displayBottomRight = orientedPointToDisplay([0.7, 0.7], displayCrop);
+assertClose(displayBottomRight[0], 1, 1e-12);
+assertClose(displayBottomRight[1], 1, 1e-12);
+assertRectClose(orientedRectToDisplay({ x: 0.4, y: 0.3, width: 0.2, height: 0.25 }, displayCrop), {
+    x: 0.25,
+    y: 0.2,
+    width: 0.5,
+    height: 0.5,
+});
+assertRectClose(
+    orientedRectToDisplay(displayCrop, getDisplayFrame({ crop_rect: displayCrop }, true)),
+    displayCrop
+);
+
+const frontend = fs.readFileSync(path.join(__dirname, '..', 'ui', 'main.js'), 'utf8');
+for (const [pattern, message] of [
+    [/function fullFrameEditView\(\)/, 'the canvas view needs one shared edit-frame decision'],
+    [/if \(!fullFrameEditView\(\)\) \{\n\s+gl\.uniform4f\(u_crop_loc/, 'the preview must draw the full oriented frame while editing'],
+    [/current_geom\.crop_rect = clampCropRect\(\s*\n?\s*NexFilmGeometry\.anchorRectForAngleChange/, 'a rotated crop has to be re-anchored to the picture'],
+    [/anchorQuadForAngleChange/, 'a rotated film area has to be re-anchored to the picture'],
+    [/applyGeometryAngle\(target\.angle\)/, 'the crop rotation slider must anchor the geometry'],
+    [/applyGeometryAngle\(rawValue\)/, 'the straighten slider must anchor the geometry'],
+    [/applyGeometryAngle\(Math\.max\(-45/, 'the crop rotate gesture must anchor the geometry'],
+    [/orientedRectToDisplay\(/, 'the crop overlay must convert out of the oriented frame'],
+    [/orientedPointToDisplay\(p, displayFrame\)/, 'the film-area overlay must convert out of the oriented frame'],
+    [/if \(isCalibrationMode\) updateCalibrationPolygon\(\);/, 'the canvas layout must refresh the film-area overlay'],
+    [/imageSizeIsProvisional/, 'a cached thumbnail must not resize a canvas the proxy already measured'],
+    [/gl\.uniform4f\(u_crop_loc, crop\.x, crop\.y, crop\.width, crop\.height\);/, 'captured thumbnails must carry the finished framing'],
+]) {
+    assert.match(frontend, pattern, message);
+}
 
 console.log('Geometry preview contract verified.');

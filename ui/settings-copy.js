@@ -13,6 +13,7 @@
         tint: { params: ['tint'] },
         exposure: { params: ['exposure'] },
         gamma: { params: ['gamma'] },
+        contrast: { params: ['contrast'] },
         highlights: { params: ['highlights'] },
         shadows: { params: ['shadows'] },
         saturation: { params: ['saturation'] },

@@ -1167,6 +1167,8 @@ pub struct ToneParams {
     pub highlights: f32,
     pub shadows: f32,
     #[serde(default)]
+    pub contrast: f32,
+    #[serde(default)]
     pub saturation: f32,
     #[serde(default)]
     pub temperature: f32,
@@ -1180,6 +1182,7 @@ impl Default for ToneParams {
         Self {
             highlights: 0.0,
             shadows: 0.0,
+            contrast: 0.0,
             saturation: 0.0,
             temperature: 0.0,
             tint: 0.0,
@@ -1282,11 +1285,13 @@ mod tuning_params_tests {
     fn legacy_tuning_json_defaults_new_post_gamma_controls() {
         let mut legacy = serde_json::to_value(TuningParams::default()).unwrap();
         let object = legacy.as_object_mut().unwrap();
+        object.remove("contrast");
         object.remove("saturation");
         object.remove("temperature");
         object.remove("tint");
 
         let params: TuningParams = serde_json::from_value(legacy).unwrap();
+        assert_eq!(params.tone.contrast, 0.0);
         assert_eq!(params.tone.saturation, 0.0);
         assert_eq!(params.tone.temperature, 0.0);
         assert_eq!(params.tone.tint, 0.0);

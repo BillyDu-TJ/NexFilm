@@ -4,6 +4,22 @@ Last updated: 2026-08-04
 
 ## Completed In The Current Worktree
 
+- Crop and film-area editing share one display frame: while either tool is open
+  the canvas lays out the whole oriented frame, so the crop box and the
+  film-area quad are drawn in the same space as the picture instead of being
+  stretched into the finished crop.
+- The fine rotation angle now re-places the crop, the film area, and the
+  sprocket sample through the picture's own frame. The oriented frame is
+  normalised by the rotated bounding box, which grows with the angle, so an
+  untouched crop rect used to slide and rescale over the picture whenever the
+  user straightened a frame.
+- A captured rendered thumbnail always carries the finished framing, and a
+  geometry write clears a stored render that no longer matches it. A cached
+  thumbnail from an older crop can no longer decide the canvas layout, which
+  made a restored crop keep the previous crop's aspect ratio.
+- New tone controls: a Contrast slider next to Gamma (display-referred, pivoted
+  on mid grey, limited to a 0.5/1.5 gain so it can never flatten the frame), and
+  shorter ranges for exposure (+/-0.60), highlights and shadows (+/-0.75).
 - Import-stage camera RAW handling is embedded-thumbnail-only. TIFF prefers an
   embedded preview and falls back to a background 1024px decode for scanner
   files without a thumbnail IFD; no inversion or auto color runs during import.

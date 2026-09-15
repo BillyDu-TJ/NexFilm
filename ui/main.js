@@ -10,7 +10,10 @@ const i18n = window.NexFilmI18n;
 const i18nText = (key, vars = {}) => i18n?.t(key, vars) ?? key;
 const {
     getContactSheetLayout,
+    draw135EdgeCodes,
     draw120EdgeCodes,
+    drawNexfilmLockup,
+    contactSheetTheme,
     createContactSheetFilename,
 } = window.NexFilmContactSheet;
 const { getNeutralExposureOffsets } = window.NexFilmDensity;
@@ -295,6 +298,7 @@ const sliders = {
     masterDmax: { el: document.getElementById('master-dmax'), val: document.getElementById('val-master-dmax') },
     exposure: { el: document.getElementById('exposure'), val: document.getElementById('val-exposure') },
     gamma: { el: document.getElementById('gamma'), val: document.getElementById('val-gamma') },
+    contrast: { el: document.getElementById('contrast'), val: document.getElementById('val-contrast') },
     saturation: { el: document.getElementById('saturation'), val: document.getElementById('val-saturation') },
     temperature: { el: document.getElementById('temperature'), val: document.getElementById('val-temperature') },
     tint: { el: document.getElementById('tint'), val: document.getElementById('val-tint') },
@@ -309,7 +313,7 @@ const sliders = {
 };
 
 const twoDecimalSliderKeys = new Set([
-    'masterDmin', 'masterDmax', 'exposure', 'gamma', 'saturation', 'highlights', 'shadows',
+    'masterDmin', 'masterDmax', 'exposure', 'gamma', 'contrast', 'saturation', 'highlights', 'shadows',
     'temperature', 'tint', 'sprocketTolerance', 'sprocketFeather'
 ]);
 const formatSliderValue = (key, value) => Number.parseFloat(value).toFixed(twoDecimalSliderKeys.has(key) ? 2 : 3);
@@ -335,6 +339,9 @@ let isCropMode = false;
 let isPerspectiveMode = false;
 let currentImageWidth = 1;
 let currentImageHeight = 1;
+// True until the proxy reports the active picture's real pixel size. A cached
+// thumbnail may only shape the canvas while the size is still unknown.
+let imageSizeIsProvisional = true;
 let zoomLevel = 1.0;
 let zoomHudHideTimer = null;
 
@@ -1380,6 +1387,7 @@ function captureEditState() {
             d_max_offset: currentDMaxOffset,
             exposure: parseFloat(sliders.exposure.el.value),
             gamma: parseFloat(sliders.gamma.el.value),
+            contrast: parseFloat(sliders.contrast.el.value),
             saturation: parseFloat(sliders.saturation.el.value),
             temperature: parseFloat(sliders.temperature.el.value),
             tint: parseFloat(sliders.tint.el.value),
@@ -1700,9 +1708,17 @@ function captureActiveCanvasThumbnail() {
     const generation = developOperationRevision;
     try {
         const maxEdge = 640;
-        const scale = Math.min(1, maxEdge / Math.max(previewCanvas.width || 1, previewCanvas.height || 1));
-        const width = Math.max(1, Math.round((previewCanvas.width || 1) * scale));
-        const height = Math.max(1, Math.round((previewCanvas.height || 1) * scale));
+        // The stored render always carries the finished framing. Crop and
+        // film-area editing deliberately draw a wider frame, and capturing that
+        // one would leave the library, the placeholder layout, and the export
+        // disagreeing about which pixels the crop selects.
+        const oriented = NexFilmGeometry.getOrientedDimensions(proxyWidth, proxyHeight, current_geom);
+        const crop = current_geom.crop_rect;
+        const framedWidth = Math.max(1, Math.round(oriented.width * crop.width));
+        const framedHeight = Math.max(1, Math.round(oriented.height * crop.height));
+        const scale = Math.min(1, maxEdge / Math.max(framedWidth, framedHeight));
+        const width = Math.max(1, Math.round(framedWidth * scale));
+        const height = Math.max(1, Math.round(framedHeight * scale));
         if (!ensureThumbnailCaptureTarget(width, height)) return false;
 
         const previousFramebuffer = gl.getParameter(gl.FRAMEBUFFER_BINDING);
@@ -1713,6 +1729,7 @@ function captureActiveCanvasThumbnail() {
             gl.useProgram(shaderProgram);
             gl.bindVertexArray(vao);
             gl.uniform1i(u_scope_warning_loc, 0);
+            gl.uniform4f(u_crop_loc, crop.x, crop.y, crop.width, crop.height);
             gl.activeTexture(gl.TEXTURE0);
             gl.bindTexture(gl.TEXTURE_2D, tex);
             gl.bindFramebuffer(gl.FRAMEBUFFER, thumbnailFbo);
@@ -1724,6 +1741,12 @@ function captureActiveCanvasThumbnail() {
             captureError = gl.getError();
         } finally {
             gl.uniform1i(u_scope_warning_loc, getScopeWarningMask());
+            // Hand the crop uniform back to the view the canvas is showing.
+            if (fullFrameEditView()) {
+                gl.uniform4f(u_crop_loc, 0.0, 0.0, 1.0, 1.0);
+            } else {
+                gl.uniform4f(u_crop_loc, crop.x, crop.y, crop.width, crop.height);
+            }
             gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
             gl.viewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
         }
@@ -1861,6 +1884,7 @@ function saveCurrentState() {
         d_max_offset: currentDMaxOffset,
         exposure: parseFloat(sliders.exposure.el.value),
         gamma: parseFloat(sliders.gamma.el.value),
+        contrast: parseFloat(sliders.contrast.el.value),
         saturation: parseFloat(sliders.saturation.el.value),
         temperature: parseFloat(sliders.temperature.el.value),
         tint: parseFloat(sliders.tint.el.value),
@@ -1938,6 +1962,7 @@ let u_dmax_trim_loc;
 let u_master_exposure_loc;
 let u_exposure_loc;
 let u_gamma_loc;
+let u_contrast_loc;
 let u_saturation_loc;
 let u_temperature_loc;
 let u_tint_loc;
@@ -2061,6 +2086,7 @@ function initWebGL() {
     // RGB printer-light controls remain density-domain channel offsets.
     uniform vec3 u_exposure;
     uniform float u_gamma;
+    uniform float u_contrast;
     uniform float u_saturation;
     uniform float u_temperature;
     uniform float u_tint;
@@ -2137,8 +2163,17 @@ function initWebGL() {
             + u_highlights * pow(clamped, 2.0) * (1.0 - value), 0.0, 1.0);
     }
 
+    // Display-referred contrast around mid grey. The usable range stops at a
+    // 0.5/1.5 gain so the weakest setting keeps half of the separation from the
+    // pivot instead of flattening the frame onto it.
+    float toneContrast(float value) {
+        float factor = 1.0 + clamp(u_contrast, -0.5, 0.5);
+        return clamp((value - 0.5) * factor + 0.5, 0.0, 1.0);
+    }
+
     vec3 applyPostGammaAdjustments(vec3 color) {
         color = vec3(tonePostGamma(color.r), tonePostGamma(color.g), tonePostGamma(color.b));
+        color = vec3(toneContrast(color.r), toneContrast(color.g), toneContrast(color.b));
         if (u_mode != 0) return color;
 
         float temperature = clamp(u_temperature, -1.0, 1.0);
@@ -2423,6 +2458,7 @@ function initWebGL() {
     u_master_exposure_loc = gl.getUniformLocation(shaderProgram, "u_master_exposure");
     u_exposure_loc = gl.getUniformLocation(shaderProgram, "u_exposure");
     u_gamma_loc = gl.getUniformLocation(shaderProgram, "u_gamma");
+    u_contrast_loc = gl.getUniformLocation(shaderProgram, "u_contrast");
     u_saturation_loc = gl.getUniformLocation(shaderProgram, "u_saturation");
     u_temperature_loc = gl.getUniformLocation(shaderProgram, "u_temperature");
     u_tint_loc = gl.getUniformLocation(shaderProgram, "u_tint");
@@ -3008,6 +3044,7 @@ function renderWebGL() {
         mode === 0 ? expbVal * CHANNEL_CONTROL_SCALE : 0.0
     );
     gl.uniform1f(u_gamma_loc, gammaVal);
+    gl.uniform1f(u_contrast_loc, parseFloat(sliders.contrast.el.value));
     gl.uniform1f(u_saturation_loc, parseFloat(sliders.saturation.el.value));
     gl.uniform1f(u_temperature_loc, parseFloat(sliders.temperature.el.value));
     gl.uniform1f(u_tint_loc, parseFloat(sliders.tint.el.value));
@@ -3102,7 +3139,7 @@ function renderWebGL() {
         proxyHeight,
         current_geom
     );
-    if (!isCropMode) {
+    if (!fullFrameEditView()) {
         gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
         const nextWidth = Math.max(1, Math.round(orientedSize.width * current_geom.crop_rect.width));
         const nextHeight = Math.max(1, Math.round(orientedSize.height * current_geom.crop_rect.height));
@@ -3319,6 +3356,7 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         }
         
         updateCanvasTransform(width, height);
+        imageSizeIsProvisional = false;
         // Draw in this task. The placeholder is hidden only after this returns,
         // so the compositor never observes an empty, resized canvas.
         renderWebGL();
@@ -3383,6 +3421,7 @@ function updateUIFromParams(params, geom) {
     
     sliders.exposure.el.value = params.exposure;
     sliders.gamma.el.value = params.gamma;
+    sliders.contrast.el.value = params.contrast ?? 0;
     sliders.saturation.el.value = params.saturation ?? 0;
     sliders.temperature.el.value = params.temperature ?? 0;
     sliders.tint.el.value = params.tint ?? params.hue ?? 0;
@@ -5045,9 +5084,23 @@ function updateThumbnailPlaceholderLayout(placeholder) {
     if (!placeholder || !placeholder.naturalWidth || !placeholder.naturalHeight || activeProxyIsFull) return;
     const isRendered = placeholder.dataset.rendered === 'true';
     const crop = current_geom?.crop_rect || { width: 1, height: 1 };
-    const width = isRendered ? placeholder.naturalWidth / Math.max(crop.width, 0.001) : placeholder.naturalWidth;
-    const height = isRendered ? placeholder.naturalHeight / Math.max(crop.height, 0.001) : placeholder.naturalHeight;
-    updateCanvasTransform(width, height);
+    if (imageSizeIsProvisional) {
+        // Before the proxy reports the picture's real size, the cached negative
+        // or a finished render scaled back out of its crop is the only size
+        // information available.
+        const width = isRendered
+            ? placeholder.naturalWidth / Math.max(crop.width, 0.001)
+            : placeholder.naturalWidth;
+        const height = isRendered
+            ? placeholder.naturalHeight / Math.max(crop.height, 0.001)
+            : placeholder.naturalHeight;
+        updateCanvasTransform(width, height);
+    } else {
+        // The proxy already reported the real size. A cached thumbnail rendered
+        // from an older crop must not resize the canvas, or a restored crop
+        // would keep the previous crop's aspect ratio.
+        updateCanvasTransform();
+    }
     if (isCalibrationMode) requestAnimationFrame(updateCalibrationPolygon);
 }
 
@@ -6107,24 +6160,32 @@ for (const key in sliders) updateSliderTrack(sliders[key].el);
 // ==========================================
 // CROP MODE INTERACTION
 // ==========================================
+// Crop and film-area editing both lay the *whole* oriented frame on the canvas.
+// Their overlays are stored in that same oriented space, so a crop box or a
+// film-area quad can be drawn at the coordinates it is stored with. Only the
+// finished view narrows the canvas down to the crop itself.
+function fullFrameEditView() {
+    return isCropMode || isCalibrationMode;
+}
+
+function currentDisplayFrame() {
+    return NexFilmGeometry.getDisplayFrame(current_geom, fullFrameEditView());
+}
+
 function updateCanvasTransform(w, h) {
     if (w) currentImageWidth = w;
     if (h) currentImageHeight = h;
     const cw = currentImageWidth;
     const ch = currentImageHeight;
-    const rect = current_geom.crop_rect;
     const orientedSize = NexFilmGeometry.getOrientedDimensions(cw, ch, current_geom);
+    const displayFrame = currentDisplayFrame();
 
     canvasWrapper.style.overflow = 'hidden';
     previewCanvas.style.position = 'absolute';
     previewCanvas.style.objectFit = 'fill'; 
 
-    let aspect;
-    if (isCropMode) {
-        aspect = orientedSize.width / orientedSize.height;
-    } else {
-        aspect = (orientedSize.width * rect.width) / (orientedSize.height * rect.height);
-    }
+    let aspect = (orientedSize.width * displayFrame.width)
+        / (orientedSize.height * displayFrame.height);
     if (isNaN(aspect) || aspect === 0) aspect = 1;
 
     const parent = previewViewport || canvasWrapper.parentElement;
@@ -6149,24 +6210,20 @@ function updateCanvasTransform(w, h) {
     dummyPusher.style.display = 'none';
     canvasWrapper.style.transform = getCanvasCompositeTransform({ zoom: zoomLevel, panX, panY });
 
+    previewCanvas.style.width = '100%';
+    previewCanvas.style.height = '100%';
+    previewCanvas.style.left = '0';
+    previewCanvas.style.top = '0';
+
     if (isCropMode) {
-        previewCanvas.style.width = '100%';
-        previewCanvas.style.height = '100%';
-        previewCanvas.style.left = '0';
-        previewCanvas.style.top = '0';
-        
         cropOverlay.classList.remove('hidden');
-        if (isCropMode) {
-            updateCropOverlay();
-        }
+        updateCropOverlay();
     } else {
-        previewCanvas.style.width = '100%';
-        previewCanvas.style.height = '100%';
-        previewCanvas.style.left = '0';
-        previewCanvas.style.top = '0';
-        
         cropOverlay.classList.add('hidden');
     }
+    // The film-area quad is stored in the oriented frame, so it has to be laid
+    // out again whenever that frame's size changes.
+    if (isCalibrationMode) updateCalibrationPolygon();
 }
 
 function updateZoomHud({ transient = false } = {}) {
@@ -6198,6 +6255,9 @@ function updateZoomHud({ transient = false } = {}) {
 function setCropMode(enabled) {
     isCropMode = !!enabled;
     if (isCropMode) {
+        // The crop box and the film-area quad are both drawn in the oriented
+        // frame, so only one editing overlay is active at a time.
+        if (isCalibrationMode) exitCalibrationMode();
         setPerspectiveMode(false);
         updateCropRotationUI();
         btnCropMode.classList.add('active');
@@ -6229,6 +6289,48 @@ function updateCropRotationUI() {
     updateSliderTrack(cropRotationRange);
 }
 
+// The oriented frame is normalised by the rotated bounding box, which grows with
+// the fine angle. Leaving the crop, the film area, or a sprocket sample untouched
+// across an angle change would slide and rescale them over the picture, which is
+// what makes a crop box and the image look detached. Re-place them through the
+// picture's own frame so only the angle changes.
+function applyGeometryAngle(nextAngle) {
+    const width = Math.max(1, currentImageWidth);
+    const height = Math.max(1, currentImageHeight);
+    const angle = Number(nextAngle) || 0;
+    const from = { ...current_geom };
+    const to = { ...current_geom, angle };
+    if (Math.abs((Number(from.angle) || 0) - angle) > 1e-9) {
+        current_geom.crop_rect = clampCropRect(
+            NexFilmGeometry.anchorRectForAngleChange(current_geom.crop_rect, width, height, from, to)
+        );
+        if (current_geom.calibration_points) {
+            current_geom.calibration_points = NexFilmGeometry.anchorQuadForAngleChange(
+                current_geom.calibration_points,
+                width,
+                height,
+                from,
+                to
+            );
+        }
+        if (isCalibrationMode) {
+            calibrationPoints = NexFilmGeometry.anchorQuadForAngleChange(
+                calibrationPoints,
+                width,
+                height,
+                from,
+                to
+            );
+        }
+        if (currentSprocketUV[0] >= 0 && currentSprocketUV[1] >= 0) {
+            currentSprocketUV = new Float32Array(
+                NexFilmGeometry.anchorPointForAngleChange(currentSprocketUV, width, height, from, to)
+            );
+        }
+    }
+    current_geom.angle = angle;
+}
+
 function applyCropRotationDegrees(value) {
     if (!activeId) return;
     const degrees = clampRangeValue(
@@ -6250,7 +6352,7 @@ function applyCropRotationDegrees(value) {
         updateSpatialSamples(transformed);
         delta += clockwise ? -1 : 1;
     }
-    current_geom.angle = target.angle;
+    applyGeometryAngle(target.angle);
     refitCropToActiveAspect();
     updatePerspectiveUI();
     updateCanvasTransform();
@@ -6384,7 +6486,13 @@ Object.entries(perspectiveControls).forEach(([key, control]) => {
     });
     control.el.addEventListener('input', event => {
         const rawValue = Number.parseFloat(event.target.value);
-        current_geom[key] = key === 'perspective_scale' ? rawValue / 100 : rawValue;
+        if (key === 'angle') {
+            // Straighten uses the same fine angle as the crop panel's rotation
+            // slider, so it has to keep the crop and film area anchored too.
+            applyGeometryAngle(rawValue);
+        } else {
+            current_geom[key] = key === 'perspective_scale' ? rawValue / 100 : rawValue;
+        }
         constrainPerspectiveScale();
         updatePerspectiveUI();
         updateCanvasTransform();
@@ -7128,12 +7236,28 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
 function enterCalibrationMode() {
     calibrationRevision++;
     isCalibrationMode = true;
+    // Film-area editing needs the whole oriented frame on the canvas; the crop
+    // box would narrow it to the finished view and shift the quad.
+    if (isCropMode) setCropMode(false);
     document.getElementById('calibration-overlay').classList.remove('hidden');
     setDevelopInspectorCalibrationLocked(true);
     setBatchApplyDisabled(false);
     calibrationPoints = NexFilmGeometry.getFilmAreaCalibrationDraft(current_geom);
+    updateCanvasTransform();
     requestAnimationFrame(updateCalibrationPolygon);
     if (activeProxyIsFull) requestRender();
+}
+
+function exitCalibrationMode() {
+    if (!isCalibrationMode) return;
+    calibrationRevision++;
+    isCalibrationMode = false;
+    calibrationDragState = null;
+    document.getElementById('calibration-overlay').classList.add('hidden');
+    setDevelopInspectorCalibrationLocked(false);
+    // Leaving the film-area view returns the canvas to the finished framing.
+    updateCanvasTransform();
+    requestRender();
 }
 
 btnRecalibrate.addEventListener('click', enterCalibrationMode);
@@ -7389,6 +7513,7 @@ btnResetColor.addEventListener('click', async () => {
     
     sliders.exposure.el.value = 0;
     sliders.gamma.el.value = 1;
+    sliders.contrast.el.value = 0;
     sliders.saturation.el.value = 0;
     sliders.temperature.el.value = 0;
     sliders.tint.el.value = 0;
@@ -7460,10 +7585,17 @@ function updateCropOverlay() {
     const overlayWidth = cropOverlay.clientWidth;
     const overlayHeight = cropOverlay.clientHeight;
     if (!overlayWidth || !overlayHeight) return;
-    const x = current_geom.crop_rect.x * overlayWidth;
-    const y = current_geom.crop_rect.y * overlayHeight;
-    const w = current_geom.crop_rect.width * overlayWidth;
-    const h = current_geom.crop_rect.height * overlayHeight;
+    // The crop is stored in the oriented frame the picture is drawn in, so it
+    // is converted into this overlay's frame instead of being stretched into
+    // whatever region the canvas currently happens to show.
+    const displayRect = NexFilmGeometry.orientedRectToDisplay(
+        current_geom.crop_rect,
+        currentDisplayFrame()
+    );
+    const x = displayRect.x * overlayWidth;
+    const y = displayRect.y * overlayHeight;
+    const w = displayRect.width * overlayWidth;
+    const h = displayRect.height * overlayHeight;
 
     cropBox.setAttribute('x', x); cropBox.setAttribute('y', y);
     cropBox.setAttribute('width', w); cropBox.setAttribute('height', h);
@@ -7513,6 +7645,9 @@ let dragType = null;
 let dragStartPos = { x: 0, y: 0 };
 let dragStartRect = { x: 0, y: 0, width: 1, height: 1 };
 let dragStartAngle = 0;
+let dragStartGeom = null;
+let dragStartCalibrationPoints = null;
+let dragStartSprocketUV = null;
 let dragCenter = { x: 0, y: 0 };
 let activeCropPointerId = null;
 const MIN_CROP_SIZE = 0.01;
@@ -7550,6 +7685,11 @@ cropOverlay.addEventListener('pointerdown', (e) => {
     pushUndoState();
     isDraggingCrop = true; dragStartPos = { x: e.clientX, y: e.clientY };
     dragStartRect = clampCropRect(current_geom.crop_rect); dragStartAngle = current_geom.angle;
+    // Rotating re-anchors the crop and the film area, so a cancelled drag has to
+    // put back the whole geometry, not just the angle.
+    dragStartGeom = JSON.parse(JSON.stringify(current_geom));
+    dragStartCalibrationPoints = cloneCalibrationPoints();
+    dragStartSprocketUV = new Float32Array(currentSprocketUV);
     activeCropPointerId = e.pointerId;
     cropOverlay.setPointerCapture(e.pointerId);
     const rect = canvasWrapper.getBoundingClientRect();
@@ -7574,7 +7714,7 @@ window.addEventListener('pointermove', (e) => {
         const currentRad = Math.atan2(e.clientY - dragCenter.y, e.clientX - dragCenter.x);
         let deltaDeg = (currentRad - startRad) * (180 / Math.PI);
         if (e.shiftKey) deltaDeg *= 0.1;
-        current_geom.angle = Math.max(-45, Math.min(45, dragStartAngle - deltaDeg));
+        applyGeometryAngle(Math.max(-45, Math.min(45, dragStartAngle - deltaDeg)));
         updatePerspectiveUI();
         updateCanvasTransform();
         requestRender();
@@ -7619,8 +7759,15 @@ function finishCropDrag(e, persist) {
     cropGrid.style.opacity = '';
     cropOverlay.classList.remove('is-dragging');
     if (!persist) {
-        if (dragType === 'rotate') current_geom.angle = dragStartAngle;
-        else current_geom.crop_rect = { ...dragStartRect };
+        if (dragType === 'rotate') {
+            current_geom = NexFilmGeometry.normalizeGeometryState(dragStartGeom);
+            calibrationPoints = cloneCalibrationPoints(dragStartCalibrationPoints);
+            currentSprocketUV = new Float32Array(dragStartSprocketUV);
+            updatePerspectiveUI();
+            updateCanvasTransform();
+        } else {
+            current_geom.crop_rect = { ...dragStartRect };
+        }
         updateCropOverlay();
         requestRender();
         return;
@@ -7825,7 +7972,7 @@ copySettingsPreset.addEventListener('change', () => {
         tone: [
             'filmMode', 'densityLimits', 'printerRed', 'printerGreen', 'printerBlue',
             'temperature', 'tint', 'exposure', 'gamma', 'highlights', 'shadows',
-            'saturation', 'lut', 'lutOpacity', 'workingSpace'
+            'contrast', 'saturation', 'lut', 'lutOpacity', 'workingSpace'
         ],
         geometry: ['crop', 'rotateFlip', 'perspective']
     };
@@ -8013,7 +8160,7 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
         const borderH = colHeight * layout.borderRatio;
         const rowHeightTotal = colHeight + borderH * 2;
         const vGap = rowHeightTotal * layout.verticalGapRatio;
-        const footerHeight = 250;
+        const footerHeight = 300;
         
         const canvasH = outerMargin + rows * rowHeightTotal + (rows > 1 ? (rows - 1) * vGap : 0) + footerHeight;
 
@@ -8022,18 +8169,27 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
         canvas.height = canvasH;
         const ctx = canvas.getContext('2d');
 
-        // 4. Background (Dark Paper Color)
-        ctx.fillStyle = '#121214';
+        // 4. Background (paper) and film strips
+        ctx.fillStyle = contactSheetTheme.paper;
         ctx.fillRect(0, 0, canvasW, canvasH);
         
         const filmName = (currentRoll.film_stock || 'UNKNOWN FILM').toUpperCase();
+        const stripWidth = canvasW - outerMargin * 2;
 
+        ctx.save();
+        ctx.shadowColor = 'rgba(18, 18, 20, 0.28)';
+        ctx.shadowBlur = 22;
+        ctx.shadowOffsetY = 7;
+        ctx.fillStyle = contactSheetTheme.filmBase;
         for (let r = 0; r < rows; r++) {
-            ctx.fillStyle = '#000000';
             const rowY = outerMargin + r * (rowHeightTotal + vGap);
-            const rowW = canvasW - outerMargin * 2;
-            ctx.fillRect(outerMargin, rowY, rowW, rowHeightTotal);
+            ctx.fillRect(outerMargin, rowY, stripWidth, rowHeightTotal);
         }
+        ctx.restore();
+
+        // Frames of a row are collected here: the 135 rebate is drawn once per
+        // strip, after the images, so the sprockets stay evenly spaced.
+        const rowFrames = Array.from({ length: rows }, () => []);
 
         // 5. Draw images
         for (let i = 0; i < rollItems.length; i++) {
@@ -8084,44 +8240,8 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
                 ctx.restore();
             }
             
-            // 6. Draw Procedural Edge Codes & Sprockets
-            ctx.fillStyle = '#D97736'; // Orange brand color
-            ctx.font = '900 16px "Helvetica Neue Extended", "Helvetica Neue", Arial, sans-serif';
-            ctx.textBaseline = 'middle';
-            
-            if (!is120) {
-                // --- 135 Procedural ---
-                const numHoles = 8;
-                const holeW = colWidth * 0.05;
-                const holeH = borderH * 0.45;
-                const holeSpacing = colWidth / numHoles;
-                const holeYTop = y + borderH - holeH - borderH * 0.1;
-                const holeYBottom = y + borderH + colHeight + borderH * 0.1;
-                
-                ctx.fillStyle = '#FFFFFF';
-                for (let h = 0; h < numHoles; h++) {
-                    const hx = x + h * holeSpacing + (holeSpacing - holeW)/2;
-                    // top hole
-                    ctx.beginPath();
-                    ctx.roundRect(hx, holeYTop, holeW, holeH, holeW * 0.2);
-                    ctx.fill();
-                    // bottom hole
-                    ctx.beginPath();
-                    ctx.roundRect(hx, holeYBottom, holeW, holeH, holeW * 0.2);
-                    ctx.fill();
-                }
-                
-                // Orange Texts
-                ctx.fillStyle = '#D97736';
-                ctx.textAlign = 'center';
-                // Top text (film name)
-                if (c === 1 || c === 4) { ctx.fillText("NEXFILM", x + colWidth/2, y + borderH * 0.25); }
-                
-                // Bottom text (frame num)
-                ctx.fillText(`${i+1}`, x + colWidth*0.25, y + borderH + colHeight + borderH * 0.75);
-                ctx.fillText(`${i+1}A`, x + colWidth*0.75, y + borderH + colHeight + borderH * 0.75);
-                
-            } else {
+            // 6. Procedural edge codes
+            if (is120) {
                 // --- 120 Procedural ---
                 draw120EdgeCodes(ctx, {
                     x,
@@ -8132,25 +8252,59 @@ document.getElementById('btn-export-contact-sheet').addEventListener('click', as
                     frameNumber: i + 1,
                     filmName,
                 });
+            } else {
+                rowFrames[r].push({
+                    x,
+                    width: colWidth,
+                    frameNumber: i + 1,
+                    label: (c === 1 || c === 4) ? 'NEXFILM' : null,
+                });
             }
         }
 
-        // 7. High-Res Footer Typography
-        const footerY = canvasH - 80;
-        ctx.fillStyle = '#FFFFFF';
-        ctx.font = 'bold 36px "Helvetica Neue Extended", "Helvetica Neue", Inter, sans-serif';
-        ctx.textAlign = 'left';
-        ctx.fillText('NEXFILM ENGINE', outerMargin, footerY);
+        // 7. 135 rebate, one pass per strip
+        if (!is120) {
+            for (let r = 0; r < rows; r++) {
+                draw135EdgeCodes(ctx, {
+                    stripLeft: outerMargin,
+                    stripTop: outerMargin + r * (rowHeightTotal + vGap),
+                    stripWidth,
+                    imageHeight: colHeight,
+                    borderHeight: borderH,
+                    frames: rowFrames[r],
+                });
+            }
+        }
+
+        // 8. Footer typography
+        const footerBaseline = canvasH - 118;
+
+        const lockup = drawNexfilmLockup(ctx, {
+            x: outerMargin,
+            bottomY: footerBaseline,
+            markHeight: 104,
+        });
         
         ctx.textAlign = 'right';
-        ctx.font = 'bold 36px "Helvetica Neue Extended", "Helvetica Neue", Inter, sans-serif';
-        ctx.fillText(filmName, canvasW - outerMargin, footerY - 40);
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = contactSheetTheme.ink;
+        // Long stock names (e.g. "ILFORD DELTA 3200 PROFESSIONAL") step down
+        // instead of running into the logo.
+        const filmNameFont = size => `900 ${size}px "Arial Black", "Helvetica Neue", Arial, sans-serif`;
+        const maxFilmNameWidth = canvasW - outerMargin * 2 - lockup.width - 80;
+        let filmNameSize = 84;
+        ctx.font = filmNameFont(filmNameSize);
+        while (filmNameSize > 44 && ctx.measureText(filmName).width > maxFilmNameWidth) {
+            filmNameSize -= 4;
+            ctx.font = filmNameFont(filmNameSize);
+        }
+        ctx.fillText(filmName, canvasW - outerMargin, footerBaseline);
         
-        ctx.fillStyle = '#888888';
-        ctx.font = '24px Inter, Helvetica, sans-serif';
-        ctx.fillText(`${currentRoll.date || 'Unknown Date'} | ${currentRoll.camera || 'Unknown Camera'} | ${totalImages} images (${emptyFrames} empty)`, canvasW - outerMargin, footerY + 10);
+        ctx.fillStyle = contactSheetTheme.muted;
+        ctx.font = '32px Inter, "Segoe UI", Helvetica, sans-serif';
+        ctx.fillText(`${currentRoll.date || 'Unknown Date'} | ${currentRoll.camera || 'Unknown Camera'} | ${totalImages} images (${emptyFrames} empty)`, canvasW - outerMargin, canvasH - 56);
 
-        // 8. Convert to high quality JPEG
+        // 9. Convert to high quality JPEG
         const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
         const filename = createContactSheetFilename(currentRoll);
         const savedPath = await invoke('save_contact_sheet', { dataUrl, filename });
@@ -8184,12 +8338,18 @@ function updateCalibrationPolygon() {
         requestAnimationFrame(updateCalibrationPolygon);
         return;
     }
-    
+    // Film-area points are stored in the oriented frame. Drawing them straight
+    // into the canvas only happens to be right while the canvas shows that whole
+    // frame; after a crop the finished view is narrower, so the points are
+    // converted through the frame the canvas is actually showing.
+    const displayFrame = currentDisplayFrame();
+
     let pointsStr = '';
     const pts = [];
     calibrationPoints.forEach((p, i) => {
-        const cx = p[0] * svgWidth;
-        const cy = p[1] * svgHeight;
+        const displayPoint = NexFilmGeometry.orientedPointToDisplay(p, displayFrame);
+        const cx = displayPoint[0] * svgWidth;
+        const cy = displayPoint[1] * svgHeight;
         pts.push({x: cx, y: cy});
         pointsStr += `${cx},${cy} `;
         if (handles[i]) {
@@ -8292,25 +8452,32 @@ window.addEventListener('pointermove', (e) => {
     const svgRect = document.getElementById('calibration-svg').getBoundingClientRect();
     if (!svgRect.width || !svgRect.height) return;
     const candidate = cloneCalibrationPoints(drag.startPoints);
+    const displayFrame = currentDisplayFrame();
+    const toOriented = point => NexFilmGeometry.displayPointToOriented(point, displayFrame);
 
     if (drag.type === 'corner') {
-        candidate[drag.index] = [
+        candidate[drag.index] = toOriented([
             Math.max(0, Math.min(1, (e.clientX - svgRect.left) / svgRect.width)),
             Math.max(0, Math.min(1, (e.clientY - svgRect.top) / svgRect.height))
-        ];
+        ]);
         setCalibrationDraft(candidate);
         return;
     }
 
     const pointerDeltaX = e.clientX - drag.startClient[0];
     const pointerDeltaY = e.clientY - drag.startClient[1];
+    // Edge drags work in the space the overlay is drawn in, then map back into
+    // the oriented frame the geometry is stored in.
+    const displayPoints = drag.startPoints.map(point =>
+        NexFilmGeometry.orientedPointToDisplay(point, displayFrame)
+    );
     const translated = NexFilmGeometry.translateCalibrationEdge(
-        drag.startPoints,
+        displayPoints,
         drag.index,
         [pointerDeltaX, pointerDeltaY],
         [svgRect.width, svgRect.height]
     );
-    if (translated) setCalibrationDraft(translated);
+    if (translated) setCalibrationDraft(translated.map(toOriented));
 });
 
 function finishCalibrationDrag(e, cancelled) {
@@ -8344,12 +8511,9 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
     saveCurrentState();
     try {
         await persistGeometryQueued(activeId, current_geom);
-        isCalibrationMode = false;
-        document.getElementById('calibration-overlay').classList.add('hidden');
-        setDevelopInspectorCalibrationLocked(false);
+        exitCalibrationMode();
         btnAutoColor.disabled = false;
         setBatchApplyDisabled(false);
-        if (activeProxyIsFull) requestRender();
         showToast("Film area saved. Run Auto Invert when ready.", "success");
     } catch (e) {
         current_geom = previousGeom;
@@ -8725,6 +8889,7 @@ function resetDevelopViewport() {
     resetDevelopViewTransform();
     currentImageWidth = 1;
     currentImageHeight = 1;
+    imageSizeIsProvisional = true;
 }
 
 window.addEventListener('keydown', e => {

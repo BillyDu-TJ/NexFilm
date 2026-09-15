@@ -218,6 +218,170 @@
         ]);
     }
 
+    // Extent of the oriented frame along its own x/y axes, in source pixels.
+    // This is the rotated bounding box, so it grows with the fine angle.
+    function orientedAxisExtents(width, height, geom) {
+        const sourceWidth = Math.max(1, numberOrZero(width));
+        const sourceHeight = Math.max(1, numberOrZero(height));
+        const turns = normalizedQuarterTurns(geom && geom.rotate_90_count);
+        const layout = getRotationLayout(sourceWidth, sourceHeight, numberOrZero(geom && geom.angle));
+        return turns % 2 === 0
+            ? { x: layout.width, y: layout.height }
+            : { x: layout.height, y: layout.width };
+    }
+
+    // `mapOrientedPointToSource` walks oriented UV back to canonical source UV.
+    // This is its exact inverse, so it can place a picture point back into the
+    // oriented frame after the fine angle changed.
+    function mapSourcePointToOriented(point, width, height, geom) {
+        const sourceWidth = Math.max(1, numberOrZero(width));
+        const sourceHeight = Math.max(1, numberOrZero(height));
+        const state = geom || {};
+        const layout = getRotationLayout(sourceWidth, sourceHeight, numberOrZero(state.angle));
+        const turns = normalizedQuarterTurns(state.rotate_90_count);
+        const oriented = getOrientedDimensions(sourceWidth, sourceHeight, state);
+
+        const sourceX = numberOrZero(point[0]) * sourceWidth;
+        const sourceY = numberOrZero(point[1]) * sourceHeight;
+
+        let rotatedX;
+        let rotatedY;
+        if (layout.angle === 0) {
+            rotatedX = sourceX;
+            rotatedY = sourceY;
+        } else {
+            const expandedSourceX = sourceX - layout.diagonal / 2 + layout.sourceOffsetX;
+            const expandedSourceY = sourceY - layout.diagonal / 2 + layout.sourceOffsetY;
+            const sine = Math.sin(layout.angle);
+            const cosine = Math.cos(layout.angle);
+            const dx = cosine * expandedSourceX - sine * expandedSourceY;
+            const dy = sine * expandedSourceX + cosine * expandedSourceY;
+            rotatedX = dx + layout.diagonal / 2 - layout.cropOffsetX;
+            rotatedY = dy + layout.diagonal / 2 - layout.cropOffsetY;
+        }
+
+        let x;
+        let y;
+        if (turns === 1) {
+            y = rotatedX;
+            x = layout.height - rotatedY;
+        } else if (turns === 2) {
+            x = layout.width - rotatedX;
+            y = layout.height - rotatedY;
+        } else if (turns === 3) {
+            x = rotatedY;
+            y = layout.width - rotatedX;
+        } else {
+            x = rotatedX;
+            y = rotatedY;
+        }
+        if (state.flip_h) x = oriented.width - x;
+        if (state.flip_v) y = oriented.height - y;
+        return [x / oriented.width, y / oriented.height];
+    }
+
+    // The oriented frame is normalised by the rotated bounding box, which grows
+    // with the fine angle. A fixed crop rect or film-area quad would therefore
+    // cover a different part of the picture after a rotation. These helpers keep
+    // a point, quad, or crop rect locked to the picture content it was placed on.
+    function anchorPointForAngleChange(point, width, height, fromGeom, toGeom) {
+        const picture = mapOrientedPointToSource(point, width, height, fromGeom);
+        return mapSourcePointToOriented(picture, width, height, toGeom);
+    }
+
+    function anchorQuadForAngleChange(points, width, height, fromGeom, toGeom) {
+        if (!Array.isArray(points)) return points;
+        return points.map(point =>
+            anchorPointForAngleChange(point, width, height, fromGeom, toGeom)
+        );
+    }
+
+    // Keep the picture point under the crop centre and the physical crop size.
+    // A crop rect stays axis-aligned with the screen, so it cannot follow the
+    // fine angle the way a quad can; holding the centre and the source-pixel
+    // size keeps the framing and its magnification stable while rotating.
+    function anchorRectForAngleChange(rect, width, height, fromGeom, toGeom) {
+        const source = {
+            x: numberOrZero(rect && rect.x),
+            y: numberOrZero(rect && rect.y),
+            width: Math.max(0, numberOrZero(rect && rect.width)),
+            height: Math.max(0, numberOrZero(rect && rect.height)),
+        };
+        const fromExtents = orientedAxisExtents(width, height, fromGeom);
+        const toExtents = orientedAxisExtents(width, height, toGeom);
+        const center = anchorPointForAngleChange(
+            [source.x + source.width / 2, source.y + source.height / 2],
+            width,
+            height,
+            fromGeom,
+            toGeom
+        );
+        const physicalWidth = source.width * fromExtents.x;
+        const physicalHeight = source.height * fromExtents.y;
+        const width2 = toExtents.x > 0 ? physicalWidth / toExtents.x : source.width;
+        const height2 = toExtents.y > 0 ? physicalHeight / toExtents.y : source.height;
+        return {
+            x: center[0] - width2 / 2,
+            y: center[1] - height2 / 2,
+            width: width2,
+            height: height2,
+        };
+    }
+
+    // The rect of the oriented frame the canvas shows. Crop and film-area
+    // editing need the whole frame so their overlays and the picture share one
+    // coordinate system; the finished view shows the crop itself.
+    function getDisplayFrame(geom, showFullFrame) {
+        if (showFullFrame) return { x: 0, y: 0, width: 1, height: 1 };
+        const crop = normalizeGeometryState(geom).crop_rect;
+        return {
+            x: numberOrZero(crop.x),
+            y: numberOrZero(crop.y),
+            width: numberOrZero(crop.width),
+            height: numberOrZero(crop.height),
+        };
+    }
+
+    function orientedPointToDisplay(point, frame) {
+        const width = Math.abs(numberOrZero(frame && frame.width)) > 1e-6
+            ? numberOrZero(frame.width)
+            : 1;
+        const height = Math.abs(numberOrZero(frame && frame.height)) > 1e-6
+            ? numberOrZero(frame.height)
+            : 1;
+        return [
+            (numberOrZero(point[0]) - numberOrZero(frame && frame.x)) / width,
+            (numberOrZero(point[1]) - numberOrZero(frame && frame.y)) / height,
+        ];
+    }
+
+    function displayPointToOriented(point, frame) {
+        const width = Math.abs(numberOrZero(frame && frame.width)) > 1e-6
+            ? numberOrZero(frame.width)
+            : 1;
+        const height = Math.abs(numberOrZero(frame && frame.height)) > 1e-6
+            ? numberOrZero(frame.height)
+            : 1;
+        return [
+            numberOrZero(frame && frame.x) + numberOrZero(point[0]) * width,
+            numberOrZero(frame && frame.y) + numberOrZero(point[1]) * height,
+        ];
+    }
+
+    function orientedRectToDisplay(rect, frame) {
+        const topLeft = orientedPointToDisplay([rect.x, rect.y], frame);
+        const bottomRight = orientedPointToDisplay(
+            [rect.x + rect.width, rect.y + rect.height],
+            frame
+        );
+        return {
+            x: topLeft[0],
+            y: topLeft[1],
+            width: bottomRight[0] - topLeft[0],
+            height: bottomRight[1] - topLeft[1],
+        };
+    }
+
     function getPreviewTransform(currentGeom, loadedGeom, editing) {
         if (!editing || !currentGeom) {
             return { angleDegrees: 0, angleRadians: 0, scaleX: 1, scaleY: 1 };
@@ -425,6 +589,14 @@
         getConstrainedPerspectiveScale,
         getOrientedDimensions,
         mapOrientedPointToSource,
+        mapSourcePointToOriented,
+        anchorPointForAngleChange,
+        anchorQuadForAngleChange,
+        anchorRectForAngleChange,
+        getDisplayFrame,
+        orientedPointToDisplay,
+        displayPointToOriented,
+        orientedRectToDisplay,
         mapDisplayPointToSource,
         createInverseGeometryMatrix,
         getPreviewTransform,

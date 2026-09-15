@@ -3,14 +3,14 @@ const { createCopyPayload, mergeCopyPayload } = require('./settings-copy.js');
 
 const currentParams = {
     film_mode: 'Color', d_min: [0.1, 0.1, 0.1], d_max: [2, 2, 2], exposure: 0,
-    gamma: 1, saturation: 0, temperature: 0, tint: 0, exp_r: 0, exp_g: 0, exp_b: 0,
+    gamma: 1, contrast: 0, saturation: 0, temperature: 0, tint: 0, exp_r: 0, exp_g: 0, exp_b: 0,
     highlights: 0, shadows: 0, lut_path: null, lut_opacity: 1,
     working_colorspace: 'linear-srgb', sprocket_uv: [-1, -1], sprocket_tolerance: 0.1,
     sprocket_feather: 0.05
 };
 const sourceParams = {
     ...currentParams, film_mode: 'BW', d_min: [0.2, 0.2, 0.2], exposure: 0.4,
-    saturation: 0.3, tint: 0.2, exp_r: 0.1, lut_path: 'film.cube', lut_opacity: 0.7,
+    contrast: 0.25, saturation: 0.3, tint: 0.2, exp_r: 0.1, lut_path: 'film.cube', lut_opacity: 0.7,
     working_colorspace: 'acescg', sprocket_uv: [0.2, 0.8],
     sprocket_tolerance: 0.2, sprocket_feather: 0.1
 };
@@ -73,6 +73,11 @@ const perspectiveOnly = mergeCopyPayload(
     createCopyPayload(sourceParams, sourceGeom, ['perspective'])
 );
 assert.equal(perspectiveOnly.geom.lens_distortion, -32);
+
+const contrastOnly = createCopyPayload(sourceParams, sourceGeom, ['contrast']);
+assert.deepEqual(contrastOnly.params, { contrast: 0.25 });
+assert.equal(mergeCopyPayload(currentParams, currentGeom, contrastOnly).params.contrast, 0.25);
+assert.equal(mergeCopyPayload(currentParams, currentGeom, contrastOnly).params.gamma, 1);
 
 const legacyEdit = mergeCopyPayload(
     currentParams,

@@ -141,6 +141,17 @@ pub fn tone_normalized_channel(value: f32, highlights: f32, shadows: f32) -> f32
         .clamp(0.0, 1.0)
 }
 
+/// Display-referred contrast around mid grey. Mirrors `toneContrast` in the
+/// WebGL fragment shader: the usable range stops at a 0.5/1.5 gain so the
+/// weakest setting keeps half of the separation from the pivot instead of
+/// flattening the frame onto it. The clamp also guards the render paths against
+/// a stored value the control can no longer produce.
+#[inline]
+pub fn contrast_channel(value: f32, contrast: f32) -> f32 {
+    let factor = 1.0 + contrast.clamp(-0.5, 0.5);
+    ((value - 0.5) * factor + 0.5).clamp(0.0, 1.0)
+}
+
 /// Apply the creative controls that intentionally live after display gamma.
 /// This mirrors `applyPostGammaAdjustments` in the WebGL fragment shader.
 #[inline]
@@ -148,6 +159,7 @@ pub fn apply_post_gamma_adjustments(
     rgb: [f32; 3],
     highlights: f32,
     shadows: f32,
+    contrast: f32,
     saturation: f32,
     temperature: f32,
     tint: f32,
@@ -156,6 +168,7 @@ pub fn apply_post_gamma_adjustments(
         rgb,
         highlights,
         shadows,
+        contrast,
         saturation,
         temperature,
         tint,
@@ -168,12 +181,14 @@ pub fn apply_post_gamma_adjustments_with_luma(
     rgb: [f32; 3],
     highlights: f32,
     shadows: f32,
+    contrast: f32,
     saturation: f32,
     temperature: f32,
     tint: f32,
     luma_coefficients: [f32; 3],
 ) -> [f32; 3] {
     let mut adjusted = rgb.map(|value| tone_normalized_channel(value, highlights, shadows));
+    adjusted = adjusted.map(|value| contrast_channel(value, contrast));
 
     let temperature = temperature.clamp(-1.0, 1.0);
     adjusted[0] *= 1.0 + temperature * 0.20;
@@ -333,8 +348,9 @@ pub fn sprocket_white_mask(luma_difference: f32, tolerance: f32, feather: f32) -
 mod tests {
     use super::{
         apply_homography, apply_lens_distortion_uv, apply_perspective_uv,
-        apply_post_gamma_adjustments, density_luma, neutral_density_bounds, neutralize_rgb,
-        normalize_density_channel, shader_homography, sprocket_white_mask, trim_density_endpoints,
+        apply_post_gamma_adjustments, contrast_channel, density_luma, neutral_density_bounds,
+        neutralize_rgb, normalize_density_channel, shader_homography, sprocket_white_mask,
+        trim_density_endpoints,
     };
 
     #[test]
@@ -353,9 +369,21 @@ mod tests {
     }
 
     #[test]
+    fn contrast_pivots_on_mid_grey_without_flattening_the_frame() {
+        assert!((contrast_channel(0.5, 0.5) - 0.5).abs() < 1e-6);
+        assert!((contrast_channel(0.75, 0.25) - 0.8125).abs() < 1e-6);
+        assert!((contrast_channel(0.25, 0.25) - 0.1875).abs() < 1e-6);
+
+        // The weakest setting keeps half of the original separation from mid
+        // grey, and the clamp refuses to flatten the frame any further.
+        assert!((contrast_channel(0.75, -0.5) - 0.625).abs() < 1e-6);
+        assert!((contrast_channel(0.75, -4.0) - 0.625).abs() < 1e-6);
+    }
+
+    #[test]
     fn post_gamma_color_defaults_are_neutral() {
         let rgb = [0.2, 0.5, 0.8];
-        let adjusted = apply_post_gamma_adjustments(rgb, 0.0, 0.0, 0.0, 0.0, 0.0);
+        let adjusted = apply_post_gamma_adjustments(rgb, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
         for channel in 0..3 {
             assert!((adjusted[channel] - rgb[channel]).abs() < 1e-4);
         }
@@ -363,7 +391,7 @@ mod tests {
 
     #[test]
     fn minimum_saturation_produces_grayscale() {
-        let adjusted = apply_post_gamma_adjustments([0.2, 0.5, 0.8], 0.0, 0.0, -1.0, 0.0, 0.0);
+        let adjusted = apply_post_gamma_adjustments([0.2, 0.5, 0.8], 0.0, 0.0, 0.0, -1.0, 0.0, 0.0);
         assert!((adjusted[0] - adjusted[1]).abs() < 1e-6);
         assert!((adjusted[1] - adjusted[2]).abs() < 1e-6);
     }
@@ -475,10 +503,10 @@ mod tests {
 
     #[test]
     fn tint_moves_between_green_and_magenta() {
-        let green = apply_post_gamma_adjustments([0.5; 3], 0.0, 0.0, 0.0, 0.0, -1.0);
+        let green = apply_post_gamma_adjustments([0.5; 3], 0.0, 0.0, 0.0, 0.0, 0.0, -1.0);
         assert!(green[1] > green[0] && green[1] > green[2]);
 
-        let magenta = apply_post_gamma_adjustments([0.5; 3], 0.0, 0.0, 0.0, 0.0, 1.0);
+        let magenta = apply_post_gamma_adjustments([0.5; 3], 0.0, 0.0, 0.0, 0.0, 0.0, 1.0);
         assert!(magenta[0] > magenta[1] && magenta[2] > magenta[1]);
     }
 
