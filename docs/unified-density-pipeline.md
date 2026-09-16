@@ -149,6 +149,6 @@ node scripts/verify-density-contract.cjs  （以及 scripts 下其余契约脚�
 - **端点随行**：源帧的 `d_min / d_max / d_min_offset / d_max_offset` 合并进每个目标帧的 `params`（未标定卷的显示端点取自 `params`，这是「反相」那一半真正生效的地方）。
 - **片基留白**：源帧的 `base_color` 只作为占位值写进那些**还没有自己测量结果**的目标帧，并把该帧 `pipeline_state` 里的 `base_source` 标记为 `inherited_film_base`（只改来源标记，目标帧自己的锚点、映射等一概保留）；已经有自己测量结果的帧连片基也不动，只接收端点。
 - **就地重测**：帧第一次被解码时（Develop 打开、相邻帧预热、导出解码），`inherited_film_base_measurement` 按该帧自己的 Film Area 测片基并替换占位值（`install_film_base` 同时保持采样卷的显示映射 = 锚点 + 该帧自己的片基）。导出时若发现仍是继承片基，也在这条路径上测一次并回写，导出的文件不会印着别的帧的色罩。
-- **打开即成片**：带有片基与端点的帧（粘贴或批量应用过来的）在打开时按「已冲洗」显示，而不是停在负片预览，否则用户会以为批量应用没有生效。
+- **状态不改**：批量应用只预处理数据，不改变"负片 / 已反相"的显示状态。打开一张照片永远保持它原本的状态，只有用户明确点击「自动反相」（或粘贴反相设置）才显示为正片；这条契约由 `scripts/verify-density-contract.cjs` 中"打开不得自行去色罩"的断言钉住。
 
 因此批量应用是一个纯写库操作（`copy_settings_transaction` 不接触解码器），耗时与整卷解码无关；片基的测量成本被摊到每张照片本来就要解码的那一刻。契约见 `scripts/verify-density-contract.cjs` 中的「批量应用不得解码」「继承片基必须在解码处重测」两段断言，行为断言见 `src/batch_settings.rs` 的两个新测试。

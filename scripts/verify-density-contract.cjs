@@ -109,10 +109,17 @@ assert.match(
     /inherited_film_base_measurement\(&render_pipeline_state, &geom_owned, &input\)/,
     'Exporting a frame must not print another frame\'s film base',
 );
+// Opening a frame must never de-mask it: stored analysis state is not a user
+// action, so only Auto Invert or a Paste Settings commit may show a positive.
+assert.doesNotMatch(
+    mainSource,
+    /storedDevelopedFrame/,
+    'Opening a frame must not enable inversion by itself',
+);
 assert.match(
     mainSource,
-    /const storedDevelopedFrame = Boolean\(state\.base_analyzed\)/,
-    'A frame that received an inversion from another frame must open as developed',
+    /autoInvertAppliedActiveImage = hasRenderedPreview;/,
+    'Only a rendered preview may mark a frame as developed when it is opened',
 );
 // The Roll white point is one value shared by every frame, so it has to come
 // from the brightest frame of the Roll. Sampling a few frames can only

@@ -2020,19 +2020,6 @@ function pipelineRequiresFilmArea(state = currentPipelineState) {
     return !pipelineHasCompleteRollAnchors(state);
 }
 
-// A frame shows a positive once it has both a film base and display endpoints.
-// The placeholder window means the analysis never finished, and such a frame
-// stays a negative until Auto Invert or a paste gives it endpoints.
-function hasStoredDensityWindow(params) {
-    const dMin = params?.d_min;
-    const dMax = params?.d_max;
-    if (!Array.isArray(dMin) || !Array.isArray(dMax) || dMin.length < 3 || dMax.length < 3) return false;
-    if (![...dMin, ...dMax].every(value => Number.isFinite(Number(value)))) return false;
-    const placeholderMin = dMin.every(value => Math.abs(Number(value) - 0.1) < 1e-4);
-    const placeholderMax = dMax.every(value => Math.abs(Number(value) - 2.0) < 1e-4);
-    return !(placeholderMin && placeholderMax);
-}
-
 function updatePipelineStatus() {
     // A complete Roll keeps its sampled density anchors as the baseline, but
     // the Master D-Min/D-Max sliders still trim this frame on top of them.
@@ -5385,15 +5372,10 @@ async function selectImage(id, { force = false } = {}) {
         btnDeleteDevelopImage.disabled = getImageDeletionTargets([activeId]).length === 0;
         activeProxyIsFull = false;
         hasProcessedActiveImage = false;
-        // A frame whose stored state already carries a film base and a window is
-        // developed: it may have received them from another frame through Paste
-        // Settings or Batch Apply, and it must not open as a bare negative. A
-        // completely calibrated Roll still stages its frames until Auto Invert
-        // confirms the shared white point.
-        const storedDevelopedFrame = Boolean(state.base_analyzed)
-            && pipelineRequiresFilmArea(currentPipelineState)
-            && hasStoredDensityWindow(state.params);
-        autoInvertAppliedActiveImage = hasRenderedPreview || storedDevelopedFrame;
+        // Only an explicit Auto Invert (or pasting inversion settings) turns a
+        // frame into a positive. Stored analysis state alone never does: opening
+        // a frame must not de-mask it behind the user's back.
+        autoInvertAppliedActiveImage = hasRenderedPreview;
         proxyPixels = null;
         proxyWidth = 0;
         proxyHeight = 0;
@@ -5462,9 +5444,7 @@ async function selectImage(id, { force = false } = {}) {
             && !autoInvertAppliedActiveImage;
         const proxyPromise = keepRollAnchorNegative
             ? ensureProxyPrepared(id)
-            : ensureProxyDisplayed(id, {
-                persistThumbnail: hasRenderedPreview || storedDevelopedFrame,
-            });
+            : ensureProxyDisplayed(id, { persistThumbnail: hasRenderedPreview });
         void proxyPromise
             .then(loaded => {
                 if (!keepRollAnchorNegative && loaded
