@@ -38,6 +38,39 @@ assert.match(
     /fn detect_frame_highlight_fraction\(/,
     'Roll rendering must place the white point from the scene highlights',
 );
+// A pasted film base is a starting point, not a constant: one Roll can record
+// a different clear-film density on either side of a scan pass, and
+// subtracting another frame's figure tints that frame end to end. The paste
+// therefore measures the target frame and only falls back to the copied figure
+// when the frame has no analysis of its own.
+assert.match(commandSource, /fn choose_pasted_film_base\(/);
+assert.match(
+    commandSource,
+    /const INHERITED_FILM_BASE_SOURCE: &str = "inherited_film_base";/,
+);
+assert.match(
+    commandSource,
+    /let measured = item[\s\S]{0,200}?estimate_film_base_f32\(proxy, &item\.geom\)/,
+    'Pasting a film base must measure the target frame',
+);
+const pasteHandler =
+    mainSource.match(/btnPasteSettings\.addEventListener\('click',[\s\S]*?\n\}\);/)?.[0] || '';
+assert.ok(pasteHandler, 'the Paste Settings handler was not found');
+assert.ok(
+    pasteHandler.indexOf('await updateBackendParams(targetId, nextParams);') <
+        pasteHandler.indexOf("invoke('apply_film_base'"),
+    'Pasted geometry and density limits must be persisted before the film base is measured',
+);
+assert.match(
+    pasteHandler,
+    /applied\?\.base_density/,
+    'The preview must render the film base the backend installed',
+);
+assert.doesNotMatch(
+    pasteHandler,
+    /currentBaseDensity = copiedSettings\.extra\.base_density\.slice\(\);/,
+    'The copied film base must not be rendered directly',
+);
 // The Roll white point is one value shared by every frame, so it has to come
 // from the brightest frame of the Roll. Sampling a few frames can only
 // under-estimate it, and a white point below a frame's highlights clips them.

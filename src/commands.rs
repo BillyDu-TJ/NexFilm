@@ -3636,6 +3636,16 @@ pub struct AutoColorLimits {
     pub pipeline_state: Option<PipelineState>,
 }
 
+/// The film base a pasted inversion actually runs on, reported back so the
+/// Develop preview cannot render a different reference than the frame stores.
+#[derive(Debug, Clone, Serialize)]
+pub struct AppliedFilmBase {
+    pub base_density: [f32; 3],
+    pub base_source: String,
+    /// True when the base was measured on the target frame itself.
+    pub measured_on_frame: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AutoInvertRollResult {
     pub roll_id: String,
@@ -7590,37 +7600,125 @@ pub async fn analyze_proxy_base_color(
     .map_err(|error| error.to_string())?
 }
 
+/// Recorded when a frame carries a film base that was measured on another
+/// frame of the same Roll instead of on its own pixels.
+const INHERITED_FILM_BASE_SOURCE: &str = "inherited_film_base";
+
+/// True when a persisted base belongs to the frame that stores it.
+///
+/// The marker has to be read together with the value: a frame that was reset,
+/// or written before its analysis finished, can still hold the default
+/// half-white colour, which is not a measurement of anything.
+fn base_is_frame_measurement(source: &str, base_color: &BaseColor) -> bool {
+    if *base_color == BaseColor::default() {
+        return false;
+    }
+    !matches!(
+        source,
+        "" | "unresolved"
+            | INHERITED_FILM_BASE_SOURCE
+            | "compatibility_fallback"
+            | "missing_film_base_reference"
+    )
+}
+
+/// Choose the film base a pasted inversion runs on.
+///
+/// The film base is the neutral reference *of one frame*: the density a
+/// scanner or camera records for the clear film moves whenever the capture,
+/// the lamp or the strip itself changes. Subtracting another frame's figure
+/// therefore tints that frame end to end — a Roll digitised in two passes
+/// recorded 0.98 and 0.82 D of blue base, and the second pass printed at
+/// R/G 1.41 (visibly red) on the first pass's base while the same window on
+/// its own base stayed at R/G 0.97.
+///
+/// Priority: measure this frame now, keep this frame's own earlier
+/// measurement, and only fall back to the copied figure when neither exists.
+fn choose_pasted_film_base(
+    copied: [f32; 3],
+    frame_measurement: Option<([f32; 3], String, String)>,
+    measured: Option<FilmBaseEstimate>,
+) -> ([f32; 3], String, String, bool) {
+    if let Some(estimate) = measured.filter(|estimate| estimate.usable) {
+        return (
+            estimate.density,
+            estimate.source.to_string(),
+            format!("{:.3}", estimate.confidence),
+            true,
+        );
+    }
+    if let Some((density, source, confidence)) = frame_measurement {
+        return (density, source, confidence, true);
+    }
+    (
+        copied,
+        INHERITED_FILM_BASE_SOURCE.to_string(),
+        "1.000".to_string(),
+        false,
+    )
+}
+
 #[tauri::command]
 pub async fn apply_film_base(
     id: String,
     generation: u64,
     base_density: [f32; 3],
     state: State<'_, EngineState>,
-) -> Result<(), String> {
+) -> Result<AppliedFilmBase, String> {
     let epoch = claim_development_generation(&state, &id, generation)?;
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
     tokio::task::spawn_blocking(move || {
         ensure_current_development_generation(&epoch, generation)?;
-        let base_color = base_color_from_density(base_density);
         let mut item = write_lock(&item_arc);
+        // A pasted film base is only a starting point: the base is the neutral
+        // reference of *this* frame's clear film, so measure it here whenever
+        // the frame's own Film Area analysis is available.
+        let measured = item
+            .geom
+            .calibration_points
+            .is_some()
+            .then(|| item.prophoto_estimate_proxy.as_ref())
+            .flatten()
+            .map(|proxy| estimate_film_base_f32(proxy, &item.geom));
+        let frame_measurement = base_is_frame_measurement(
+            &item.pipeline_state.processing_report.base_source,
+            &item.base_color,
+        )
+        .then(|| {
+            (
+                crate::pipeline::base_density_from_base_color(&item.base_color),
+                item.pipeline_state.processing_report.base_source.clone(),
+                item.pipeline_state
+                    .processing_report
+                    .base_confidence
+                    .clone(),
+            )
+        });
+        let (effective_density, base_source, base_confidence, measured_on_frame) =
+            choose_pasted_film_base(base_density, frame_measurement, measured);
+        let base_color = base_color_from_density(effective_density);
         let mut effective = item.effective_pipeline_state().clone();
         clear_retired_legacy_domain(&mut effective);
-        effective.processing_report.base_source = "inherited_film_base".to_string();
-        effective.processing_report.base_confidence = "1.000".to_string();
+        effective.processing_report.base_source = base_source.clone();
+        effective.processing_report.base_confidence = base_confidence.clone();
         effective.processing_report.analysis_window_rule =
             crate::app_state::DENSITY_WINDOW_RULE_VERSION;
         let mut persisted = item.pipeline_state.clone();
-        persisted.processing_report.base_source = "inherited_film_base".to_string();
-        persisted.processing_report.base_confidence = "1.000".to_string();
+        persisted.processing_report.base_source = base_source.clone();
+        persisted.processing_report.base_confidence = base_confidence;
         persisted.processing_report.analysis_window_rule =
             crate::app_state::DENSITY_WINDOW_RULE_VERSION;
         persist_base_and_pipeline(&item.roll_id, &item.file_path, &base_color, &persisted)?;
         item.base_color = base_color;
         item.pipeline_state = persisted;
         item.runtime_pipeline_state = Some(effective);
-        item.runtime_frame_base = Some(base_density);
+        item.runtime_frame_base = Some(effective_density);
         item.pristine_proxy = None;
-        Ok(())
+        Ok(AppliedFilmBase {
+            base_density: effective_density,
+            base_source,
+            measured_on_frame,
+        })
     })
     .await
     .map_err(|error| error.to_string())?
@@ -21409,5 +21507,125 @@ mod roll_render_tests {
             None,
         );
         assert_eq!(input.density_anchors.highlight_fraction, Some(0.5));
+    }
+
+    fn usable_frame_base_estimate(
+        density: [f32; 3],
+        source: &'static str,
+        confidence: f32,
+    ) -> FilmBaseEstimate {
+        FilmBaseEstimate {
+            density,
+            confidence,
+            source,
+            usable: true,
+            fallback_reason: None,
+        }
+    }
+
+    /// A pasted film base must be measured on the frame it runs on. The same
+    /// Roll records a different clear-film density on either side of a scan
+    /// pass, so letting one frame's figure travel to the next tints it end to
+    /// end.
+    #[test]
+    fn pasted_film_base_is_measured_on_the_target_frame() {
+        let copied = [0.5775, 0.7360, 0.9848];
+        let measured = usable_frame_base_estimate([0.6956, 0.7609, 0.8364], "film_edge_band", 0.95);
+
+        let (density, source, confidence, measured_on_frame) =
+            choose_pasted_film_base(copied, None, Some(measured));
+
+        assert_eq!(density, [0.6956, 0.7609, 0.8364]);
+        assert_eq!(source, "film_edge_band");
+        assert_eq!(confidence, "0.950");
+        assert!(measured_on_frame);
+    }
+
+    /// When the frame cannot be measured right now, its own earlier
+    /// measurement still beats the figure copied from another frame.
+    #[test]
+    fn pasted_film_base_keeps_the_frames_own_earlier_measurement() {
+        let copied = [0.5775, 0.7360, 0.9848];
+        let own = (
+            [0.6067, 0.7570, 1.0074],
+            "film_edge_band".to_string(),
+            "0.950".to_string(),
+        );
+
+        let (density, source, confidence, measured_on_frame) =
+            choose_pasted_film_base(copied, Some(own), None);
+
+        assert_eq!(density, [0.6067, 0.7570, 1.0074]);
+        assert_eq!(source, "film_edge_band");
+        assert_eq!(confidence, "0.950");
+        assert!(measured_on_frame);
+    }
+
+    /// The copied figure stays as the fallback for frames that have neither a
+    /// Film Area analysis nor an earlier base of their own.
+    #[test]
+    fn pasted_film_base_falls_back_to_the_copied_figure() {
+        let copied = [0.5775, 0.7360, 0.9848];
+
+        let (density, source, confidence, measured_on_frame) =
+            choose_pasted_film_base(copied, None, None);
+
+        assert_eq!(density, copied);
+        assert_eq!(source, INHERITED_FILM_BASE_SOURCE);
+        assert_eq!(confidence, "1.000");
+        assert!(!measured_on_frame);
+    }
+
+    /// A measurement that fails the quality gate must not override the frame's
+    /// own base or the copied figure.
+    #[test]
+    fn pasted_film_base_ignores_an_unusable_measurement() {
+        let copied = [0.5775, 0.7360, 0.9848];
+        let unusable = FilmBaseEstimate {
+            density: [0.4; 3],
+            confidence: 0.0,
+            source: "unavailable",
+            usable: false,
+            fallback_reason: Some("missing_film_base_reference"),
+        };
+
+        let (density, source, _confidence, measured_on_frame) =
+            choose_pasted_film_base(copied, None, Some(unusable));
+
+        assert_eq!(density, copied);
+        assert_eq!(source, INHERITED_FILM_BASE_SOURCE);
+        assert!(!measured_on_frame);
+    }
+
+    /// A marker alone does not make a base this frame's measurement: a reset
+    /// or half-written frame still holds the default half-white colour, and a
+    /// copied base names the frame it came from.
+    #[test]
+    fn frame_measurement_requires_a_marker_and_a_real_base() {
+        let measured = base_color_from_density([0.58, 0.74, 0.99]);
+
+        assert!(base_is_frame_measurement("film_edge_band", &measured));
+        assert!(base_is_frame_measurement(
+            "film_area_low_density_tail",
+            &measured
+        ));
+        assert!(!base_is_frame_measurement(
+            INHERITED_FILM_BASE_SOURCE,
+            &measured
+        ));
+        assert!(!base_is_frame_measurement("unresolved", &measured));
+        assert!(!base_is_frame_measurement("", &measured));
+        assert!(!base_is_frame_measurement(
+            "compatibility_fallback",
+            &measured
+        ));
+        assert!(!base_is_frame_measurement(
+            "missing_film_base_reference",
+            &measured
+        ));
+        assert!(!base_is_frame_measurement(
+            "film_edge_band",
+            &BaseColor::default()
+        ));
     }
 }

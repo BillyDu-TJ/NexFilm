@@ -8064,26 +8064,48 @@ btnPasteSettings.addEventListener('click', async () => {
     const settings = new Set(copiedSettings.settings || copiedSettings.modules);
 
     const geometryChanged = ['crop', 'rotateFlip', 'perspective'].some(setting => settings.has(setting));
+    let filmBaseNotice = null;
     pushUndoState();
     try {
         current_geom = nextGeom;
         updateUIFromParams(nextParams, nextGeom);
+        if (settings.has('lut')) await restoreLutForImage(nextParams);
+        // Geometry and density limits are persisted before the film base is
+        // installed: the backend measures this frame's own film base, and that
+        // measurement has to use the Film Area the frame will render with.
+        await updateBackendParams(targetId, nextParams);
+        if (geometryChanged) await persistGeometryQueued(targetId, nextGeom);
         if (settings.has('filmBase') && copiedSettings.extra?.base_density) {
-            currentBaseDensity = copiedSettings.extra.base_density.slice();
+            // The film base belongs to one frame's own clear film. A base
+            // measured on another frame of the Roll can sit a fifth of a
+            // density unit away and print the whole frame red or cyan, so the
+            // pasted figure is only a fallback for frames that cannot be
+            // measured here. Decoding is required first, otherwise the
+            // measurement is skipped and the copied value stays in place.
+            try {
+                await ensureProxyPrepared(targetId);
+            } catch (error) {
+                console.debug('Film base measurement skipped: the proxy is not ready yet', error);
+            }
+            if (targetId !== activeId) return;
+            const generation = developOperationRevision;
+            const applied = await invoke('apply_film_base', {
+                id: targetId,
+                generation,
+                baseDensity: copiedSettings.extra.base_density.slice(),
+            });
+            const appliedDensity = Array.isArray(applied?.base_density) && applied.base_density.length >= 3
+                ? applied.base_density.slice(0, 3)
+                : copiedSettings.extra.base_density.slice();
+            currentBaseDensity = appliedDensity.map(value => Number(value) || 0);
             autoInvertAppliedActiveImage = true;
             proxyHasAnalyzedBase = true;
             proxyAnalyzedBaseIds.add(targetId);
-            const generation = developOperationRevision;
-            await invoke('apply_film_base', {
-                id: targetId,
-                generation,
-                baseDensity: currentBaseDensity,
-            });
             updateAutoInvertAvailability();
+            if (applied && applied.measured_on_frame === false) {
+                filmBaseNotice = i18nText('develop.pasteFilmBaseInherited');
+            }
         }
-        if (settings.has('lut')) await restoreLutForImage(nextParams);
-        await updateBackendParams(targetId, nextParams);
-        if (geometryChanged) await persistGeometryQueued(targetId, nextGeom);
 
         updateCanvasTransform();
         requestRender();
@@ -8092,7 +8114,7 @@ btnPasteSettings.addEventListener('click', async () => {
         if (proxyHasAnalyzedBase) {
             requestThumbnailSync();
         }
-        showToast("Settings pasted.", "success");
+        showToast(filmBaseNotice || "Settings pasted.", filmBaseNotice ? "info" : "success");
     } catch (error) {
         current_geom = previousGeom;
         updateUIFromParams(previousParams, previousGeom);
