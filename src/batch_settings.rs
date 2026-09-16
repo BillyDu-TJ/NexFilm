@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
 
-const GEOMETRY_MODULE: &str = "geometry";
-const FILM_AREA_MODULE: &str = "film_area";
+pub const GEOMETRY_MODULE: &str = "geometry";
+pub const FILM_AREA_MODULE: &str = "film_area";
+pub const FILM_BASE_MODULE: &str = "base_color";
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct ImageKey {
@@ -23,6 +24,8 @@ pub struct BatchCopyResult {
 pub struct BatchCopyCommit {
     pub result: BatchCopyResult,
     pub geometry: Option<Value>,
+    pub base_color: Option<String>,
+    pub pipeline_state: Option<String>,
 }
 
 /// Copy selected JSON modules in one transaction. This function only mutates
@@ -50,6 +53,8 @@ pub fn copy_settings_transaction(
                 modules: modules.to_vec(),
             },
             geometry: None,
+            base_color: None,
+            pipeline_state: None,
         });
     }
 
@@ -74,6 +79,22 @@ pub fn copy_settings_transaction(
         }))
     } else {
         None
+    };
+
+    let (source_base, source_pipeline) = if modules.iter().any(|module| module == FILM_BASE_MODULE)
+    {
+        let (base, pipeline): (Option<String>, Option<String>) = transaction
+            .query_row(
+                "SELECT base_color, pipeline_state FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
+                params![source.roll_id, source.file_path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| format!("Failed to read source base state: {error}"))?
+            .unwrap_or((None, None));
+        (base, pipeline)
+    } else {
+        (None, None)
     };
 
     for target in &targets {
@@ -102,6 +123,27 @@ pub fn copy_settings_transaction(
                 ));
             }
         }
+        if let Some(base) = source_base.as_ref() {
+            transaction
+                .execute(
+                    "UPDATE image_states
+                     SET base_color = ?1, pipeline_state = ?2, updated_at = ?3
+                     WHERE roll_id = ?4 AND file_path = ?5",
+                    params![
+                        base,
+                        source_pipeline,
+                        updated_at,
+                        target.roll_id,
+                        target.file_path
+                    ],
+                )
+                .map_err(|error| {
+                    format!(
+                        "Failed to update film base for {}/{}: {error}",
+                        target.roll_id, target.file_path
+                    )
+                })?;
+        }
     }
 
     transaction
@@ -115,6 +157,8 @@ pub fn copy_settings_transaction(
             modules: modules.to_vec(),
         },
         geometry: source_geometry,
+        base_color: source_base,
+        pipeline_state: source_pipeline,
     })
 }
 
@@ -122,10 +166,12 @@ fn validate_modules(modules: &[String]) -> Result<(), String> {
     if modules.is_empty() {
         return Err("At least one settings module is required".to_string());
     }
-    if let Some(module) = modules
-        .iter()
-        .find(|module| !matches!(module.as_str(), GEOMETRY_MODULE | FILM_AREA_MODULE))
-    {
+    if let Some(module) = modules.iter().find(|module| {
+        !matches!(
+            module.as_str(),
+            GEOMETRY_MODULE | FILM_AREA_MODULE | FILM_BASE_MODULE
+        )
+    }) {
         return Err(format!("Unsupported settings module: {module}"));
     }
     Ok(())
@@ -193,6 +239,8 @@ mod tests {
                     roll_id TEXT NOT NULL,
                     file_path TEXT NOT NULL,
                     geom TEXT,
+                    base_color TEXT,
+                    pipeline_state TEXT,
                     rendered_thumb_base64 TEXT,
                     updated_at INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (roll_id, file_path)
@@ -407,5 +455,67 @@ mod tests {
         let geometry: Value = serde_json::from_str(&geometry).unwrap();
         assert_eq!(geometry["calibration_points"], draft);
         assert_eq!(geometry["calibration_confirmed"], json!(false));
+    }
+
+    #[test]
+    fn film_base_copy_copies_base_and_pipeline_state() {
+        let mut connection = connection();
+        let source = ImageKey {
+            roll_id: "r1".into(),
+            file_path: "source.nef".into(),
+        };
+        let target = ImageKey {
+            roll_id: "r1".into(),
+            file_path: "target.nef".into(),
+        };
+        insert(
+            &connection,
+            &source,
+            json!({"calibration_points": null}),
+            "source",
+        );
+        insert(
+            &connection,
+            &target,
+            json!({"calibration_points": null}),
+            "target",
+        );
+        connection
+            .execute(
+                "UPDATE image_states SET base_color = ?1, pipeline_state = ?2 WHERE roll_id = ?3 AND file_path = ?4",
+                params!["[0.1, 0.2, 0.3]", "{\"base_analyzed\":true}", source.roll_id, source.file_path],
+            )
+            .unwrap();
+
+        let commit = copy_settings_transaction(
+            &mut connection,
+            &source,
+            std::slice::from_ref(&target),
+            &[FILM_BASE_MODULE.to_string()],
+            202,
+        )
+        .unwrap();
+
+        assert_eq!(commit.result.updated, 1);
+        assert_eq!(commit.base_color.as_deref(), Some("[0.1, 0.2, 0.3]"));
+        assert_eq!(
+            commit.pipeline_state.as_deref(),
+            Some(r#"{"base_analyzed":true}"#)
+        );
+
+        let (target_base, target_pipeline, target_thumb, target_updated): (Option<String>, Option<String>, String, i64) = connection
+            .query_row(
+                "SELECT base_color, pipeline_state, rendered_thumb_base64, updated_at FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
+                params![target.roll_id, target.file_path],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(target_base.as_deref(), Some("[0.1, 0.2, 0.3]"));
+        assert_eq!(
+            target_pipeline.as_deref(),
+            Some(r#"{"base_analyzed":true}"#)
+        );
+        assert_eq!(target_thumb, "target");
+        assert_eq!(target_updated, 202);
     }
 }

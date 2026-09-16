@@ -5,6 +5,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
     const SETTING_FIELDS = {
         filmMode: { params: ['film_mode'] },
+        filmBase: { extra: ['base_density', 'base_color', 'base_source', 'invert_active'] },
         densityLimits: { params: ['d_min', 'd_max', 'd_min_offset', 'd_max_offset'] },
         printerRed: { params: ['exp_r'] },
         printerGreen: { params: ['exp_g'] },
@@ -19,7 +20,7 @@
         saturation: { params: ['saturation'] },
         lut: { params: ['lut_path'] },
         lutOpacity: { params: ['lut_opacity'] },
-        sprocketPoint: { params: ['sprocket_uv'] },
+        sprocketPoint: { params: ['sprocket_uv', 'sprocket_target_color'] },
         sprocketTolerance: { params: ['sprocket_tolerance'] },
         sprocketFeather: { params: ['sprocket_feather'] },
         workingSpace: { params: ['working_colorspace'] },
@@ -58,37 +59,45 @@
         return Array.from(new Set(expanded)).filter(setting => SETTING_FIELDS[setting]);
     }
 
-    function createCopyPayload(params, geom, settings) {
+    function createCopyPayload(params, geom, settings, extra = {}) {
         const selectedSettings = normalizeSettings(settings);
         if (selectedSettings.length === 0) throw new Error('At least one setting is required.');
 
         const selectedParams = {};
         const selectedGeom = {};
+        const selectedExtra = {};
         selectedSettings.forEach(setting => {
             const fields = SETTING_FIELDS[setting];
             mergeSelectedKeys(selectedParams, params, fields.params || []);
             mergeSelectedKeys(selectedGeom, geom, fields.geom || []);
+            mergeSelectedKeys(selectedExtra, extra, fields.extra || []);
         });
 
-        return {
+        const result = {
             settings: selectedSettings,
             params: selectedParams,
             geom: selectedGeom
         };
+        if (Object.keys(selectedExtra).length > 0) {
+            result.extra = selectedExtra;
+        }
+        return result;
     }
 
-    function mergeCopyPayload(params, geom, payload) {
+    function mergeCopyPayload(params, geom, payload, extra = {}) {
         const nextParams = cloneSettingsValue(params);
         const nextGeom = cloneSettingsValue(geom);
+        const nextExtra = cloneSettingsValue(extra) || {};
         const selectedSettings = normalizeSettings(payload?.settings || payload?.modules);
 
         selectedSettings.forEach(setting => {
             const fields = SETTING_FIELDS[setting];
             mergeSelectedKeys(nextParams, payload?.params, fields.params || []);
             mergeSelectedKeys(nextGeom, payload?.geom, fields.geom || []);
+            mergeSelectedKeys(nextExtra, payload?.extra, fields.extra || []);
         });
 
-        return { params: nextParams, geom: nextGeom };
+        return { params: nextParams, geom: nextGeom, extra: nextExtra };
     }
 
     return { cloneSettingsValue, createCopyPayload, mergeCopyPayload, normalizeSettings };

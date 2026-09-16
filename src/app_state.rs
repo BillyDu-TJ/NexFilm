@@ -17,6 +17,11 @@ pub const CAPTURE_CORRECTION_ALGORITHM_VERSION: &str = "cfa_dark_open_v2";
 pub const CAPTURE_DEMOSAIC_ALGORITHM_VERSION: &str = "fixed_bilinear_bayer_oriented_v2";
 pub const DENSITY_ANCHOR_ALGORITHM_VERSION: &str = "density_anchor_v2";
 
+/// Rules the frame-wise display window is derived with. Bumped when a change
+/// makes previously persisted endpoints wrong, so frames analysed by an older
+/// release are re-derived once instead of rendering the retired result.
+pub const DENSITY_WINDOW_RULE_VERSION: u32 = 2;
+
 fn default_calibration_profile_payload_version() -> u32 {
     CALIBRATION_PROFILE_PAYLOAD_VERSION
 }
@@ -710,6 +715,14 @@ pub struct PipelineProcessingReport {
     /// that do not measure a content window (roll anchors, legacy recipes).
     #[serde(default)]
     pub channel_response: Option<ChannelResponseRecord>,
+    /// Version of the display-window rules this frame's endpoints were derived
+    /// with. A frame analysed by an older release holds a window that was built
+    /// with the retired rules (per-channel content offsets), so its endpoints
+    /// have to be derived once more instead of rendering the old cast.
+    /// Zero means "older than any recorded rule", which is what a frame
+    /// persisted before this field existed deserializes to.
+    #[serde(default)]
+    pub analysis_window_rule: u32,
 }
 
 /// Per-channel density response of one frame's content window.
@@ -762,6 +775,7 @@ impl PipelineProcessingReport {
             fallback_reason: String::new(),
             input_domain: InputDomainRecord::default(),
             channel_response: None,
+            analysis_window_rule: DENSITY_WINDOW_RULE_VERSION,
         }
     }
 
@@ -1075,7 +1089,7 @@ impl PipelineState {
                 "roll_anchor_relative_transmission".to_string()
             }
         } else {
-            "content_estimate".to_string()
+            "unresolved".to_string()
         };
         report.base_confidence = if anchors.has_roll_base() {
             if prophoto_estimate {
@@ -1195,6 +1209,8 @@ pub struct SprocketParams {
     pub sprocket_uv: Option<Vec<f32>>,
     pub sprocket_tolerance: Option<f32>,
     pub sprocket_feather: Option<f32>,
+    #[serde(default)]
+    pub sprocket_target_color: Option<Vec<f32>>,
 }
 
 impl Default for SprocketParams {
@@ -1203,6 +1219,7 @@ impl Default for SprocketParams {
             sprocket_uv: None,
             sprocket_tolerance: None,
             sprocket_feather: None,
+            sprocket_target_color: None,
         }
     }
 }

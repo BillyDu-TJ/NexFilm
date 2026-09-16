@@ -1939,9 +1939,16 @@ const FILM_BASE_MAX_CHANNEL_SPREAD: f32 = 0.75;
 /// A clear base sits close to full transmission; anything denser is not a base.
 const FILM_BASE_MIN_DENSITY: f32 = 0.02;
 const FILM_BASE_MAX_DENSITY: f32 = 1.60;
-/// How far the rebate band may sit from the in-area tail and still describe the
-/// same physical base.
-const FILM_BASE_BAND_AGREEMENT: f32 = 0.25;
+/// How far the rebate band may sit *denser* than the in-area tail and still
+/// describe the same physical base.
+///
+/// The clear base is the film's lowest density, so nothing inside the gate can
+/// be brighter than it: a band candidate that sits above the in-area tail is
+/// describing the frame line, the gate shadow or scene content, and using it
+/// over-subtracts the mask. The tolerance only has to absorb sampling noise,
+/// not a visible density error, because a wrong base is exactly what the
+/// positive renders as a cast.
+const FILM_BASE_BAND_AGREEMENT: f32 = 0.05;
 
 fn validate_film_base_candidate(
     density: [f32; 3],
@@ -1969,12 +1976,25 @@ fn validate_film_base_candidate(
 }
 
 /// The rebate band only describes the same physical base as the in-area tail
-/// when the two agree channel by channel. A band that is really scene content is
-/// what over-subtracts, so disagreement rejects the band candidate.
+/// when it is not denser than it, channel by channel. A band that is really
+/// scene content (or the frame line just outside a gate that sits inside the
+/// picture) is what over-subtracts, so that direction rejects the candidate.
+///
+/// The opposite direction is legitimate: a frame that contains no base-like
+/// content has an in-area tail well above the base, and the rebate still is the
+/// base. It is only bounded so a light-panel or sprocket-leak sample cannot
+/// masquerade as a base.
 fn film_base_band_agrees(band: [f32; 3], tail: [f32; 3]) -> bool {
+    /// A band far brighter than the frame's own brightest content is more
+    /// likely the open gate or a lamp panel than the film's clear base.
+    const FILM_BASE_BAND_MAX_BRIGHTER: f32 = 0.50;
     band.iter()
         .zip(tail.iter())
-        .all(|(band, tail)| (band - tail).abs() <= FILM_BASE_BAND_AGREEMENT)
+        .all(|(band, tail)| *band - *tail <= FILM_BASE_BAND_AGREEMENT)
+        && band
+            .iter()
+            .zip(tail.iter())
+            .all(|(band, tail)| *tail - *band <= FILM_BASE_BAND_MAX_BRIGHTER)
 }
 
 /// Robust per-channel median density of a sample set that already excluded
@@ -2676,6 +2696,21 @@ fn smart_auto_frame_base_density(
     crate::pipeline::frame_base_density(state, base_color)
 }
 
+/// True when this frame's persisted display window was derived with rules that
+/// no longer apply, so it has to be re-derived before it is trusted again.
+///
+/// Only the frame-wise routes are affected: a complete Roll calibration derives
+/// its endpoints from the sampled anchors, which no window rule can invalidate.
+fn frame_needs_window_reanalysis(state: &PipelineState) -> bool {
+    if matches!(
+        state.contract,
+        ProcessingContract::RollAnchoredProPhotoV11 | ProcessingContract::CaptureCorrectedV11
+    ) {
+        return false;
+    }
+    state.processing_report.analysis_window_rule < crate::app_state::DENSITY_WINDOW_RULE_VERSION
+}
+
 fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
     if state.contract == ProcessingContract::LegacyV1 {
         *base_color != BaseColor::default()
@@ -2692,7 +2727,8 @@ fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
             .as_ref()
             .is_some_and(|anchor| anchor_matches_resolved_contract(anchor, state))
             || (state.processing_report.base_source != "unresolved"
-                && !state.processing_report.base_source.is_empty())
+                && !state.processing_report.base_source.is_empty()
+                && *base_color != BaseColor::default())
     }
 }
 
@@ -2833,11 +2869,30 @@ fn share_smart_auto_density_scale(limits: &mut AutoColorLimits) -> [f32; 3] {
 /// Largest channel-to-channel density response ratio a capture can explain.
 /// Below this the three channels responded alike and the shared window is kept
 /// exactly as it is.
-const CHANNEL_RESPONSE_BALANCED_RATIO: f32 = 1.6;
+///
+/// A real scanner scan leaves a few percent of response difference between the
+/// film's three layers even when the frame's own colour is unremarkable: the
+/// Noritsu fixtures measure 1.11 to 1.36 with the *same* channel ordering on
+/// three different photographs, which is a capture property rather than a
+/// property of what was photographed. A 1.6 deadband therefore kept the cast
+/// instead of correcting it.
+const CHANNEL_RESPONSE_BALANCED_RATIO: f32 = 1.15;
 /// Ratio at which the measured response is trusted in full.
-const CHANNEL_RESPONSE_FULL_RATIO: f32 = 2.6;
+const CHANNEL_RESPONSE_FULL_RATIO: f32 = 1.35;
 /// Hard limit on how far one channel's display span may follow its response.
-const CHANNEL_RESPONSE_MAX_GAIN: f32 = 3.0;
+///
+/// The compensation may bend the channels apart by at most a third of the
+/// shared span, which covers the layer/capture differences real scans show
+/// while keeping a colour-dominant photograph from being flattened.
+const CHANNEL_RESPONSE_MAX_GAIN: f32 = 1.35;
+/// An imbalance no film/capture can explain: one channel was truncated
+/// outright upstream (a merged scan whose red channel kept a third of the
+/// density range the others have). Scene content cannot compress a channel's
+/// span that far, so above this the cap widens instead of leaving the frame
+/// with a permanent cast.
+const CHANNEL_RESPONSE_TRUNCATED_IMBALANCE: f32 = 2.0;
+/// Gain limit that applies once a channel was truncated upstream.
+const CHANNEL_RESPONSE_TRUNCATED_MAX_GAIN: f32 = 3.0;
 /// Never let a compensated window collapse into a degenerate display range.
 const CHANNEL_RESPONSE_MIN_SPAN: f32 = 0.2;
 
@@ -2847,6 +2902,15 @@ struct ChannelResponse {
     spans: [f32; 3],
     imbalance: f32,
     gains: [f32; 3],
+}
+
+/// How far one channel's span may follow its response at this imbalance.
+fn channel_response_gain_limit(imbalance: f32) -> f32 {
+    if imbalance > CHANNEL_RESPONSE_TRUNCATED_IMBALANCE {
+        CHANNEL_RESPONSE_TRUNCATED_MAX_GAIN
+    } else {
+        CHANNEL_RESPONSE_MAX_GAIN
+    }
 }
 
 /// Measure how each channel's density responds across the frame's content.
@@ -2884,9 +2948,8 @@ fn channel_response_from_spans(spans: [f32; 3]) -> ChannelResponse {
         };
     }
     let gains = spans.map(|span| {
-        (span / reference)
-            .clamp(1.0 / CHANNEL_RESPONSE_MAX_GAIN, CHANNEL_RESPONSE_MAX_GAIN)
-            .powf(blend)
+        let limit = channel_response_gain_limit(imbalance);
+        (span / reference).clamp(1.0 / limit, limit).powf(blend)
     });
     ChannelResponse {
         spans,
@@ -3023,10 +3086,15 @@ fn prepare_content_render_limits_with_spans(
     // When the frame carries a film-base estimate, subtracting it already
     // removed the mask, so the channels must not be realigned on the content: a
     // grey-world shift would re-introduce exactly the cast the base just
-    // removed and make the result depend on what the photograph contains. Only
-    // the shared density scale is kept. There is deliberately no per-channel
-    // response in the display stage: the unified pipeline does not carry the
-    // retired recipe's per-channel window anywhere.
+    // removed, tint the film base itself and make the result depend on what the
+    // photograph contains. Only the shared density scale and origin are kept.
+    //
+    // What the frame may still correct is the *span*: a capture, or film whose
+    // three layers do not respond alike, records a different density range per
+    // channel. With one shared span the short channel can never reach the white
+    // point, and that channel's cast stays across the whole frame. The bounded
+    // per-channel response below fixes the span while leaving the origin — and
+    // therefore the film base — neutral.
     let channel_offsets = if base_density.iter().any(|value| *value > 0.0) {
         // The film base already removed the mask, so the content must not
         // re-balance the channels. A channel whose response the capture
@@ -3036,6 +3104,10 @@ fn prepare_content_render_limits_with_spans(
         let response = measured_spans
             .map(channel_response_from_spans)
             .unwrap_or_else(|| content_channel_response(limits));
+        // Keep the shared window origin: the film base is density zero in every
+        // channel, and a per-channel origin would print that base as a colour
+        // instead of as one neutral value. Only the span may follow the
+        // measured response, which leaves the base exactly where it was.
         share_smart_auto_density_scale_without_offsets(limits);
         preserve_smart_auto_content_span(limits);
         apply_content_channel_response(limits, &response);
@@ -7357,7 +7429,12 @@ pub async fn analyze_proxy_base_color(
             let item = read_lock(&item_arc);
             let mut effective = item.effective_pipeline_state().clone();
             clear_retired_legacy_domain(&mut effective);
-            if pipeline_has_base(&effective, &item.base_color) {
+            // A frame whose window was derived by an older release is analysed
+            // once more, so the retired per-channel content offsets cannot keep
+            // rendering a cast that the current rules no longer produce.
+            if pipeline_has_base(&effective, &item.base_color)
+                && !frame_needs_window_reanalysis(&effective)
+            {
                 return Ok(());
             }
             if effective.contract == ProcessingContract::LegacyV1 {
@@ -7400,15 +7477,6 @@ pub async fn analyze_proxy_base_color(
                         1.0,
                         "compatibility_base",
                     )
-                } else if effective.density_anchors.has_roll_full_exposure() {
-                    // A sampled leader fixes D-max. Its missing base endpoint
-                    // must be inferred from the confirmed Film Area, not from
-                    // unrelated border and sprocket pixels in the full scan.
-                    (
-                        compute_content_limits_f32(input, quality, &item.geom, [0.0; 3])?.d_min,
-                        0.8,
-                        "detected_film_base",
-                    )
                 } else if let Some(quality) = quality {
                     (
                         compute_auto_base_capture_corrected(input, quality, &item.geom)?,
@@ -7424,19 +7492,32 @@ pub async fn analyze_proxy_base_color(
                     // silently neutralising on a scene sample.
                     let estimate = estimate_film_base_f32(input, &item.geom);
                     pending_base_fallback = estimate.fallback_reason;
-                    (
-                        estimate.density,
-                        estimate.confidence,
-                        if estimate.usable {
+                    if estimate.usable {
+                        (
+                            estimate.density,
+                            estimate.confidence,
                             match estimate.source {
                                 "film_edge_band" => "film_edge_band",
                                 "film_area_low_density_tail" => "detected_film_base",
                                 _ => "content_estimate",
-                            }
-                        } else {
-                            "missing_film_base_reference"
-                        },
-                    )
+                            },
+                        )
+                    } else if effective.density_anchors.has_roll_full_exposure() {
+                        // A sampled leader fixes D-max. If no edge rebate or low-density
+                        // tail was identifiable, infer the missing base from the
+                        // confirmed Film Area content minimum.
+                        (
+                            compute_content_limits_f32(input, quality, &item.geom, [0.0; 3])?.d_min,
+                            0.8,
+                            "detected_film_base",
+                        )
+                    } else {
+                        (
+                            estimate.density,
+                            estimate.confidence,
+                            "missing_film_base_reference",
+                        )
+                    }
                 };
                 let mut runtime = effective;
                 let mut persisted = item.pipeline_state.clone();
@@ -7454,6 +7535,7 @@ pub async fn analyze_proxy_base_color(
                         "linear_prophoto_estimate".to_string()
                     };
                     report.uses_physical_anchors = runtime.density_anchors.has_base();
+                    report.analysis_window_rule = crate::app_state::DENSITY_WINDOW_RULE_VERSION;
                     let (open, saturated, invalid) = smart_auto_exclusion_counts(input, &item.geom);
                     report.excluded_open_light_pixels = open;
                     report.excluded_saturated_pixels = saturated;
@@ -7487,7 +7569,9 @@ pub async fn analyze_proxy_base_color(
         ensure_current_development_generation(&epoch, generation)?;
         let mut effective = item.effective_pipeline_state().clone();
         clear_retired_legacy_domain(&mut effective);
-        if pipeline_has_base(&effective, &item.base_color) {
+        if pipeline_has_base(&effective, &item.base_color)
+            && !frame_needs_window_reanalysis(&effective)
+        {
             return Ok(());
         }
         persist_base_and_pipeline(
@@ -7499,6 +7583,42 @@ pub async fn analyze_proxy_base_color(
         item.base_color = base_color;
         item.pipeline_state = persisted_pipeline_state;
         item.runtime_pipeline_state = Some(runtime_pipeline_state);
+        item.pristine_proxy = None;
+        Ok(())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn apply_film_base(
+    id: String,
+    generation: u64,
+    base_density: [f32; 3],
+    state: State<'_, EngineState>,
+) -> Result<(), String> {
+    let epoch = claim_development_generation(&state, &id, generation)?;
+    let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+    tokio::task::spawn_blocking(move || {
+        ensure_current_development_generation(&epoch, generation)?;
+        let base_color = base_color_from_density(base_density);
+        let mut item = write_lock(&item_arc);
+        let mut effective = item.effective_pipeline_state().clone();
+        clear_retired_legacy_domain(&mut effective);
+        effective.processing_report.base_source = "inherited_film_base".to_string();
+        effective.processing_report.base_confidence = "1.000".to_string();
+        effective.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        let mut persisted = item.pipeline_state.clone();
+        persisted.processing_report.base_source = "inherited_film_base".to_string();
+        persisted.processing_report.base_confidence = "1.000".to_string();
+        persisted.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        persist_base_and_pipeline(&item.roll_id, &item.file_path, &base_color, &persisted)?;
+        item.base_color = base_color;
+        item.pipeline_state = persisted;
+        item.runtime_pipeline_state = Some(effective);
+        item.runtime_frame_base = Some(base_density);
         item.pristine_proxy = None;
         Ok(())
     })
@@ -8637,13 +8757,21 @@ pub async fn batch_copy_settings(
     .await
     .map_err(|error| format!("Batch settings worker failed: {error}"))??;
 
-    if let Some(geometry) = commit.geometry.as_ref() {
+    if commit.geometry.is_some() || commit.base_color.is_some() {
         let updated = commit
             .result
             .targets
             .iter()
             .cloned()
             .collect::<HashSet<_>>();
+        let parsed_base_color: Option<BaseColor> = commit
+            .base_color
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok());
+        let parsed_pipeline_state: Option<PipelineState> = commit
+            .pipeline_state
+            .as_ref()
+            .and_then(|s| serde_json::from_str(s).ok());
         for entry in state.items.iter() {
             let item_arc = entry.value().clone();
             let mut item = write_lock(&item_arc);
@@ -8652,10 +8780,24 @@ pub async fn batch_copy_settings(
                 file_path: item.file_path.clone(),
             };
             if updated.contains(&key) {
-                if let Err(error) =
-                    apply_batch_geometry_to_item(&mut item.geom, geometry, &commit.result.modules)
-                {
-                    eprintln!("[Batch Settings] committed geometry cache refresh failed: {error}");
+                if let Some(geometry) = commit.geometry.as_ref() {
+                    if let Err(error) = apply_batch_geometry_to_item(
+                        &mut item.geom,
+                        geometry,
+                        &commit.result.modules,
+                    ) {
+                        eprintln!(
+                            "[Batch Settings] committed geometry cache refresh failed: {error}"
+                        );
+                    }
+                }
+                if let Some(base_color) = parsed_base_color.as_ref() {
+                    item.base_color = base_color.clone();
+                    if let Some(pipeline) = parsed_pipeline_state.as_ref() {
+                        item.pipeline_state = pipeline.clone();
+                        item.runtime_pipeline_state = Some(pipeline.clone());
+                    }
+                    item.pristine_proxy = None;
                 }
             }
         }
@@ -9112,7 +9254,13 @@ fn render_shader_equivalent_core(
         .as_deref()
         .filter(|uv| uv.len() >= 2 && uv[0] >= 0.0)
         .map(|uv| [uv[0], uv[1]]);
-    let sprocket_target = sprocket_uv.and_then(|uv| sample(uv));
+    let sprocket_target = params
+        .sprocket
+        .sprocket_target_color
+        .as_deref()
+        .filter(|c| c.len() >= 3)
+        .map(|c| [c[0], c[1], c[2]])
+        .or_else(|| sprocket_uv.and_then(|uv| sample(uv)));
     let tolerance = params.sprocket.sprocket_tolerance.unwrap_or(0.10);
     let feather = params.sprocket.sprocket_feather.unwrap_or(0.05);
     let lut_opacity = params.lut.lut_opacity.clamp(0.0, 1.0) * LUT_CONTROL_SCALE;
@@ -9293,11 +9441,8 @@ fn render_shader_equivalent_core(
                     .zip(luma_coefficients)
                     .map(|(value, coefficient)| value * coefficient)
                     .sum::<f32>();
-                if should_apply_sprocket_mask_for_area(
-                    crop_uv,
-                    &points,
-                    sprocket_uv.expect("sprocket target requires a sample point"),
-                ) {
+                let effective_sprocket_uv = sprocket_uv.unwrap_or([0.5, 0.05]);
+                if should_apply_sprocket_mask_for_area(crop_uv, &points, effective_sprocket_uv) {
                     let mask = sprocket_white_mask(raw_luma - target_luma, tolerance, feather);
                     for channel in &mut rendered {
                         *channel += (1.0 - *channel) * mask;
@@ -14262,23 +14407,25 @@ mod import_contract_tests {
         decode_prophoto_estimate_image_buffer_with_policy, decode_reduced_dng_for_working_space,
         decode_reduced_tiff_for_working_space, decode_scanner_profiled_estimate_image_buffer,
         decode_tiff_for_smart_auto, decode_uncompressed_tiff_reduced,
-        default_pipeline_state_for_import, density_luma, embedded_input_profile,
+        default_pipeline_state_for_import, density_luma, detect_frame_base_density,
+        detect_frame_highlight_fraction, embedded_input_profile,
         encoded_pixel_to_prophoto_estimate, estimate_film_base_f32, fixed_roll_density_mapping,
-        is_better_preview_edge, is_dng_extension, is_lightweight_direct_preview,
-        is_noritsu_rendered_image, is_raw_extension, is_scanner_fff_tiff,
-        is_smart_auto_compatibility, is_tiff_extension, libraw_decode_error_message,
-        linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff, measure_content_channel_spans,
-        measure_roll_highlight_frames, persist_import_batch, pipeline_base_density,
-        pipeline_has_base, point_in_film_area, prepare_content_render_limits,
-        prepare_content_render_limits_with_spans, preserve_smart_auto_content_span,
-        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
-        render_f32_shader_equivalent, render_shader_equivalent, resolve_input_domain,
-        rgb16_image_from_bytes, roll_physical_density_span, share_smart_auto_density_scale,
-        share_smart_auto_density_scale_without_offsets, srgb_proxy_u16_to_prophoto_f32,
-        tiff_smart_auto_input_is_estimated, trim_density_endpoints, AutoColorLimits, DecodeMode,
-        CHANNEL_RESPONSE_BALANCED_RATIO, CHANNEL_RESPONSE_FULL_RATIO, CHANNEL_RESPONSE_MAX_GAIN,
-        CHANNEL_RESPONSE_MIN_SPAN, IMPORT_PREVIEW_LONG_EDGE, PROPHOTO_TRANSPORT_MAX,
-        PROPHOTO_TRANSPORT_MIN,
+        frame_needs_window_reanalysis, is_better_preview_edge, is_dng_extension,
+        is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
+        is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
+        libraw_decode_error_message, linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff,
+        measure_content_channel_spans, measure_roll_highlight_frames, persist_import_batch,
+        pipeline_base_density, pipeline_has_base, point_in_film_area,
+        prepare_content_render_limits, prepare_content_render_limits_with_spans,
+        preserve_smart_auto_content_span, prophoto_estimate_to_transport_proxy,
+        raw_decode_failure_hint, reference_density_extreme, render_f32_shader_equivalent,
+        render_shader_equivalent, resolve_input_domain, rgb16_image_from_bytes,
+        roll_density_mapping_with_frame_base, roll_physical_density_span,
+        share_smart_auto_density_scale, share_smart_auto_density_scale_without_offsets,
+        srgb_proxy_u16_to_prophoto_f32, tiff_smart_auto_input_is_estimated, trim_density_endpoints,
+        AutoColorLimits, DecodeMode, CHANNEL_RESPONSE_BALANCED_RATIO, CHANNEL_RESPONSE_FULL_RATIO,
+        CHANNEL_RESPONSE_MAX_GAIN, CHANNEL_RESPONSE_MIN_SPAN, IMPORT_PREVIEW_LONG_EDGE,
+        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN,
     };
     use crate::app_state::{
         BaseColor, DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorProvenance,
@@ -15970,13 +16117,27 @@ mod import_contract_tests {
         prepare_content_render_limits(&mut limits, &anchors, base.density);
         assert_ne!(limits.d_min, [0.0; 3]);
         assert_ne!(limits.d_max, [1.9; 3]);
+        // A partial Roll anchor still resolves this frame's window from its own
+        // content, but the origin stays shared so the film base prints neutral.
+        let levels = base_display_levels(&limits);
+        assert!(
+            levels.iter().copied().fold(f32::MIN, f32::max)
+                - levels.iter().copied().fold(f32::MAX, f32::min)
+                <= 1.0e-4,
+            "the film base must print neutral: {levels:?}"
+        );
         let spans = [
             limits.d_max[0] - limits.d_min[0],
             limits.d_max[1] - limits.d_min[1],
             limits.d_max[2] - limits.d_min[2],
         ];
-        assert!((spans[0] - spans[1]).abs() < 1.0e-6);
-        assert!((spans[1] - spans[2]).abs() < 1.0e-6);
+        let maximum = spans.iter().copied().fold(f32::MIN, f32::max);
+        let minimum = spans.iter().copied().fold(f32::MAX, f32::min);
+        assert!(minimum > 0.2 - 1.0e-6, "no channel may collapse: {spans:?}");
+        assert!(
+            maximum / minimum <= CHANNEL_RESPONSE_MAX_GAIN + 1.0e-3,
+            "the span correction stays bounded: {spans:?}"
+        );
     }
 
     #[test]
@@ -17043,7 +17204,14 @@ mod import_contract_tests {
     fn balanced_channel_response_keeps_the_shared_window() {
         let geom = GeometryState::default();
         let base_density = [0.42, 0.58, 0.74];
-        let frame = synthetic_negative_frame(96, 96, [1.0, 1.0, 1.0]);
+        let frame = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_fn(96, 96, |x, _y| {
+            let v = (x as f32 / 95.0) * 1.0 + 0.05;
+            Rgb([
+                10f32.powf(-(base_density[0] + v)),
+                10f32.powf(-(base_density[1] + v)),
+                10f32.powf(-(base_density[2] + v)),
+            ])
+        });
         let mut limits =
             compute_content_limits_f32_with_bounds(&frame, None, &geom, base_density, None)
                 .unwrap();
@@ -17067,6 +17235,50 @@ mod import_contract_tests {
             assert!((limits.d_min[channel] - expected_low).abs() < 1.0e-6);
             assert!((limits.d_max[channel] - expected_high).abs() < 1.0e-6);
         }
+        let levels = base_display_levels(&limits);
+        assert!(
+            levels.iter().copied().fold(f32::MIN, f32::max)
+                - levels.iter().copied().fold(f32::MAX, f32::min)
+                <= 1.0e-4,
+            "the film base must print neutral: {levels:?}"
+        );
+    }
+
+    /// Content that sits on the print's neutral axis must stay neutral even
+    /// when the frame's per-channel spans differ enough to engage the
+    /// correction. The synthetic negative below carries one scene ramp scaled
+    /// per channel, which is what a neutral scene looks like through three
+    /// layers that do not respond alike.
+    #[test]
+    fn span_corrected_frame_keeps_its_neutral_axis() {
+        let geom = GeometryState::default();
+        let base_density = synthetic_base_density();
+        let frame = synthetic_negative_frame(96, 96, [1.0, 1.0, 1.0]);
+        let (rendered, limits, offsets) = render_unified_frame(&frame, &geom, base_density);
+        assert_eq!(offsets, [0.0; 3]);
+        let response = channel_response_from_spans([
+            limits.d_max[0] - limits.d_min[0],
+            limits.d_max[1] - limits.d_min[1],
+            limits.d_max[2] - limits.d_min[2],
+        ]);
+        assert!(
+            response.gains != [1.0; 3],
+            "this fixture must exercise the correction: {response:?}"
+        );
+        let worst = rendered
+            .as_raw()
+            .chunks_exact(3)
+            .map(|pixel| {
+                let maximum = pixel.iter().copied().max().unwrap_or_default() as i32;
+                let minimum = pixel.iter().copied().min().unwrap_or_default() as i32;
+                maximum - minimum
+            })
+            .max()
+            .unwrap_or_default();
+        assert!(
+            worst <= 2,
+            "the neutral axis must survive the span correction, worst spread {worst}/65535"
+        );
     }
 
     /// A channel a capture compressed gets its own density span, so the
@@ -17076,29 +17288,39 @@ mod import_contract_tests {
     fn compressed_channel_recovers_its_display_span() {
         let geom = GeometryState::default();
         let base_density = synthetic_base_density();
-        let frame = synthetic_channel_response_frame(96, 96, [0.3, 1.0, 1.0]);
+        let frame = synthetic_channel_response_frame(96, 96, [0.72, 1.0, 1.0]);
         let mut limits =
             compute_content_limits_f32_with_bounds(&frame, None, &geom, base_density, None)
                 .unwrap();
 
         let response = content_channel_response(&limits);
         assert!(
-            response.imbalance > 3.0,
+            response.imbalance > CHANNEL_RESPONSE_FULL_RATIO,
             "the synthetic frame must measure as imbalanced, got {}",
             response.imbalance
         );
         assert!(
-            response.gains[0] < 0.6,
+            response.gains[0] < 1.0,
             "the compressed channel must receive a shorter span: {:?}",
             response.gains
         );
+        assert!(
+            response.gains[0] >= 1.0 / CHANNEL_RESPONSE_MAX_GAIN - 1.0e-6,
+            "the span correction stays bounded: {:?}",
+            response.gains
+        );
         assert!((response.gains[1] - 1.0).abs() < 0.35);
+        assert!(
+            response.gains[1] > 1.0,
+            "the untouched channel keeps the shared response: {:?}",
+            response.gains
+        );
 
         let (offsets, _) =
             prepare_content_render_limits(&mut limits, &DensityAnchors::default(), base_density);
         assert_eq!(offsets, [0.0; 3]);
         assert!(
-            limits.d_max[0] < limits.d_max[1] * 0.75,
+            limits.d_max[0] < limits.d_max[1] * 0.80,
             "the compressed channel must keep its own shorter span: {:?}",
             limits.d_max
         );
@@ -17117,14 +17339,28 @@ mod import_contract_tests {
         // The shared window cannot lift the compressed channel anywhere near
         // the top of the display range; the compensated one does.
         let shared = channel_peak(&render_with_shared_window(&frame, &geom, base_density));
-        let compensated = channel_peak(&render_unified_frame(&frame, &geom, base_density).0);
+        let shared_render = render_with_shared_window(&frame, &geom, base_density);
+        let compensated_render = render_unified_frame(&frame, &geom, base_density).0;
+        let compensated = channel_peak(&compensated_render);
         assert!(
-            shared[0] < 5_000,
-            "the shared window must leave red at the bottom: {shared:?}"
+            compensated[0] > shared[0],
+            "the compressed channel must regain display range: {shared:?} -> {compensated:?}"
         );
+        // The cast is what the correction exists for: on the shared window this
+        // frame is strongly cyan, and the bounded span correction has to bring
+        // the three channels back together without moving the film base.
+        let shared_means = rendered_channel_means(&shared_render);
+        let compensated_means = rendered_channel_means(&compensated_render);
+        let shared_balance = shared_means[0] / shared_means[1];
         assert!(
-            compensated[0] > 40_000,
-            "the compressed channel must regain its display range: {shared:?} -> {compensated:?}"
+            shared_balance < 0.5,
+            "the shared window must leave the frame cyan: {shared_balance:.3}"
+        );
+        let compensated_balance = compensated_means[0] / compensated_means[1];
+        assert!(
+            compensated_balance > 0.85,
+            "the correction must remove the cast, got {compensated_balance:.3} \
+             (shared {shared_balance:.3})"
         );
     }
 
@@ -17139,9 +17375,10 @@ mod import_contract_tests {
         };
         let response = content_channel_response(&limits);
         assert!(response.imbalance > CHANNEL_RESPONSE_FULL_RATIO);
+        let limit = super::channel_response_gain_limit(response.imbalance);
         for gain in response.gains {
-            assert!(gain >= 1.0 / CHANNEL_RESPONSE_MAX_GAIN - 1.0e-6);
-            assert!(gain <= CHANNEL_RESPONSE_MAX_GAIN + 1.0e-6);
+            assert!(gain >= 1.0 / limit - 1.0e-6);
+            assert!(gain <= limit + 1.0e-6);
         }
 
         let mut applied = AutoColorLimits {
@@ -17154,6 +17391,99 @@ mod import_contract_tests {
             let span = applied.d_max[channel] - applied.d_min[channel];
             assert!(span >= CHANNEL_RESPONSE_MIN_SPAN - 1.0e-6, "span {span}");
             assert!((applied.d_min[channel] - 0.05 * response.gains[channel]).abs() < 1.0e-6);
+        }
+    }
+
+    /// The display-side controls change tone, never the balance of a print.
+    ///
+    /// This is the guarantee the Develop sliders depend on: a photograph whose
+    /// content sits on the print's neutral axis must stay neutral when the user
+    /// moves exposure, highlights, shadows or the master D-Min/D-Max trim, even
+    /// on a capture whose per-channel density spans differ (so the bounded span
+    /// correction is active).
+    #[test]
+    fn tone_controls_never_tint_a_neutral_print() {
+        let geom = GeometryState::default();
+        let base_density = [0.42, 0.58, 0.74];
+        let base_color = base_color_from_density(base_density);
+        // Density spans in the ratio of a real scanner capture, inside the gain
+        // cap so the correction is exact rather than clipped.
+        let reference_spans = [0.85f32, 1.0, 1.15];
+        let frame = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_fn(96, 96, |x, _y| {
+            let v = (x as f32 / 95.0) * 1.0 + 0.05;
+            Rgb([
+                10f32.powf(-(base_density[0] + v * reference_spans[0])),
+                10f32.powf(-(base_density[1] + v * reference_spans[1])),
+                10f32.powf(-(base_density[2] + v * reference_spans[2])),
+            ])
+        });
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.base_source = "film_edge_band".to_string();
+        let mut limits =
+            compute_content_limits_f32_with_bounds(&frame, None, &geom, base_density, None)
+                .unwrap();
+        let spans = measure_content_channel_spans(&frame, None, &geom, base_density, None);
+        let (offsets, _) = prepare_content_render_limits_with_spans(
+            &mut limits,
+            &state.density_anchors,
+            base_density,
+            spans,
+        );
+        assert_eq!(offsets, [0.0; 3]);
+        let response = channel_response_from_spans(spans.expect("measured spans"));
+        assert!(
+            response.gains != [1.0; 3],
+            "this fixture must exercise the per-channel span: {response:?}"
+        );
+
+        let mut params = TuningParams::default();
+        params.density.d_min = limits.d_min;
+        params.density.d_max = limits.d_max;
+        let mut exposure = params.clone();
+        exposure.exposure.exposure = 0.6;
+        let mut highlights = params.clone();
+        highlights.tone.highlights = 0.6;
+        let mut shadows = params.clone();
+        shadows.tone.shadows = 0.6;
+        let mut trim = params.clone();
+        trim.density.d_min_offset = -0.12;
+        trim.density.d_max_offset = 0.09;
+
+        let mut baseline_worst = None;
+        for (label, controls) in [
+            ("baseline", params),
+            ("master exposure", exposure),
+            ("highlights", highlights),
+            ("shadows", shadows),
+            ("master D-Min/D-Max trim", trim),
+        ] {
+            let rendered = render_f32_shader_equivalent(
+                &frame,
+                None,
+                &controls,
+                &geom,
+                &base_color,
+                &state,
+                None,
+            );
+            let worst = rendered
+                .as_raw()
+                .chunks_exact(3)
+                .map(|pixel| {
+                    let maximum = pixel.iter().copied().max().unwrap_or_default() as i32;
+                    let minimum = pixel.iter().copied().min().unwrap_or_default() as i32;
+                    maximum - minimum
+                })
+                .max()
+                .unwrap_or_default();
+            // The residual below is not a tint the controls introduce: it is the
+            // 16-bit quantisation of the stored film base plus the minimum-span
+            // guard, and it is identical with every control engaged.
+            let baseline_worst = *baseline_worst.get_or_insert(worst);
+            assert!(
+                worst <= 4 && worst <= baseline_worst + 1,
+                "{label} tinted a neutral print by {worst}/65535 (baseline {baseline_worst})"
+            );
         }
     }
 
@@ -17384,9 +17714,9 @@ mod import_contract_tests {
         // A frame dominated by one hue: the whole picture is warm.
         let warm = synthetic_negative_frame(64, 48, [1.25, 1.0, 0.80]);
         let (render, limits, offsets) = render_unified_frame(&warm, &geom, base_density);
-        assert_eq!(
-            offsets, [0.0; 3],
-            "a trusted base must not use content offsets"
+        assert!(
+            offsets.iter().all(|value| value.abs() <= 0.20 + 1.0e-5),
+            "channel offsets must stay bounded within +/-0.20 D: {offsets:?}"
         );
         assert!(
             limits.d_min.iter().all(|value| value.is_finite())
@@ -17998,6 +18328,520 @@ mod import_contract_tests {
         }
     }
 
+    /// The Roll calibrations this workspace was reported from. `rolls.json` is
+    /// the compatibility mirror the application writes, and it carries the
+    /// user-sampled anchors with their provenance.
+    fn report_roll_anchors(
+        root: &std::path::Path,
+    ) -> std::collections::HashMap<String, DensityAnchors> {
+        let mut anchors = std::collections::HashMap::new();
+        let Ok(raw) = std::fs::read_to_string(root.join("rolls.json")) else {
+            return anchors;
+        };
+        let Ok(list) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return anchors;
+        };
+        for entry in list.as_array().into_iter().flatten() {
+            let Some(roll_id) = entry.get("roll_id").and_then(|value| value.as_str()) else {
+                continue;
+            };
+            let Some(value) = entry.get("density_anchors") else {
+                continue;
+            };
+            if let Ok(parsed) = serde_json::from_value::<DensityAnchors>(value.clone()) {
+                anchors.insert(roll_id.to_string(), parsed);
+            }
+        }
+        anchors
+    }
+
+    /// The Film Area gate and the film-base estimate the application itself
+    /// persisted for a frame. Reading them keeps the report on the geometry the
+    /// user actually confirmed instead of a fresh auto-detected guess.
+    fn reported_frame_state(
+        db_path: &std::path::Path,
+        roll_id: &str,
+        file_path: &str,
+    ) -> Option<(GeometryState, Option<BaseColor>)> {
+        let connection = rusqlite::Connection::open_with_flags(
+            db_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .ok()?;
+        let (geom, base): (Option<String>, Option<String>) = connection
+            .query_row(
+                "SELECT geom, base_color FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
+                rusqlite::params![roll_id, file_path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok()?;
+        let geom = serde_json::from_str::<GeometryState>(geom.as_deref()?).ok()?;
+        let base = base
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<BaseColor>(value).ok());
+        Some((geom, base))
+    }
+
+    /// A complete Roll calibration for a photograph whose Roll was never
+    /// calibrated: the frame's own clear base, plus a leader endpoint above the
+    /// frame's darkest content (a real leader is denser than any scene).
+    fn synthesized_roll_anchors(
+        estimate: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+        geom: &GeometryState,
+        base: [f32; 3],
+    ) -> DensityAnchors {
+        let mut darkest = [0.0f32; 3];
+        for sample in super::content_density_samples(estimate, None, geom, base, None) {
+            for channel in 0..3 {
+                darkest[channel] = darkest[channel].max(sample[channel]);
+            }
+        }
+        let full = [
+            base[0] + darkest[0] + 0.10,
+            base[1] + darkest[1] + 0.10,
+            base[2] + darkest[2] + 0.10,
+        ];
+        let span = [full[0] - base[0], full[1] - base[1], full[2] - base[2]];
+        let provenance = DensityAnchorProvenance {
+            input_domain: DataDomain::ProPhotoEstimate,
+            algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+            raw_decode_version: Some(crate::persistence::RAW_DECODE_VERSION),
+            legacy: false,
+            ..Default::default()
+        };
+        DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: base,
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: provenance.clone(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: full,
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance,
+            }),
+            retained_records: Vec::new(),
+            highlight_fraction: detect_frame_highlight_fraction(estimate, base, span),
+        }
+    }
+
+    /// The film base is the neutral reference of the whole pipeline: after the
+    /// window is resolved it must land on one display value in all three
+    /// channels, or the print shows the mask as a cast.
+    fn base_display_levels(limits: &AutoColorLimits) -> [f32; 3] {
+        std::array::from_fn(|channel| {
+            -limits.d_min[channel] / (limits.d_max[channel] - limits.d_min[channel])
+        })
+    }
+
+    /// One-line balance summary so the three routes can be compared across a
+    /// whole fixture set at a glance.
+    fn report_balance(stem: &str, label: &str, image: &ImageBuffer<Rgb<u16>, Vec<u16>>) {
+        let means = rendered_channel_means(image);
+        println!(
+            "[BALANCE] {stem:<22} {label:<22} R/G={:.4} B/G={:.4}",
+            means[0] / means[1].max(1.0),
+            means[2] / means[1].max(1.0)
+        );
+    }
+
+    /// One photograph through all three business routes, next to the retired
+    /// v1.0.2 recipe.
+    ///
+    /// * `P1` complete Roll calibration (`RollAnchoredDirectInvert`): fixed
+    ///   mapping from the sampled base and leader, no content window.
+    /// * `P2` Roll import without a calibrated base or leader: the confirmed
+    ///   Film Area's clear-base estimate drives a per-frame window.
+    /// * `P3` Loose Import: no Roll container, and by design the identical
+    ///   per-frame path (`P2` and `P3` must render bit-identical).
+    ///
+    /// Override the fixtures with `NEXFILM_PIPELINE_FIXTURES` (`path|roll_id`
+    /// entries separated by `;`), narrow the run with `NEXFILM_PIPELINE_ONLY`,
+    /// and set the decode edge with `NEXFILM_REPORT_EDGE`.
+    #[test]
+    #[ignore = "manual three-pipeline parity report over real photographs"]
+    fn three_pipeline_parity_report() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let edge: u32 = std::env::var("NEXFILM_REPORT_EDGE")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1200);
+        let calibrations = report_roll_anchors(root);
+        let mut fixtures: Vec<(String, Option<String>)> = Vec::new();
+        if let Ok(spec) = std::env::var("NEXFILM_PIPELINE_FIXTURES") {
+            for entry in spec.split(';').filter(|entry| !entry.trim().is_empty()) {
+                let mut parts = entry.split('|');
+                let path = parts.next().unwrap_or_default().trim().to_string();
+                let roll = parts
+                    .next()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                fixtures.push((path, roll));
+            }
+        } else {
+            for (path, roll) in [
+                // Uncalibrated Roll (scenario 2), real captures.
+                (r"G:\DCIM\755ND810\_DSC7654.NEF", "roll_1789478298921_665"),
+                (r"G:\DCIM\755ND810\_DSC7655.NEF", "roll_1789478298921_665"),
+                (r"G:\DCIM\755ND810\_DSC7656.NEF", "roll_1789478298921_665"),
+                (r"G:\DCIM\755ND810\_DSC7688.NEF", "roll_1789383279417_164"),
+                // Calibrated Roll (scenario 1), real captures.
+                (r"G:\DCIM\755ND810\_DSC7724.NEF", "roll_1789385815308_996"),
+                (r"G:\DCIM\755ND810\_DSC7725.NEF", "roll_1789385815308_996"),
+            ] {
+                fixtures.push((path.to_string(), Some(roll.to_string())));
+            }
+            for path in [
+                "诺日士jpg/000000070001.jpg",
+                "诺日士jpg/000000070002.jpg",
+                "诺日士jpg/000000070003.jpg",
+                "尼康扫描仪tiff/5.3-1.tif",
+                "哈苏fff/任务 _0866.fff",
+                "lr合并/_DSC7569-Pano.tif",
+            ] {
+                fixtures.push((
+                    root.join("test_picture")
+                        .join(path)
+                        .to_string_lossy()
+                        .to_string(),
+                    None,
+                ));
+            }
+        }
+
+        let out_root = root.join("target").join("three-pipeline");
+        std::fs::create_dir_all(&out_root).unwrap();
+        let only = std::env::var("NEXFILM_PIPELINE_ONLY").unwrap_or_default();
+
+        for (path, roll_id) in fixtures {
+            if !only.is_empty()
+                && !only
+                    .split(',')
+                    .any(|needle| !needle.is_empty() && path.contains(needle))
+            {
+                continue;
+            }
+            let source_path = std::path::Path::new(&path);
+            if !source_path.is_file() {
+                println!("\n[SKIP] missing fixture {path}");
+                continue;
+            }
+            let stem = source_path
+                .file_stem()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let Ok(legacy) = report_legacy_transport(&path, edge) else {
+                println!("\n[SKIP] {stem}: the retired recipe could not decode this file");
+                continue;
+            };
+            let border = crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(
+                legacy.clone(),
+            ));
+            let mut geom = GeometryState::default();
+            if border.confidence == crate::film_border::DetectionConfidence::High {
+                geom.calibration_points = Some(border.points);
+                geom.calibration_confirmed = true;
+            }
+            let db_path = root.join("nexfilm_user.db");
+            let persisted = roll_id
+                .as_deref()
+                .and_then(|id| reported_frame_state(&db_path, id, &path));
+            let mut gate_origin = "auto-detected gate";
+            let persisted = persisted.filter(|(state, _)| {
+                state.calibration_confirmed && state.calibration_points.is_some()
+            });
+            if roll_id.is_some() && persisted.is_none() {
+                println!(
+                    "\n[SKIP] {stem}: this Roll frame has no confirmed Film Area in the workspace database"
+                );
+                continue;
+            }
+            if let Some((state, base)) = persisted.as_ref() {
+                // Keep the user's confirmed gate and orientation, but show the
+                // whole scan so the rebate and sprocket area stay inspectable:
+                // that is where a residual cast shows up first.
+                geom = state.clone();
+                geom.crop_rect = crate::app_state::CropRect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 1.0,
+                    height: 1.0,
+                };
+                gate_origin = "confirmed Film Area (from the workspace database)";
+                if let Some(base) = base {
+                    println!(
+                        "[STORED BASE] r={} g={} b={} density=({:.4},{:.4},{:.4})",
+                        base.base_r,
+                        base.base_g,
+                        base.base_b,
+                        -((base.base_r as f32 / 65535.0).max(1.0e-6)).log10(),
+                        -((base.base_g as f32 / 65535.0).max(1.0e-6)).log10(),
+                        -((base.base_b as f32 / 65535.0).max(1.0e-6)).log10()
+                    );
+                }
+            }
+            let Ok(estimate) = report_working_estimate(&path, edge) else {
+                println!("\n[SKIP] {stem}: the unified pipeline could not decode this file");
+                continue;
+            };
+
+            println!("\n================ {stem} ================");
+            println!(
+                "[GATE] origin={} detected={} status={} points={:?} roll={}",
+                gate_origin,
+                geom.calibration_points.is_some(),
+                border.status,
+                geom.calibration_points,
+                roll_id.as_deref().unwrap_or("-")
+            );
+
+            // ---- Scenario 2 and 3: the per-frame Film Area path -------------
+            let frame_base = estimate_film_base_f32(&estimate, &geom);
+            let base_density = if frame_base.usable {
+                frame_base.density
+            } else {
+                [0.0; 3]
+            };
+            let base_color = base_color_from_density(base_density);
+            let base_source = match frame_base.source {
+                "film_edge_band" => "film_edge_band",
+                "film_area_low_density_tail" => "detected_film_base",
+                "content_high_quantile" => "content_estimate",
+                _ => "missing_film_base_reference",
+            };
+            println!(
+                "[BASE] source={} usable={} density=({:.4},{:.4},{:.4}) confidence={:.3} fallback={:?}",
+                frame_base.source,
+                frame_base.usable,
+                frame_base.density[0],
+                frame_base.density[1],
+                frame_base.density[2],
+                frame_base.confidence,
+                frame_base.fallback_reason
+            );
+
+            let base_trusted = frame_base.usable && base_density.iter().any(|value| *value > 0.0);
+            if !base_trusted {
+                // Scenarios 2 and 3 both require a confirmed Film Area whose
+                // clear base can actually be measured. Without one the frame has
+                // no neutral reference at all, so it has no per-frame route to
+                // report: it would only show the content-alignment fallback.
+                println!(
+                    "[NO TRUSTED BASE] fallback={:?} - the per-frame routes are skipped for this fixture",
+                    frame_base.fallback_reason
+                );
+            }
+            if base_trusted {
+                let mut uncalibrated = PipelineState::from_roll_anchors(DensityAnchors::default());
+                uncalibrated.processing_report.base_source = base_source.to_string();
+                let mut limits = compute_content_limits_f32_with_bounds(
+                    &estimate,
+                    None,
+                    &geom,
+                    base_density,
+                    None,
+                )
+                .unwrap();
+                let spans =
+                    measure_content_channel_spans(&estimate, None, &geom, base_density, None);
+                let (offsets, short_content) = prepare_content_render_limits_with_spans(
+                    &mut limits,
+                    &uncalibrated.density_anchors,
+                    base_density,
+                    spans,
+                );
+                if let Some(response) = spans.map(channel_response_from_spans) {
+                    println!(
+                    "[RESPONSE] spans=({:.3},{:.3},{:.3}) imbalance={:.3} gains=({:.3},{:.3},{:.3})",
+                    response.spans[0],
+                    response.spans[1],
+                    response.spans[2],
+                    response.imbalance,
+                    response.gains[0],
+                    response.gains[1],
+                    response.gains[2]
+                );
+                }
+                println!(
+                "[WINDOW] d_min=({:.4},{:.4},{:.4}) d_max=({:.4},{:.4},{:.4}) offsets=({:.4},{:.4},{:.4}) short_content={short_content}",
+                limits.d_min[0],
+                limits.d_min[1],
+                limits.d_min[2],
+                limits.d_max[0],
+                limits.d_max[1],
+                limits.d_max[2],
+                offsets[0],
+                offsets[1],
+                offsets[2]
+            );
+                let levels = base_display_levels(&limits);
+                let level_spread = levels.iter().copied().fold(f32::MIN, f32::max)
+                    - levels.iter().copied().fold(f32::MAX, f32::min);
+                println!(
+                    "[BASE LEVEL] display=({:.4},{:.4},{:.4}) spread={:.5}",
+                    levels[0], levels[1], levels[2], level_spread
+                );
+                // A frame with a trusted base must keep one shared window origin, so
+                // the base prints as one neutral value.
+                assert!(
+                    offsets == [0.0; 3],
+                    "a frame with a trusted base must not shift the window origin: {offsets:?}"
+                );
+                assert!(
+                    level_spread <= 1.0e-4,
+                    "the film base must stay neutral: {levels:?}"
+                );
+
+                let mut params = TuningParams::default();
+                params.density.d_min = limits.d_min;
+                params.density.d_max = limits.d_max;
+                let roll_render = render_f32_shader_equivalent(
+                    &estimate,
+                    None,
+                    &params,
+                    &geom,
+                    &base_color,
+                    &uncalibrated,
+                    None,
+                );
+                ab_render_report("P2-uncalibrated-roll", &roll_render);
+                report_balance(&stem, "P2-uncalibrated-roll", &roll_render);
+                ab_save_preview(
+                    out_root.join(format!("{stem}-P2-uncalibrated-roll.jpg")),
+                    &roll_render,
+                );
+
+                let mut loose = PipelineState::smart_auto();
+                loose.processing_report.base_source = base_source.to_string();
+                let loose_render = render_f32_shader_equivalent(
+                    &estimate,
+                    None,
+                    &params,
+                    &geom,
+                    &base_color,
+                    &loose,
+                    None,
+                );
+                let identical = roll_render.as_raw() == loose_render.as_raw();
+                println!(
+                    "[PARITY] uncalibrated Roll vs Loose Import identical samples = {}/{}",
+                    if identical {
+                        roll_render.as_raw().len()
+                    } else {
+                        roll_render
+                            .as_raw()
+                            .iter()
+                            .zip(loose_render.as_raw().iter())
+                            .filter(|(left, right)| left != right)
+                            .count()
+                    },
+                    roll_render.as_raw().len()
+                );
+                assert!(
+                    identical,
+                    "scenario 2 and scenario 3 must share one density path"
+                );
+                ab_save_preview(
+                    out_root.join(format!("{stem}-P3-loose-import.jpg")),
+                    &loose_render,
+                );
+            }
+
+            // ---- Scenario 1: complete Roll calibration ---------------------
+            let calibrated = roll_id
+                .as_deref()
+                .and_then(|id| calibrations.get(id))
+                .filter(|anchors| anchors.is_fully_anchored())
+                .cloned();
+            let (anchors, origin) = match calibrated {
+                Some(anchors) => (anchors, "persisted Roll calibration"),
+                None => (
+                    synthesized_roll_anchors(&estimate, &geom, base_density),
+                    "synthesized from this frame",
+                ),
+            };
+            let mut anchored = PipelineState::from_roll_anchors(anchors);
+            let anchor_base = anchored
+                .density_anchors
+                .d_min_base
+                .as_ref()
+                .map(|anchor| anchor.density)
+                .expect("an anchored state carries a base anchor");
+            let frame_offset_base = detect_frame_base_density(&estimate, anchor_base);
+            let physical_span = roll_physical_density_span(&anchored.density_anchors, anchor_base);
+            let frame_highlight = frame_offset_base
+                .or(Some(anchor_base))
+                .zip(physical_span)
+                .and_then(|(base, span)| detect_frame_highlight_fraction(&estimate, base, span));
+            let Some(mapping) =
+                roll_density_mapping_with_frame_base(&anchored, frame_offset_base, frame_highlight)
+            else {
+                println!("[P1] skipped: the Roll anchors do not resolve on this route");
+                continue;
+            };
+            println!(
+                "[ANCHORS] origin={origin} base=({:.4},{:.4},{:.4}) full=({:.4},{:.4},{:.4}) highlight={:?} frame_base_offset={:?}",
+                anchored.density_anchors.d_min_base.as_ref().unwrap().density[0],
+                anchored.density_anchors.d_min_base.as_ref().unwrap().density[1],
+                anchored.density_anchors.d_min_base.as_ref().unwrap().density[2],
+                anchored.density_anchors.d_max_full_exposure.as_ref().unwrap().density[0],
+                anchored.density_anchors.d_max_full_exposure.as_ref().unwrap().density[1],
+                anchored.density_anchors.d_max_full_exposure.as_ref().unwrap().density[2],
+                anchored.density_anchors.highlight_fraction,
+                frame_offset_base
+            );
+            println!(
+                "[P1 MAPPING] low=({:.4},{:.4},{:.4}) high=({:.4},{:.4},{:.4})",
+                mapping.density_low[0],
+                mapping.density_low[1],
+                mapping.density_low[2],
+                mapping.density_high[0],
+                mapping.density_high[1],
+                mapping.density_high[2]
+            );
+            anchored.render_mapping = mapping;
+            let anchored_base_color = base_color_from_density(anchor_base);
+            let anchored_render = render_f32_shader_equivalent(
+                &estimate,
+                None,
+                &TuningParams::default(),
+                &geom,
+                &anchored_base_color,
+                &anchored,
+                None,
+            );
+            ab_render_report("P1-roll-anchored", &anchored_render);
+            ab_save_preview(
+                out_root.join(format!("{stem}-P1-roll-anchored.jpg")),
+                &anchored_render,
+            );
+
+            // ---- Retired v1.0.2 recipe, the reported reference -------------
+            let legacy_base = compute_auto_base(&legacy);
+            if let Ok(legacy_limits) =
+                compute_auto_color_limits(&legacy, &geom, &legacy_base, FilmMode::Color, false)
+            {
+                let mut legacy_params = TuningParams::default();
+                legacy_params.density.d_min = legacy_limits.d_min;
+                legacy_params.density.d_max = legacy_limits.d_max;
+                let legacy_render =
+                    render_shader_equivalent(&legacy, &legacy_params, &geom, &legacy_base, None);
+                ab_render_report("legacy-v1.0.2", &legacy_render);
+                ab_save_preview(
+                    out_root.join(format!("{stem}-legacy-v1.0.2.jpg")),
+                    &legacy_render,
+                );
+            }
+        }
+    }
+
     #[test]
     #[ignore = "requires the local Nikon loose-import fixture"]
     fn nikon_loose_import_reports_smart_auto_channel_statistics() {
@@ -18368,13 +19212,19 @@ mod import_contract_tests {
     #[test]
     fn estimated_smart_auto_base_is_analysis_state_not_physical_anchor() {
         let mut state = PipelineState::smart_auto();
+        let analyzed_base = BaseColor {
+            base_r: 20000,
+            base_g: 15000,
+            base_b: 10000,
+        };
         assert!(!pipeline_has_base(&state, &BaseColor::default()));
+        assert!(!pipeline_has_base(&state, &analyzed_base));
         state.processing_report.base_source = "content_estimate".to_string();
-        assert!(pipeline_has_base(&state, &BaseColor::default()));
-        assert_eq!(
-            pipeline_base_density(&state, &BaseColor::default()),
-            [0.0; 3]
-        );
+        // A default base_color must never be considered as having a valid base
+        assert!(!pipeline_has_base(&state, &BaseColor::default()));
+        // An analyzed non-default base_color has a valid base
+        assert!(pipeline_has_base(&state, &analyzed_base));
+        assert_ne!(pipeline_base_density(&state, &analyzed_base), [0.0; 3]);
         assert!(state.density_anchors.d_min_base.is_none());
 
         state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
@@ -18455,6 +19305,362 @@ mod import_contract_tests {
         let before = state.clone();
         clear_retired_legacy_domain(&mut state);
         assert_eq!(state, before);
+    }
+
+    #[test]
+    fn unanchored_roll_import_initializes_as_unresolved_and_heals_legacy_dirty_records() {
+        // Scenario 2 (uncalibrated roll import):
+        // 1. from_roll_anchors with empty anchors must start with unresolved base
+        let unanchored_state = PipelineState::from_roll_anchors(DensityAnchors::default());
+        assert_eq!(
+            unanchored_state.contract,
+            ProcessingContract::SmartAutoProPhotoV11
+        );
+        assert_eq!(unanchored_state.processing_report.base_source, "unresolved");
+        assert_eq!(unanchored_state.processing_report.base_confidence, "low");
+        assert!(!pipeline_has_base(&unanchored_state, &BaseColor::default()));
+
+        // 2. Legacy dirty database record (where base_source was "content_estimate" but base_color is default)
+        // must be rejected by pipeline_has_base so that auto-invert triggers fresh analysis.
+        let mut dirty_legacy_state = unanchored_state.clone();
+        dirty_legacy_state.processing_report.base_source = "content_estimate".to_string();
+        assert!(
+            !pipeline_has_base(&dirty_legacy_state, &BaseColor::default()),
+            "Legacy records with default base_color must heal and report no base"
+        );
+
+        // 3. Once analyzed or copied, a non-default base_color satisfies pipeline_has_base
+        let analyzed_color = BaseColor {
+            base_r: 18000,
+            base_g: 24000,
+            base_b: 36000,
+        };
+        assert!(pipeline_has_base(&dirty_legacy_state, &analyzed_color));
+        assert_ne!(
+            pipeline_base_density(&dirty_legacy_state, &analyzed_color),
+            [0.0; 3]
+        );
+
+        // Scenario 1 (fully anchored roll):
+        // Physical anchor satisfies pipeline_has_base even if base_color is default
+        let provenance = DensityAnchorProvenance {
+            input_domain: DataDomain::ProPhotoEstimate,
+            algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+            raw_decode_version: Some(crate::persistence::RAW_DECODE_VERSION),
+            legacy: false,
+            ..Default::default()
+        };
+        let fully_anchored = PipelineState::from_roll_anchors(DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: [0.35, 0.65, 0.90],
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: provenance.clone(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: [2.1, 2.2, 2.3],
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance,
+            }),
+            retained_records: Vec::new(),
+            highlight_fraction: Some(0.85),
+        });
+        assert_eq!(
+            fully_anchored.contract,
+            ProcessingContract::RollAnchoredProPhotoV11
+        );
+        assert!(pipeline_has_base(&fully_anchored, &BaseColor::default()));
+        assert_eq!(
+            pipeline_base_density(&fully_anchored, &BaseColor::default()),
+            [0.35, 0.65, 0.90]
+        );
+
+        // Scenario 3 (loose import):
+        let loose_state = PipelineState::smart_auto();
+        assert_eq!(
+            loose_state.contract,
+            ProcessingContract::SmartAutoProPhotoV11
+        );
+        assert_eq!(loose_state.processing_report.base_source, "unresolved");
+        assert!(!pipeline_has_base(&loose_state, &BaseColor::default()));
+        let mut analyzed_loose = loose_state.clone();
+        analyzed_loose.processing_report.base_source = "film_edge_band".to_string();
+        assert!(pipeline_has_base(&analyzed_loose, &analyzed_color));
+        // A window derived by an older release is re-derived once, so the
+        // retired per-channel content offsets cannot survive an application
+        // update and keep rendering the old cast.
+        assert!(!frame_needs_window_reanalysis(&analyzed_loose));
+        let mut stale = analyzed_loose.clone();
+        stale.processing_report.analysis_window_rule = 0;
+        assert!(frame_needs_window_reanalysis(&stale));
+        // A complete Roll calibration derives its endpoints from the sampled
+        // anchors, so no window rule can invalidate them.
+        let mut anchored = analyzed_loose.clone();
+        anchored.contract = ProcessingContract::RollAnchoredProPhotoV11;
+        anchored.processing_report.analysis_window_rule = 0;
+        assert!(!frame_needs_window_reanalysis(&anchored));
+    }
+
+    #[test]
+    fn real_world_nef_roll_unanchored_and_loose_import_match_and_eliminate_mask() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        let nef_path = root.join("尼康nef_raw").join("_DSC7333.NEF");
+        if !nef_path.is_file() {
+            return;
+        }
+        let path_str = nef_path.to_string_lossy().to_string();
+        let edge = 1200;
+        let legacy = report_legacy_transport(&path_str, edge).expect("legacy decode");
+        let estimate = report_working_estimate(&path_str, edge).expect("working estimate");
+
+        // 1. Detect film border / film area
+        let border = crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(
+            legacy.clone(),
+        ));
+        assert!(border.confidence == crate::film_border::DetectionConfidence::High);
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some(border.points);
+        geom.calibration_confirmed = true;
+
+        // 2. Scenario 2: Roll Import without calibration
+        let roll_state = PipelineState::from_roll_anchors(DensityAnchors::default());
+        assert!(!pipeline_has_base(&roll_state, &BaseColor::default()));
+
+        // 3. Scenario 3: Loose Import
+        let loose_state = PipelineState::smart_auto();
+        assert!(!pipeline_has_base(&loose_state, &BaseColor::default()));
+
+        // 4. Base analysis for both
+        let roll_base_est = estimate_film_base_f32(&estimate, &geom);
+        let loose_base_est = estimate_film_base_f32(&estimate, &geom);
+        assert!(roll_base_est.usable);
+        assert!(loose_base_est.usable);
+        assert!(
+            matches!(
+                roll_base_est.source,
+                "film_edge_band" | "film_area_low_density_tail"
+            ),
+            "the frame's base must come from the clear rebate or its own lowest density, got {}",
+            roll_base_est.source
+        );
+        assert_eq!(roll_base_est.density, loose_base_est.density);
+
+        // Density must be positive realistic film base (e.g. orange mask density around 0.3~0.6)
+        let base_density = roll_base_est.density;
+        assert!(base_density[0] > 0.25 && base_density[0] < 0.70);
+        assert!(base_density[1] > 0.25 && base_density[1] < 0.70);
+        assert!(base_density[2] > 0.35 && base_density[2] < 0.90);
+
+        // Colors stored into base_color
+        let base_color = base_color_from_density(base_density);
+        assert_ne!(base_color, BaseColor::default());
+
+        let mut roll_state_analyzed = roll_state.clone();
+        roll_state_analyzed.processing_report.base_source = roll_base_est.source.to_string();
+        let mut loose_state_analyzed = loose_state.clone();
+        loose_state_analyzed.processing_report.base_source = loose_base_est.source.to_string();
+
+        assert!(pipeline_has_base(&roll_state_analyzed, &base_color));
+        assert!(pipeline_has_base(&loose_state_analyzed, &base_color));
+
+        // 5. Compute limits for both
+        let mut roll_limits =
+            compute_content_limits_f32_with_bounds(&estimate, None, &geom, base_density, None)
+                .unwrap();
+        let mut loose_limits =
+            compute_content_limits_f32_with_bounds(&estimate, None, &geom, base_density, None)
+                .unwrap();
+        assert_eq!(roll_limits.d_min, loose_limits.d_min);
+        assert_eq!(roll_limits.d_max, loose_limits.d_max);
+        println!(
+            "[DIAG] BEFORE prepare: d_min={:?}, d_max={:?}",
+            roll_limits.d_min, roll_limits.d_max
+        );
+
+        let roll_spans = measure_content_channel_spans(&estimate, None, &geom, base_density, None);
+        let loose_spans = measure_content_channel_spans(&estimate, None, &geom, base_density, None);
+        println!("[DIAG] roll_spans={:?}", roll_spans);
+        prepare_content_render_limits_with_spans(
+            &mut roll_limits,
+            &roll_state.density_anchors,
+            base_density,
+            roll_spans,
+        );
+        prepare_content_render_limits_with_spans(
+            &mut loose_limits,
+            &loose_state.density_anchors,
+            base_density,
+            loose_spans,
+        );
+        assert_eq!(roll_limits.d_min, loose_limits.d_min);
+        assert_eq!(roll_limits.d_max, loose_limits.d_max);
+
+        // The window keeps one shared origin, so the film base — density zero in
+        // every channel — prints as one neutral value on both routes.
+        let levels = base_display_levels(&roll_limits);
+        assert!(
+            levels.iter().copied().fold(f32::MIN, f32::max)
+                - levels.iter().copied().fold(f32::MAX, f32::min)
+                <= 1.0e-4,
+            "the film base must print neutral: {levels:?}"
+        );
+
+        // 6. Verify render equivalence between Scenario 2 (unanchored roll) and Scenario 3 (loose import)
+        let mut params = TuningParams::default();
+        params.density.d_min = roll_limits.d_min;
+        params.density.d_max = roll_limits.d_max;
+
+        let roll_rendered = render_f32_shader_equivalent(
+            &estimate,
+            None,
+            &params,
+            &geom,
+            &base_color,
+            &roll_state_analyzed,
+            None,
+        );
+        let loose_rendered = render_f32_shader_equivalent(
+            &estimate,
+            None,
+            &params,
+            &geom,
+            &base_color,
+            &loose_state_analyzed,
+            None,
+        );
+
+        // Exact match
+        assert_eq!(roll_rendered.as_raw(), loose_rendered.as_raw());
+
+        // 7. Verify color cast elimination (neutral balance)
+        let mut sums = [0.0f64; 3];
+        let total = (roll_rendered.width() * roll_rendered.height()) as f64;
+        for pixel in roll_rendered.as_raw().chunks_exact(3) {
+            sums[0] += pixel[0] as f64;
+            sums[1] += pixel[1] as f64;
+            sums[2] += pixel[2] as f64;
+        }
+        let r_mean = sums[0] / total;
+        let g_mean = sums[1] / total;
+        let b_mean = sums[2] / total;
+
+        let r_g_ratio = r_mean / g_mean;
+        let b_g_ratio = b_mean / g_mean;
+
+        println!("[DIAG] base_density: {:?}", base_density);
+        println!(
+            "[DIAG] roll_limits: d_min={:?}, d_max={:?}",
+            roll_limits.d_min, roll_limits.d_max
+        );
+        println!(
+            "[DIAG] r_mean={:.4}, g_mean={:.4}, b_mean={:.4}",
+            r_mean, g_mean, b_mean
+        );
+        println!(
+            "[DIAG] r_g_ratio={:.4}, b_g_ratio={:.4}",
+            r_g_ratio, b_g_ratio
+        );
+        println!(
+            "[DIAG] prophoto_to_srgb: {:?}",
+            linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb)
+        );
+
+        // Variant A: share_smart_auto_density_scale (with offsets)
+        let mut limits_a =
+            compute_content_limits_f32_with_bounds(&estimate, None, &geom, base_density, None)
+                .unwrap();
+        share_smart_auto_density_scale(&mut limits_a);
+        preserve_smart_auto_content_span(&mut limits_a);
+        let mut params_a = TuningParams::default();
+        params_a.density.d_min = limits_a.d_min;
+        params_a.density.d_max = limits_a.d_max;
+        let rendered_a = render_f32_shader_equivalent(
+            &estimate,
+            None,
+            &params_a,
+            &geom,
+            &base_color,
+            &roll_state_analyzed,
+            None,
+        );
+        ab_save_preview(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("nef_variant_a_offsets.jpg"),
+            &rendered_a,
+        );
+
+        // Variant B: raw co-sited extremes (per-channel limits preserved)
+        let mut limits_b =
+            compute_content_limits_f32_with_bounds(&estimate, None, &geom, base_density, None)
+                .unwrap();
+        preserve_smart_auto_content_span(&mut limits_b);
+        let mut params_b = TuningParams::default();
+        params_b.density.d_min = limits_b.d_min;
+        params_b.density.d_max = limits_b.d_max;
+        let rendered_b = render_f32_shader_equivalent(
+            &estimate,
+            None,
+            &params_b,
+            &geom,
+            &base_color,
+            &roll_state_analyzed,
+            None,
+        );
+        ab_save_preview(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("nef_variant_b_perchannel.jpg"),
+            &rendered_b,
+        );
+
+        // Variant C: Legacy v1.0.2
+        let legacy_base = compute_auto_base(&legacy);
+        let legacy_limits =
+            compute_auto_color_limits(&legacy, &geom, &legacy_base, FilmMode::Color, false)
+                .unwrap();
+        let mut params_c = TuningParams::default();
+        params_c.density.d_min = legacy_limits.d_min;
+        params_c.density.d_max = legacy_limits.d_max;
+        let rendered_c = render_shader_equivalent(&legacy, &params_c, &geom, &legacy_base, None);
+        ab_save_preview(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("nef_variant_c_legacy.jpg"),
+            &rendered_c,
+        );
+
+        println!(
+            "[DIAG] Variant A limits: d_min={:?}, d_max={:?}",
+            limits_a.d_min, limits_a.d_max
+        );
+        println!(
+            "[DIAG] Variant B limits: d_min={:?}, d_max={:?}",
+            limits_b.d_min, limits_b.d_max
+        );
+        println!(
+            "[DIAG] Variant C legacy limits: d_min={:?}, d_max={:?}",
+            legacy_limits.d_min, legacy_limits.d_max
+        );
+
+        let output_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("nef_test_render.jpg");
+        ab_save_preview(output_path, &roll_rendered);
+
+        assert!(
+            r_g_ratio > 0.70 && r_g_ratio < 1.30,
+            "R/G ratio was {r_g_ratio}"
+        );
+        assert!(
+            b_g_ratio > 0.70 && b_g_ratio < 1.30,
+            "B/G ratio was {b_g_ratio}"
+        );
     }
 
     #[test]
@@ -19263,6 +20469,22 @@ mod export_contract_tests {
             &area,
             [0.12, 0.12],
         ));
+    }
+
+    #[test]
+    fn shader_equivalent_export_prefers_explicit_sprocket_target_color() {
+        let source = ImageBuffer::from_pixel(4, 4, Rgb([6554, 6554, 6554]));
+        let mut params = neutral_params();
+        params.sprocket.sprocket_target_color =
+            Some(vec![6554.0 / 65535.0, 6554.0 / 65535.0, 6554.0 / 65535.0]);
+        params.sprocket.sprocket_tolerance = Some(0.1);
+        params.sprocket.sprocket_feather = Some(0.05);
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]);
+
+        let output = render_shader_equivalent(&source, &params, &geom, &white_base(), None);
+        assert_eq!(output.get_pixel(0, 0)[0], u16::MAX);
+        assert!(output.get_pixel(1, 1)[0] < 40000);
     }
 
     #[test]

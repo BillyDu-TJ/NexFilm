@@ -88,5 +88,22 @@ assert.equal(legacyEdit.params.exposure, 0.4);
 assert.equal(legacyEdit.params.working_colorspace, 'acescg');
 assert.deepEqual(legacyEdit.params.sprocket_uv, [-1, -1]);
 
+const sourceExtra = {
+    base_density: [0.85, 1.15, 1.45],
+    base_color: { base_r: 9200, base_g: 4600, base_b: 2300 },
+    base_source: 'detected_film_base',
+    invert_active: true
+};
+const filmBasePayload = createCopyPayload(sourceParams, sourceGeom, ['filmBase'], sourceExtra);
+assert.deepEqual(filmBasePayload.settings, ['filmBase']);
+assert.deepEqual(filmBasePayload.extra, sourceExtra);
+
+const mergedFilmBase = mergeCopyPayload(currentParams, currentGeom, filmBasePayload, {
+    base_density: [0, 0, 0],
+    invert_active: false
+});
+assert.deepEqual(mergedFilmBase.extra.base_density, [0.85, 1.15, 1.45]);
+assert.equal(mergedFilmBase.extra.invert_active, true);
+
 assert.throws(() => createCopyPayload(sourceParams, sourceGeom, []), /At least one/);
 console.log('Settings copy module tests passed.');

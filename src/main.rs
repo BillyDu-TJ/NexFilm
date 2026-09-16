@@ -96,6 +96,7 @@ fn main() {
             nexfilm_engine::commands::switch_active_image,
             nexfilm_engine::commands::prepare_proxy,
             nexfilm_engine::commands::analyze_proxy_base_color,
+            nexfilm_engine::commands::apply_film_base,
             nexfilm_engine::commands::analyze_proxy_density_limits,
             nexfilm_engine::commands::auto_invert_roll,
             nexfilm_engine::commands::calibrate_roll_highlight_fraction,

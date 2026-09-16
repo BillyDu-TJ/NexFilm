@@ -942,6 +942,7 @@
                 <div class="copy-settings-column">
                     <fieldset class="copy-settings-group">
                         <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="copy.scanDensity">Scan &amp; Density</span></label></legend>
+                        <label><input type="checkbox" value="filmBase" class="copy-setting-option"><span data-i18n="copy.filmBase">Film Base &amp; Inversion</span></label>
                         <label><input type="checkbox" value="filmMode" class="copy-setting-option"><span data-i18n="copy.filmMode">Film Mode (Color / B&amp;W)</span></label>
                         <label><input type="checkbox" value="densityLimits" class="copy-setting-option"><span data-i18n="copy.densityLimits">Density Limits (D-Min / D-Max)</span></label>
                     </fieldset>
@@ -994,8 +995,8 @@
                 <button id="btn-copy-select-all" type="button" class="copy-settings-secondary" data-i18n="actions.selectAll">Select All</button>
                 <button id="btn-copy-select-none" type="button" class="copy-settings-secondary" data-i18n="copy.selectNone">Select None</button>
                 <select id="copy-settings-preset" aria-label="Settings preset">
-                    <option value="all" data-i18n="copy.presetAll" selected>All available settings</option>
-                    <option value="tone" data-i18n="copy.presetTone">Tone and color</option>
+                    <option value="all" data-i18n="copy.presetAll">All available settings</option>
+                    <option value="tone" data-i18n="copy.presetTone" selected>Tone and color</option>
                     <option value="geometry" data-i18n="copy.presetGeometry">Geometry only</option>
                 </select>
                 <span class="copy-settings-footer-spacer"></span>
@@ -1349,6 +1350,17 @@
                         <input type="radio" name="batch-target" value="selected">
                         <span>Selected frames</span>
                         <span id="batch-selected-count" class="batch-target-count">0</span>
+                    </label>
+                </fieldset>
+                <fieldset class="flex flex-col gap-2.5 border border-zinc-700/60 rounded p-3 text-[11px] text-zinc-300">
+                    <legend class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest px-1">Settings to Apply</legend>
+                    <label class="flex items-center gap-2 cursor-pointer select-none">
+                        <input type="checkbox" id="batch-module-film-area" value="film_area" class="rounded bg-zinc-800 border-zinc-600 text-zinc-100" checked>
+                        <span data-i18n="batch.filmArea">Film Area</span>
+                    </label>
+                    <label class="flex items-center gap-2 cursor-pointer select-none">
+                        <input type="checkbox" id="batch-module-film-base" value="base_color" class="rounded bg-zinc-800 border-zinc-600 text-zinc-100" checked>
+                        <span data-i18n="batch.filmBase">Film Base &amp; Inversion</span>
                     </label>
                 </fieldset>
                 <div class="flex justify-end gap-3 pt-2">

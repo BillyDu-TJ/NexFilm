@@ -1401,7 +1401,8 @@ function captureEditState() {
             working_colorspace: currentWorkingColorspace,
             sprocket_uv: Array.from(currentSprocketUV),
             sprocket_tolerance: currentSprocketTolerance,
-            sprocket_feather: currentSprocketFeather
+            sprocket_feather: currentSprocketFeather,
+            sprocket_target_color: currentSprocketTargetColor ? Array.from(currentSprocketTargetColor) : null
         },
         geom: JSON.parse(JSON.stringify(current_geom))
     };
@@ -1898,7 +1899,8 @@ function saveCurrentState() {
         working_colorspace: currentWorkingColorspace,
         sprocket_uv: Array.from(currentSprocketUV),
         sprocket_tolerance: currentSprocketTolerance,
-        sprocket_feather: currentSprocketFeather
+        sprocket_feather: currentSprocketFeather,
+        sprocket_target_color: currentSprocketTargetColor ? Array.from(currentSprocketTargetColor) : null
     };
     imageStates.set(activeId, {
         params,
@@ -1984,6 +1986,8 @@ let u_lens_distortion_loc;
 let u_sprocket_uv_loc;
 let u_sprocket_tolerance_loc;
 let u_sprocket_feather_loc;
+let u_sprocket_target_color_loc;
+let u_has_sprocket_target_color_loc;
 let u_scope_warning_loc;
 let u_shadow_threshold_loc;
 let u_highlight_threshold_loc;
@@ -2110,6 +2114,8 @@ function initWebGL() {
     uniform vec2 u_sprocket_uv;
     uniform float u_sprocket_tolerance;
     uniform float u_sprocket_feather;
+    uniform vec3 u_sprocket_target_color;
+    uniform int u_has_sprocket_target_color;
     uniform vec2 u_calib_pts[4];
     uniform int u_scope_warning;
     uniform float u_shadow_threshold;
@@ -2254,13 +2260,20 @@ function initWebGL() {
         }
 
         float mask = 0.0;
-        if (u_sprocket_uv.x >= 0.0) {
-            vec2 sprocket_source_uv = mapOrientedToSource(u_sprocket_uv);
+        if (u_sprocket_uv.x >= 0.0 || u_has_sprocket_target_color != 0) {
+            vec2 sprocket_source_uv = u_sprocket_uv.x >= 0.0 ? mapOrientedToSource(u_sprocket_uv) : vec2(0.5, 0.05);
             vec3 raw_color = vec3(texture(u_image, warped_uv).rgb) / 65535.0;
-            vec3 raw_target = vec3(texture(u_image, sprocket_source_uv).rgb) / 65535.0;
+            vec3 raw_target;
+            if (u_has_sprocket_target_color != 0) {
+                raw_target = u_sprocket_target_color;
+            } else {
+                raw_target = vec3(texture(u_image, sprocket_source_uv).rgb) / 65535.0;
+                if (u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0) {
+                    raw_target = decodeProPhotoTransport(raw_target);
+                }
+            }
             if (u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0) {
                 raw_color = decodeProPhotoTransport(raw_color);
-                raw_target = decodeProPhotoTransport(raw_target);
             }
             float luma_diff = abs(getLuma(raw_color) - getLuma(raw_target));
             mask = pow(1.0 - smoothstep(u_sprocket_tolerance, u_sprocket_tolerance + u_sprocket_feather + 0.0001, luma_diff), 3.0);
@@ -2374,7 +2387,7 @@ function initWebGL() {
             final_rgb = vec3(getLuma(final_rgb));
         }
 
-        if (u_sprocket_uv.x >= 0.0) {
+        if (u_sprocket_uv.x >= 0.0 || u_has_sprocket_target_color != 0) {
             bool has_visible_border = distance(u_calib_pts[0], vec2(0.0, 0.0)) > 0.001
                 || distance(u_calib_pts[1], vec2(1.0, 0.0)) > 0.001
                 || distance(u_calib_pts[2], vec2(1.0, 1.0)) > 0.001
@@ -2382,8 +2395,9 @@ function initWebGL() {
             bool outside_calibration = !insideFilmArea(v_texcoord);
             bool apply_sprocket_mask = outside_calibration;
             if (!has_visible_border) {
-                float horizontal_edge = min(u_sprocket_uv.x, 1.0 - u_sprocket_uv.x);
-                float vertical_edge = min(u_sprocket_uv.y, 1.0 - u_sprocket_uv.y);
+                vec2 effective_sprocket_uv = u_sprocket_uv.x >= 0.0 ? u_sprocket_uv : vec2(0.5, 0.05);
+                float horizontal_edge = min(effective_sprocket_uv.x, 1.0 - effective_sprocket_uv.x);
+                float vertical_edge = min(effective_sprocket_uv.y, 1.0 - effective_sprocket_uv.y);
                 bool sampled_horizontal_edge = vertical_edge <= horizontal_edge;
                 float sampled_edge = sampled_horizontal_edge ? vertical_edge : horizontal_edge;
                 float edge_band = clamp(sampled_edge * 1.75, 0.08, 0.24);
@@ -2481,6 +2495,8 @@ function initWebGL() {
     u_sprocket_uv_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_uv");
     u_sprocket_tolerance_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_tolerance");
     u_sprocket_feather_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_feather");
+    u_sprocket_target_color_loc = gl.getUniformLocation(shaderProgram, "u_sprocket_target_color");
+    u_has_sprocket_target_color_loc = gl.getUniformLocation(shaderProgram, "u_has_sprocket_target_color");
     u_calib_pts_loc = gl.getUniformLocation(shaderProgram, "u_calib_pts[0]");
     u_scope_warning_loc = gl.getUniformLocation(shaderProgram, "u_scope_warning");
     u_shadow_threshold_loc = gl.getUniformLocation(shaderProgram, "u_shadow_threshold");
@@ -2997,6 +3013,7 @@ function updateDataViz(pixels) {
 let currentSprocketUV = new Float32Array([-1.0, -1.0]);
 let currentSprocketTolerance = 0.10;
 let currentSprocketFeather = 0.05;
+let currentSprocketTargetColor = null;
 
 function requestRender() {
     if (!webGLInitialized || renderRequested) return;
@@ -3084,6 +3101,13 @@ function renderWebGL() {
     gl.uniform2fv(u_sprocket_uv_loc, currentSprocketUV);
     gl.uniform1f(u_sprocket_tolerance_loc, currentSprocketTolerance);
     gl.uniform1f(u_sprocket_feather_loc, currentSprocketFeather);
+    if (currentSprocketTargetColor) {
+        gl.uniform1i(u_has_sprocket_target_color_loc, 1);
+        gl.uniform3fv(u_sprocket_target_color_loc, currentSprocketTargetColor);
+    } else {
+        gl.uniform1i(u_has_sprocket_target_color_loc, 0);
+        gl.uniform3f(u_sprocket_target_color_loc, 0.0, 0.0, 0.0);
+    }
     gl.uniform2fv(u_calib_pts_loc, new Float32Array(pts.flat()));
     // Scope readback always measures the clean image. Clipping warnings are
     // enabled only for the main preview below.
@@ -3437,6 +3461,7 @@ function updateUIFromParams(params, geom) {
     currentSprocketUV = params.sprocket_uv ? new Float32Array(params.sprocket_uv) : new Float32Array([-1.0, -1.0]);
     currentSprocketTolerance = (params.sprocket_tolerance !== undefined && params.sprocket_tolerance !== null) ? params.sprocket_tolerance : 0.10;
     currentSprocketFeather = (params.sprocket_feather !== undefined && params.sprocket_feather !== null) ? params.sprocket_feather : 0.05;
+    currentSprocketTargetColor = params.sprocket_target_color ? new Float32Array(params.sprocket_target_color) : null;
     
     sliders.sprocketTolerance.el.value = currentSprocketTolerance;
     sliders.sprocketFeather.el.value = currentSprocketFeather;
@@ -6659,13 +6684,19 @@ async function doAutoColor(targetId = activeId, generation = developOperationRev
     currentDMax = batchState.dmax;
     updateDMinMaxDisplay();
 
-    sliders.expr.el.value = 0; sliders.expr.val.textContent = "0.000";
-    sliders.expg.el.value = 0; sliders.expg.val.textContent = "0.000";
-    sliders.expb.el.value = 0; sliders.expb.val.textContent = "0.000";
-    
-    updateSliderTrack(sliders.expr.el);
-    updateSliderTrack(sliders.expg.el);
-    updateSliderTrack(sliders.expb.el);
+    const hasCustomPrinterLights =
+        Math.abs(parseFloat(sliders.expr.el.value) || 0) > 0.0001 ||
+        Math.abs(parseFloat(sliders.expg.el.value) || 0) > 0.0001 ||
+        Math.abs(parseFloat(sliders.expb.el.value) || 0) > 0.0001;
+
+    if (!hasCustomPrinterLights) {
+        sliders.expr.el.value = 0; sliders.expr.val.textContent = "0.000";
+        sliders.expg.el.value = 0; sliders.expg.val.textContent = "0.000";
+        sliders.expb.el.value = 0; sliders.expb.val.textContent = "0.000";
+        updateSliderTrack(sliders.expr.el);
+        updateSliderTrack(sliders.expg.el);
+        updateSliderTrack(sliders.expb.el);
+    }
 
     await updateBackendParams(targetId, saveCurrentState(), generation);
     if (targetId !== activeId || generation !== developOperationRevision) return false;
@@ -7217,6 +7248,7 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
     current_geom.calibration_confirmed = false;
     setBatchApplyDisabled(false);
     currentSprocketUV = new Float32Array([-1.0, -1.0]);
+    currentSprocketTargetColor = null;
     // Reset must also refresh the lightweight, pre-invert view. Previously
     // rendering was gated by hasProcessedActiveImage, leaving the old
     // rotated/scaled canvas visible until the first full development pass.
@@ -7839,6 +7871,13 @@ btnConfirmBatchApply.addEventListener('click', async () => {
             current_geom.calibration_confirmed = true;
         }
         await persistGeometryQueued(activeId, current_geom);
+        const modules = [];
+        if (document.getElementById('batch-module-film-area')?.checked) modules.push('film_area');
+        if (document.getElementById('batch-module-film-base')?.checked) modules.push('base_color');
+        if (modules.length === 0) {
+            showToast("Select at least one module to apply.", "error");
+            return;
+        }
         const result = await invoke('batch_copy_settings', {
             source: {
                 roll_id: source.roll_id || 'LOOSE_DEFAULT',
@@ -7848,10 +7887,10 @@ btnConfirmBatchApply.addEventListener('click', async () => {
                 roll_id: item.roll_id || 'LOOSE_DEFAULT',
                 file_path: item.file_path
             })),
-            modules: ['film_area']
+            modules
         });
         closeBatchApplyModal();
-        showToast(`Film area applied to ${result.updated} frame(s).`, "success");
+        showToast(`Batch settings applied to ${result.updated} frame(s).`, "success");
     } catch (error) {
         console.error('Batch Apply failed', error);
         showToast("Batch Apply failed: " + error, "error");
@@ -7923,7 +7962,12 @@ function getCopySettingsSourceLabel() {
 
 function openCopySettingsModal() {
     copySettingsSourceLabel.textContent = getCopySettingsSourceLabel();
-    updateCopySettingsSelectionState();
+    if (!copySettingsPreset.value || copySettingsPreset.value === 'custom') {
+        copySettingsPreset.value = 'tone';
+        copySettingsPreset.dispatchEvent(new Event('change'));
+    } else {
+        updateCopySettingsSelectionState();
+    }
     copySettingsModal.classList.remove('opacity-0', 'pointer-events-none');
     copySettingsModal.setAttribute('aria-hidden', 'false');
     setTimeout(() => {
@@ -7956,7 +8000,15 @@ copySettingsGroups.forEach(group => {
     });
 });
 
-copySettingOptions.forEach(input => input.addEventListener('change', updateCopySettingsSelectionState));
+copySettingOptions.forEach(input => input.addEventListener('change', () => {
+    if (input.value === 'filmBase' && input.checked) {
+        const densityLimitsOption = copySettingOptions.find(opt => opt.value === 'densityLimits');
+        if (densityLimitsOption && !densityLimitsOption.checked) {
+            densityLimitsOption.checked = true;
+        }
+    }
+    updateCopySettingsSelectionState();
+}));
 
 btnCopySelectAll.addEventListener('click', () => {
     setCopySettingsSelection(copySettingOptions.map(input => input.value));
@@ -7970,7 +8022,7 @@ copySettingsPreset.addEventListener('change', () => {
     const presets = {
         all: copySettingOptions.map(input => input.value),
         tone: [
-            'filmMode', 'densityLimits', 'printerRed', 'printerGreen', 'printerBlue',
+            'filmBase', 'filmMode', 'densityLimits', 'printerRed', 'printerGreen', 'printerBlue',
             'temperature', 'tint', 'exposure', 'gamma', 'highlights', 'shadows',
             'contrast', 'saturation', 'lut', 'lutOpacity', 'workingSpace'
         ],
@@ -7988,7 +8040,12 @@ btnConfirmCopySettings.addEventListener('click', () => {
     }
     const params = saveCurrentState();
     if (!params) return;
-    copiedSettings = createCopyPayload(params, current_geom, settings);
+    const extra = {
+        base_density: currentBaseDensity.slice(),
+        invert_active: Boolean(autoInvertAppliedActiveImage || proxyHasAnalyzedBase),
+        base_source: currentPipelineState?.processing_report?.base_source || 'detected_film_base',
+    };
+    copiedSettings = createCopyPayload(params, current_geom, settings, extra);
     btnPasteSettings.disabled = false;
     closeCopySettingsModal();
     showToast(settings.length + " setting(s) copied.", "success");
@@ -8011,6 +8068,19 @@ btnPasteSettings.addEventListener('click', async () => {
     try {
         current_geom = nextGeom;
         updateUIFromParams(nextParams, nextGeom);
+        if (settings.has('filmBase') && copiedSettings.extra?.base_density) {
+            currentBaseDensity = copiedSettings.extra.base_density.slice();
+            autoInvertAppliedActiveImage = true;
+            proxyHasAnalyzedBase = true;
+            proxyAnalyzedBaseIds.add(targetId);
+            const generation = developOperationRevision;
+            await invoke('apply_film_base', {
+                id: targetId,
+                generation,
+                baseDensity: currentBaseDensity,
+            });
+            updateAutoInvertAvailability();
+        }
         if (settings.has('lut')) await restoreLutForImage(nextParams);
         await updateBackendParams(targetId, nextParams);
         if (geometryChanged) await persistGeometryQueued(targetId, nextGeom);
@@ -8019,7 +8089,9 @@ btnPasteSettings.addEventListener('click', async () => {
         requestRender();
         setBatchApplyDisabled(false);
         if (isCropMode) updateCropOverlay();
-        requestThumbnailSync();
+        if (proxyHasAnalyzedBase) {
+            requestThumbnailSync();
+        }
         showToast("Settings pasted.", "success");
     } catch (error) {
         current_geom = previousGeom;
@@ -8926,6 +8998,53 @@ previewViewport.addEventListener('mousedown', e => {
             
             pushUndoState();
             currentSprocketUV = new Float32Array(lensUv);
+
+            if (proxyPixels && proxyWidth > 0 && proxyHeight > 0) {
+                const sourceUv = NexFilmGeometry.mapDisplayPointToSource(
+                    [displayU, displayV],
+                    current_geom.crop_rect,
+                    proxyWidth,
+                    proxyHeight,
+                    current_geom
+                );
+                if (sourceUv && !sourceUv.some(value => !Number.isFinite(value) || value < 0 || value > 1)) {
+                    const px = Math.min(proxyWidth - 1, Math.floor(sourceUv[0] * proxyWidth));
+                    const py = Math.min(proxyHeight - 1, Math.floor(sourceUv[1] * proxyHeight));
+                    let sumR = 0, sumG = 0, sumB = 0;
+                    let count = 0;
+                    const radius = 2;
+                    for (let dy = -radius; dy <= radius; dy++) {
+                        for (let dx = -radius; dx <= radius; dx++) {
+                            const nx = px + dx;
+                            const ny = py + dy;
+                            if (nx >= 0 && nx < proxyWidth && ny >= 0 && ny < proxyHeight) {
+                                const idx = (ny * proxyWidth + nx) * 4;
+                                sumR += proxyPixels[idx];
+                                sumG += proxyPixels[idx + 1];
+                                sumB += proxyPixels[idx + 2];
+                                count++;
+                            }
+                        }
+                    }
+                    if (count > 0) {
+                        const avgR = (sumR / count) / 65535.0;
+                        const avgG = (sumG / count) / 65535.0;
+                        const avgB = (sumB / count) / 65535.0;
+                        const isLegacy = currentPipelineContract === 'legacy_v1' || currentProxyDomain === 'legacy_linear_srgb';
+                        const isCaptureCorrected = currentProxyDomain === 'relative_transmission_rgb';
+                        if (!isLegacy && !isCaptureCorrected) {
+                            currentSprocketTargetColor = new Float32Array([
+                                avgR * 4.0 - 1.0,
+                                avgG * 4.0 - 1.0,
+                                avgB * 4.0 - 1.0,
+                            ]);
+                        } else {
+                            currentSprocketTargetColor = new Float32Array([avgR, avgG, avgB]);
+                        }
+                    }
+                }
+            }
+
             const sampledId = activeId;
             const generation = developOperationRevision;
             const paramsSnapshot = saveCurrentState();
