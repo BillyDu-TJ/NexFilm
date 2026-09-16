@@ -5373,9 +5373,25 @@ async function selectImage(id, { force = false } = {}) {
         activeProxyIsFull = false;
         hasProcessedActiveImage = false;
         // Only an explicit Auto Invert (or pasting inversion settings) turns a
-        // frame into a positive. Stored analysis state alone never does: opening
-        // a frame must not de-mask it behind the user's back.
-        autoInvertAppliedActiveImage = hasRenderedPreview;
+        // frame into a positive. A frame that merely carries a film base — Batch
+        // Apply installs one — has no display endpoints yet, so it keeps showing
+        // the negative, and a rendered thumbnail alone never decides this.
+        const developedFrame = Boolean(state.developed);
+        const showsRenderedPreview = hasRenderedPreview && developedFrame;
+        autoInvertAppliedActiveImage = showsRenderedPreview;
+        if (hasRenderedPreview && !developedFrame) {
+            // The stored render was produced from a bare film base by an earlier
+            // build: drop it so the filmstrip agrees with the canvas.
+            const staleItem = findKnownItem(id);
+            const staleThumbnail = staleItem?.rendered_thumbnail_base64;
+            if (staleThumbnail) {
+                publishThumbnailUpdate(id, staleItem.embedded_thumbnail_base64, { rendered: false });
+                void invoke('clear_invalid_rendered_thumbnail', {
+                    id,
+                    expectedThumbnail: staleThumbnail,
+                }).catch(error => console.debug('undeveloped thumbnail cleanup skipped', error));
+            }
+        }
         proxyPixels = null;
         proxyWidth = 0;
         proxyHeight = 0;
@@ -5440,11 +5456,11 @@ async function selectImage(id, { force = false } = {}) {
         // proxy. The embedded/rendered thumbnail remains visible while it is
         // decoding, so RAW work never blocks navigation or slider input.
         const keepRollAnchorNegative = pipelineHasCompleteRollAnchors(currentPipelineState)
-            && !hasRenderedPreview
+            && !showsRenderedPreview
             && !autoInvertAppliedActiveImage;
         const proxyPromise = keepRollAnchorNegative
             ? ensureProxyPrepared(id)
-            : ensureProxyDisplayed(id, { persistThumbnail: hasRenderedPreview });
+            : ensureProxyDisplayed(id, { persistThumbnail: showsRenderedPreview });
         void proxyPromise
             .then(loaded => {
                 if (!keepRollAnchorNegative && loaded

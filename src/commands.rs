@@ -2732,6 +2732,30 @@ fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
     }
 }
 
+/// True when a frame carries the display endpoints a positive is rendered with.
+///
+/// A film base alone is not a developed frame: Batch Apply installs one so the
+/// next decode can measure it, but the endpoints stay untouched until the user
+/// runs Auto Invert (or pastes inversion settings). The untouched default window
+/// is therefore the marker that separates "has a base" from "was inverted", and
+/// nothing may render a positive — preview or thumbnail — without it.
+fn frame_has_display_endpoints(params: &TuningParams) -> bool {
+    const PLACEHOLDER_D_MIN: f32 = 0.1;
+    const PLACEHOLDER_D_MAX: f32 = 2.0;
+    const TOLERANCE: f32 = 1.0e-4;
+    let placeholder_min = params
+        .density
+        .d_min
+        .iter()
+        .all(|value| (value - PLACEHOLDER_D_MIN).abs() < TOLERANCE);
+    let placeholder_max = params
+        .density
+        .d_max
+        .iter()
+        .all(|value| (value - PLACEHOLDER_D_MAX).abs() < TOLERANCE);
+    !(placeholder_min && placeholder_max)
+}
+
 /// Recognise the persisted marker left by imports that ran on the retired
 /// v1.0.2 compatibility source. Previous releases marked every scanner-produced
 /// loose frame with it, which switched the frame onto the historical density
@@ -6847,6 +6871,9 @@ pub struct ActiveImageState {
     pub params: TuningParams,
     pub geom: crate::app_state::GeometryState,
     pub base_analyzed: bool,
+    /// True once the frame has display endpoints, i.e. once the user has
+    /// committed an inversion (Auto Invert, Paste Settings or the Roll batch).
+    pub developed: bool,
     pub pipeline_state: PipelineState,
 }
 
@@ -6970,6 +6997,7 @@ pub async fn switch_active_image(
         params: item.params.clone(),
         geom: item.geom.clone(),
         base_analyzed: pipeline_has_base(&resolved_state, &item.base_color),
+        developed: frame_has_display_endpoints(&item.params),
         pipeline_state: resolved_state,
     })
 }
@@ -8492,6 +8520,12 @@ pub async fn sync_thumbnail_buffer(
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
     tokio::task::spawn_blocking(move || {
         ensure_current_development_generation(&epoch, generation)?;
+        // A frame that was never inverted has no endpoints to render with: keep
+        // the import preview instead of inventing a developed thumbnail. This is
+        // what used to make Batch Apply look like it inverted every frame.
+        if !frame_has_display_endpoints(&read_lock(&item_arc).params) {
+            return Ok(());
+        }
         {
             let mut item = write_lock(&item_arc);
             if item.pristine_proxy.is_none() {
@@ -21722,6 +21756,31 @@ mod roll_render_tests {
             "film_edge_band",
             &BaseColor::default()
         ));
+    }
+
+    /// A film base alone is not a developed frame. The untouched default window
+    /// is what separates "this frame carries a base" (Batch Apply) from "the
+    /// user inverted it", and nothing may render a positive without endpoints.
+    #[test]
+    fn display_endpoints_mark_a_committed_inversion() {
+        let params = TuningParams::default();
+        assert!(
+            !frame_has_display_endpoints(&params),
+            "the untouched window means the frame was never inverted"
+        );
+
+        let mut inverted = TuningParams::default();
+        inverted.density.d_min = [-0.061, -0.074, -0.099];
+        inverted.density.d_max = [0.608, 0.731, 0.981];
+        assert!(frame_has_display_endpoints(&inverted));
+
+        let mut trimmed_only = TuningParams::default();
+        trimmed_only.density.d_min_offset = -0.05;
+        trimmed_only.density.d_max_offset = 0.03;
+        assert!(
+            !frame_has_display_endpoints(&trimmed_only),
+            "the Master trim alone does not commit an inversion"
+        );
     }
 
     /// A frame that inherited another frame's base measures the film on its own

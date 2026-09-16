@@ -137,8 +137,32 @@ assert.doesNotMatch(
 );
 assert.match(
     mainSource,
-    /autoInvertAppliedActiveImage = hasRenderedPreview;/,
+    /autoInvertAppliedActiveImage = showsRenderedPreview;/,
     'Only a rendered preview may mark a frame as developed when it is opened',
+);
+// A frame that was never inverted has no endpoints to render with. Nothing may
+// turn it into a positive — the canvas or a stored render — before the user
+// runs Auto Invert, which is what Batch Apply used to trigger by accident.
+assert.match(commandSource, /fn frame_has_display_endpoints\(/);
+assert.match(
+    commandSource,
+    /pub async fn sync_thumbnail_buffer[\s\S]{0,700}?if !frame_has_display_endpoints\(&read_lock\(&item_arc\)\.params\)/,
+    'A stored render must not be produced for a frame that was never inverted',
+);
+assert.match(
+    commandSource,
+    /pub developed: bool,/,
+    'The Develop state must report whether the frame carries display endpoints',
+);
+assert.match(
+    mainSource,
+    /const developedFrame = Boolean\(state\.developed\);/,
+    'Opening a frame must ask whether an inversion was committed',
+);
+assert.match(
+    mainSource,
+    /const showsRenderedPreview = hasRenderedPreview && developedFrame;/,
+    'A stored render only counts for a frame that was inverted',
 );
 // The Roll white point is one value shared by every frame, so it has to come
 // from the brightest frame of the Roll. Sampling a few frames can only
@@ -212,7 +236,11 @@ assert.doesNotMatch(
     'The WebGL shader must not apply a per-channel display response',
 );
 assert.match(commandSource, /pipeline_state\.content_range = None/);
-assert.match(mainSource, /pipelineHasCompleteRollAnchors\(currentPipelineState\)\s*&&\s*!hasRenderedPreview/);
+assert.match(
+    mainSource,
+    /pipelineHasCompleteRollAnchors\(currentPipelineState\)\s*&&\s*!showsRenderedPreview/,
+    'A Roll frame stays staged until a render it can show exists',
+);
 assert.match(
     mainSource,
     /autoInvertAppliedActiveImage\s*=\s*true;[\s\S]*proxyHasAnalyzedBase\s*=\s*true;[\s\S]*await reloadDevelopProxy/,
