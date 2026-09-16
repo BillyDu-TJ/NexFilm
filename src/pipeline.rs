@@ -218,6 +218,28 @@ pub(crate) fn frame_base_density(
     Some(base_density_from_base_color(base_color))
 }
 
+/// Recorded when a frame carries a film base that was measured on another
+/// frame of the same Roll instead of on its own pixels.
+pub(crate) const INHERITED_FILM_BASE_SOURCE: &str = "inherited_film_base";
+
+/// True when a persisted base belongs to the frame that stores it.
+///
+/// The marker has to be read together with the value: a frame that was reset,
+/// or written before its analysis finished, can still hold the default
+/// half-white colour, which is not a measurement of anything.
+pub(crate) fn base_is_frame_measurement(source: &str, base_color: &BaseColor) -> bool {
+    if *base_color == BaseColor::default() {
+        return false;
+    }
+    !matches!(
+        source,
+        "" | "unresolved"
+            | INHERITED_FILM_BASE_SOURCE
+            | "compatibility_fallback"
+            | "missing_film_base_reference"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::FilmPipeline;

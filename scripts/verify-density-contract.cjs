@@ -45,12 +45,12 @@ assert.match(
 // when the frame has no analysis of its own.
 assert.match(commandSource, /fn choose_pasted_film_base\(/);
 assert.match(
-    commandSource,
+    fs.readFileSync(path.join(__dirname, '..', 'src', 'pipeline.rs'), 'utf8'),
     /const INHERITED_FILM_BASE_SOURCE: &str = "inherited_film_base";/,
 );
 assert.match(
     commandSource,
-    /let measured = item[\s\S]{0,200}?estimate_film_base_f32\(proxy, &item\.geom\)/,
+    /let measured = item[\s\S]{0,220}?estimate_film_base_f32\(proxy, &item\.geom\)/,
     'Pasting a film base must measure the target frame',
 );
 const pasteHandler =
@@ -70,6 +70,49 @@ assert.doesNotMatch(
     pasteHandler,
     /currentBaseDensity = copiedSettings\.extra\.base_density\.slice\(\);/,
     'The copied film base must not be rendered directly',
+);
+// Batch Apply makes the same promise for a whole Roll: the endpoints travel,
+// the film base does not. Each target measures its own base the next time it is
+// decoded, which is why the batch never opens an image by itself.
+const batchSource = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'batch_settings.rs'),
+    'utf8',
+);
+assert.match(batchSource, /pub\(crate\) fn merge_density_endpoints\(/);
+assert.match(batchSource, /fn mark_inherited_film_base\(/);
+assert.match(batchSource, /fn target_keeps_its_own_base\(/);
+assert.doesNotMatch(
+    batchSource,
+    /estimate_film_base_f32|decode_/,
+    'Batch Apply must not decode or measure anything',
+);
+assert.match(
+    commandSource,
+    /fn remeasure_inherited_film_base\(/,
+    'An inherited film base must be re-measured on the frame that inherited it',
+);
+assert.match(commandSource, /fn inherited_film_base_measurement\(/);
+// The measurement runs where the pixels arrive — an already prepared proxy, a
+// freshly decoded one, and the export decode — never in the batch itself.
+assert.match(
+    commandSource,
+    /if current_long_edge >= target_long_edge[\s\S]{0,400}?remeasure_inherited_film_base\(&mut item\)/,
+    'An already prepared frame must still re-measure an inherited base',
+);
+assert.match(
+    commandSource,
+    /item\.runtime_pipeline_key = Some\(final_resolution_key\);[\s\S]{0,400}?remeasure_inherited_film_base\(&mut item\)/,
+    'A freshly decoded frame must re-measure an inherited base',
+);
+assert.match(
+    commandSource,
+    /inherited_film_base_measurement\(&render_pipeline_state, &geom_owned, &input\)/,
+    'Exporting a frame must not print another frame\'s film base',
+);
+assert.match(
+    mainSource,
+    /const storedDevelopedFrame = Boolean\(state\.base_analyzed\)/,
+    'A frame that received an inversion from another frame must open as developed',
 );
 // The Roll white point is one value shared by every frame, so it has to come
 // from the brightest frame of the Roll. Sampling a few frames can only

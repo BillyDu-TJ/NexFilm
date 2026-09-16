@@ -7063,6 +7063,14 @@ pub async fn prepare_proxy(
         && cached_resolution_key.as_deref() == Some(initial_resolution_key.as_str())
         && auxiliary_ready
     {
+        // The proxy is already the one this frame renders: a base inherited
+        // from another frame can still be replaced on it right here.
+        {
+            let mut item = write_lock(&item_arc);
+            if let Err(error) = remeasure_inherited_film_base(&mut item) {
+                eprintln!("[Film Base] inherited film base re-measurement failed: {error}");
+            }
+        }
         track_proxy_loaded(&state, &id);
         return Ok(current_long_edge);
     }
@@ -7401,6 +7409,12 @@ pub async fn prepare_proxy(
         item.runtime_pipeline_state = Some(final_state);
         item.runtime_density_provenance = Some(density_provenance);
         item.runtime_pipeline_key = Some(final_resolution_key);
+        // A base copied from another frame is a place-holder. This frame now
+        // has its own pixels, so measure the film on them instead of printing
+        // the other frame's mask.
+        if let Err(error) = remeasure_inherited_film_base(&mut item) {
+            eprintln!("[Film Base] inherited film base re-measurement failed: {error}");
+        }
         loaded_long_edge.max(retained_long_edge)
     };
     track_proxy_loaded(&state, &id);
@@ -7600,28 +7614,6 @@ pub async fn analyze_proxy_base_color(
     .map_err(|error| error.to_string())?
 }
 
-/// Recorded when a frame carries a film base that was measured on another
-/// frame of the same Roll instead of on its own pixels.
-const INHERITED_FILM_BASE_SOURCE: &str = "inherited_film_base";
-
-/// True when a persisted base belongs to the frame that stores it.
-///
-/// The marker has to be read together with the value: a frame that was reset,
-/// or written before its analysis finished, can still hold the default
-/// half-white colour, which is not a measurement of anything.
-fn base_is_frame_measurement(source: &str, base_color: &BaseColor) -> bool {
-    if *base_color == BaseColor::default() {
-        return false;
-    }
-    !matches!(
-        source,
-        "" | "unresolved"
-            | INHERITED_FILM_BASE_SOURCE
-            | "compatibility_fallback"
-            | "missing_film_base_reference"
-    )
-}
-
 /// Choose the film base a pasted inversion runs on.
 ///
 /// The film base is the neutral reference *of one frame*: the density a
@@ -7652,10 +7644,84 @@ fn choose_pasted_film_base(
     }
     (
         copied,
-        INHERITED_FILM_BASE_SOURCE.to_string(),
+        crate::pipeline::INHERITED_FILM_BASE_SOURCE.to_string(),
         "1.000".to_string(),
         false,
     )
+}
+
+/// Write one film base into one frame.
+///
+/// Everything that depends on the base moves with it: the stored colour, the
+/// provenance the technical report shows, and — on a sampled Roll — the
+/// display mapping, which is the Roll anchor plus *this* frame's own base.
+fn install_film_base(
+    item: &mut FilmItem,
+    density: [f32; 3],
+    source: &str,
+    confidence: &str,
+) -> Result<(), String> {
+    let base_color = base_color_from_density(density);
+    let mut runtime = item.effective_pipeline_state().clone();
+    clear_retired_legacy_domain(&mut runtime);
+    runtime.processing_report.base_source = source.to_string();
+    runtime.processing_report.base_confidence = confidence.to_string();
+    runtime.processing_report.analysis_window_rule = crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+    // A complete Roll has no per-frame window of its own: it renders from the
+    // sampled anchors, offset by the base this frame actually recorded. A
+    // mapping copied from another frame would carry that frame's exposure.
+    // The white point is only re-derived when this frame knows its highlight
+    // fraction, so an unknown one cannot silently flatten the print.
+    let highlight_known = runtime.density_anchors.highlight_fraction.is_some()
+        || item.runtime_frame_highlight.is_some();
+    if highlight_known {
+        if let Some(mapping) = roll_density_mapping_with_frame_base(
+            &runtime,
+            Some(density),
+            item.runtime_frame_highlight,
+        ) {
+            runtime.render_mapping = mapping;
+        }
+    }
+    let mut persisted = item.pipeline_state.clone();
+    persisted.processing_report = runtime.processing_report.clone();
+    persisted.render_mapping = runtime.render_mapping.clone();
+    persist_base_and_pipeline(&item.roll_id, &item.file_path, &base_color, &persisted)?;
+    item.base_color = base_color;
+    item.pipeline_state = persisted;
+    item.runtime_pipeline_state = Some(runtime);
+    item.runtime_frame_base = Some(density);
+    item.pristine_proxy = None;
+    Ok(())
+}
+
+/// The base a frame that inherited one from another frame should run on, now
+/// that its own pixels are decoded. `None` keeps the copied figure: a frame
+/// without a confirmed Film Area has nowhere trustworthy to measure.
+fn inherited_film_base_measurement(
+    state: &PipelineState,
+    geom: &GeometryState,
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+) -> Option<FilmBaseEstimate> {
+    (state.processing_report.base_source == crate::pipeline::INHERITED_FILM_BASE_SOURCE
+        && geom.calibration_points.is_some())
+    .then(|| estimate_film_base_f32(proxy, geom))
+    .filter(|estimate| estimate.usable)
+}
+
+/// Replace a base this frame inherited with its own measurement, the first time
+/// the frame has pixels to measure. Returns true when it was replaced.
+fn remeasure_inherited_film_base(item: &mut FilmItem) -> Result<bool, String> {
+    let Some(proxy) = item.prophoto_estimate_proxy.as_ref() else {
+        return Ok(false);
+    };
+    let Some(estimate) = inherited_film_base_measurement(&item.pipeline_state, &item.geom, proxy)
+    else {
+        return Ok(false);
+    };
+    let confidence = format!("{:.3}", estimate.confidence);
+    install_film_base(item, estimate.density, estimate.source, &confidence)?;
+    Ok(true)
 }
 
 #[tauri::command]
@@ -7680,7 +7746,7 @@ pub async fn apply_film_base(
             .then(|| item.prophoto_estimate_proxy.as_ref())
             .flatten()
             .map(|proxy| estimate_film_base_f32(proxy, &item.geom));
-        let frame_measurement = base_is_frame_measurement(
+        let frame_measurement = crate::pipeline::base_is_frame_measurement(
             &item.pipeline_state.processing_report.base_source,
             &item.base_color,
         )
@@ -7696,24 +7762,7 @@ pub async fn apply_film_base(
         });
         let (effective_density, base_source, base_confidence, measured_on_frame) =
             choose_pasted_film_base(base_density, frame_measurement, measured);
-        let base_color = base_color_from_density(effective_density);
-        let mut effective = item.effective_pipeline_state().clone();
-        clear_retired_legacy_domain(&mut effective);
-        effective.processing_report.base_source = base_source.clone();
-        effective.processing_report.base_confidence = base_confidence.clone();
-        effective.processing_report.analysis_window_rule =
-            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
-        let mut persisted = item.pipeline_state.clone();
-        persisted.processing_report.base_source = base_source.clone();
-        persisted.processing_report.base_confidence = base_confidence;
-        persisted.processing_report.analysis_window_rule =
-            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
-        persist_base_and_pipeline(&item.roll_id, &item.file_path, &base_color, &persisted)?;
-        item.base_color = base_color;
-        item.pipeline_state = persisted;
-        item.runtime_pipeline_state = Some(effective);
-        item.runtime_frame_base = Some(effective_density);
-        item.pristine_proxy = None;
+        install_film_base(&mut item, effective_density, &base_source, &base_confidence)?;
         Ok(AppliedFilmBase {
             base_density: effective_density,
             base_source,
@@ -8855,19 +8904,23 @@ pub async fn batch_copy_settings(
     .await
     .map_err(|error| format!("Batch settings worker failed: {error}"))??;
 
-    if commit.geometry.is_some() || commit.base_color.is_some() {
+    if commit.geometry.is_some()
+        || commit.density_params.is_some()
+        || !commit.inherited_targets.is_empty()
+    {
         let updated = commit
             .result
             .targets
             .iter()
             .cloned()
             .collect::<HashSet<_>>();
+        let inherited = commit
+            .inherited_targets
+            .iter()
+            .cloned()
+            .collect::<HashSet<_>>();
         let parsed_base_color: Option<BaseColor> = commit
-            .base_color
-            .as_ref()
-            .and_then(|s| serde_json::from_str(s).ok());
-        let parsed_pipeline_state: Option<PipelineState> = commit
-            .pipeline_state
+            .inherited_base_color
             .as_ref()
             .and_then(|s| serde_json::from_str(s).ok());
         for entry in state.items.iter() {
@@ -8889,13 +8942,41 @@ pub async fn batch_copy_settings(
                         );
                     }
                 }
-                if let Some(base_color) = parsed_base_color.as_ref() {
-                    item.base_color = base_color.clone();
-                    if let Some(pipeline) = parsed_pipeline_state.as_ref() {
-                        item.pipeline_state = pipeline.clone();
-                        item.runtime_pipeline_state = Some(pipeline.clone());
+                if let Some(density_params) = commit.density_params.as_ref() {
+                    if let Ok(mut params) = serde_json::to_value(&item.params) {
+                        if crate::batch_settings::merge_density_endpoints(
+                            &mut params,
+                            density_params,
+                        ) {
+                            match serde_json::from_value::<TuningParams>(params) {
+                                Ok(merged) => item.params = merged,
+                                Err(error) => eprintln!(
+                                    "[Batch Settings] density limits could not be cached: {error}"
+                                ),
+                            }
+                        }
                     }
+                }
+                if inherited.contains(&key) {
+                    if let Some(base_color) = parsed_base_color.as_ref() {
+                        item.base_color = base_color.clone();
+                    }
+                    // Only the provenance changes here: the frame keeps its own
+                    // anchors and mapping, and measures the base itself when it
+                    // is next decoded.
+                    let marker = crate::pipeline::INHERITED_FILM_BASE_SOURCE.to_string();
+                    item.pipeline_state.processing_report.base_source = marker.clone();
+                    item.pipeline_state.processing_report.base_confidence = "1.000".to_string();
+                    let mut runtime = item.effective_pipeline_state().clone();
+                    runtime.processing_report.base_source = marker;
+                    runtime.processing_report.base_confidence = "1.000".to_string();
+                    item.runtime_pipeline_state = Some(runtime);
                     item.pristine_proxy = None;
+                }
+                // The frame may already be decoded here: replace a base copied
+                // from another frame with this frame's own measurement.
+                if let Err(error) = remeasure_inherited_film_base(&mut item) {
+                    eprintln!("[Batch Settings] film base re-measurement failed: {error}");
                 }
             }
         }
@@ -10912,7 +10993,9 @@ pub async fn batch_export_images(
             match decoded {
                 Ok(original) => {
                     let params = &params_owned;
-                    let base_color = &base_color_owned;
+                    // The stored base is replaced below when it still names
+                    // another frame instead of this one's own clear film.
+                    let mut base_color = base_color_owned.clone();
                     if snapshot.pipeline_state.contract != ProcessingContract::LegacyV1
                         && !is_smart_auto_compatibility(&snapshot.pipeline_state)
                     {
@@ -10967,6 +11050,30 @@ pub async fn batch_export_images(
                                 return;
                             }
                         };
+                        // A base inherited from another frame is a place-holder:
+                        // this decode is the first chance to measure the film on
+                        // its own pixels, and the export must not print another
+                        // frame's mask.
+                        if let Some(estimate) =
+                            inherited_film_base_measurement(&render_pipeline_state, &geom_owned, &input)
+                        {
+                            base_color = base_color_from_density(estimate.density);
+                            let mut persisted = snapshot.pipeline_state.clone();
+                            persisted.processing_report.base_source = estimate.source.to_string();
+                            persisted.processing_report.base_confidence =
+                                format!("{:.3}", estimate.confidence);
+                            if let Err(error) = persist_base_and_pipeline(
+                                &snapshot.roll_id,
+                                &snapshot.file_path,
+                                &base_color,
+                                &persisted,
+                            ) {
+                                lock_mutex(&warnings).push(format!(
+                                    "export_film_base_persist_failed|{}|{error}",
+                                    file_path
+                                ));
+                            }
+                        }
                         // Match the Develop preview: mask removal uses this
                         // frame's own film base, and the white point uses the
                         // fraction of the film span its scene actually reaches.
@@ -10976,7 +11083,7 @@ pub async fn batch_export_images(
                                 | ProcessingContract::CaptureCorrectedV11
                         ) {
                             let anchor_base =
-                                pipeline_base_density(&render_pipeline_state, base_color);
+                                pipeline_base_density(&render_pipeline_state, &base_color);
                             let frame_base =
                                 detect_frame_base_density(&input, anchor_base).unwrap_or(anchor_base);
                             if let Some(span) = roll_physical_density_span(
@@ -10999,7 +11106,7 @@ pub async fn batch_export_images(
                             quality_mask.as_ref(),
                             params,
                             &geom_owned,
-                            base_color,
+                            &base_color,
                             &render_pipeline_state,
                             params.lut.lut_path.as_deref().and_then(|path| parsed_luts.get(path)),
                         );
@@ -11094,7 +11201,7 @@ pub async fn batch_export_images(
                         &transformed,
                         params,
                         &geom_owned,
-                        base_color,
+                        &base_color,
                         export_lut,
                     );
                     // Resize and output sharpening intentionally preserve the
@@ -21571,7 +21678,7 @@ mod roll_render_tests {
             choose_pasted_film_base(copied, None, None);
 
         assert_eq!(density, copied);
-        assert_eq!(source, INHERITED_FILM_BASE_SOURCE);
+        assert_eq!(source, crate::pipeline::INHERITED_FILM_BASE_SOURCE);
         assert_eq!(confidence, "1.000");
         assert!(!measured_on_frame);
     }
@@ -21593,7 +21700,7 @@ mod roll_render_tests {
             choose_pasted_film_base(copied, None, Some(unusable));
 
         assert_eq!(density, copied);
-        assert_eq!(source, INHERITED_FILM_BASE_SOURCE);
+        assert_eq!(source, crate::pipeline::INHERITED_FILM_BASE_SOURCE);
         assert!(!measured_on_frame);
     }
 
@@ -21604,28 +21711,73 @@ mod roll_render_tests {
     fn frame_measurement_requires_a_marker_and_a_real_base() {
         let measured = base_color_from_density([0.58, 0.74, 0.99]);
 
-        assert!(base_is_frame_measurement("film_edge_band", &measured));
-        assert!(base_is_frame_measurement(
+        assert!(crate::pipeline::base_is_frame_measurement(
+            "film_edge_band",
+            &measured
+        ));
+        assert!(crate::pipeline::base_is_frame_measurement(
             "film_area_low_density_tail",
             &measured
         ));
-        assert!(!base_is_frame_measurement(
-            INHERITED_FILM_BASE_SOURCE,
+        assert!(!crate::pipeline::base_is_frame_measurement(
+            crate::pipeline::INHERITED_FILM_BASE_SOURCE,
             &measured
         ));
-        assert!(!base_is_frame_measurement("unresolved", &measured));
-        assert!(!base_is_frame_measurement("", &measured));
-        assert!(!base_is_frame_measurement(
+        assert!(!crate::pipeline::base_is_frame_measurement(
+            "unresolved",
+            &measured
+        ));
+        assert!(!crate::pipeline::base_is_frame_measurement("", &measured));
+        assert!(!crate::pipeline::base_is_frame_measurement(
             "compatibility_fallback",
             &measured
         ));
-        assert!(!base_is_frame_measurement(
+        assert!(!crate::pipeline::base_is_frame_measurement(
             "missing_film_base_reference",
             &measured
         ));
-        assert!(!base_is_frame_measurement(
+        assert!(!crate::pipeline::base_is_frame_measurement(
             "film_edge_band",
             &BaseColor::default()
         ));
+    }
+
+    /// A frame that inherited another frame's base measures the film on its own
+    /// pixels once they are decoded — and only then. The measurement needs a
+    /// confirmed Film Area, and a frame that already has its own base keeps it.
+    #[test]
+    fn inherited_film_base_is_re_measured_on_the_frames_own_pixels() {
+        let transmission = 10f32.powf(-0.85);
+        let proxy = ImageBuffer::from_pixel(
+            96,
+            96,
+            Rgb([transmission, transmission * 0.92, transmission * 0.84]),
+        );
+        let mut geom = GeometryState::default();
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.base_source =
+            crate::pipeline::INHERITED_FILM_BASE_SOURCE.to_string();
+
+        assert!(
+            inherited_film_base_measurement(&state, &geom, &proxy).is_none(),
+            "a frame without a confirmed Film Area has nowhere to measure"
+        );
+
+        geom.calibration_points = Some([[0.10, 0.10], [0.90, 0.10], [0.90, 0.90], [0.10, 0.90]]);
+        let estimate = inherited_film_base_measurement(&state, &geom, &proxy)
+            .expect("the frame's own film base is measurable");
+        assert!(estimate.usable);
+        for (channel, expected) in estimate.density.iter().zip([0.85, 0.886, 0.926]) {
+            assert!(
+                (channel - expected).abs() < 0.02,
+                "expected {expected}, measured {channel}"
+            );
+        }
+
+        state.processing_report.base_source = "film_edge_band".to_string();
+        assert!(
+            inherited_film_base_measurement(&state, &geom, &proxy).is_none(),
+            "a frame that already measured its own base is left alone"
+        );
     }
 }
