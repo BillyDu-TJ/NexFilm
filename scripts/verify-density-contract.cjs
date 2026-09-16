@@ -71,14 +71,20 @@ assert.doesNotMatch(
     /currentBaseDensity = copiedSettings\.extra\.base_density\.slice\(\);/,
     'The copied film base must not be rendered directly',
 );
-// Batch Apply makes the same promise for a whole Roll: the endpoints travel,
-// the film base does not. Each target measures its own base the next time it is
+// Batch Apply and Copy Settings stay separated: the batch carries the frame's
+// physical settings (Film Area, film base), while the display endpoints belong
+// to Copy Settings. Each target measures its own base the next time it is
 // decoded, which is why the batch never opens an image by itself.
 const batchSource = fs.readFileSync(
     path.join(__dirname, '..', 'src', 'batch_settings.rs'),
     'utf8',
 );
-assert.match(batchSource, /pub\(crate\) fn merge_density_endpoints\(/);
+const batchCore = batchSource.split('#[cfg(test)]')[0];
+assert.doesNotMatch(
+    batchCore,
+    /d_min|d_max/,
+    'Batch Apply must not move another frame\'s display endpoints',
+);
 assert.match(batchSource, /fn mark_inherited_film_base\(/);
 assert.match(batchSource, /fn target_keeps_its_own_base\(/);
 assert.doesNotMatch(

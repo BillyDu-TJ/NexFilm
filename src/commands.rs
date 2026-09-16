@@ -8904,10 +8904,7 @@ pub async fn batch_copy_settings(
     .await
     .map_err(|error| format!("Batch settings worker failed: {error}"))??;
 
-    if commit.geometry.is_some()
-        || commit.density_params.is_some()
-        || !commit.inherited_targets.is_empty()
-    {
+    if commit.geometry.is_some() || !commit.inherited_targets.is_empty() {
         let updated = commit
             .result
             .targets
@@ -8940,21 +8937,6 @@ pub async fn batch_copy_settings(
                         eprintln!(
                             "[Batch Settings] committed geometry cache refresh failed: {error}"
                         );
-                    }
-                }
-                if let Some(density_params) = commit.density_params.as_ref() {
-                    if let Ok(mut params) = serde_json::to_value(&item.params) {
-                        if crate::batch_settings::merge_density_endpoints(
-                            &mut params,
-                            density_params,
-                        ) {
-                            match serde_json::from_value::<TuningParams>(params) {
-                                Ok(merged) => item.params = merged,
-                                Err(error) => eprintln!(
-                                    "[Batch Settings] density limits could not be cached: {error}"
-                                ),
-                            }
-                        }
                     }
                 }
                 if inherited.contains(&key) {

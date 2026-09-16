@@ -8,10 +8,6 @@ pub const GEOMETRY_MODULE: &str = "geometry";
 pub const FILM_AREA_MODULE: &str = "film_area";
 pub const FILM_BASE_MODULE: &str = "base_color";
 
-/// Density endpoints a frame renders with. They are the part of the inversion
-/// the user tuned, so they travel to every target.
-const DENSITY_KEYS: [&str; 4] = ["d_min", "d_max", "d_min_offset", "d_max_offset"];
-
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct ImageKey {
     pub roll_id: String,
@@ -29,8 +25,6 @@ pub struct BatchCopyResult {
 pub struct BatchCopyCommit {
     pub result: BatchCopyResult,
     pub geometry: Option<Value>,
-    /// The source frame's density endpoints, merged into every target's params.
-    pub density_params: Option<Value>,
     /// The source frame's film base, used as a place-holder only on targets that
     /// have no measurement of their own. Every target keeps its own pipeline
     /// state and re-measures the base as soon as it is decoded.
@@ -64,7 +58,6 @@ pub fn copy_settings_transaction(
                 modules: modules.to_vec(),
             },
             geometry: None,
-            density_params: None,
             inherited_base_color: None,
             inherited_targets: Vec::new(),
         });
@@ -93,30 +86,21 @@ pub fn copy_settings_transaction(
         None
     };
 
-    let source_film_base = if modules.iter().any(|module| module == FILM_BASE_MODULE) {
-        let (base, params): (Option<String>, Option<String>) = transaction
-            .query_row(
-                "SELECT base_color, params FROM image_states
-                 WHERE roll_id = ?1 AND file_path = ?2",
-                params![source.roll_id, source.file_path],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()
-            .map_err(|error| format!("Failed to read source base state: {error}"))?
-            .unwrap_or((None, None));
-        Some((base, params))
-    } else {
-        None
-    };
-    let source_density_params = source_film_base
-        .as_ref()
-        .and_then(|(_, params)| params.as_deref())
-        .and_then(|params| serde_json::from_str::<Value>(params).ok())
-        .filter(Value::is_object);
-    let source_base_color = source_film_base
-        .as_ref()
-        .and_then(|(base, _)| base.as_deref())
-        .filter(|base| !base.is_empty());
+    let source_film_base: Option<String> =
+        if modules.iter().any(|module| module == FILM_BASE_MODULE) {
+            transaction
+                .query_row(
+                    "SELECT base_color FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
+                    params![source.roll_id, source.file_path],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| format!("Failed to read source base state: {error}"))?
+                .flatten()
+        } else {
+            None
+        };
+    let source_base_color = source_film_base.as_deref().filter(|base| !base.is_empty());
     let mut inherited_targets = Vec::new();
 
     for target in &targets {
@@ -143,26 +127,6 @@ pub fn copy_settings_transaction(
                     "Target image state disappeared during batch update: {}/{}",
                     target.roll_id, target.file_path
                 ));
-            }
-        }
-        if let Some(density_params) = source_density_params.as_ref() {
-            let mut target_params = read_json_column(&transaction, target, "params", "target")?;
-            if merge_density_endpoints(&mut target_params, density_params) {
-                let serialized = serde_json::to_string(&target_params)
-                    .map_err(|error| format!("Failed to serialize target params: {error}"))?;
-                transaction
-                    .execute(
-                        "UPDATE image_states
-                         SET params = ?1, updated_at = ?2
-                         WHERE roll_id = ?3 AND file_path = ?4",
-                        params![serialized, updated_at, target.roll_id, target.file_path],
-                    )
-                    .map_err(|error| {
-                        format!(
-                            "Failed to update density limits for {}/{}: {error}",
-                            target.roll_id, target.file_path
-                        )
-                    })?;
             }
         }
         if let Some(base_color) = source_base_color {
@@ -228,27 +192,9 @@ pub fn copy_settings_transaction(
             modules: modules.to_vec(),
         },
         geometry: source_geometry,
-        density_params: source_density_params,
         inherited_base_color: source_base_color.map(str::to_string),
         inherited_targets,
     })
-}
-
-/// Copy the source's display endpoints into one target's tuning parameters.
-pub(crate) fn merge_density_endpoints(target: &mut Value, source: &Value) -> bool {
-    let (Some(target), Some(source)) = (target.as_object_mut(), source.as_object()) else {
-        return false;
-    };
-    let mut changed = false;
-    for key in DENSITY_KEYS {
-        if let Some(value) = source.get(key) {
-            if target.get(key) != Some(value) {
-                target.insert(key.to_string(), value.clone());
-                changed = true;
-            }
-        }
-    }
-    changed
 }
 
 /// Keep the target's own film base but record that the inversion it now renders
@@ -297,10 +243,10 @@ fn read_json_column(
     column: &str,
     role: &str,
 ) -> Result<Value, String> {
-    debug_assert!(matches!(column, "geom" | "params"));
+    debug_assert_eq!(column, "geom");
     let payload = connection
         .query_row(
-            &format!("SELECT {column} FROM image_states WHERE roll_id = ?1 AND file_path = ?2"),
+            "SELECT geom FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
             params![key.roll_id, key.file_path],
             |row| row.get::<_, Option<String>>(0),
         )
@@ -649,11 +595,13 @@ mod tests {
             .unwrap()
     }
 
-    /// Batch Apply moves the injection *recipe* and leaves the physical
-    /// reading to the target frame: the film base it installs is a place-holder
-    /// that the frame re-measures as soon as it has pixels of its own.
+    /// Batch Apply carries the physical settings of the frame: its Film Area
+    /// (that module is covered above) and its film base. The display endpoints
+    /// are what Copy Settings broadcasts, so they must not move here, and the
+    /// base it installs is a place-holder the frame re-measures as soon as it
+    /// has pixels of its own.
     #[test]
-    fn film_base_copy_transfers_the_recipe_and_defers_the_base() {
+    fn film_base_copy_marks_the_base_and_leaves_the_endpoints() {
         let (mut connection, source, target) = film_base_pair();
         set_film_base_state(
             &connection,
@@ -697,14 +645,14 @@ mod tests {
         let (params, base_color, pipeline, thumbnail, updated_at) =
             target_row(&connection, &target);
         let params: Value = serde_json::from_str(&params).unwrap();
-        assert_eq!(params["d_min"], json!([0.12, 0.13, 0.14]));
-        assert_eq!(params["d_max"], json!([1.02, 1.13, 1.24]));
-        assert_eq!(params["d_min_offset"], json!(-0.05));
-        assert_eq!(params["d_max_offset"], json!(0.03));
         assert_eq!(
-            params["exposure"],
-            json!(0.0),
-            "only the inversion recipe travels with the film base"
+            params,
+            json!({
+                "d_min": [0.1, 0.1, 0.1],
+                "d_max": [2.0, 2.0, 2.0],
+                "exposure": 0.0
+            }),
+            "Batch Apply must not copy another frame's endpoints"
         );
         assert_eq!(base_color, "[17338,12035,6787]");
         let state: PipelineState = serde_json::from_str(&pipeline).unwrap();
@@ -753,7 +701,11 @@ mod tests {
         assert!(commit.inherited_targets.is_empty());
         let (params, base_color, pipeline, _, _) = target_row(&connection, &target);
         let params: Value = serde_json::from_str(&params).unwrap();
-        assert_eq!(params["d_min"], json!([0.12, 0.13, 0.14]));
+        assert_eq!(
+            params,
+            json!({"d_min": [0.1, 0.1, 0.1], "d_max": [2.0, 2.0, 2.0]}),
+            "Batch Apply must not copy another frame's endpoints"
+        );
         assert_eq!(base_color, "[14036,11366,8402]");
         let state: PipelineState = serde_json::from_str(&pipeline).unwrap();
         assert_eq!(state.processing_report.base_source, "film_edge_band");
