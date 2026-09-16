@@ -7874,13 +7874,10 @@ btnConfirmBatchApply.addEventListener('click', async () => {
             current_geom.calibration_confirmed = true;
         }
         await persistGeometryQueued(activeId, current_geom);
-        const modules = [];
-        if (document.getElementById('batch-module-film-area')?.checked) modules.push('film_area');
-        if (document.getElementById('batch-module-film-base')?.checked) modules.push('base_color');
-        if (modules.length === 0) {
-            showToast("Select at least one module to apply.", "error");
-            return;
-        }
+        // Batch Apply always carries the frame's Film Area and film base. The
+        // display endpoints stay with Copy Settings, so there is nothing to
+        // choose here.
+        const modules = ['film_area', 'base_color'];
         const result = await invoke('batch_copy_settings', {
             source: {
                 roll_id: source.roll_id || 'LOOSE_DEFAULT',
@@ -7893,11 +7890,7 @@ btnConfirmBatchApply.addEventListener('click', async () => {
             modules
         });
         closeBatchApplyModal();
-        if (modules.includes('base_color')) {
-            showToast(i18nText('batch.appliedWithOwnBase', { count: result.updated }), "success");
-        } else {
-            showToast(`Batch settings applied to ${result.updated} frame(s).`, "success");
-        }
+        showToast(i18nText('batch.appliedWithOwnBase', { count: result.updated }), "success");
     } catch (error) {
         console.error('Batch Apply failed', error);
         showToast("Batch Apply failed: " + error, "error");

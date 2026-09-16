@@ -85,6 +85,19 @@ assert.doesNotMatch(
     /d_min|d_max/,
     'Batch Apply must not move another frame\'s display endpoints',
 );
+// The modal carries no module picker: the batch always applies the frame's
+// Film Area and its film base together.
+const htmlSource = fs.readFileSync(path.join(__dirname, '..', 'ui', 'index.html'), 'utf8');
+assert.doesNotMatch(
+    htmlSource,
+    /batch-module-film-area|batch-module-film-base/,
+    'Batch Apply must not ask which settings to apply',
+);
+assert.match(
+    mainSource,
+    /const modules = \['film_area', 'base_color'\];/,
+    'Batch Apply must always send the Film Area and the film base',
+);
 assert.match(batchSource, /fn mark_inherited_film_base\(/);
 assert.match(batchSource, /fn target_keeps_its_own_base\(/);
 assert.doesNotMatch(

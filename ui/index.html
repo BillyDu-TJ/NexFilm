@@ -1352,21 +1352,10 @@
                         <span id="batch-selected-count" class="batch-target-count">0</span>
                     </label>
                 </fieldset>
-                <fieldset class="flex flex-col gap-2.5 border border-zinc-700/60 rounded p-3 text-[11px] text-zinc-300">
-                    <legend class="text-[10px] font-bold text-zinc-400 uppercase tracking-widest px-1">Settings to Apply</legend>
-                    <label class="flex items-center gap-2 cursor-pointer select-none">
-                        <input type="checkbox" id="batch-module-film-area" value="film_area" class="rounded bg-zinc-800 border-zinc-600 text-zinc-100" checked>
-                        <span data-i18n="batch.filmArea">Film Area</span>
-                    </label>
-                    <label class="flex items-center gap-2 cursor-pointer select-none">
-                        <input type="checkbox" id="batch-module-film-base" value="base_color" class="rounded bg-zinc-800 border-zinc-600 text-zinc-100" checked>
-                        <span data-i18n="batch.filmBase">Film Base (mask removal)</span>
-                    </label>
-                    <p class="text-[10px] leading-relaxed text-zinc-500" data-i18n="batch.filmBaseHint">Applies the Film Area and the film base only — never the display endpoints, which Copy Settings broadcasts.</p>
-                </fieldset>
+                <p class="text-[11px] leading-relaxed text-zinc-400" data-i18n="batch.appliesHint">Applies the Film Area and the film base to every selected frame — never the display endpoints, which belong to Copy Settings.</p>
                 <div class="flex justify-end gap-3 pt-2">
                     <button id="btn-cancel-batch-apply" class="px-5 py-2 text-[12px] font-bold uppercase tracking-wider text-zinc-400 hover:text-zinc-200 transition-colors">Cancel</button>
-                    <button id="btn-confirm-batch-apply" class="px-6 py-2 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm" data-i18n="batch.applyFilmArea">Apply Film Area</button>
+                    <button id="btn-confirm-batch-apply" class="px-6 py-2 text-[12px] font-bold uppercase tracking-wider bg-zinc-100 hover:bg-white text-zinc-900 rounded transition-colors shadow-sm" data-i18n="batch.applyFilmArea">Apply Film Area &amp; Film Base</button>
                 </div>
             </div>
         </div>
