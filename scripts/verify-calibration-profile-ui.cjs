@@ -26,6 +26,21 @@ assert.match(html, /<label for="develop-calibration-profile-select"[^>]*data-i18
 assert.doesNotMatch(html, /id="develop-calibration-status"/, 'Develop must not expose the calibration status grid');
 assert.doesNotMatch(html, /id="develop-calibration-warning"/, 'Develop must not expose calibration warnings below the selector');
 assert.match(html, /class="develop-profile-heading"/, 'Develop must show the Profile heading above the selector');
+assert.match(
+    html,
+    /id="inspector-density-capture" class="develop-calibration-profile"/,
+    'Density Capture must stack its label above the field like the two Profile rows',
+);
+assert.match(
+    html,
+    /<label for="select-colorspace" data-i18n="develop\.densityCapture"/,
+    'Density Capture must keep a translated label',
+);
+assert.match(
+    referenceCss,
+    /#inspector-input #select-colorspace,\s*#inspector-input \.develop-calibration-profile select,\s*#inspector-print #select-builtin-lut \{[\s\S]*?appearance: none !important;[\s\S]*?linear-gradient\(45deg, transparent 50%, var\(--ui-muted\) 50%\)/,
+    'Every inspector dropdown must share one drawn, cross-platform field style',
+);
 assert.doesNotMatch(main, /window\.confirm/, 'Profile deletion must not use the blocked native confirm dialog');
 assert.match(html, /id="calibration-delete-modal"/, 'Profile deletion must use an in-app confirmation dialog');
 assert.match(main, /await confirmCalibrationProfileDeletion/, 'Profile deletion must await the in-app confirmation');

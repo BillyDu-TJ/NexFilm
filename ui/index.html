@@ -59,6 +59,7 @@
                 <button type="button" class="menu-item" id="menu-view-develop" data-i18n="nav.develop">Develop</button>
                 <button type="button" class="menu-item" id="menu-view-rolls" data-i18n="nav.rolls">Rolls</button>
                 <button type="button" class="menu-item" id="menu-view-calibration" data-i18n="nav.calibration">Hardware Calibration</button>
+                <button type="button" class="menu-item" id="menu-view-documentation" data-i18n="nav.documentation">Documentation</button>
                 <button type="button" class="menu-item" id="menu-view-reset" data-i18n="menu.resetView">Reset View</button>
             </div>
         </div>
@@ -84,6 +85,7 @@
                 <button id="nav-develop" data-i18n="nav.develop" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Develop</button>
                 <button id="nav-history" data-i18n="nav.rolls" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Rolls</button>
                 <button id="nav-calibration" data-i18n="nav.calibration" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Hardware Calibration</button>
+                <button id="nav-documentation" data-i18n="nav.documentation" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Documentation</button>
                 <button id="nav-sponsor" data-i18n="nav.sponsor" type="button" aria-haspopup="dialog" aria-controls="sponsor-modal" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Sponsor</button>
             </nav>
         </div>
@@ -295,6 +297,39 @@
         </section>
 
         <!-- ============================== -->
+        <!-- VIEW: DOCUMENTATION            -->
+        <!-- ============================== -->
+        <section id="view-documentation" class="documentation-workspace transition-opacity duration-300 z-10" style="display: none;" aria-hidden="true" aria-labelledby="documentation-view-title">
+            <div class="view-toolbar documentation-toolbar">
+                <div class="documentation-toolbar-lead">
+                    <h1 id="documentation-view-title" data-i18n="documentation.title">NexFilm Documentation</h1>
+                    <p id="documentation-view-subtitle" data-i18n="documentation.subtitle">User manual and reference</p>
+                </div>
+                <div class="flex items-center gap-3">
+                    <div class="documentation-search-wrap">
+                        <input id="documentation-search-input" type="search" class="documentation-search-input" data-i18n-placeholder="documentation.searchPlaceholder" placeholder="Search the manual..." data-i18n-aria-label="documentation.searchPlaceholder" aria-label="Search the manual">
+                    </div>
+                </div>
+            </div>
+            <div class="documentation-layout">
+                <aside class="documentation-nav-panel" aria-labelledby="documentation-nav-title">
+                    <div class="documentation-panel-heading">
+                        <h2 id="documentation-nav-title" data-i18n="documentation.navTitle">Topics</h2>
+                        <span id="documentation-chapter-count">0</span>
+                    </div>
+                    <nav id="documentation-nav-list" class="documentation-nav-list custom-scrollbar" aria-label="Documentation chapters">
+                        <!-- Populated dynamically by documentation.js -->
+                    </nav>
+                </aside>
+                <section class="documentation-content-panel custom-scrollbar" id="documentation-content-scroll">
+                    <article id="documentation-article-body" class="documentation-article">
+                        <!-- Populated dynamically by documentation.js -->
+                    </article>
+                </section>
+            </div>
+        </section>
+
+        <!-- ============================== -->
         <!-- VIEW: DEVELOP                  -->
         <!-- ============================== -->
         <section id="view-develop" class="flex transition-opacity duration-300 z-10" style="display: none;" aria-label="Develop workspace">
@@ -440,14 +475,14 @@
             <!-- Quick module navigation -->
             <nav id="develop-module-nav" class="develop-module-nav" aria-label="Develop modules">
                 <div class="module-nav-steps">
-                    <button type="button" class="module-nav-btn is-active" data-target="inspector-scopes" aria-label="Scopes" title="Scopes"><span aria-hidden="true"></span></button>
-                    <button type="button" class="module-nav-btn" data-target="inspector-actions" aria-label="Actions" title="Actions"><span aria-hidden="true"></span></button>
-                    <button type="button" class="module-nav-btn" data-target="inspector-density" aria-label="Density Limits" title="Density Limits"><span aria-hidden="true"></span></button>
-                    <button type="button" class="module-nav-btn" data-target="inspector-printer" aria-label="Printer Lights" title="Printer Lights"><span aria-hidden="true"></span></button>
-                    <button type="button" class="module-nav-btn" data-target="inspector-aesthetics" aria-label="Aesthetics" title="Aesthetics"><span aria-hidden="true"></span></button>
-                    <button type="button" class="module-nav-btn" data-target="inspector-sprocket" aria-label="Sprocket Settings" title="Sprocket Settings"><span aria-hidden="true"></span></button>
-                    <button type="button" class="module-nav-btn" data-target="inspector-input" aria-label="Input Color Science" title="Input Color Science"><span aria-hidden="true"></span></button>
-                    <button type="button" class="module-nav-btn" data-target="inspector-print" aria-label="Print Film Emulation" title="Print Film Emulation"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn is-active" data-target="inspector-scopes" aria-label="Scopes" data-i18n-aria-label="develop.scopes" title="Scopes" data-i18n-title="develop.scopes"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-actions" aria-label="Actions" data-i18n-aria-label="develop.actions" title="Actions" data-i18n-title="develop.actions"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-density" aria-label="Density Limits" data-i18n-aria-label="develop.densityLimits" title="Density Limits" data-i18n-title="develop.densityLimits"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-printer" aria-label="Printer Lights" data-i18n-aria-label="develop.printerLights" title="Printer Lights" data-i18n-title="develop.printerLights"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-aesthetics" aria-label="Aesthetics" data-i18n-aria-label="develop.aesthetics" title="Aesthetics" data-i18n-title="develop.aesthetics"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-sprocket" aria-label="Sprocket Settings" data-i18n-aria-label="develop.sprocketSettings" title="Sprocket Settings" data-i18n-title="develop.sprocketSettings"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-input" aria-label="Input Color Science" data-i18n-aria-label="develop.inputColorScience" title="Input Color Science" data-i18n-title="develop.inputColorScience"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-print" aria-label="Print Film Emulation" data-i18n-aria-label="develop.printFilmEmulation" title="Print Film Emulation" data-i18n-title="develop.printFilmEmulation"><span aria-hidden="true"></span></button>
                 </div>
                 <button id="develop-module-slider" class="module-nav-slider" type="button" role="scrollbar" aria-controls="develop-inspector" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-label="Scroll develop controls" title="Drag to scroll develop controls"></button>
             </nav>
@@ -594,30 +629,11 @@
                         <button id="btn-paste-settings" class="flex-1 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider bg-zinc-800 hover:bg-zinc-700 text-zinc-200 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Paste Settings</button>
                     </div>
 
-                    <!-- Roll Calibration Config Profile -->
-                    <div id="inspector-calibration-profile" class="develop-calibration-profile control-group border-t border-[#28282c] pt-6">
-                        <div class="develop-profile-heading">
-                            <label for="develop-calibration-profile-select" data-i18n="calibrationConfig.profileLabel">Calibration Config Profile</label>
-                        </div>
-                        <select id="develop-calibration-profile-select" aria-label="Calibration Config Profile" data-i18n-aria-label="calibrationConfig.profileLabel" disabled>
-                            <option value="" data-i18n="calibrationConfig.smartAuto">Smart Auto</option>
-                        </select>
-                    </div>
-
-                    <div id="inspector-scanner-profile" class="develop-calibration-profile control-group border-t border-[#28282c] pt-6">
-                        <div class="develop-profile-heading">
-                            <label for="develop-scanner-profile-select" data-i18n="scannerConfig.profileLabel">Scanner Input Profile</label>
-                        </div>
-                        <select id="develop-scanner-profile-select" aria-label="Scanner Input Profile" data-i18n-aria-label="scannerConfig.profileLabel" disabled>
-                            <option value="" data-i18n="scannerConfig.none">None</option>
-                        </select>
-                    </div>
-
                     <!-- Auto Invert -->
                     <div id="inspector-actions" class="control-group border-t border-[#28282c] pt-6">
-                        <div class="inspector-segmented inspector-action-segment">
+                        <div class="inspector-segmented inspector-action-segment is-single-invert">
                             <button id="btn-auto-color" data-i18n="develop.autoInvert" class="flex-1 px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Auto Invert</button>
-                            <button id="btn-auto-color-roll" data-i18n="develop.autoInvertRoll" class="flex-1 px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Auto Invert Roll</button>
+                            <button id="btn-auto-color-roll" data-i18n="develop.autoInvertRoll" class="flex-1 px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" hidden disabled>Auto Invert Roll</button>
                             <button id="btn-reset-color" class="flex-none px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Reset</button>
                         </div>
                     </div>
@@ -814,10 +830,31 @@
                             Input Color Science
                         </h3>
                         <div class="flex flex-col gap-5">
-                            <div class="flex items-center justify-between">
-                                <label class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Density Capture</label>
-                                <select id="select-colorspace" disabled class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
+                            <!-- Density Capture -->
+                            <div id="inspector-density-capture" class="develop-calibration-profile">
+                                <div class="develop-profile-heading">
+                                    <label for="select-colorspace" data-i18n="develop.densityCapture">Density Capture</label>
+                                </div>
+                                <select id="select-colorspace" disabled>
                                     <option value="linear-srgb">Linear sRGB (D65)</option>
+                                </select>
+                            </div>
+                            <!-- Roll Calibration Config Profile -->
+                            <div id="inspector-calibration-profile" class="develop-calibration-profile">
+                                <div class="develop-profile-heading">
+                                    <label for="develop-calibration-profile-select" data-i18n="calibrationConfig.profileLabel">Calibration Config Profile</label>
+                                </div>
+                                <select id="develop-calibration-profile-select" aria-label="Calibration Config Profile" data-i18n-aria-label="calibrationConfig.profileLabel" disabled>
+                                    <option value="" data-i18n="calibrationConfig.smartAuto">Smart Auto</option>
+                                </select>
+                            </div>
+                            <!-- Scanner Input Profile -->
+                            <div id="inspector-scanner-profile" class="develop-calibration-profile">
+                                <div class="develop-profile-heading">
+                                    <label for="develop-scanner-profile-select" data-i18n="scannerConfig.profileLabel">Scanner Input Profile</label>
+                                </div>
+                                <select id="develop-scanner-profile-select" aria-label="Scanner Input Profile" data-i18n-aria-label="scannerConfig.profileLabel" disabled>
+                                    <option value="" data-i18n="scannerConfig.none">None</option>
                                 </select>
                             </div>
                         </div>
@@ -1517,6 +1554,8 @@
     <script src="settings-copy.js"></script>
     <script src="export-settings.js"></script>
     <script src="i18n.js"></script>
+    <script src="documentation-data.js"></script>
+    <script src="documentation.js"></script>
     <script src="main.js"></script>
     <script src="import-controls.js"></script>
 </body>

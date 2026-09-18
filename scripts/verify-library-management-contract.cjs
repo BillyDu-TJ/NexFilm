@@ -139,6 +139,41 @@ for (const marker of inspectorOrder) {
     assert.ok(position > previousInspectorPosition, `Develop inspector order is incorrect at: ${marker}`);
     previousInspectorPosition = position;
 }
+
+// The quick module strip on the inspector's left edge maps one dot per group.
+// Moving a control group inside another section must not leave a dot pointing
+// at a section that no longer sits where the strip claims, so pin both the
+// presence and the order of every mapped target.
+const moduleNavHtml = html.slice(
+    html.indexOf('id="develop-module-nav"'),
+    html.indexOf('id="develop-inspector"'),
+);
+const moduleNavTargets = Array.from(
+    moduleNavHtml.matchAll(/data-target="([^"]+)"/g),
+    match => match[1],
+);
+assert.ok(moduleNavTargets.length > 0, 'The Develop module strip must map at least one group');
+assert.equal(
+    new Set(moduleNavTargets).size,
+    moduleNavTargets.length,
+    'Each Develop module dot must map to a distinct inspector group',
+);
+let previousNavPosition = -1;
+for (const target of moduleNavTargets) {
+    assert.match(
+        moduleNavHtml,
+        new RegExp(`data-target="${target}"[^>]*data-i18n-title="[A-Za-z0-9_.-]+"`),
+        `The module dot for ${target} must carry a translated label`,
+    );
+    const position = inspectorHtml.indexOf(`id="${target}"`);
+    assert.ok(position >= 0, `Module strip target ${target} is missing from the inspector`);
+    assert.ok(
+        position > previousNavPosition,
+        `Module strip target ${target} is out of order in the inspector`,
+    );
+    previousNavPosition = position;
+}
+
 assert.match(css, /#develop-inspector\.calibration-locked\s*\{[\s\S]*?overflow:\s*hidden\s*!important/);
 assert.match(main, /function setDevelopInspectorCalibrationLocked\(locked\)[\s\S]*?scrollTop = 0/);
 assert.match(main, /function enterCalibrationMode\(\)[\s\S]*?setDevelopInspectorCalibrationLocked\(true\)/);

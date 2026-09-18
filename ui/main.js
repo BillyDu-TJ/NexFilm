@@ -63,11 +63,13 @@ const navHistory = document.getElementById('nav-history');
 const navLibrary = document.getElementById('nav-library');
 const navDevelop = document.getElementById('nav-develop');
 const navCalibration = document.getElementById('nav-calibration');
+const navDocumentation = document.getElementById('nav-documentation');
 const navSponsor = document.getElementById('nav-sponsor');
 const viewHistory = document.getElementById('view-history');
 const viewLibrary = document.getElementById('view-library');
 const viewDevelop = document.getElementById('view-develop');
 const viewCalibration = document.getElementById('view-calibration');
+const viewDocumentation = document.getElementById('view-documentation');
 
 // DOM: Calibration Config Profiles
 const calibrationProfileList = document.getElementById('calibration-profile-list');
@@ -1166,7 +1168,8 @@ function switchView(viewName) {
         { name: 'history', nav: navHistory, el: viewHistory },
         { name: 'library', nav: navLibrary, el: viewLibrary },
         { name: 'develop', nav: navDevelop, el: viewDevelop },
-        { name: 'calibration', nav: navCalibration, el: viewCalibration }
+        { name: 'calibration', nav: navCalibration, el: viewCalibration },
+        { name: 'documentation', nav: navDocumentation, el: viewDocumentation }
     ];
 
     views.forEach(v => {
@@ -1217,6 +1220,9 @@ function switchView(viewName) {
     } else if (viewName === 'calibration') {
         renderCalibrationWorkspace();
         disableUI();
+    } else if (viewName === 'documentation') {
+        window.NexFilmDocumentation?.render();
+        disableUI();
     } else {
         // When leaving develop view, disable all tuning UI to prevent
         // orphaned slider event handlers from firing on stale state.
@@ -1232,6 +1238,7 @@ navLibrary.addEventListener('click', () => {
 });
 navDevelop.addEventListener('click', () => switchView('develop'));
 navCalibration?.addEventListener('click', () => switchView('calibration'));
+navDocumentation?.addEventListener('click', () => switchView('documentation'));
 
 const moduleNavButtons = developModuleNav
     ? Array.from(developModuleNav.querySelectorAll('.module-nav-btn'))
@@ -2032,15 +2039,39 @@ function updatePipelineStatus() {
     if (btnAutoColorRoll) {
         btnAutoColorRoll.title = i18nText('develop.autoInvertRoll');
         btnAutoColorRoll.setAttribute('aria-label', btnAutoColorRoll.title);
-        btnAutoColorRoll.hidden = false;
     }
+    updateInvertActionLayout();
+}
+
+// Invert Whole Roll is a Roll-only shortcut: it measures the brightest frame of
+// the roll as the white point, which only exists once the roll carries sampled
+// film base and leader anchors. Roll imports without anchors and Loose Import
+// keep the v1.0.2 single Auto Invert + Reset pair. The decision belongs to the
+// roll's import + calibration state, not to the transient render mapping of the
+// selected frame, so a Reset keeps the three-button group intact.
+function rollHasCompleteAnchors(rollId) {
+    if (!rollId) return false;
+    const roll = allRolls.find(candidate => candidate.roll_id === rollId);
+    if (!roll || isLooseImportRoll(roll)) return false;
+    const anchors = roll.density_anchors || {};
+    return anchors.d_min_base?.scope === 'roll'
+        && anchors.d_max_full_exposure?.scope === 'roll';
+}
+
+function updateInvertActionLayout() {
+    if (!btnAutoColorRoll) return;
+    const showRollBatch = rollHasCompleteAnchors(getDevelopRollId());
+    btnAutoColorRoll.hidden = !showRollBatch;
+    const segment = btnAutoColorRoll.closest('.inspector-action-segment');
+    if (segment) segment.classList.toggle('is-single-invert', !showRollBatch);
 }
 
 function updateAutoInvertAvailability() {
     const needsFilmArea = pipelineRequiresFilmArea() && !current_geom?.calibration_points;
     btnAutoColor.disabled = isCalibrationMode || needsFilmArea || Boolean(autoInvertRollProgress);
-    btnAutoColorRoll.disabled = isCalibrationMode || !pipelineHasCompleteRollAnchors()
+    btnAutoColorRoll.disabled = isCalibrationMode || !rollHasCompleteAnchors(getDevelopRollId())
         || Boolean(autoInvertRollProgress);
+    updateInvertActionLayout();
 }
 // Base analysis belongs to an image, not to the currently displayed buffer.
 // Keep it while a proxy is reloaded after Auto Invert.
@@ -7085,7 +7116,7 @@ async function syncActiveFrameAfterRollInvert(rollId) {
 }
 
 async function runAutoInvertRoll(rollId) {
-    if (!rollId || !pipelineHasCompleteRollAnchors()) return false;
+    if (!rollId || !rollHasCompleteAnchors(rollId)) return false;
     // A batch is not bound to the Develop view: selecting another frame while
     // it runs must leave the work alone.
     const batchToken = ++autoInvertRollRevision;
@@ -7401,9 +7432,10 @@ btnAutoColor.addEventListener('click', async () => {
 });
 
 btnAutoColorRoll.addEventListener('click', async () => {
-    if (!currentRollViewId || !pipelineHasCompleteRollAnchors()) return;
+    const rollId = getDevelopRollId();
+    if (!rollId || !rollHasCompleteAnchors(rollId)) return;
     pushUndoState();
-    await runAutoInvertRoll(currentRollViewId);
+    await runAutoInvertRoll(rollId);
 });
 
 function updateDevelopSamplingCursor() {
@@ -9143,6 +9175,7 @@ if (i18n) {
         renderCalibrationWorkspace();
         void renderDevelopCalibrationProfile();
         updateExportDialogState();
+        if (currentView === 'documentation') window.NexFilmDocumentation?.render();
         if (typeof renderLibraryAndFilmstrip === 'function') renderLibraryAndFilmstrip(true);
     });
 }
@@ -9159,6 +9192,10 @@ function applyTheme(theme) {
         brandMark.src = isDarkTheme
             ? 'assets/design-reference/nexfilm-logo-dark.svg'
             : 'assets/design-reference/nexfilm-logo.svg';
+    }
+    const indicator = document.getElementById('theme-indicator');
+    if (indicator) {
+        indicator.textContent = isDarkTheme ? 'Theme: Dark' : 'Theme: Light';
     }
     const label = document.getElementById('theme-value') || document.getElementById('menu-theme-toggle')?.querySelector('span');
     if (label) label.textContent = i18nText(isDarkTheme ? 'theme.dark' : 'theme.light');
@@ -9217,6 +9254,7 @@ document.getElementById('menu-view-library')?.addEventListener('click', () => {
 });
 document.getElementById('menu-view-develop')?.addEventListener('click', () => switchView('develop'));
 document.getElementById('menu-view-calibration')?.addEventListener('click', () => switchView('calibration'));
+document.getElementById('menu-view-documentation')?.addEventListener('click', () => switchView('documentation'));
 document.getElementById('menu-view-rolls')?.addEventListener('click', () => switchView('history'));
 document.getElementById('menu-view-reset')?.addEventListener('click', () => {
     resetDevelopViewTransform();

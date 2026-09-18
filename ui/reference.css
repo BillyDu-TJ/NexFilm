@@ -18,6 +18,7 @@ body[data-theme="light"] {
     --ui-danger: #d81f26;
     --ui-shadow: 0 2px 9px rgba(0, 0, 0, .18);
     --ui-radius: 10px;
+    --ui-selection-bg: rgba(11, 95, 174, .22);
     --ui-nav-height: 58px;
     --ui-tab-height: 50px;
     --ui-tab-top-radius: 20px;
@@ -38,6 +39,15 @@ body[data-theme="dark"] {
     --ui-line: rgba(226, 226, 244, .12);
     --ui-danger: #e26f73;
     --ui-shadow: none;
+    --ui-selection-bg: rgba(72, 147, 221, .34);
+}
+
+/* The markup carries Tailwind's selection:bg-zinc-700, which paints a dark
+   band under dark text in the light theme. Only the background is overridden
+   so coloured elements keep their own text colour. */
+body[data-theme]::selection,
+body[data-theme] ::selection {
+    background-color: var(--ui-selection-bg);
 }
 
 html,
@@ -1414,7 +1424,10 @@ body[data-theme="light"] {
 body[data-theme="dark"] {
     --inspector-panel: #2b2b2b;
     --inspector-field: #3b3b3b;
-    --inspector-standalone: #2b2b2b;
+    /* The print-emulation controls sit directly on the panel. A fill equal to
+     * the panel (#2b2b2b) left them as bare text once the platform-drawn
+     * select chrome was removed. */
+    --inspector-standalone: #3b3b3b;
 }
 
 #inspector-actions .inspector-action-segment {
@@ -1456,6 +1469,17 @@ body[data-theme="dark"] {
 #inspector-actions #btn-reset-color {
     background: var(--ui-surface) !important;
     color: var(--ui-text) !important;
+}
+
+/* Roll imports without sampled anchors and Loose Import keep the v1.0.2 pair:
+ * one wide Auto Invert and Reset. Invert Whole Roll only exists once the roll
+ * carries sampled film base and leader anchors. */
+#inspector-actions .inspector-action-segment.is-single-invert {
+    grid-template-columns: minmax(0, 2.25fr) minmax(0, 0.75fr) !important;
+}
+
+#inspector-actions #btn-auto-color-roll[hidden] {
+    display: none !important;
 }
 
 #inspector-printer > h3 {
@@ -1502,17 +1526,52 @@ body[data-theme="dark"] {
     background: var(--inspector-panel) !important;
 }
 
-#inspector-input #select-colorspace {
-    flex: 0 1 47%;
-    width: auto !important;
+/* Inspector dropdowns are drawn here instead of by the platform. The native
+ * macOS pop-up button paints its own gradient body and stepper, which never
+ * matches the flat Chromium/Windows rendering, so every dropdown in the
+ * inspector shares one drawn shape, one caret and one typography. */
+#inspector-input #select-colorspace,
+#inspector-input .develop-calibration-profile select,
+#inspector-print #select-builtin-lut {
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    width: 100% !important;
     min-width: 0 !important;
-    min-height: 30px !important;
-    padding-inline: 10px 28px !important;
+    min-height: 32px !important;
+    padding: 0 32px 0 12px !important;
     border: 0 !important;
     border-radius: 10px !important;
-    background-color: var(--inspector-field) !important;
-    color: var(--ui-muted) !important;
+    background-image:
+        linear-gradient(45deg, transparent 50%, var(--ui-muted) 50%),
+        linear-gradient(135deg, var(--ui-muted) 50%, transparent 50%) !important;
+    background-position:
+        calc(100% - 17px) calc(50% - 2px),
+        calc(100% - 12px) calc(50% - 2px) !important;
+    background-size: 5px 5px !important;
+    background-repeat: no-repeat !important;
+    color: var(--ui-text) !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    text-overflow: ellipsis;
     box-shadow: none !important;
+}
+
+/* Contextual fills stay as designed: fields sit on an inspector card, the LUT
+ * selector sits directly on the panel. */
+#inspector-input #select-colorspace,
+#inspector-input .develop-calibration-profile select {
+    background-color: var(--inspector-field) !important;
+}
+
+#inspector-print #select-builtin-lut {
+    background-color: var(--inspector-standalone) !important;
+}
+
+#inspector-input #select-colorspace:disabled,
+#inspector-input .develop-calibration-profile select:disabled,
+#inspector-print #select-builtin-lut:disabled {
+    color: var(--ui-muted) !important;
+    cursor: not-allowed;
 }
 
 #inspector-print {
@@ -1524,21 +1583,15 @@ body[data-theme="dark"] {
     margin-bottom: 20px !important;
 }
 
-#inspector-print #select-builtin-lut,
 #inspector-print #btn-load-lut {
     width: 100% !important;
-    min-height: 31px !important;
+    min-height: 32px !important;
     padding: 6px 10px !important;
     border: 0 !important;
     border-radius: 10px !important;
     background: var(--inspector-standalone) !important;
     color: var(--ui-text) !important;
     box-shadow: none !important;
-}
-
-#inspector-print #select-builtin-lut {
-    padding-right: 30px !important;
-    color: var(--ui-muted) !important;
 }
 
 body[data-theme="dark"] #inspector-actions #btn-reset-color {
@@ -2702,6 +2755,84 @@ body[data-theme="dark"] .import-choice-art {
     padding: 0 !important;
     gap: var(--ui-gap) !important;
     background: transparent !important;
+}
+
+/* Documentation uses the same page-toolbar rhythm as Library, Rolls, and Calibration. */
+#view-documentation {
+    gap: var(--ui-gap);
+    overflow: visible !important;
+    background: transparent !important;
+}
+
+#view-documentation > .documentation-toolbar {
+    width: 100% !important;
+    min-height: 52px !important;
+    height: 52px !important;
+    padding: 6px clamp(12px, 1.25vw, 18px) !important;
+    border: 0 !important;
+    border-radius: var(--ui-radius) !important;
+    background: var(--ui-surface-soft) !important;
+    box-shadow: var(--ui-shadow) !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+}
+
+#view-documentation > .documentation-toolbar > .documentation-toolbar-lead > h1 {
+    margin: 0;
+    color: var(--ui-brand) !important;
+    font-size: 18px !important;
+    font-weight: 800 !important;
+    letter-spacing: 0 !important;
+}
+
+#view-documentation > .documentation-toolbar > .documentation-toolbar-lead > p {
+    margin: 2px 0 0 !important;
+    color: var(--ui-muted) !important;
+    font-size: 11px !important;
+    line-height: 1.2 !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#view-documentation > .documentation-layout {
+    padding: 0 !important;
+    gap: var(--ui-gap) !important;
+    background: transparent !important;
+}
+
+#view-documentation .documentation-nav-panel,
+#view-documentation .documentation-content-panel {
+    background: var(--ui-surface) !important;
+    border: 1px solid var(--ui-line) !important;
+    border-radius: var(--ui-radius) !important;
+    box-shadow: var(--ui-shadow) !important;
+}
+
+#view-documentation .documentation-search-input {
+    height: 32px !important;
+    min-height: 32px !important;
+    border: 1px solid var(--ui-line) !important;
+    border-radius: 6px !important;
+    background: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
+    font-size: 12px !important;
+    padding: 0 12px !important;
+}
+
+#view-documentation .documentation-search-input:focus {
+    border-color: var(--ui-brand) !important;
+}
+
+/* The manual is a reading surface: its text must stay selectable even though
+   the rest of the application shell disables selection on UI copy. */
+body #view-documentation .documentation-content-panel,
+body #view-documentation .documentation-content-panel *,
+body #view-documentation .documentation-article,
+body #view-documentation .documentation-article * {
+    -webkit-user-select: text;
+    user-select: text;
 }
 
 /* Shared command typography across top-level work surfaces. */
