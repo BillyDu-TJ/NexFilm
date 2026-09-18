@@ -139,6 +139,7 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
             roll_format TEXT NOT NULL,
             film_stock TEXT NOT NULL,
             camera TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
             image_paths TEXT NOT NULL,
             density_anchors TEXT NOT NULL DEFAULT '{}',
             scanner_profile_id TEXT,
@@ -224,6 +225,7 @@ pub fn init_schema(connection: &Connection) -> rusqlite::Result<()> {
     add_roll_column_if_missing(connection, "density_anchors", "TEXT NOT NULL DEFAULT '{}'")?;
     add_roll_column_if_missing(connection, "calibration_profile_id", "TEXT")?;
     add_roll_column_if_missing(connection, "scanner_profile_id", "TEXT")?;
+    add_roll_column_if_missing(connection, "notes", "TEXT NOT NULL DEFAULT ''")?;
     add_calibration_profile_column_if_missing(connection, "payload", "TEXT NOT NULL DEFAULT '{}'")?;
     migrate_legacy_thumbnails(connection)?;
     migrate_raw_decode_settings(connection)?;
@@ -628,15 +630,16 @@ fn insert_roll(connection: &Connection, roll: &Roll, sort_order: usize) -> rusql
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     connection.execute(
         "INSERT INTO rolls (
-             roll_id, date, roll_format, film_stock, camera,
+             roll_id, date, roll_format, film_stock, camera, notes,
              image_paths, density_anchors, calibration_profile_id, scanner_profile_id, sort_order, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             roll.roll_id,
             roll.date,
             roll.format,
             roll.film_stock,
             roll.camera,
+            roll.notes,
             image_paths,
             density_anchors,
             roll.calibration_profile_id,
@@ -721,23 +724,23 @@ pub fn save_rolls_and_pipeline_states_reset_thumbnails(
 
 pub fn load_rolls(connection: &Connection) -> rusqlite::Result<Vec<Roll>> {
     let mut statement = connection.prepare(
-        "SELECT roll_id, date, roll_format, film_stock, camera, image_paths, density_anchors,
+        "SELECT roll_id, date, roll_format, film_stock, camera, notes, image_paths, density_anchors,
                 calibration_profile_id, scanner_profile_id
          FROM rolls ORDER BY sort_order, roll_id",
     )?;
     let rows = statement.query_map([], |row| {
-        let image_paths_json: String = row.get(5)?;
+        let image_paths_json: String = row.get(6)?;
         let image_paths = serde_json::from_str(&image_paths_json).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                5,
+                6,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?;
-        let density_anchors_json: String = row.get(6)?;
+        let density_anchors_json: String = row.get(7)?;
         let density_anchors = serde_json::from_str(&density_anchors_json).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                6,
+                7,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
@@ -748,10 +751,11 @@ pub fn load_rolls(connection: &Connection) -> rusqlite::Result<Vec<Roll>> {
             format: row.get(2)?,
             film_stock: row.get(3)?,
             camera: row.get(4)?,
+            notes: row.get(5)?,
             image_paths,
             density_anchors,
-            calibration_profile_id: row.get(7)?,
-            scanner_profile_id: row.get(8)?,
+            calibration_profile_id: row.get(8)?,
+            scanner_profile_id: row.get(9)?,
         })
     })?;
     rows.collect()
@@ -1667,6 +1671,7 @@ mod tests {
             format: "135".to_string(),
             film_stock: "Test Film".to_string(),
             camera: "Test Camera".to_string(),
+            notes: "Roll note".to_string(),
             image_paths: paths.iter().map(|path| path.to_string()).collect(),
             density_anchors: Default::default(),
             calibration_profile_id: None,

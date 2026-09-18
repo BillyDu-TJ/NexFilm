@@ -1088,12 +1088,14 @@ body > header > div:last-child button:hover { background: var(--control) !import
 #export-quality { width: 100%; min-height: 20px; accent-color: var(--accent); }
 .export-range-labels { display: flex; justify-content: space-between; color: var(--subtle); font-size: 10px; }
 .export-field.is-disabled { opacity: .45; }
+.export-check-row.is-disabled { opacity: .45; }
 .export-check-row { display: flex; align-items: flex-start; gap: 9px; margin: 14px 0 10px calc(50% + 6px); cursor: pointer; }
 .export-check-row input { flex: 0 0 auto; width: 15px; height: 15px; margin-top: 1px; accent-color: var(--accent); }
 .export-check-row span { display: flex; flex-direction: column; gap: 3px; }
 .export-check-row strong { color: var(--text); font-size: 12px; font-weight: 560; }
 .export-check-row small { color: var(--subtle); font-size: 10px; line-height: 1.4; }
 .export-info-note { color: var(--subtle); font-size: 10px; line-height: 1.45; }
+.export-info-note.is-accent { color: var(--text); }
 .export-token-hint { margin: -2px 0 10px 50%; padding-left: 6px; color: var(--subtle); font-size: 10px; line-height: 1.6; }
 .export-token-hint code { color: var(--accent); font-family: var(--font-mono); }
 .export-preview-row { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(0, 1fr); align-items: center; gap: 12px; min-height: 30px; margin: 0 0 8px; padding: 0 10px; border-radius: 10px; background: var(--panel-raised); }

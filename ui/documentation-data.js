@@ -213,10 +213,11 @@
 <p>适用于按整卷扫描或翻拍的素材。</p>
 <ol>
     <li>点击右上角的<strong>导入胶卷</strong>，在导入方式中选择<strong>按胶卷导入</strong>。</li>
-    <li>填写画幅、相机、胶片型号和日期。相机和胶片型号可以直接输入新值，之后会出现在下拉列表中。</li>
+    <li>填写画幅、相机、胶片型号、日期和备注。相机和胶片型号可以直接输入新值，之后会出现在下拉列表中。</li>
     <li>选择文件。导入过程中会生成缩略图和预览，原始文件保持原样。</li>
 </ol>
 <p>这些资料会保存在胶卷记录中，并用于导出时的命名模板和 EXIF 写入。整卷导入的画面在<strong>历史胶卷记录</strong>中会作为一组出现，而不是散落在图库里。</p>
+<p>备注是自由文本，用于区分同一款胶片的多卷素材，例如“第 2 卷”“棚拍”“过期卷”。它会显示在胶卷卡片和胶卷资料面板上，也可以在<strong>编辑信息</strong>中随时补充或修改。</p>
 `
                     },
                     {
@@ -423,6 +424,21 @@
 </table>
 <p>输出色彩空间可选 sRGB IEC 61966-2.1、Display P3、Adobe RGB (1998)、ITU-R BT.2020、ProPhoto RGB (ROMM RGB)、ACEScg (AP1) 和 ACES2065-1 (AP0)。选定的 ICC 配置文件会随文件一同写入。面向网络发布时选 sRGB，需要更宽色域继续处理时选 ProPhoto RGB 或 ACES 系列。</p>
 <p>输出锐化提供<strong>无</strong>（保留颗粒）、<strong>低</strong>（网页与屏幕）、<strong>标准</strong>（默认）和<strong>高</strong>（小尺寸输出）四档。</p>
+<p>格式列表下方的<strong>线性 / RAW</strong> 分组提供三种交付方式，用于把结果交给其他软件继续处理：</p>
+<table class="doc-table">
+    <thead>
+        <tr><th>格式</th><th>说明</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><strong>TIFF · 16-bit linear</strong></td><td>线性光输出，不含显示曲线，并把对应的线性 ICC 配置文件写入 TIFF。</td></tr>
+        <tr><td><strong>DNG · linear</strong></td><td>把已完成的正片写成 LinearRaw DNG，色彩空间随所选输出色彩写入文件，可在 Lightroom、Camera Raw 等软件中继续调色。</td></tr>
+        <tr><td><strong>DNG · camera RAW</strong></td><td>把该画面自己的相机 RAW 马赛克数据原样封装为 DNG，采样值、片基黑电平、有效区域和方向都保持不变。</td></tr>
+    </tbody>
+</table>
+<div class="doc-callout">
+    <div class="doc-callout-title">线性输出与相机 RAW DNG 的区别</div>
+    <div class="doc-callout-body">线性输出是<strong>处理结果</strong>：反相、校色、缩放和输出锐化照常生效，只是最后不套显示曲线。相机 RAW DNG 是<strong>原始素材</strong>：它不参与任何调整，因此输出色彩、缩放和锐化对它无效；同时它只适用于相机 RAW 文件，TIFF、JPEG 和扫描仪线性 DNG 没有可封装的马赛克数据，导出时会以失败列出，需要改用线性 DNG。</div>
+</div>
 `
                     },
                     {
@@ -1055,10 +1071,11 @@
 <p>Use this for material scanned or copied as a complete roll.</p>
 <ol>
     <li>Choose <strong>Import Roll</strong> and select <strong>Import by Roll</strong>.</li>
-    <li>Fill in format, camera, film stock, and date. New camera and film names can be typed directly and will appear in the lists afterwards.</li>
+    <li>Fill in format, camera, film stock, date, and notes. New camera and film names can be typed directly and will appear in the lists afterwards.</li>
     <li>Select the files. Thumbnails and previews are generated during import; the originals stay untouched.</li>
 </ol>
 <p>These details are stored with the roll and feed the export filename template and EXIF writing. A roll imported this way appears as a group in <strong>Rolls</strong> rather than as loose frames in the library.</p>
+<p>Notes are free text, meant to tell several rolls of the same film stock apart — "roll 2", "studio", "expired stock". They appear on the roll card and in the roll details panel, and can be edited later through <strong>Edit Info</strong>.</p>
 `
                     },
                     {
@@ -1265,6 +1282,21 @@
 </table>
 <p>Output colour space can be sRGB IEC 61966-2.1, Display P3, Adobe RGB (1998), ITU-R BT.2020, ProPhoto RGB (ROMM RGB), ACEScg (AP1), or ACES2065-1 (AP0). The chosen ICC profile is written into the file. Use sRGB for the web, and ProPhoto RGB or an ACES space when you need a wider gamut for further work.</p>
 <p>Output sharpening offers <strong>None</strong> (preserve grain), <strong>Low</strong> (web and screens), <strong>Standard</strong> (default), and <strong>High</strong> (small output).</p>
+<p>The <strong>Linear / RAW</strong> group below the finished formats hands the result to another application:</p>
+<table class="doc-table">
+    <thead>
+        <tr><th>Format</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><strong>TIFF · 16-bit linear</strong></td><td>Linear-light output with no display curve, tagged with a matching linear ICC profile.</td></tr>
+        <tr><td><strong>DNG · linear</strong></td><td>The finished positive written as a LinearRaw DNG in the selected output colour, ready for further grading in Lightroom, Camera Raw and similar tools.</td></tr>
+        <tr><td><strong>DNG · camera RAW</strong></td><td>The frame's own camera RAW mosaic re-wrapped as DNG. Sample values, black level, active area and orientation are preserved exactly.</td></tr>
+    </tbody>
+</table>
+<div class="doc-callout">
+    <div class="doc-callout-title">Linear output is not the same as a camera RAW DNG</div>
+    <div class="doc-callout-body">Linear output is a <strong>processed result</strong>: inversion, grading, resizing and output sharpening all apply, and only the display curve is left out. Camera RAW DNG is the <strong>original capture</strong>: no adjustments take part, so output colour, resizing and sharpening have no effect on it, and it only works for camera RAW files. TIFF, JPEG and scanner linear DNGs have no mosaic to wrap; those frames are reported as failures and should be exported as linear DNG.</div>
+</div>
 `
                     },
                     {

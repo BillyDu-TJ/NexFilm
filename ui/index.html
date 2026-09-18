@@ -188,6 +188,7 @@
                             <div><dt data-i18n="history.captured">Captured</dt><dd id="history-roll-date"></dd></div>
                             <div><dt data-i18n="history.frames">Frames</dt><dd id="history-roll-frames"></dd></div>
                         </dl>
+                        <p id="history-roll-notes" class="history-roll-notes hidden"></p>
                     </section>
                     <!-- Roll Cards (1 per row) -->
                     <div id="library-rolls-grid" class="flex flex-col gap-6 hidden">
@@ -1220,6 +1221,10 @@
                         <label for="roll-date" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Date</label>
                         <input type="date" id="roll-date" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 w-48">
                     </div>
+                    <div class="import-form-row import-form-row-notes flex flex-col gap-1.5">
+                        <label for="roll-notes" class="text-[11px] font-bold tracking-widest text-zinc-500 uppercase">Notes</label>
+                        <textarea id="roll-notes" rows="2" maxlength="400" data-i18n-placeholder="import.notesPlaceholder" placeholder="Roll #2 of the same film stock..." class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500 w-full resize-none custom-scrollbar"></textarea>
+                    </div>
                 </div>
 
                 <div class="import-dialog-footer flex justify-end gap-3 pt-2">
@@ -1428,12 +1433,20 @@
                         <label class="export-field">
                             <span>Format</span>
                             <select id="export-format">
-                                <option value="tiff16">TIFF · 16-bit</option>
-                                <option value="tiff8">TIFF · 8-bit</option>
-                                <option value="png">PNG · 16-bit</option>
-                                <option value="jpeg" selected>JPEG · 8-bit</option>
+                                <optgroup label="Finished image">
+                                    <option value="tiff16">TIFF · 16-bit</option>
+                                    <option value="tiff8">TIFF · 8-bit</option>
+                                    <option value="png">PNG · 16-bit</option>
+                                    <option value="jpeg" selected>JPEG · 8-bit</option>
+                                </optgroup>
+                                <optgroup label="Linear / RAW">
+                                    <option value="tiff16_linear">TIFF · 16-bit linear</option>
+                                    <option value="dng_linear">DNG · linear</option>
+                                    <option value="dng">DNG · camera RAW</option>
+                                </optgroup>
                             </select>
                         </label>
+                        <div class="export-info-note" id="export-format-note">Encoded files carry the display transfer curve.</div>
                         <label class="export-field">
                             <span>Output color</span>
                             <select id="export-colorspace">

@@ -1514,6 +1514,10 @@ pub struct Roll {
     pub format: String, // "135" or "120"
     pub film_stock: String,
     pub camera: String,
+    /// Free-form note supplied at import time. Same film stock may be shot on
+    /// several rolls, so this is the place to tell them apart.
+    #[serde(default)]
+    pub notes: String,
     pub image_paths: Vec<String>,
     #[serde(default)]
     pub density_anchors: DensityAnchors,

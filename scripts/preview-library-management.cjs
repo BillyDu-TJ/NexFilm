@@ -54,7 +54,7 @@ const mock = `
         render_mapping: { mode: 'preserve_tone', density_low: [0.1, 0.1, 0.1], density_high: [2, 2, 2] }
     };
     let rolls = [
-        { roll_id: 'roll-a', date: '2026-07-12', format: '135', film_stock: 'Kodak Gold 200', camera: 'Nikon F3', image_paths: ['mock/a-1.dng', 'mock/a-2.dng'], density_anchors: rollAnchoredPipeline.density_anchors },
+        { roll_id: 'roll-a', date: '2026-07-12', format: '135', film_stock: 'Kodak Gold 200', camera: 'Nikon F3', notes: '第 2 卷 · 棚拍，测光偏亮半档', image_paths: ['mock/a-1.dng', 'mock/a-2.dng'], density_anchors: rollAnchoredPipeline.density_anchors },
         { roll_id: 'loose-b', date: '2026-07-29', format: 'Loose', film_stock: 'Loose Import', camera: '', image_paths: ['mock/b-1.tif', 'mock/b-2.tif'], density_anchors: {} }
     ];
     let items = [
@@ -86,7 +86,7 @@ const mock = `
         }
         if (command === 'update_roll_metadata') {
             const roll = rolls.find(candidate => candidate.roll_id === args.rollId);
-            Object.assign(roll, { date: args.date, format: args.format, film_stock: args.filmStock, camera: args.camera });
+            Object.assign(roll, { date: args.date, format: args.format, film_stock: args.filmStock, camera: args.camera, notes: args.notes });
             return clone(roll);
         }
         if (command === 'switch_active_image') {

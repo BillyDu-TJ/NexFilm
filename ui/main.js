@@ -188,6 +188,7 @@ const exportModalSubtitle = document.getElementById('export-modal-subtitle');
 const exportOutputSummary = document.getElementById('export-output-summary');
 const exportOutputDir = document.getElementById('export-output-dir');
 const exportFormat = document.getElementById('export-format');
+const exportFormatNote = document.getElementById('export-format-note');
 const exportColorSpace = document.getElementById('export-colorspace');
 const exportQualityGroup = document.getElementById('export-quality-group');
 const exportQuality = document.getElementById('export-quality');
@@ -4831,6 +4832,10 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                     document.getElementById('history-roll-camera').textContent = currentRoll.camera || i18nText('common.unknown');
                     document.getElementById('history-roll-date').textContent = currentRoll.date || i18nText('common.unknown');
                     document.getElementById('history-roll-frames').textContent = i18nText('history.frameCount', { count: currentRoll.image_paths?.length || 0 });
+                    const rollNotes = document.getElementById('history-roll-notes');
+                    const notesText = (currentRoll.notes || '').trim();
+                    rollNotes.textContent = notesText;
+                    rollNotes.classList.toggle('hidden', !notesText);
                     try {
                         let rollStrip = await invoke('get_roll_filmstrip', { rollId: historyRollViewId });
 
@@ -4991,6 +4996,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                                 <span><small>Camera</small><span data-roll-camera></span></span>
                                 <span><small>Captured</small><span data-roll-date></span></span>
                             </div>
+                            <div class="roll-notes hidden" data-roll-notes></div>
                             <div class="roll-card-actions">
                                 <span class="roll-view-action">View archive →</span>
                                 <button type="button" class="roll-edit-action">${i18nText('actions.editInfoShort')}</button>
@@ -5019,6 +5025,10 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                     card.querySelector('.roll-format').textContent = `${roll.format || '135'} ${i18nText('common.formatSuffix')}`;
                     card.querySelector('[data-roll-camera]').textContent = roll.camera || i18nText('common.unknown');
                     card.querySelector('[data-roll-date]').textContent = roll.date || i18nText('common.unknown');
+                    const cardNotes = card.querySelector('[data-roll-notes]');
+                    const cardNotesText = (roll.notes || '').trim();
+                    cardNotes.textContent = cardNotesText;
+                    cardNotes.classList.toggle('hidden', !cardNotesText);
                     card.querySelector('.roll-edit-action').addEventListener('click', event => {
                         event.stopPropagation();
                         openRollMetadataEditor(roll);
@@ -5603,6 +5613,7 @@ const doImportRoll = async () => {
         
         let film = document.getElementById('roll-film-select').value;
         if (film === "__new__") film = document.getElementById('roll-film-input').value;
+        const notes = document.getElementById('roll-notes').value.trim();
         
         if(!film) {
             showToast("Film stock is required", "error");
@@ -5622,7 +5633,7 @@ const doImportRoll = async () => {
         if (paths.length > 0) {
             initImportToast(paths.length);
             const roll_id = `roll_${Date.now()}_${Math.floor(Math.random()*1000)}`;
-            const roll = { roll_id, date, format, film_stock: film, camera, image_paths: paths, density_anchors: {} };
+            const roll = { roll_id, date, format, film_stock: film, camera, notes, image_paths: paths, density_anchors: {} };
             await beginWorkingImport(roll_id, paths);
             const tempItems = paths.map((p, idx) => ({
                 id: 'temp_import_' + Date.now() + '_' + idx,
@@ -5822,6 +5833,7 @@ document.getElementById('btn-import-by-roll').addEventListener('click', () => {
     document.getElementById('roll-metadata-title').textContent = i18nText('history.rollMetadata');
     document.getElementById('btn-confirm-roll-meta').textContent = i18nText('actions.selectImages');
     document.getElementById('roll-format').value = '135';
+    document.getElementById('roll-notes').value = '';
     if (!document.getElementById('roll-date').value) {
         const now = new Date();
         document.getElementById('roll-date').value = new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
@@ -5868,6 +5880,7 @@ function openRollMetadataEditor(roll) {
     document.getElementById('btn-confirm-roll-meta').textContent = i18nText('common.saveChanges');
     document.getElementById('roll-format').value = roll.format || '135';
     document.getElementById('roll-date').value = roll.date || '';
+    document.getElementById('roll-notes').value = roll.notes || '';
     setRollMetadataSelect('roll-camera-select', 'roll-camera-input', roll.camera);
     setRollMetadataSelect('roll-film-select', 'roll-film-input', roll.film_stock);
     window.NexFilmImportControls?.sync(true);
@@ -5897,7 +5910,8 @@ async function updateCurrentRollMetadata() {
             date: document.getElementById('roll-date').value,
             format: document.getElementById('roll-format').value,
             filmStock,
-            camera
+            camera,
+            notes: document.getElementById('roll-notes').value
         });
         const index = allRolls.findIndex(roll => roll.roll_id === rollId);
         if (index >= 0) allRolls[index] = updated;
@@ -5930,6 +5944,9 @@ const EXPORT_FORMAT_LABELS = {
     png: 'PNG 16-bit',
     tiff8: 'TIFF 8-bit',
     tiff16: 'TIFF 16-bit',
+    tiff16_linear: 'TIFF 16-bit linear',
+    dng_linear: 'DNG linear',
+    dng: 'DNG camera RAW',
 };
 
 function readExportPreferences() {
@@ -6007,7 +6024,10 @@ function currentExportPreviewMetadata(ids) {
 }
 
 function exportFileExtension(format) {
-    return format === 'jpeg' ? 'jpg' : format === 'png' ? 'png' : 'tiff';
+    if (format === 'jpeg') return 'jpg';
+    if (format === 'png') return 'png';
+    if (format === 'dng' || format === 'dng_linear') return 'dng';
+    return 'tiff';
 }
 
 function collectExportSettings() {
@@ -6028,24 +6048,48 @@ function collectExportSettings() {
 function updateExportDialogState() {
     const ids = currentExportIds();
     const settings = collectExportSettings();
-    const validationError = validateExportSettings(settings);
     const isJpeg = settings.format === 'jpeg';
+    // A raw DNG is the untouched camera mosaic: the encoder, the display colour
+    // space and the output sharpening cannot participate in it.
+    const isRawDng = settings.format === 'dng';
+    const isLinear = settings.format === 'tiff16_linear' || settings.format === 'dng_linear';
     const isOriginal = settings.resizeMode === 'original';
+    // The raw DNG keeps the capture's own dimensions, so a saved long-edge
+    // policy must not block an export it cannot affect.
+    const validationError = validateExportSettings(
+        isRawDng ? { ...settings, resizeMode: 'original' } : settings
+    );
     exportSelectionCount.textContent = i18nText(ids.length === 1 ? 'export.frameCount.one' : 'export.frameCount.other', { count: ids.length });
     exportModalSubtitle.textContent = ids.length
         ? i18nText('export.reviewSettings')
         : i18nText('export.selectFrames');
     exportQuality.disabled = !isJpeg;
     exportQualityGroup.classList.toggle('is-disabled', !isJpeg);
-    exportLongEdge.disabled = isOriginal;
-    exportLongEdgeGroup.classList.toggle('is-disabled', isOriginal);
+    exportLongEdge.disabled = isOriginal || isRawDng;
+    exportLongEdgeGroup.classList.toggle('is-disabled', isOriginal || isRawDng);
+    exportResizeMode.disabled = isRawDng;
+    exportResizeMode.closest('.export-field')?.classList.toggle('is-disabled', isRawDng);
+    exportUpscale.disabled = isRawDng;
+    exportUpscale.closest('.export-check-row')?.classList.toggle('is-disabled', isRawDng);
+    exportSharpening.disabled = isRawDng;
+    exportSharpening.closest('.export-field')?.classList.toggle('is-disabled', isRawDng);
+    exportColorSpace.disabled = isRawDng;
+    exportColorSpace.closest('.export-field')?.classList.toggle('is-disabled', isRawDng);
+    exportFormatNote.textContent = isRawDng
+        ? i18nText('export.formatRawDngHint')
+        : isLinear
+            ? i18nText('export.formatLinearHint')
+            : i18nText('export.formatEncodedHint');
+    exportFormatNote.classList.toggle('is-accent', isRawDng || isLinear);
     exportQualityValue.textContent = String(settings.quality);
     const metadata = currentExportPreviewMetadata(ids);
     exportNamePreview.textContent = formatExportTemplate(settings.namingTemplate, metadata) + '.' + exportFileExtension(settings.format);
     exportOutputDir.value = exportOutputDirectory;
-    const resizeDescription = settings.resizeMode === 'long_edge'
-        ? `${settings.longEdge} px ${i18nText('export.longEdgeSuffix')}${settings.allowUpscale ? `, ${i18nText('export.enlargementAllowed')}` : ''}`
-        : i18nText('export.originalShort');
+    const resizeDescription = isRawDng
+        ? i18nText('export.rawDimensions')
+        : settings.resizeMode === 'long_edge'
+            ? `${settings.longEdge} px ${i18nText('export.longEdgeSuffix')}${settings.allowUpscale ? `, ${i18nText('export.enlargementAllowed')}` : ''}`
+            : i18nText('export.originalShort');
     exportOutputSummary.textContent = (exportOutputDirectory || i18nText('export.chooseDestination'))
         + ' · ' + (EXPORT_FORMAT_LABELS[settings.format] || settings.format)
         + ' · ' + resizeDescription;

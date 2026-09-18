@@ -727,6 +727,52 @@ pub(crate) fn normalized_as_shot_gains(cam_mul: [f32; 4]) -> Option<[f32; 4]> {
     })
 }
 
+/// Everything a DNG re-wrap of the source scan needs beyond the mosaic itself.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct RawContainerSource {
+    pub(crate) mosaic: RawMosaic,
+    /// `ColorMatrix1` rows: XYZ (D65) to the camera's R, G and B planes.
+    pub(crate) xyz_to_camera: Option<[[f32; 3]; 3]>,
+    /// As-shot neutral in camera coordinates.
+    pub(crate) as_shot_neutral: Option<[f32; 3]>,
+    pub(crate) make: String,
+    pub(crate) model: String,
+}
+
+/// Split LibRaw's `"Make|Model"` camera identifier.
+pub(crate) fn split_camera_id(camera_id: &str) -> (String, String) {
+    match camera_id.split_once('|') {
+        Some((make, model)) => (make.trim().to_string(), model.trim().to_string()),
+        None => (camera_id.trim().to_string(), String::new()),
+    }
+}
+
+/// Reduce LibRaw's four-channel as-shot multipliers to the positive neutral DNG
+/// stores: the colour, in camera coordinates, that has to come out grey.
+pub(crate) fn normalized_as_shot_neutral(as_shot: [f32; 4]) -> Option<[f32; 3]> {
+    let green = as_shot[1];
+    if !green.is_finite() || green <= 0.0 {
+        return None;
+    }
+    let neutral = [as_shot[0] / green, 1.0, as_shot[2] / green];
+    if neutral
+        .iter()
+        .any(|channel| !channel.is_finite() || *channel <= 0.0 || *channel > 64.0)
+    {
+        return None;
+    }
+    Some(neutral)
+}
+
+/// Resolve LibRaw's `cam_xyz` (XYZ to camera) into the first three DNG colour
+/// planes. `None` means LibRaw resolved no usable camera matrix.
+pub(crate) fn color_matrix_from_cam_xyz(cam_xyz: [[f32; 3]; 4]) -> Option<[[f32; 3]; 3]> {
+    let rows = [cam_xyz[0], cam_xyz[1], cam_xyz[2]];
+    let usable = rows.iter().flatten().all(|value| value.is_finite())
+        && rows.iter().any(|row| row.iter().any(|value| value.abs() > 1.0e-6));
+    usable.then_some(rows)
+}
+
 #[cfg(not(target_os = "macos"))]
 mod non_macos {
     use super::{CaptureConditions, CfaPattern, RawMetadata, RawMosaic};
@@ -857,6 +903,7 @@ mod non_macos {
             data: *mut LibRawData,
             output: *mut NexFilmRawWhiteBalance,
         ) -> c_int;
+        fn nexfilm_raw_color_matrix(data: *mut LibRawData, output: *mut [f32; 3]) -> c_int;
         fn nexfilm_raw_set_user_mul(
             data: *mut LibRawData,
             multipliers: *const f32,
@@ -935,6 +982,11 @@ mod non_macos {
             return Err("Failed to initialize LibRaw".to_string());
         }
         open_file(processor.0, path.as_ref())?;
+        mosaic_from_processor(&processor)
+    }
+
+    /// Unpack one already-opened file and copy its CFA buffer.
+    fn mosaic_from_processor(processor: &Processor) -> Result<RawMosaic, String> {
         check(unsafe { libraw_unpack(processor.0) })?;
 
         let mut info = NexFilmRawMosaicInfo::default();
@@ -988,6 +1040,46 @@ mod non_macos {
                 libraw_version: fixed_c_string(&info.libraw_version),
                 capture_conditions: CaptureConditions::default(),
             },
+        })
+    }
+
+    /// The mosaic plus the camera colour metadata a DNG re-wrap needs. Both come
+    /// from one LibRaw session, so exporting raw DNGs never unpacks a scan
+    /// twice.
+    pub(crate) fn read_raw_container_source<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<super::RawContainerSource, String> {
+        let processor = Processor(unsafe { libraw_init(0) });
+        if processor.0.is_null() {
+            return Err("Failed to initialize LibRaw".to_string());
+        }
+        open_file(processor.0, path.as_ref())?;
+        let mosaic = mosaic_from_processor(&processor)?;
+        let mut white_balance = NexFilmRawWhiteBalance {
+            cam_mul: [0.0; 4],
+            pre_mul: [0.0; 4],
+            camera_wb_valid: 0,
+        };
+        let status = unsafe { nexfilm_raw_white_balance(processor.0, &mut white_balance) };
+        if status != 0 {
+            return Err(format!(
+                "LibRaw white-balance metadata read failed ({status})"
+            ));
+        }
+        let mut matrix = [[0.0f32; 3]; 4];
+        let status = unsafe { nexfilm_raw_color_matrix(processor.0, matrix.as_mut_ptr()) };
+        if status != 0 {
+            return Err(format!("LibRaw colour matrix read failed ({status})"));
+        }
+        let (make, model) = super::split_camera_id(&mosaic.metadata.camera_id);
+        Ok(super::RawContainerSource {
+            mosaic,
+            xyz_to_camera: super::color_matrix_from_cam_xyz(matrix),
+            as_shot_neutral: white_balance
+                .as_shot()
+                .and_then(super::normalized_as_shot_neutral),
+            make,
+            model,
         })
     }
 
@@ -1113,8 +1205,8 @@ mod non_macos {
 #[cfg(not(target_os = "macos"))]
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use non_macos::{
-    decode_raw_mosaic, extract_camera_rgb_with_policy, read_white_balance, DecodeOptions,
-    ImageFormat, RawProcessor,
+    decode_raw_mosaic, extract_camera_rgb_with_policy, read_raw_container_source,
+    read_white_balance, DecodeOptions, ImageFormat, RawProcessor,
 };
 
 #[cfg(target_os = "macos")]
@@ -1361,6 +1453,31 @@ mod macos {
         })
     }
 
+    /// The mosaic plus the camera colour metadata a DNG re-wrap needs. Both come
+    /// from one LibRaw session, so exporting raw DNGs never unpacks a scan
+    /// twice.
+    pub(crate) fn read_raw_container_source<P: AsRef<Path>>(
+        path: P,
+    ) -> Result<super::RawContainerSource> {
+        let mut processor = RawProcessor::new()?;
+        processor.open_file(path)?;
+        let status = unsafe { ffi::libraw_unpack(processor.data) };
+        processor.check(status)?;
+        let data = unsafe { &*processor.data };
+        let mosaic = mosaic_from_data(data)?;
+        let color = &data.rawdata.color;
+        let cam_mul = [color.cam_mul[0], color.cam_mul[1], color.cam_mul[2], color.cam_mul[3]];
+        let as_shot = (cam_mul[0] > 0.0 && cam_mul[1] > 0.0 && cam_mul[2] > 0.0).then_some(cam_mul);
+        let (make, model) = super::split_camera_id(&mosaic.metadata.camera_id);
+        Ok(super::RawContainerSource {
+            mosaic,
+            xyz_to_camera: super::color_matrix_from_cam_xyz(color.cam_xyz),
+            as_shot_neutral: as_shot.and_then(super::normalized_as_shot_neutral),
+            make,
+            model,
+        })
+    }
+
     /// Installs a white-balance ratio whose strongest channel is unity, using the
     /// as-shot multipliers LibRaw resolved while opening the file.
     fn apply_normalized_as_shot_white_balance(processor: &RawProcessor) -> Result<()> {
@@ -1443,8 +1560,11 @@ mod macos {
         processor.open_file(path)?;
         let status = unsafe { ffi::libraw_unpack(processor.data) };
         processor.check(status)?;
+        mosaic_from_data(unsafe { &*processor.data })
+    }
 
-        let data = unsafe { &*processor.data };
+    /// Copy the CFA buffer of an already unpacked LibRaw session.
+    fn mosaic_from_data(data: &ffi::libraw_data_t) -> Result<RawMosaic> {
         let raw = &data.rawdata;
         if raw.raw_image.is_null() {
             return Err(RawError {
@@ -1568,8 +1688,8 @@ mod macos {
 #[cfg(target_os = "macos")]
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use macos::{
-    decode_raw_mosaic, extract_camera_rgb_with_policy, read_white_balance, CameraRgbData,
-    DecodeOptions, ImageFormat, RawProcessor,
+    decode_raw_mosaic, extract_camera_rgb_with_policy, read_raw_container_source,
+    read_white_balance, CameraRgbData, DecodeOptions, ImageFormat, RawProcessor,
 };
 
 #[cfg(test)]

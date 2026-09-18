@@ -622,19 +622,35 @@ fn description_tag(value: &str) -> Vec<u8> {
 /// to the ICC PCS D50 white and the TRC curves map encoded samples to linear
 /// light, so the profile describes the pixels emitted by export exactly.
 pub fn build_icc_profile(id: ColorSpaceId) -> Vec<u8> {
+    build_icc_profile_with_transfer(id, profile(id).transfer)
+}
+
+/// The same RGB primaries with a linear TRC, for linear-light exports. A
+/// linear TIFF or LinearRaw DNG carries no display gamma, so tagging it with the
+/// gamma-encoded profile of the same space would make every reader darken it.
+pub fn build_linear_icc_profile(id: ColorSpaceId) -> Vec<u8> {
+    build_icc_profile_with_transfer(id, Transfer::Linear)
+}
+
+fn build_icc_profile_with_transfer(id: ColorSpaceId, transfer: Transfer) -> Vec<u8> {
     let source = profile(id);
     let d50_adaptation = bradford_adaptation(source.white, D50);
     let xyz = matrix_multiply(d50_adaptation, native_to_xyz(source));
+    let description = if matches!(transfer, Transfer::Linear) {
+        format!("{} (linear)", source.name)
+    } else {
+        source.name.to_string()
+    };
     let tags = [
-        (b"desc" as &[u8; 4], description_tag(source.name)),
+        (b"desc" as &[u8; 4], description_tag(&description)),
         (b"cprt", text_tag("Copyright 2026 NexFilm")),
         (b"wtpt", xyz_tag(white_xyz(D50))),
         (b"rXYZ", xyz_tag([xyz[0], xyz[3], xyz[6]])),
         (b"gXYZ", xyz_tag([xyz[1], xyz[4], xyz[7]])),
         (b"bXYZ", xyz_tag([xyz[2], xyz[5], xyz[8]])),
-        (b"rTRC", curve_tag(source.transfer)),
-        (b"gTRC", curve_tag(source.transfer)),
-        (b"bTRC", curve_tag(source.transfer)),
+        (b"rTRC", curve_tag(transfer)),
+        (b"gTRC", curve_tag(transfer)),
+        (b"bTRC", curve_tag(transfer)),
     ];
     let header_size = 128usize;
     let tag_table_size = 4 + tags.len() * 12;
@@ -667,6 +683,17 @@ pub fn build_icc_profile(id: ColorSpaceId) -> Vec<u8> {
     let profile_size = output.len() as u32;
     output[0..4].copy_from_slice(&profile_size.to_be_bytes());
     output
+}
+
+/// `ColorMatrix1` for a DNG that stores data in the given colour space: the
+/// matrix that takes XYZ (D50 adapted) to that space's linear RGB, row major.
+///
+/// DNG defines the colour matrix in the opposite direction, XYZ to the file's
+/// own coordinates, which is exactly this inverse of the ICC-space matrix.
+pub fn xyz_d50_to_color_space_matrix(id: ColorSpaceId) -> [f64; 9] {
+    let source = profile(id);
+    let space_to_xyz = matrix_multiply(bradford_adaptation(source.white, D50), native_to_xyz(source));
+    matrix_inverse(space_to_xyz)
 }
 
 #[cfg(test)]
@@ -724,6 +751,66 @@ mod tests {
             let round_trip = decoded.map(|value| encode_transfer(value, profile(space).transfer));
             for index in 0..encoded.len() {
                 assert!((round_trip[index] - encoded[index]).abs() < 1e-10);
+            }
+        }
+    }
+
+    #[test]
+    fn linear_profile_is_identity_curve_and_still_tagged_with_its_primaries() {
+        for space in [
+            ColorSpaceId::SRgb,
+            ColorSpaceId::DisplayP3,
+            ColorSpaceId::AdobeRgb,
+            ColorSpaceId::ProPhotoRgb,
+        ] {
+            let encoded = build_icc_profile(space);
+            let linear = build_linear_icc_profile(space);
+            assert_ne!(encoded, linear, "{space:?} must not reuse the encoded curve");
+            assert!(linear.len() >= 128 && &linear[36..40] == b"acsp");
+            // The linear profile keeps the same primaries, so its rXYZ tag is
+            // byte identical; only the TRC and the description change.
+            let encoded_rxyz = find_tag(&encoded, b"rXYZ");
+            let linear_rxyz = find_tag(&linear, b"rXYZ");
+            assert_eq!(encoded_rxyz, linear_rxyz);
+            let linear_rtrc = find_tag(&linear, b"rTRC").expect("linear profile has a red TRC");
+            assert_eq!(
+                u32::from_be_bytes(linear_rtrc[8..12].try_into().unwrap()),
+                0,
+                "a zero entry count in the curv tag means the identity curve"
+            );
+            assert_ne!(find_tag(&encoded, b"rTRC"), Some(linear_rtrc.to_vec()));
+        }
+    }
+
+    fn find_tag(profile: &[u8], signature: &[u8; 4]) -> Option<Vec<u8>> {
+        let count = u32::from_be_bytes(profile[128..132].try_into().ok()?) as usize;
+        for index in 0..count {
+            let entry = 132 + index * 12;
+            if &profile[entry..entry + 4] != signature {
+                continue;
+            }
+            let offset = u32::from_be_bytes(profile[entry + 4..entry + 8].try_into().ok()?) as usize;
+            let size = u32::from_be_bytes(profile[entry + 8..entry + 12].try_into().ok()?) as usize;
+            return Some(profile[offset..offset + size].to_vec());
+        }
+        None
+    }
+
+    #[test]
+    fn xyz_matrix_maps_the_adapted_white_point_to_neutral() {
+        let d50_white = white_xyz(D50);
+        for space in [
+            ColorSpaceId::SRgb,
+            ColorSpaceId::DisplayP3,
+            ColorSpaceId::AdobeRgb,
+            ColorSpaceId::Rec2020,
+            ColorSpaceId::ProPhotoRgb,
+            ColorSpaceId::Aces2065,
+            ColorSpaceId::AcesCg,
+        ] {
+            let rgb = matrix_vector(xyz_d50_to_color_space_matrix(space), d50_white);
+            for channel in rgb {
+                assert!((channel - 1.0).abs() < 2e-4, "{space:?}: {rgb:?}");
             }
         }
     }

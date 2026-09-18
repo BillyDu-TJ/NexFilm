@@ -67,13 +67,13 @@ NexFilm Engine 用于将相机翻拍或扫描仪输出的胶片负片转换为�
 
 ### v1.0 主要功能
 
-- **胶卷与散张工作流**：按画幅、相机、胶片型号和日期导入整卷，也可直接拖入散张；支持继续编辑、追加画面、修改胶卷信息、筛选归档、重定位缺失文件和删除记录。
+- **胶卷与散张工作流**：按画幅、相机、胶片型号、日期和备注导入整卷，也可直接拖入散张；备注用于区分同一款胶片的多卷素材，并显示在胶卷卡片与胶卷资料中；支持继续编辑、追加画面、修改胶卷信息、筛选归档、重定位缺失文件和删除记录。
 - **自动胶片范围识别**：自动检测有效成像区域，也可拖动四角或边缘手动修正；范围仅用于内容分析与边缘排除，不会自动改变画面透视。固定机位扫描时可将范围批量应用到同卷其他画面。
 - **密度域反相与自动校色**：基于线性透射率进行密度转换、片基扣除和经验去串扰，并提供 Color / B&W、D-Min / D-Max、Printer Lights、曝光、Gamma、对比度、高光、阴影、饱和度、色温和色调控制。算法细节见 [数据处理管线说明](data_process_pipeline_doc.md)。
 - **实时 Develop 工作区**：WebGL 交互预览，支持裁切、拉直、透视、90 度旋转、水平/垂直翻转、缩放平移，以及直方图和波形图。
 - **设置复制与批处理**：可按类别选择要复制的校色、LUT、齿孔和几何参数，再粘贴到其他相似画面。
 - **打印胶片模拟**：内置 Kodak 与 Ilford 打印胶片/相纸风格 LUT，支持载入自定义 <code>.cube</code> LUT 并调节强度。
-- **完整输出工具**：可导出选中画面或整卷，支持 16/8 位 TIFF、16 位 PNG 和 JPEG；提供输出色彩空间、尺寸、放大策略、锐化、JPEG 质量、命名模板、重名策略和可选 EXIF 胶卷信息。
+- **完整输出工具**：可导出选中画面或整卷，支持 16/8 位 TIFF、16 位 PNG、JPEG，以及线性 16 位 TIFF、线性 DNG 和相机 RAW DNG；提供输出色彩空间、尺寸、放大策略、锐化、JPEG 质量、命名模板、重名策略和可选 EXIF 胶卷信息。
 - **胶卷接触印样**：生成带胶片型号、拍摄日期、相机和画面编号的 JPEG Contact Sheet。
 - **本地化与主题**：提供中文/英文界面和浅色/深色主题；v1.0 的前端样式已随安装包本地打包，可离线使用。
 
@@ -102,7 +102,7 @@ Library 与 Develop 显示当前工作卷；历史胶卷保存在 **Rolls**。�
 3. 导出在后台执行，可继续浏览和编辑。正式批量导出前请先检查一张样片。
 4. 在 **Rolls → Roll Contents** 中选择 **Export Contact Sheet** 可生成接触印样；源文件移动后使用 **Locate File** 重新关联。
 
-16 位 TIFF 适合存档或继续精修；JPEG 适合日常分享。命名模板支持 <code>{Roll}</code>、<code>{Camera}</code>、<code>{Film}</code>、<code>{Date}</code>、<code>{Original}</code> 和 <code>{Seq}</code>。
+16 位 TIFF 适合存档或继续精修；JPEG 适合日常分享。需要把结果交给其他软件继续调色时，可以选择线性 16 位 TIFF 或线性 DNG（线性光，不带显示曲线，并写入对应色彩空间）；需要原样归档扫描的 RAW 数据时，可以选择相机 RAW DNG，它不参与任何调整，仅适用于相机 RAW 素材，其余画面请改用线性 DNG。命名模板支持 <code>{Roll}</code>、<code>{Camera}</code>、<code>{Film}</code>、<code>{Date}</code>、<code>{Original}</code> 和 <code>{Seq}</code>。
 
 ### 文件格式与色彩输出
 
@@ -264,13 +264,13 @@ NexFilm Engine converts camera-scanned or scanner-produced film negatives into p
 
 ### v1.0 features
 
-- **Roll and loose-frame workflows** with format, camera, film stock, and date metadata; drag-and-drop import; archived-roll editing; append; metadata editing; missing-file relocation; and deletion.
+- **Roll and loose-frame workflows** with format, camera, film stock, date, and note metadata. The note tells several rolls of the same film stock apart and appears on the roll card and in the roll details; drag-and-drop import, archived-roll editing, append, metadata editing, missing-file relocation, and deletion are all supported.
 - **Automatic film-area detection**, with manual corner/edge adjustment and batch reuse for consistently positioned scans. The detected area guides analysis and edge exclusion without automatically changing image perspective.
 - **Density-domain inversion and automatic grading** with Color / B&W modes, D-Min / D-Max, Printer Lights, exposure, gamma, contrast, highlights, shadows, saturation, temperature, and tint. See the [data-processing pipeline](data_process_pipeline_doc.md) for implementation details.
 - **Real-time Develop workspace** powered by WebGL, with crop, straighten, perspective, quarter-turn rotation, horizontal/vertical flip, zoom/pan, histogram, and waveform.
 - **Selective Copy Settings / Paste Settings** for grade, LUT, sprocket, and geometry groups.
 - **Print-film emulation** with bundled Kodak and Ilford print-film/paper LUTs, custom <code>.cube</code> LUT loading, and opacity control.
-- **Complete output tools** for selected frames or a full roll: 16/8-bit TIFF, 16-bit PNG, and JPEG; output color space; resizing; optional enlargement; sharpening; JPEG quality; filename templates; conflict policies; and optional roll metadata in EXIF.
+- **Complete output tools** for selected frames or a full roll: 16/8-bit TIFF, 16-bit PNG, JPEG, linear 16-bit TIFF, linear DNG, and camera RAW DNG; output color space; resizing; optional enlargement; sharpening; JPEG quality; filename templates; conflict policies; and optional roll metadata in EXIF.
 - **JPEG contact sheets** labeled with film stock, date, camera, and frame number.
 - **English/Chinese UI and light/dark themes** with locally bundled v1.0 styles for offline use.
 
@@ -310,7 +310,9 @@ The input picker supports common camera RAW formats, including DNG, NEF/NRW, CR2
 
 Because JPEG is hard to get linear information, we DON'T guarantee the color calibration effect. So if you are unsatisfied about the result, please adjust Printer Light module to optimize. 
 
-Exports are 16-bit TIFF, 8-bit TIFF, 16-bit PNG, or 8-bit JPEG. NexFilm can embed a matching sRGB, Display P3, Adobe RGB (1998), Rec.2020, ProPhoto RGB, ACEScg, or ACES2065-1 ICC profile. Resizing preserves aspect ratio, does not enlarge by default, and does not silently overwrite name conflicts.
+Exports are 16-bit TIFF, 8-bit TIFF, 16-bit PNG, 8-bit JPEG, linear 16-bit TIFF, linear DNG, or camera RAW DNG. NexFilm can embed a matching sRGB, Display P3, Adobe RGB (1998), Rec.2020, ProPhoto RGB, ACEScg, or ACES2065-1 ICC profile, and linear TIFF files carry the matching linear profile. Resizing preserves aspect ratio, does not enlarge by default, and does not silently overwrite name conflicts.
+
+The linear and RAW formats are hand-off outputs. Linear TIFF and linear DNG hold the developed positive with no display curve, so another application can grade it further; linear DNG declares its colour space in the file itself. Camera RAW DNG re-wraps each frame's own RAW mosaic for archival, so grading, resizing, sharpening, and output color do not apply to it, and frames whose source is not a camera RAW file (TIFF, JPEG, or a scanner's linear DNG) are reported as failures instead — export those as linear DNG.
 
 ### Data, privacy, and backups
 

@@ -6574,6 +6574,184 @@ fn encode_export_buffer(
     Ok(encoded)
 }
 
+/// Same colour conversion as `encode_export_buffer`, but the result keeps linear
+/// light: linear TIFF and LinearRaw DNG are intermediates for further grading,
+/// so applying the display transfer function would throw away the headroom they
+/// exist to preserve.
+fn encode_export_buffer_linear(
+    image: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    output_space: ColorSpaceId,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, output_space);
+    let mut linear_image = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(image.width(), image.height());
+    linear_image
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(image.as_raw().par_chunks_exact(3))
+        .for_each(|(target, source_pixel)| {
+            let linear = convert_encoded_to_linear_rgb_with_matrix(
+                [
+                    source_pixel[0] as f32 / 65535.0,
+                    source_pixel[1] as f32 / 65535.0,
+                    source_pixel[2] as f32 / 65535.0,
+                ],
+                ColorSpaceId::SRgb,
+                matrix,
+            );
+            for channel in 0..3 {
+                target[channel] = (linear[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+            }
+        });
+    Ok(linear_image)
+}
+
+/// Convert a rendered frame into the samples the selected export format stores.
+fn encode_export_output(
+    image: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    export_format: ExportFormat,
+    output_space: ColorSpaceId,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    if export_format.is_linear() {
+        encode_export_buffer_linear(image, output_space)
+    } else {
+        encode_export_buffer(image, output_space)
+    }
+}
+
+fn export_software() -> String {
+    format!("NexFilm Engine {}", env!("CARGO_PKG_VERSION"))
+}
+
+/// Roll metadata for the DNG `ImageDescription`, written only when the user
+/// asked for roll information to travel with the file.
+fn export_description(metadata: Option<&ExportMetadata>) -> Option<String> {
+    let metadata = metadata?;
+    let mut parts = Vec::new();
+    if !metadata.film_stock.trim().is_empty() {
+        parts.push(format!("Film: {}", metadata.film_stock.trim()));
+    }
+    if !metadata.camera.trim().is_empty() {
+        parts.push(format!("Camera: {}", metadata.camera.trim()));
+    }
+    if !metadata.date.trim().is_empty() {
+        parts.push(format!("Date: {}", metadata.date.trim()));
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+fn write_raw_dng_export(
+    source_path: &str,
+    output_path: &std::path::Path,
+    metadata: Option<&ExportMetadata>,
+) -> Result<(), String> {
+    if !is_raw_extension(source_path) {
+        return Err(format!(
+            "{} is not a camera RAW file, so it has no RAW mosaic to wrap. Export it as a linear DNG instead.",
+            std::path::Path::new(source_path)
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_else(|| source_path.to_string())
+        ));
+    }
+    let source = crate::raw_backend::read_raw_container_source(source_path).map_err(|error| {
+        format!(
+            "{error}. Only a camera RAW mosaic can be wrapped as a camera RAW DNG; \
+             export this frame as a linear DNG instead."
+        )
+    })?;
+    // LibRaw resolves a camera matrix while opening proprietary RAW files, but
+    // reads a DNG's matrix only during processing. Carry the source file's own
+    // colour tags over when the decoder did not supply them.
+    let mut xyz_to_camera = source.xyz_to_camera;
+    let mut calibration_illuminant = xyz_to_camera.map(|_| 21u16);
+    let mut as_shot_neutral = source.as_shot_neutral;
+    if xyz_to_camera.is_none() || as_shot_neutral.is_none() {
+        if let Some(embedded) =
+            crate::dng_writer::read_dng_color_metadata(std::path::Path::new(source_path))
+        {
+            if xyz_to_camera.is_none() {
+                xyz_to_camera = embedded.xyz_to_camera;
+                calibration_illuminant = embedded.calibration_illuminant.or(Some(21));
+            }
+            if as_shot_neutral.is_none() {
+                as_shot_neutral = embedded.as_shot_neutral;
+            }
+        }
+    }
+    let software = export_software();
+    let timestamp = crate::dng_writer::exif_datetime(persistence::now_timestamp());
+    let description = export_description(metadata);
+    let request = crate::dng_writer::CfaDngRequest {
+        mosaic: &source.mosaic,
+        xyz_to_camera,
+        calibration_illuminant,
+        as_shot_neutral,
+        make: &source.make,
+        model: &source.model,
+        description: description.as_deref(),
+        software: &software,
+        timestamp: &timestamp,
+    };
+    let bytes = crate::dng_writer::cfa_dng_bytes(&request)?;
+    write_bytes_atomically(output_path, &bytes)
+}
+
+fn write_linear_dng_export(
+    buffer: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+    output_path: &std::path::Path,
+    output_space: ColorSpaceId,
+    metadata: Option<&ExportMetadata>,
+) -> Result<(), String> {
+    let software = export_software();
+    let timestamp = crate::dng_writer::exif_datetime(persistence::now_timestamp());
+    let description = export_description(metadata);
+    let profile = crate::color_science::build_linear_icc_profile(output_space);
+    let camera_model = format!(
+        "{} linear",
+        crate::color_science::profile_name(output_space)
+    );
+    let request = crate::dng_writer::LinearDngRequest {
+        width: buffer.width(),
+        height: buffer.height(),
+        rgb16: buffer.as_raw(),
+        xyz_to_space: crate::color_science::xyz_d50_to_color_space_matrix(output_space),
+        icc_profile: Some(&profile),
+        camera_model: &camera_model,
+        description: description.as_deref(),
+        software: &software,
+        timestamp: &timestamp,
+    };
+    let bytes = crate::dng_writer::linear_dng_bytes(&request)?;
+    write_bytes_atomically(output_path, &bytes)
+}
+
+/// Store one converted frame in the format the user selected.
+fn write_export_output(
+    buffer: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    snapshot: &ExportItemSnapshot,
+    export_format: ExportFormat,
+    output_space: ColorSpaceId,
+    quality: u32,
+) -> Result<(), String> {
+    if export_format == ExportFormat::DngLinear {
+        return write_linear_dng_export(
+            &buffer,
+            &snapshot.output_path,
+            output_space,
+            snapshot.export_metadata.as_ref(),
+        );
+    }
+    let profile = export_profile_for_output(export_format, output_space);
+    write_export_image_with_profile(
+        buffer,
+        &snapshot.output_path,
+        export_format,
+        quality,
+        snapshot.export_metadata.as_ref(),
+        profile.as_deref(),
+    )
+}
+
 #[cfg(test)]
 mod lut_tests {
     use super::ParsedLut;
@@ -6723,6 +6901,7 @@ mod history_contract_tests {
             format: "135".into(),
             film_stock: String::new(),
             camera: String::new(),
+            notes: String::new(),
             image_paths: vec!["first.dng".into(), "second.dng".into(), "third.dng".into()],
             density_anchors: Default::default(),
             calibration_profile_id: None,
@@ -6766,6 +6945,7 @@ mod history_contract_tests {
                 format: "135".into(),
                 film_stock: String::new(),
                 camera: String::new(),
+                notes: String::new(),
                 image_paths: vec!["A\\First.DNG".into(), "A\\Second.DNG".into()],
                 density_anchors: Default::default(),
                 calibration_profile_id: None,
@@ -6777,6 +6957,7 @@ mod history_contract_tests {
                 format: "135".into(),
                 film_stock: String::new(),
                 camera: String::new(),
+                notes: String::new(),
                 image_paths: vec!["A\\First.DNG".into()],
                 density_anchors: Default::default(),
                 calibration_profile_id: None,
@@ -9784,9 +9965,22 @@ enum ExportFormat {
     Png,
     Tiff8,
     Tiff16,
+    /// 16-bit TIFF with a linear transfer function and a matching ICC profile.
+    TiffLinear,
+    /// LinearRaw DNG carrying the developed positive as linear-light RGB.
+    DngLinear,
+    /// DNG that re-wraps the source scan's camera RAW mosaic untouched.
+    DngRaw,
 }
 
 fn export_profile_for_output(format: ExportFormat, output_space: ColorSpaceId) -> Option<Vec<u8>> {
+    if matches!(format, ExportFormat::DngLinear | ExportFormat::DngRaw) {
+        // DNG files declare their colour space in the file itself.
+        return None;
+    }
+    if format == ExportFormat::TiffLinear {
+        return Some(crate::color_science::build_linear_icc_profile(output_space));
+    }
     // JPEG viewers universally treat an untagged JPEG as sRGB. Avoid attaching
     // a generated matrix profile to standard sRGB JPEGs so their appearance
     // matches the browser canvas and the operating system's native sRGB path.
@@ -9804,8 +9998,21 @@ impl ExportFormat {
             "png" => Ok(Self::Png),
             "tiff8" => Ok(Self::Tiff8),
             "tiff16" | "tiff16_uncompressed" => Ok(Self::Tiff16),
+            "tiff16_linear" | "tiff_linear" => Ok(Self::TiffLinear),
+            "dng_linear" => Ok(Self::DngLinear),
+            "dng" | "dng_raw" => Ok(Self::DngRaw),
             other => Err(format!("Unsupported export format: {other}")),
         }
+    }
+
+    /// Formats whose samples are linear light and therefore carry no display
+    /// transfer function.
+    fn is_linear(self) -> bool {
+        matches!(self, Self::TiffLinear | Self::DngLinear)
+    }
+
+    fn is_raw_container(self) -> bool {
+        matches!(self, Self::DngRaw)
     }
 
     fn extension(self) -> &'static str {
@@ -9813,6 +10020,8 @@ impl ExportFormat {
             Self::Jpeg => "jpg",
             Self::Png => "png",
             Self::Tiff8 | Self::Tiff16 => "tiff",
+            Self::TiffLinear => "tiff",
+            Self::DngLinear | Self::DngRaw => "dng",
         }
     }
 }
@@ -10531,7 +10740,10 @@ fn attach_export_profile(
     match format {
         ExportFormat::Jpeg => insert_jpeg_icc(encoded, profile),
         ExportFormat::Png => insert_png_icc(encoded, profile),
-        ExportFormat::Tiff8 | ExportFormat::Tiff16 => insert_tiff_icc(encoded, profile),
+        ExportFormat::Tiff8 | ExportFormat::Tiff16 | ExportFormat::TiffLinear => {
+            insert_tiff_icc(encoded, profile)
+        }
+        ExportFormat::DngLinear | ExportFormat::DngRaw => Ok(()),
     }
 }
 
@@ -10543,7 +10755,10 @@ fn attach_export_metadata(
     match format {
         ExportFormat::Jpeg => insert_jpeg_exif(encoded, metadata),
         ExportFormat::Png => insert_png_exif(encoded, metadata),
-        ExportFormat::Tiff8 | ExportFormat::Tiff16 => insert_tiff_exif(encoded, metadata),
+        ExportFormat::Tiff8 | ExportFormat::Tiff16 | ExportFormat::TiffLinear => {
+            insert_tiff_exif(encoded, metadata)
+        }
+        ExportFormat::DngLinear | ExportFormat::DngRaw => Ok(()),
     }
 }
 
@@ -10580,12 +10795,20 @@ fn write_export_image_with_profile(
                 });
             image::DynamicImage::ImageRgb8(out8)
         }
-        ExportFormat::Png | ExportFormat::Tiff16 => image::DynamicImage::ImageRgb16(buffer),
+        ExportFormat::Png | ExportFormat::Tiff16 | ExportFormat::TiffLinear => {
+            image::DynamicImage::ImageRgb16(buffer)
+        }
+        ExportFormat::DngLinear | ExportFormat::DngRaw => {
+            return Err("DNG output is written by the DNG writer".to_string())
+        }
     };
     let output_format = match format {
         ExportFormat::Jpeg => ImageOutputFormat::Jpeg(quality as u8),
         ExportFormat::Png => ImageOutputFormat::Png,
-        ExportFormat::Tiff8 | ExportFormat::Tiff16 => ImageOutputFormat::Tiff,
+        ExportFormat::Tiff8 | ExportFormat::Tiff16 | ExportFormat::TiffLinear => {
+            ImageOutputFormat::Tiff
+        }
+        ExportFormat::DngLinear | ExportFormat::DngRaw => unreachable!("DNG returns above"),
     };
     let mut cursor = Cursor::new(Vec::new());
     dynamic
@@ -10757,7 +10980,11 @@ pub async fn batch_export_images(
     let export_format = ExportFormat::parse(&format)?;
     let conflict_policy = ExportConflictPolicy::parse(&conflict_policy)?;
     let sharpening = export_sharpening(&sharpening)?;
-    export_dimensions(1, 1, &resize_mode, long_edge, allow_upscale)?;
+    // A raw DNG is the untouched camera mosaic: resizing or sharpening it would
+    // no longer be the capture, so those controls do not apply.
+    if !export_format.is_raw_container() {
+        export_dimensions(1, 1, &resize_mode, long_edge, allow_upscale)?;
+    }
     if export_format == ExportFormat::Jpeg && !(1..=100).contains(&quality) {
         return Err("JPEG quality must be between 1 and 100".to_string());
     }
@@ -10937,17 +11164,22 @@ pub async fn batch_export_images(
 
     // Parse every referenced LUT before starting any writes. A bad or missing
     // LUT must fail the export rather than silently changing the appearance.
-    let lut_sources = export_snapshots
-        .iter()
-        .filter_map(|snapshot| {
-            snapshot
-                .params
-                .lut
-                .lut_path
-                .as_ref()
-                .map(|path| (path.clone(), snapshot.file_path.clone()))
-        })
-        .collect::<Vec<_>>();
+    // A raw DNG copies the camera mosaic, so no grade — and no LUT — takes part.
+    let lut_sources = if export_format.is_raw_container() {
+        Vec::new()
+    } else {
+        export_snapshots
+            .iter()
+            .filter_map(|snapshot| {
+                snapshot
+                    .params
+                    .lut
+                    .lut_path
+                    .as_ref()
+                    .map(|path| (path.clone(), snapshot.file_path.clone()))
+            })
+            .collect::<Vec<_>>()
+    };
     let parsed_luts = tokio::task::spawn_blocking(move || {
         let mut parsed = HashMap::new();
         for (path, file_path) in lut_sources {
@@ -10994,6 +11226,33 @@ pub async fn batch_export_images(
                     "stage": "decoding",
                 }),
             );
+            if export_format.is_raw_container() {
+                // The source scan's own mosaic is the output; nothing in the
+                // Develop pipeline participates.
+                let outcome = write_raw_dng_export(
+                    &file_path,
+                    &snapshot.output_path,
+                    snapshot.export_metadata.as_ref(),
+                );
+                match outcome {
+                    Ok(()) => {
+                        success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Err(error) => lock_mutex(&failures)
+                        .push(format!("Failed to write the raw DNG for {file_path}: {error}")),
+                }
+                let processed =
+                    processed_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                let _ = progress_app.emit(
+                    "export_progress",
+                    serde_json::json!({
+                        "processed": processed,
+                        "total": count,
+                        "id": snapshot.id
+                    }),
+                );
+                return;
+            }
             let params_owned = snapshot.params.clone();
             let geom_owned = snapshot.geom.clone();
             let base_color_owned = snapshot.base_color.clone();
@@ -11143,17 +11402,20 @@ pub async fn batch_export_images(
                         if let Some((sigma, amount)) = sharpening {
                             apply_usm(&mut out_buffer, sigma, amount);
                         }
-                        let out_buffer = match encode_export_buffer(out_buffer, output_space) {
+                        let out_buffer =
+                            match encode_export_output(out_buffer, export_format, output_space) {
                             Ok(buffer) => buffer,
                             Err(error) => {
                                 lock_mutex(&failures).push(format!("Failed to convert {} to {}: {error}", file_path, color_space));
                                 return;
                             }
                         };
-                        let profile = export_profile_for_output(export_format, output_space);
-                        match write_export_image_with_profile(
-                            out_buffer, &snapshot.output_path, export_format, quality,
-                            snapshot.export_metadata.as_ref(), profile.as_deref(),
+                        match write_export_output(
+                            out_buffer,
+                            snapshot,
+                            export_format,
+                            output_space,
+                            quality,
                         ) {
                             Ok(()) => { success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
                             Err(error) => lock_mutex(&failures).push(error),
@@ -11266,7 +11528,7 @@ pub async fn batch_export_images(
                         apply_usm(&mut out_buffer, sigma, amount);
                     }
 
-                    out_buffer = match encode_export_buffer(out_buffer, output_space) {
+                    out_buffer = match encode_export_output(out_buffer, export_format, output_space) {
                         Ok(buffer) => buffer,
                         Err(error) => {
                             lock_mutex(&failures).push(format!(
@@ -11282,14 +11544,12 @@ pub async fn batch_export_images(
                         }
                     };
 
-                    let profile = export_profile_for_output(export_format, output_space);
-                    match write_export_image_with_profile(
+                    match write_export_output(
                         out_buffer,
-                        &snapshot.output_path,
+                        snapshot,
                         export_format,
+                        output_space,
                         quality,
-                        snapshot.export_metadata.as_ref(),
-                        profile.as_deref(),
                     ) {
                         Ok(()) => {
                             success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -12817,6 +13077,7 @@ mod calibration_profile_contract_tests {
             format: format.to_string(),
             film_stock: String::new(),
             camera: String::new(),
+            notes: String::new(),
             image_paths: Vec::new(),
             density_anchors: DensityAnchors::default(),
             calibration_profile_id: profile_id.map(str::to_string),
@@ -13557,6 +13818,7 @@ pub async fn update_roll_metadata(
     format: String,
     film_stock: String,
     camera: String,
+    notes: Option<String>,
     state: State<'_, EngineState>,
 ) -> Result<Roll, String> {
     if film_stock.trim().is_empty() {
@@ -13573,6 +13835,9 @@ pub async fn update_roll_metadata(
         roll.format = format;
         roll.film_stock = film_stock;
         roll.camera = camera;
+        if let Some(notes) = notes {
+            roll.notes = notes.trim().to_string();
+        }
         let updated_roll = roll.clone();
         let updated = persist_roll_snapshot_async(updated).await?;
         *write_lock(&state.rolls) = updated.clone();
@@ -14323,6 +14588,7 @@ fn migrate_legacy_loose_roll(
         format: "Loose".to_string(),
         film_stock: "Loose Import".to_string(),
         camera: String::new(),
+        notes: String::new(),
         image_paths: paths,
         density_anchors: Default::default(),
         calibration_profile_id: None,
@@ -15956,6 +16222,7 @@ mod import_contract_tests {
             format: "35mm".into(),
             film_stock: String::new(),
             camera: String::new(),
+            notes: String::new(),
             image_paths: Vec::new(),
             density_anchors: anchors,
             calibration_profile_id: None,
@@ -20404,6 +20671,7 @@ mod library_management_contract_tests {
             format: "135".to_string(),
             film_stock: "Test Film".to_string(),
             camera: "Test Camera".to_string(),
+            notes: String::new(),
             image_paths: vec!["NEW.DNG".to_string()],
             density_anchors: Default::default(),
             calibration_profile_id: None,
@@ -20447,6 +20715,7 @@ mod library_management_contract_tests {
             format: "Loose".to_string(),
             film_stock: "Loose Import".to_string(),
             camera: String::new(),
+            notes: String::new(),
             image_paths: vec!["scan.tif".to_string()],
             density_anchors: Default::default(),
             calibration_profile_id: None,
@@ -20503,12 +20772,14 @@ mod export_contract_tests {
     use super::{
         build_response_buffer_from_proxy, build_response_buffer_from_proxy_with_state,
         co_sited_density_extremes, compute_auto_color_limits, density_histogram_extremes,
-        embedded_input_profile, encode_export_buffer, export_dimensions, export_profile_for_output,
+        decode_uncompressed_tiff_directory_reduced, embedded_input_profile, encode_export_buffer,
+        encode_export_buffer_linear, export_dimensions, export_profile_for_output,
         gaussian_blur_rgb16_parallel, normalize_persisted_geometry_for_rendered_image,
-        point_in_film_area, render_f32_shader_equivalent, render_shader_equivalent,
-        reserve_export_path, sanitize_export_file_stem, should_apply_sprocket_mask,
-        should_apply_sprocket_mask_for_area, validate_export_color_space, write_export_image,
-        write_export_image_with_profile, ExportConflictPolicy, ExportFormat,
+        point_in_film_area, read_classic_tiff_directory, render_f32_shader_equivalent,
+        render_shader_equivalent, reserve_export_path, sanitize_export_file_stem,
+        should_apply_sprocket_mask, should_apply_sprocket_mask_for_area,
+        validate_export_color_space, write_export_image, write_export_image_with_profile,
+        write_linear_dng_export, ExportConflictPolicy, ExportFormat,
     };
     use crate::app_state::{
         BaseColor, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
@@ -20867,6 +21138,82 @@ mod export_contract_tests {
             );
             assert_eq!(image::open(&path).unwrap().dimensions(), (2, 2));
         }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// Linear intermediates must not carry the display transfer function: that
+    /// curve is exactly what a user grading the file elsewhere has to apply
+    /// themselves.
+    #[test]
+    fn linear_export_keeps_linear_light_for_the_same_pixels() {
+        let mid_grey = (0.5f32 * 65_535.0).round() as u16;
+        let source = ImageBuffer::from_pixel(1, 1, Rgb([mid_grey, mid_grey, mid_grey]));
+        let display = encode_export_buffer(source.clone(), ColorSpaceId::SRgb).unwrap();
+        let linear = encode_export_buffer_linear(source, ColorSpaceId::SRgb).unwrap();
+        let linear_value = f32::from(linear.get_pixel(0, 0)[0]) / 65_535.0;
+        assert!(
+            (linear_value - 0.2140).abs() < 0.002,
+            "0.5 sRGB must become 0.214 linear, got {linear_value}"
+        );
+        assert_eq!(display.get_pixel(0, 0)[0], mid_grey);
+    }
+
+    #[test]
+    fn linear_export_formats_use_a_linear_profile_and_dng_keeps_its_own() {
+        for format in [ExportFormat::TiffLinear, ExportFormat::DngLinear] {
+            assert!(format.is_linear());
+            assert!(!format.is_raw_container());
+        }
+        assert!(ExportFormat::DngRaw.is_raw_container());
+        let profile = export_profile_for_output(ExportFormat::TiffLinear, ColorSpaceId::SRgb)
+            .expect("a linear TIFF is tagged with a linear profile");
+        // A `curv` tag with zero entries is the identity curve, which is what a
+        // linear file needs; the gamma-encoded profiled would carry 4096 points.
+        let rtrc = profile[132..].chunks_exact(12).find_map(|entry| {
+            (&entry[..4] == b"rTRC").then(|| {
+                let offset = u32::from_be_bytes(entry[4..8].try_into().unwrap()) as usize;
+                u32::from_be_bytes(profile[offset + 8..offset + 12].try_into().unwrap())
+            })
+        });
+        assert_eq!(rtrc, Some(0));
+        assert!(export_profile_for_output(ExportFormat::DngLinear, ColorSpaceId::SRgb).is_none());
+        assert!(export_profile_for_output(ExportFormat::DngRaw, ColorSpaceId::SRgb).is_none());
+    }
+
+    /// A LinearRaw DNG has to be readable by the application's own TIFF reader,
+    /// which is what a re-import would use.
+    #[test]
+    fn linear_dng_round_trips_through_the_tiff_reader() {
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-linear-dng-export-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let source = ImageBuffer::from_fn(4, 3, |x, y| {
+            Rgb([
+                (x * 1000 + y) as u16,
+                (y * 2000 + x) as u16,
+                (x * y * 300) as u16,
+            ])
+        });
+        let path = root.join("frame.dng");
+        write_linear_dng_export(&source, &path, ColorSpaceId::DisplayP3, None).unwrap();
+
+        let directory = read_classic_tiff_directory(path.to_string_lossy().as_ref(), 0).unwrap();
+        assert_eq!(directory.photometric, 34892);
+        assert_eq!(directory.samples_per_pixel, 3);
+        assert_eq!(directory.bits_per_sample, vec![16, 16, 16]);
+        assert_eq!(directory.compression, 1);
+        assert!(directory.icc_profile.is_some());
+        let decoded = decode_uncompressed_tiff_directory_reduced(
+            path.to_string_lossy().as_ref(),
+            directory,
+            u32::MAX,
+        )
+        .unwrap();
+        assert_eq!(decoded.dimensions(), (4, 3));
+        assert_eq!(decoded.into_raw(), source.into_raw());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -21617,6 +21964,7 @@ mod roll_render_tests {
             format: "135".into(),
             film_stock: "Test".into(),
             camera: String::new(),
+            notes: String::new(),
             image_paths: Vec::new(),
             density_anchors: anchors,
             calibration_profile_id: None,

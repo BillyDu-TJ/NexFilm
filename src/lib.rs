@@ -5,6 +5,7 @@ pub mod capability_resolver;
 pub mod color_science;
 pub mod commands;
 pub mod core_math;
+pub(crate) mod dng_writer;
 pub mod film_border;
 pub mod geometry;
 pub mod io_processor;

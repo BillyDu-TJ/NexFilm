@@ -79,6 +79,21 @@ struct NexFilmRawWhiteBalance {
   int32_t camera_wb_valid;
 };
 
+// XYZ (D65) to camera reference coordinates, DNG's ColorMatrix1. LibRaw fills
+// this while opening the file, so no dcraw_process pass is needed.
+int nexfilm_raw_color_matrix(libraw_data_t *data, float *out) {
+  if (!data || !out) {
+    return -1;
+  }
+  const libraw_colordata_t &color = data->rawdata.color;
+  for (int channel = 0; channel < 4; ++channel) {
+    for (int component = 0; component < 3; ++component) {
+      out[channel * 3 + component] = color.cam_xyz[channel][component];
+    }
+  }
+  return 0;
+}
+
 // Reads the multipliers LibRaw resolved while opening the file: cam_mul is the
 // camera's as-shot white balance (AsShotNeutral), pre_mul the fixed daylight
 // balance LibRaw falls back to when as-shot WB is switched off.

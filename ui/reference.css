@@ -680,6 +680,18 @@ body[data-theme] #view-history.history-detail > div:last-child {
     margin: 0;
 }
 .history-roll-facts div { min-width: 0; }
+.history-roll-notes {
+    grid-column: 1 / -1;
+    margin: 0;
+    padding: 10px 12px;
+    border-radius: 6px;
+    background: var(--ui-control);
+    color: var(--ui-text);
+    font-size: 13px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
 .history-roll-facts dd {
     overflow: hidden;
     margin: 0;
@@ -931,6 +943,17 @@ body[data-theme] #view-history.history-detail > div:last-child {
 .roll-card .roll-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; margin-top: 28px; }
 .roll-card .roll-meta > span { min-width: 0; color: var(--ui-text); font-size: 13px; }
 .roll-card .roll-meta small { display: block; color: var(--ui-muted); font-size: 10px; font-weight: 600; }
+.roll-card .roll-notes {
+    margin-top: 16px;
+    padding: 8px 10px;
+    border-radius: 6px;
+    background: var(--ui-control);
+    color: var(--ui-text);
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
 .roll-card-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 22px; }
 .roll-view-action { color: var(--ui-brand); font-size: 14px; font-weight: 700; }
 #view-history .roll-edit-action { margin: 0; padding: 4px 0 !important; background: transparent !important; color: var(--ui-muted) !important; }
@@ -2421,6 +2444,32 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 .import-form-row > div {
     width: 200px !important;
     flex: 0 0 200px;
+}
+
+/* The roll note is the one free-form row: it needs the full width so several
+   rolls of the same film stock stay tellable apart at a glance. */
+.import-dialog .import-form-row-notes {
+    flex-direction: column;
+    align-items: stretch;
+}
+
+.import-dialog .import-form-row-notes > label {
+    flex: 0 0 auto;
+}
+
+.import-dialog .import-form-row-notes > textarea {
+    width: 100% !important;
+    flex: 1 1 auto;
+    min-height: 54px !important;
+    padding: 8px 10px !important;
+    border: 0 !important;
+    border-radius: 10px !important;
+    background-color: var(--ui-surface) !important;
+    color: var(--ui-text) !important;
+    font-family: inherit;
+    font-size: 12px !important;
+    line-height: 1.45;
+    resize: vertical;
 }
 
 .import-dialog select,
