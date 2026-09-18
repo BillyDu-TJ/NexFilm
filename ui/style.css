@@ -1082,6 +1082,31 @@ body > header > div:last-child button:hover { background: var(--control) !import
     font-size: 12px;
 }
 .export-field select:focus, .export-field input:focus, .export-destination-row input:focus { border-color: var(--accent) !important; }
+/* Export dropdowns are drawn here instead of by the platform, exactly like the
+ * Develop inspector: the native macOS pop-up button paints its own gradient
+ * body and stepper, which never matches the flat Windows/Chromium rendering of
+ * the same dialog. */
+#export-modal-content .export-field select {
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    padding: 0 32px 0 12px !important;
+    background-image:
+        linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+        linear-gradient(135deg, var(--muted) 50%, transparent 50%) !important;
+    background-position:
+        calc(100% - 17px) calc(50% - 2px),
+        calc(100% - 12px) calc(50% - 2px) !important;
+    background-size: 5px 5px !important;
+    background-repeat: no-repeat !important;
+    background-color: var(--panel-raised) !important;
+    color: var(--text) !important;
+    text-overflow: ellipsis;
+    box-shadow: none !important;
+}
+#export-modal-content .export-field select:disabled {
+    color: var(--muted) !important;
+    cursor: not-allowed;
+}
 .export-field-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .export-field output { color: var(--text); font-family: var(--font-mono); font-size: 11px; }
 #export-quality-group { display: block; padding: 8px 10px; border-radius: 10px; background: color-mix(in srgb, var(--panel-raised) 76%, transparent); }
@@ -3062,6 +3087,21 @@ body[data-theme="light"] .scope-channel-tabs { background: rgba(42, 42, 44, .72)
 .calibration-form-field input,
 .calibration-form-field select { height: 34px; padding: 0 10px; }
 .calibration-form-field textarea { min-height: 64px; resize: vertical; padding: 8px 10px; line-height: 1.5; }
+/* Same drawn dropdown as the Develop inspector and the export dialog. */
+.calibration-form-field select {
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    padding: 0 32px 0 12px !important;
+    background-image:
+        linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+        linear-gradient(135deg, var(--muted) 50%, transparent 50%) !important;
+    background-position:
+        calc(100% - 17px) calc(50% - 2px),
+        calc(100% - 12px) calc(50% - 2px) !important;
+    background-size: 5px 5px !important;
+    background-repeat: no-repeat !important;
+    text-overflow: ellipsis;
+}
 .calibration-form-field input:focus,
 .calibration-form-field select:focus,
 .calibration-form-field textarea:focus,

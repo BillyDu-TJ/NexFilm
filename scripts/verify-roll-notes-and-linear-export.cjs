@@ -13,6 +13,8 @@ const i18n = fs.readFileSync(path.join(root, 'ui/i18n.js'), 'utf8');
 const commands = fs.readFileSync(path.join(root, 'src/commands.rs'), 'utf8');
 const dngWriter = fs.readFileSync(path.join(root, 'src/dng_writer.rs'), 'utf8');
 const persistence = fs.readFileSync(path.join(root, 'src/persistence.rs'), 'utf8');
+const style = fs.readFileSync(path.join(root, 'ui/style.css'), 'utf8');
+const referenceCss = fs.readFileSync(path.join(root, 'ui/reference.css'), 'utf8');
 
 // --- Roll note ------------------------------------------------------------
 
@@ -48,6 +50,19 @@ assert.match(
     'Existing databases must gain the note column without a rebuild',
 );
 assert.match(persistence, /roll\.notes,/, 'Roll saves must persist the note');
+
+// The note field is empty by default. Its placeholder must read as an example,
+// otherwise the hint looks like a value the app filled in for the user.
+assert.match(
+    i18n,
+    /'import\.notesPlaceholder': '例如：/,
+    'The Chinese note placeholder must be marked as an example',
+);
+assert.match(
+    i18n,
+    /'import\.notesPlaceholder': 'For example:/,
+    'The English note placeholder must be marked as an example',
+);
 
 // --- Linear / RAW export --------------------------------------------------
 
@@ -97,6 +112,30 @@ for (const control of ['exportColorSpace', 'exportSharpening', 'exportResizeMode
     assert.match(main, new RegExp(`${control}\\.disabled = isRawDng`), `${control} must be disabled for raw DNG exports`);
 }
 assert.match(main, /exportFormatNote\.textContent = isRawDng/, 'The export dialog must explain what the selected format does');
+
+// Dropdowns are drawn in the app, not by the platform: the native macOS pop-up
+// button renders its own gradient body and stepper, so every dialog dropdown
+// has to opt out of it and paint the shared caret. Develop did this first; the
+// export dialog, the calibration editor and Copy Settings follow it here.
+const drawnCaret =
+    /appearance: none !important;[\s\S]{0,600}?linear-gradient\(45deg, transparent 50%, var\(--(?:ui-)?muted\) 50%\)[\s\S]{0,200}?linear-gradient\(135deg, var\(--(?:ui-)?muted\) 50%, transparent 50%\)/;
+assert.match(
+    style,
+    new RegExp(`#export-modal-content \\.export-field select \\{[\\s\\S]{0,900}?${drawnCaret.source}`),
+    'Every export dropdown must use the drawn caret instead of the native control',
+);
+assert.match(
+    style,
+    new RegExp(`\\.calibration-form-field select \\{[\\s\\S]{0,900}?${drawnCaret.source}`),
+    'The calibration editor dropdowns must use the same drawn caret',
+);
+assert.match(
+    referenceCss,
+    new RegExp(
+        `#copy-settings-content \\.copy-settings-footer select \\{[\\s\\S]{0,900}?${drawnCaret.source}`,
+    ),
+    'The Copy Settings dropdown must use the same drawn caret',
+);
 
 // Every new label has to be translatable in both locales.
 for (const key of [

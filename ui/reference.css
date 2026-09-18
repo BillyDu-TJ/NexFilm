@@ -2390,7 +2390,17 @@ body[data-theme] #view-history:not(.history-detail) > div:last-child > .history-
 
 #copy-settings-content .copy-settings-footer select {
     min-width: 280px !important;
-    padding: 0 34px 0 10px !important;
+    appearance: none !important;
+    -webkit-appearance: none !important;
+    padding: 0 32px 0 12px !important;
+    background-image:
+        linear-gradient(45deg, transparent 50%, var(--ui-muted) 50%),
+        linear-gradient(135deg, var(--ui-muted) 50%, transparent 50%) !important;
+    background-position:
+        calc(100% - 17px) calc(50% - 2px),
+        calc(100% - 12px) calc(50% - 2px) !important;
+    background-size: 5px 5px !important;
+    background-repeat: no-repeat !important;
     background-color: var(--ui-surface) !important;
     color: var(--ui-text) !important;
 }
