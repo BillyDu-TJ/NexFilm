@@ -51,6 +51,36 @@ assert.match(
 );
 assert.match(persistence, /roll\.notes,/, 'Roll saves must persist the note');
 
+// The archive has to show the note on both of its surfaces: the card in the
+// roll grid and the roll-contents header. Each one renders it as one more
+// labelled fact beside Camera and Captured rather than as a separate block.
+assert.match(main, /data-roll-note-value/, 'The roll card must render the note value');
+assert.match(
+    main,
+    /i18nText\('import\.rollNotes'\)/,
+    'The roll card note label must be translated',
+);
+assert.match(
+    main,
+    /document\.getElementById\('history-roll-note'\)\.classList\.toggle\('hidden'/,
+    'The roll contents header must toggle the note',
+);
+assert.match(
+    html,
+    /id="history-roll-note"[\s\S]{0,200}?data-i18n="import\.rollNotes"/,
+    'The roll contents note must carry a translated label',
+);
+assert.match(
+    referenceCss,
+    /\.roll-card \.roll-notes small \{[\s\S]{0,200}?color: var\(--ui-muted\)/,
+    'The card note must follow the card fact typography',
+);
+assert.match(
+    referenceCss,
+    /\.history-roll-note > span \{[\s\S]{0,200}?color: var\(--ui-muted\)/,
+    'The contents note label must match the facts row',
+);
+
 // The note field is empty by default. Its placeholder must read as an example,
 // otherwise the hint looks like a value the app filled in for the user.
 assert.match(

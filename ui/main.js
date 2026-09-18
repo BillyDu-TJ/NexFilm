@@ -4832,10 +4832,9 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                     document.getElementById('history-roll-camera').textContent = currentRoll.camera || i18nText('common.unknown');
                     document.getElementById('history-roll-date').textContent = currentRoll.date || i18nText('common.unknown');
                     document.getElementById('history-roll-frames').textContent = i18nText('history.frameCount', { count: currentRoll.image_paths?.length || 0 });
-                    const rollNotes = document.getElementById('history-roll-notes');
                     const notesText = (currentRoll.notes || '').trim();
-                    rollNotes.textContent = notesText;
-                    rollNotes.classList.toggle('hidden', !notesText);
+                    document.getElementById('history-roll-notes').textContent = notesText;
+                    document.getElementById('history-roll-note').classList.toggle('hidden', !notesText);
                     try {
                         let rollStrip = await invoke('get_roll_filmstrip', { rollId: historyRollViewId });
 
@@ -4993,10 +4992,13 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                             </div>
                             <div class="roll-format"></div>
                             <div class="roll-meta">
-                                <span><small>Camera</small><span data-roll-camera></span></span>
-                                <span><small>Captured</small><span data-roll-date></span></span>
+                                <span><small>${i18nText('fields.camera')}</small><span data-roll-camera></span></span>
+                                <span><small>${i18nText('history.captured')}</small><span data-roll-date></span></span>
                             </div>
-                            <div class="roll-notes hidden" data-roll-notes></div>
+                            <div class="roll-notes hidden" data-roll-notes>
+                                <small>${i18nText('import.rollNotes')}</small>
+                                <span data-roll-note-value></span>
+                            </div>
                             <div class="roll-card-actions">
                                 <span class="roll-view-action">View archive →</span>
                                 <button type="button" class="roll-edit-action">${i18nText('actions.editInfoShort')}</button>
@@ -5025,10 +5027,12 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                     card.querySelector('.roll-format').textContent = `${roll.format || '135'} ${i18nText('common.formatSuffix')}`;
                     card.querySelector('[data-roll-camera]').textContent = roll.camera || i18nText('common.unknown');
                     card.querySelector('[data-roll-date]').textContent = roll.date || i18nText('common.unknown');
-                    const cardNotes = card.querySelector('[data-roll-notes]');
                     const cardNotesText = (roll.notes || '').trim();
-                    cardNotes.textContent = cardNotesText;
+                    const cardNotes = card.querySelector('[data-roll-notes]');
+                    card.querySelector('[data-roll-note-value]').textContent = cardNotesText;
                     cardNotes.classList.toggle('hidden', !cardNotesText);
+                    // The card clamps long notes; the full text stays reachable.
+                    cardNotes.title = cardNotesText;
                     card.querySelector('.roll-edit-action').addEventListener('click', event => {
                         event.stopPropagation();
                         openRollMetadataEditor(roll);
