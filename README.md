@@ -26,10 +26,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/nexfilm-v1.0-develop.png" width="100%" alt="NexFilm Engine v1.0 Develop workspace">
+  <img src="docs/assets/nexfilm-v1.0-develop.png" width="100%" alt="NexFilm Engine Develop workspace">
 </p>
 
-<p align="center"><sub>NexFilm Engine v1.0 · Develop 工作区 / Develop workspace · 浅色主题 / Light theme</sub></p>
+<p align="center"><sub>NexFilm Engine · Develop 工作区 / Develop workspace · 浅色主题 / Light theme</sub></p>
 
 ---
 
@@ -38,11 +38,11 @@
 ## 中文说明
 
 > [!IMPORTANT]
-> NexFilm Engine v1.0.2 是当前稳定版本。Windows 与 macOS 安装包目前未进行代码签名，macOS DMG 也未经过 Apple 公证。请只从本仓库的 Releases 下载，并始终保留原始扫描文件；正式批量输出前，建议先导出少量画面检查结果。
+> NexFilm Engine v1.1.0 是当前稳定版本。Windows 与 macOS 安装包目前未进行代码签名，macOS DMG 也未经过 Apple 公证。请只从本仓库的 Releases 下载，并始终保留原始扫描文件；正式批量输出前，建议先导出少量画面检查结果。
 
 ### 下载与安装
 
-从 [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest) 下载与电脑架构匹配的 v1.0.2 安装包：
+从 [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest) 下载与电脑架构匹配的 v1.1.0 安装包：
 
 | 平台 | 下载文件 | 安装方式 |
 | --- | --- | --- |
@@ -52,30 +52,50 @@
 
 不要下载 Releases 中自动生成的 <code>Source code</code> 压缩包，它们不是可直接运行的安装包。若 macOS 阻止首次启动，请先确认文件来自本仓库，再在 Finder 中右键应用并选择 **打开**，或前往 **系统设置 → 隐私与安全性** 允许启动。
 
-### v1.0.2 更新内容
+### v1.1.0 更新内容
+
+本版的主题是把**输入类型与密度数学分开**：输入类型只决定"这段数据属于什么输入域"，反相与密度计算全部使用同一套实现。相机 RAW、扫描仪 TIFF 与 Imacon/Flextight FFF 因此得到一致、可解释的结果。
+
+新功能：
+
+- **统一密度管线**：输入域（内嵌 ICC、扫描仪容器记录、RAW 元数据、机型识别或 sRGB 兜底）逐帧解析并记录在技术报告中；密度数学统一为逐通道扣除片基 → 光学密度 → 共享窗口原点 → 有界通道跨度响应。跨度响应只在三通道确实失衡时介入，正常素材不受影响。
+- **整卷白点与批量反相**：按整卷最亮的真实画面标定一次共享白点；片基与片头被采样的画面视为标定素材，自动排除在 Develop、白点测量与批量反相之外，并在进度中报告跳过数量。
+- **硬件校正（实验性）**：**该功能仍在开发，当前不稳定，请不要将其投入严肃使用。** 新增硬件校正视图与校正配置，可收集 dark / open gate / flat / 透射目标，生成带验证报告的配置并绑定到胶卷；Capture Corrected 让 dark/open 真正参与像素计算，Capture Separation 3×3 可由实测色卡拟合。条件不满足时自动回退到 Smart Auto 并说明原因。
+- **新的交付格式**：线性 16 位 TIFF、线性 DNG，以及原样封装扫描 RAW 的相机 RAW DNG。
+- **胶卷备注**：每卷可填写备注，显示在归档卡片与胶卷内容中。
+- **内置使用文档**：应用内新增 9 章中英双语文档，完全离线可读。
 
 修复与优化：
 
-- 优化相机 RAW 处理管线：导入阶段优先提取嵌入预览，Develop 阶段按需生成有界的 16 位线性代理，Auto Invert 复用同一代理。
-- 修复 Intel Mac 上 RAW 代理尚未就绪时自动反相偶发失败的问题。
-- 修复旋转后胶片条缩略图容器变形，以及裁切遮罩与缩放/平移不同步的问题。
-- 调整调整条滚轮交互，必须先点击调整条才会响应滚轮。
+- 扫描件改用按行流式解码：数百兆到 GB 级的 FFF、扫描仪 TIFF 与线性 DNG 都能打开，不再要求整幅图像驻留内存；大尺寸扫描件"Develop 能看、导出失败"的问题同时修复。
+- `.fff` 识别不再依赖 FlexColor 写下的设备字符串。缺少该标记的 Imacon/Flextight 扫描件不会再被误判为哈苏相机 RAW —— 这正是 1.0.2 中"导入 fff 无法解码"的原因。
+- 流式 TIFF 读取器增加几何与文件长度一致性校验：尺寸异常的头部现在给出明确错误，不再拖垮进程。
+- 反相：短调画面保持原有影调性格；拼接白边、白灯板与高光溢出不再参与窗口端点；从其他画面继承的片基会在本画面自己的像素上重新测量。
+- 散张导入与按卷未标定使用同一套密度数学，两者观感不再分叉。
+- 导入阶段不再解算 RAW：首次进入 Develop 时才生成有界代理，导入更快、内存更可控。
+- 界面：Develop 检查器重新分组，新增对比度并收紧曝光/高光/阴影范围；裁切与胶片范围共用同一画面坐标系；打开画面不再自动取消遮罩。
+- 数据改为每用户数据目录，胶卷元数据迁入 SQLite，散张导入同样持久化；修复旋转缩略图变形、裁切遮罩与缩放不同步、批量反相中断等回归。
+
+升级提示：
+
+- 升级后请对旧胶卷重新执行一次 **Auto Invert**。本次迁移会清除用旧密度配方渲染的缩略图，避免缩略图与实际渲染不一致。
 
 ### NexFilm 是什么
 
 NexFilm Engine 用于将相机翻拍或扫描仪输出的胶片负片转换为正片，并把导入、反相、校色、胶卷归档和输出组织在同一个工作区。应用采用 Rust、Tauri、SQLite 与 WebGL 构建；图库、编辑状态和胶卷资料均保存在本地，核心工作流不依赖云端服务。
 
-### v1.0 主要功能
+### 主要功能
 
 - **胶卷与散张工作流**：按画幅、相机、胶片型号、日期和备注导入整卷，也可直接拖入散张；备注用于区分同一款胶片的多卷素材，并显示在胶卷卡片与胶卷资料中；支持继续编辑、追加画面、修改胶卷信息、筛选归档、重定位缺失文件和删除记录。
 - **自动胶片范围识别**：自动检测有效成像区域，也可拖动四角或边缘手动修正；范围仅用于内容分析与边缘排除，不会自动改变画面透视。固定机位扫描时可将范围批量应用到同卷其他画面。
-- **密度域反相与自动校色**：基于线性透射率进行密度转换、片基扣除和经验去串扰，并提供 Color / B&W、D-Min / D-Max、Printer Lights、曝光、Gamma、对比度、高光、阴影、饱和度、色温和色调控制。算法细节见 [数据处理管线说明](data_process_pipeline_doc.md)。
+- **密度域反相与自动校色**：基于线性透射率进行密度转换、片基扣除与统一的通道响应补偿，输入域逐帧记录；提供 Color / B&W、D-Min / D-Max、Printer Lights、曝光、Gamma、对比度、高光、阴影、饱和度、色温和色调控制。算法细节见 [统一密度管线说明](docs/unified-density-pipeline.md) 与 [数据处理管线说明](data_process_pipeline_doc.md)。
+- **整卷标定与实验性硬件校正**：可按卷标定共享白点并整卷自动反相；硬件校正视图可管理采集校正配置（dark / open gate / flat / 透射目标）与扫描仪输入配置，用于固定的翻拍或扫描设备。该部分仍标记为实验性。
 - **实时 Develop 工作区**：WebGL 交互预览，支持裁切、拉直、透视、90 度旋转、水平/垂直翻转、缩放平移，以及直方图和波形图。
 - **设置复制与批处理**：可按类别选择要复制的校色、LUT、齿孔和几何参数，再粘贴到其他相似画面。
 - **打印胶片模拟**：内置 Kodak 与 Ilford 打印胶片/相纸风格 LUT，支持载入自定义 <code>.cube</code> LUT 并调节强度。
 - **完整输出工具**：可导出选中画面或整卷，支持 16/8 位 TIFF、16 位 PNG、JPEG，以及线性 16 位 TIFF、线性 DNG 和相机 RAW DNG；提供输出色彩空间、尺寸、放大策略、锐化、JPEG 质量、命名模板、重名策略和可选 EXIF 胶卷信息。
 - **胶卷接触印样**：生成带胶片型号、拍摄日期、相机和画面编号的 JPEG Contact Sheet。
-- **本地化与主题**：提供中文/英文界面和浅色/深色主题；v1.0 的前端样式已随安装包本地打包，可离线使用。
+- **本地化与主题**：提供中文/英文界面和浅色/深色主题；前端样式与使用文档均随安装包本地打包，可离线使用。
 
 ### 快速开始
 
@@ -178,17 +198,20 @@ cargo tauri build --target aarch64-apple-darwin --bundles dmg
 cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ~~~
 
-### 维护者：发布 v1.0.2
+### 维护者：发布 v1.1.0
 
-仓库使用单一的手动工作流 [Build and Release NexFilm 1.0.2](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml)。运行时输入标签 <code>v1.0.2</code>；工作流会先执行 Rust 与前端校验，随后并行构建 Windows x64、macOS Apple Silicon 和 macOS Intel 安装包，并发布为正式 GitHub Release。
+仓库使用单一的手动工作流 [Build and Release NexFilm 1.1.0](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml)。运行时输入标签 <code>v1.1.0</code>；工作流会先执行 Rust 与前端校验，随后并行构建 Windows x64、macOS Apple Silicon 和 macOS Intel 安装包，并发布为正式 GitHub Release。
 
-发布前请确认 <code>Cargo.toml</code>、<code>Cargo.lock</code> 与 <code>tauri.conf.json</code> 均为 <code>1.0.2</code>，提交并推送全部发布文件，再从 Actions 手动运行一次工作流。当前配置为 <code>releaseDraft: false</code>、<code>prerelease: false</code>。
+发布前请确认 <code>Cargo.toml</code>、<code>Cargo.lock</code> 与 <code>tauri.conf.json</code> 均为 <code>1.1.0</code>，应用内文档与 README 的版本号已同步，提交并推送全部发布文件，再从 Actions 手动运行一次工作流。当前配置为 <code>releaseDraft: false</code>、<code>prerelease: false</code>。
 
 ### 已知限制
 
 - Windows 和 macOS 安装包尚未进行代码签名；macOS DMG 尚未经过 Apple 公证。
 - 不同 RAW 相机、扫描仪与 FFF 文件的兼容性仍需持续验证。
 - Nikon Z8 的 HE/HE* 高效率 RAW 压缩格式暂时无法由 LibRaw 解码。
+- 硬件校正相关能力（Capture Corrected、Capture Characterized、扫描仪输入配置）仍为实验性，需要在真实设备素材上继续验证。
+- 超大 JPEG/PNG 受解码器内存上限约束，可能提示解码失败，建议改用 TIFF 或 DNG。
+- 全分辨率导出大型扫描件需要较大的可用内存。
 - Linux 暂无经过验证的正式安装包。
 - 数据库引用原始文件路径，不会复制原图；移动或删除源文件会导致画面离线。
 - WebGL 预览与全尺寸导出仍需在更多真实 RAW 文件上持续进行像素级一致性验证。
@@ -221,11 +244,11 @@ cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ## English
 
 > [!IMPORTANT]
-> NexFilm Engine v1.0.2 is the current stable release. Windows and macOS packages are currently unsigned, and macOS DMGs are not notarized by Apple. Download only from this repository's Releases page, keep the original scans, and test a small export before processing a full roll.
+> NexFilm Engine v1.1.0 is the current stable release. Windows and macOS packages are currently unsigned, and macOS DMGs are not notarized by Apple. Download only from this repository's Releases page, keep the original scans, and test a small export before processing a full roll.
 
 ### Download and install
 
-Download the v1.0.2 package for your system from [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest):
+Download the v1.1.0 package for your system from [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest):
 
 | Platform | Package | Installation |
 | --- | --- | --- |
@@ -235,44 +258,51 @@ Download the v1.0.2 package for your system from [GitHub Releases](https://githu
 
 The automatically generated <code>Source code</code> archives are not application installers. If macOS blocks the first launch, verify that the DMG came from this repository, then right-click the app in Finder and choose **Open**, or allow it under **System Settings → Privacy & Security**.
 
-### What's new in v1.0.2
+### What's new in v1.1.0
+
+The theme of this release is separating **what the input is** from **how density is computed**. The input class now selects only the input domain; inversion and density use one shared implementation, which gives camera RAW, scanner TIFF, and Imacon/Flextight FFF files consistent and explainable results.
 
 New features:
 
-- Mouse-wheel controls.
-- Barrel and pincushion distortion correction.
-- Crop aspect-ratio presets.
-- Preview-quality selection.
-- Deleted files are now moved to the system trash first.
+- **Unified density pipeline.** The input domain (embedded ICC, scanner container record, RAW metadata, device identity, or an sRGB fallback) is resolved per frame and recorded in the technical report. Density is computed the same way everywhere: per-channel film-base subtraction, optical density, a shared window origin, and a bounded per-channel span response that only engages when the channels are genuinely unbalanced.
+- **Roll white point and Roll auto invert.** One shared white point is measured on the brightest real photograph of the roll. Frames the base and leader were sampled from are treated as calibration material and stay out of Develop, out of the white-point measurement, and out of the Roll batch, which reports how many it skipped.
+- **Hardware calibration (experimental).** **This feature is still under development thus not stable. Please do NOT use it in serious application.** A calibration view and configuration profile collect dark / open-gate / flat / transmission-target references and produce a validated, digest-stamped profile bound to a roll. Capture Corrected makes dark/open correction part of the pixel math, and Capture Separation is fittable from measured patches. When the conditions are not met the pipeline falls back to Smart Auto and says why.
+- **Scanner input profiles** can be imported and bound to a roll, affecting both preview and export.
+- **New delivery formats**: linear 16-bit TIFF, linear DNG, and camera RAW DNG that re-wraps a scan's own mosaic.
+- **Per-roll notes**, shown on the roll card and in the roll contents.
+- **In-app documentation**: nine chapters, in Chinese and English, fully offline.
 
 Fixes and improvements:
 
-- Reworked camera-RAW processing: import prefers embedded previews, Develop generates a bounded 16-bit linear proxy on demand, and Auto Invert reuses that proxy.
-- Fixed intermittent Auto Invert failures on Intel Macs when the RAW proxy was still being prepared.
-- Fixed rotated filmstrip thumbnails changing the slot shape, and kept crop overlays synchronized with zoom and pan.
-- Range controls now respond to the mouse wheel only after the control has been clicked.
+- Scanner files are decoded row by row, so FFF, scanner TIFF, and linear DNG files from hundreds of megabytes to gigabytes open without ever fitting in memory. The same readers are used for export, fixing large scans that used to render in Develop and then fail to export.
+- `.fff` classification no longer depends on the device string FlexColor writes. Imacon/Flextight scans without it are no longer mistaken for a Hasselblad camera back, which is what caused the "import fff cannot decode" reports against 1.0.2.
+- The streaming TIFF reader now validates declared geometry against the file size, so an abnormal header returns a clear error instead of taking the process down.
+- Inversion: short-tone frames keep their character, stitched white edges, light tables, and clipped highlights no longer set the window endpoints, and a film base inherited from another frame is re-measured on the frame's own pixels.
+- Loose import and uncalibrated roll import now share one density recipe, so their results no longer diverge.
+- Import no longer unpacks RAW: the bounded Develop proxy is built on first open, which makes imports faster and memory use more predictable.
+- Interface: the Develop inspector is regrouped, a contrast control was added, and the exposure/highlight/shadow ranges were tightened; crop and film area share one frame coordinate system; opening a frame no longer cancels its mask.
+- Data now lives in a per-user directory with roll metadata in SQLite, and loose imports persist across restarts. Rotated thumbnail deformation, crop-overlay desynchronization, and interrupted Roll batches were fixed.
 
-- Fixed import failures for large files such as Hasselblad FFF images.
-- Fixed notification dialogs being obscured by other interface elements.
-- Improved application-state consistency for a more stable workflow.
-- Improved rotation controls.
-- Fixed pagination and deletion on the Rolls page.
+Upgrade note:
+
+- After upgrading, run **Auto Invert** once more on older rolls. This release's migration clears thumbnails rendered with the retired density recipe so the filmstrip cannot disagree with the actual render.
 
 ### What is NexFilm?
 
 NexFilm Engine converts camera-scanned or scanner-produced film negatives into positives while keeping import, inversion, grading, roll archiving, and output in one workspace. It is built with Rust, Tauri, SQLite, and WebGL. The library, edit state, and roll metadata remain local; the core workflow does not require a cloud service.
 
-### v1.0 features
+### Features
 
 - **Roll and loose-frame workflows** with format, camera, film stock, date, and note metadata. The note tells several rolls of the same film stock apart and appears on the roll card and in the roll details; drag-and-drop import, archived-roll editing, append, metadata editing, missing-file relocation, and deletion are all supported.
 - **Automatic film-area detection**, with manual corner/edge adjustment and batch reuse for consistently positioned scans. The detected area guides analysis and edge exclusion without automatically changing image perspective.
-- **Density-domain inversion and automatic grading** with Color / B&W modes, D-Min / D-Max, Printer Lights, exposure, gamma, contrast, highlights, shadows, saturation, temperature, and tint. See the [data-processing pipeline](data_process_pipeline_doc.md) for implementation details.
+- **Density-domain inversion and automatic grading** with per-channel film-base subtraction and one shared channel-response stage, with the input domain recorded per frame; Color / B&W modes, D-Min / D-Max, Printer Lights, exposure, gamma, contrast, highlights, shadows, saturation, temperature, and tint. See the [unified density pipeline](docs/unified-density-pipeline.md) and the [data-processing pipeline](data_process_pipeline_doc.md) for implementation details.
+- **Roll calibration and experimental hardware calibration**: measure a shared roll white point and run Roll auto invert; the calibration view manages capture profiles (dark / open gate / flat / transmission target) and scanner input profiles for a fixed copy stand or scanner. This part is still marked experimental.
 - **Real-time Develop workspace** powered by WebGL, with crop, straighten, perspective, quarter-turn rotation, horizontal/vertical flip, zoom/pan, histogram, and waveform.
 - **Selective Copy Settings / Paste Settings** for grade, LUT, sprocket, and geometry groups.
 - **Print-film emulation** with bundled Kodak and Ilford print-film/paper LUTs, custom <code>.cube</code> LUT loading, and opacity control.
 - **Complete output tools** for selected frames or a full roll: 16/8-bit TIFF, 16-bit PNG, JPEG, linear 16-bit TIFF, linear DNG, and camera RAW DNG; output color space; resizing; optional enlargement; sharpening; JPEG quality; filename templates; conflict policies; and optional roll metadata in EXIF.
 - **JPEG contact sheets** labeled with film stock, date, camera, and frame number.
-- **English/Chinese UI and light/dark themes** with locally bundled v1.0 styles for offline use.
+- **English/Chinese UI and light/dark themes**, with the frontend styles and the documentation bundled for offline use.
 
 ### Quick start
 
@@ -358,17 +388,20 @@ cargo tauri build --target aarch64-apple-darwin --bundles dmg
 cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ~~~
 
-### Maintainers: publish v1.0.2
+### Maintainers: publish v1.1.0
 
-The repository uses one manual workflow: [Build and Release NexFilm 1.0.2](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml). Run it with tag <code>v1.0.2</code>. It verifies the Rust and frontend sources, then builds Windows x64, macOS Apple Silicon, and macOS Intel packages in parallel and publishes a stable GitHub Release.
+The repository uses one manual workflow: [Build and Release NexFilm 1.1.0](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml). Run it with tag <code>v1.1.0</code>. It verifies the Rust and frontend sources, then builds Windows x64, macOS Apple Silicon, and macOS Intel packages in parallel and publishes a stable GitHub Release.
 
-Before running it, confirm that <code>Cargo.toml</code>, <code>Cargo.lock</code>, and <code>tauri.conf.json</code> contain version <code>1.0.2</code>, then commit and push every release file. The current workflow uses <code>releaseDraft: false</code> and <code>prerelease: false</code>.
+Before running it, confirm that <code>Cargo.toml</code>, <code>Cargo.lock</code>, and <code>tauri.conf.json</code> contain version <code>1.1.0</code> and that the in-app documentation and README carry the same version, then commit and push every release file. The current workflow uses <code>releaseDraft: false</code> and <code>prerelease: false</code>.
 
 ### Known limitations
 
 - Windows and macOS packages are unsigned; macOS DMGs are not Apple-notarized.
 - Compatibility still needs broader validation across RAW cameras, scanners, and FFF variants.
 - Nikon Z8 HE/HE* high-efficiency RAW compression is not currently decodable by LibRaw.
+- Hardware calibration (Capture Corrected, Capture Characterized, scanner input profiles) is still experimental and needs validation on real hardware.
+- Very large JPEG/PNG files are limited by the decoder's memory ceiling and may report a decode failure; prefer TIFF or DNG for those.
+- Exporting a large scan at full resolution needs a substantial amount of free memory.
 - No verified Linux release package is currently provided.
 - The database references source paths and does not copy originals; moved or deleted files become unavailable until relocated.
 - Pixel-level consistency between WebGL preview and full-resolution export continues to be tested against more real RAW files.

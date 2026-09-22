@@ -44,6 +44,18 @@ Last updated: 2026-08-04
   linear transmission before film-density processing. FlexColor edit recipes
   stored in the file do not override this input contract. Other RAW-style FFF
   files continue through the bundled LibRaw decoder.
+- The scanner `.FFF` decision no longer depends on the FlexColor device string.
+  A file that names no scanner is classified from the container itself: an
+  uncompressed first RGB page with no CFA/LinearRaw SubIFD is a scan, while a
+  camera back keeps its reduced-size preview in the first IFD and its Bayer page
+  in a SubIFD. A scan without a device string used to reach LibRaw, which rejects
+  Imacon FFF outright.
+- The estimate decoder the export runs follows the same input classes as the
+  Develop proxy: scanner FFF and TIFF come from the streaming reader, LinearRaw
+  DNG from the DNG reader, and only Bayer captures go to LibRaw. Export used to
+  send every `.fff` and every large TIFF to the generic image decoder, so those
+  frames failed to export with a LibRaw or "insufficient memory" error even
+  though Develop rendered them.
 - Roll identity is `roll_id + file_path` in both frontend collection logic and backend deletion/preview lookup.
 - Relocating a missing source file migrates the SQLite primary-key path and only updates the owning roll.
 - History keeps showing persisted previews when source files are missing and marks them as missing.

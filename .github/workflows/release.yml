@@ -1,12 +1,12 @@
-name: Build and Release NexFilm 1.0.2
+name: Build and Release NexFilm 1.1.0
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, for example v1.0.2"
+        description: "Release tag, for example v1.1.0"
         required: true
-        default: "v1.0.2"
+        default: "v1.1.0"
         type: string
 
 permissions:
@@ -103,14 +103,33 @@ jobs:
           releaseBody: |
             NexFilm ${{ inputs.tag }} 正式版。
 
-            ### 修复与优化
-            - 优化相机 RAW 源文件处理管线：导入阶段优先提取嵌入预览，Develop 阶段按需生成有界的 16 位线性代理，自动反相复用同一代理。
-            - 修复 Intel Mac 上 RAW 代理尚未就绪时自动反相偶发失败的问题。
-            - 修复旋转后胶片条缩略图容器变形，以及裁切遮罩与缩放/平移不同步的问题。
-            - 调整调整条滚轮交互，必须先点击调整条才会响应滚轮。
+            本版主题是把**输入类型与密度数学分开**：输入类型只决定"这段数据属于什么输入域"，反相与密度计算全部使用同一套实现。
 
-            > Nikon Z8 的 HE/HE* 高效率 RAW 文件因 LibRaw 暂不支持解码，目前无法导入。
-            
+            ### 新功能
+            - **统一密度管线**：输入域（内嵌 ICC、扫描仪容器记录、RAW 元数据、机型识别或 sRGB 兜底）逐帧解析并记录；密度数学统一为逐通道扣除片基 → 光学密度 → 共享窗口原点 → 有界通道跨度响应，正常素材不受影响。
+            - **整卷白点与批量反相**：按整卷最亮画面标定一次共享白点；片基与片头被采样的画面视为标定素材，自动排除在 Develop、白点测量与批量反相之外，并在进度中报告跳过数量。
+            - **硬件校正（实验性）**：新增硬件校正视图与校正配置，可收集 dark / open gate / flat / 透射目标并绑定到胶卷；Capture Corrected 让 dark/open 参与像素计算，Capture Separation 3×3 可由实测色卡拟合，条件不足时自动回退 Smart Auto 并说明原因。
+            - **扫描仪输入配置**：可导入本地扫描仪配置文件并绑定到胶卷，作用于预览与导出。
+            - **新的交付格式**：线性 16 位 TIFF、线性 DNG，以及原样封装扫描 RAW 的相机 RAW DNG。
+            - **胶卷备注**与**内置使用文档**（9 章中英双语，完全离线）。
+
+            ### 修复与优化
+            - 扫描件改用按行流式解码：数百兆到 GB 级的 FFF、扫描仪 TIFF 与线性 DNG 都能打开；大尺寸扫描件"Develop 能看、导出失败"的问题同时修复。
+            - `.fff` 识别不再依赖 FlexColor 写下的设备字符串，缺少该标记的 Imacon/Flextight 扫描件不会再被误判为哈苏相机 RAW（即 1.0.2 中"导入 fff 无法解码"的原因）。
+            - 流式 TIFF 读取器增加几何与文件长度一致性校验，异常头部返回明确错误而不是拖垮进程。
+            - 反相：短调画面保持原有影调性格；拼接白边、白灯板与高光溢出不再参与窗口端点；继承的片基会在本画面自己的像素上重新测量。
+            - 散张导入与按卷未标定观感不再分叉；导入阶段不再解算 RAW，首次进入 Develop 才生成有界代理。
+            - 界面：Develop 检查器重新分组，新增对比度并收紧曝光/高光/阴影范围；裁切与胶片范围共用同一画面坐标系；打开画面不再自动取消遮罩。
+
+            ### 升级提示
+            - 升级后请对旧胶卷重新执行一次 **Auto Invert**：本次迁移会清除用旧密度配方渲染的缩略图，避免缩略图与实际渲染不一致。
+
+            ### 已知限制
+            - 硬件校正相关能力（Capture Corrected、Capture Characterized、扫描仪输入配置）仍为实验性。
+            - 超大 JPEG/PNG 受解码器内存上限约束，可能提示解码失败，建议改用 TIFF 或 DNG。
+            - 全分辨率导出大型扫描件需要较大的可用内存。
+            - Nikon Z8 的 HE/HE* 高效率 RAW 文件因 LibRaw 暂不支持解码，目前无法导入。
+
             ### 📥 下载指南 (Download)
             - **Windows 用户**：请下载包含 `nsis` 和 `x86_64` 的 `.exe` 安装程序。
             - **Mac (Apple Silicon)**：请下载包含 `aarch64` 的 `.dmg`。

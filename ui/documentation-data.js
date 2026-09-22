@@ -828,8 +828,9 @@
                         id: 'version',
                         heading: '版本与更新',
                         content: `
-<p>当前稳定版本为 <strong>v1.0.2</strong>。安装包与更新说明统一发布在仓库的 Releases 页面，请以那里为准。</p>
+<p>当前稳定版本为 <strong>v1.1.0</strong>。安装包与更新说明统一发布在仓库的 Releases 页面，请以那里为准。</p>
 <p>升级不会删除数据目录，但涉及数据库结构变化时软件会在首次启动时自动迁移。跨越较大版本升级之前，建议先备份数据目录。</p>
+<p>从 1.0.2 升级到 1.1.0 时，迁移会清除用旧密度配方渲染的缩略图。升级后请对旧胶卷重新执行一次自动反相，让缩略图与实际渲染结果一致。</p>
 `
                     },
                     {
@@ -1686,8 +1687,9 @@
                         id: 'version',
                         heading: 'Version and updates',
                         content: `
-<p>The current stable release is <strong>v1.0.2</strong>. Installers and release notes are published on the repository's Releases page; treat that page as the source of truth.</p>
+<p>The current stable release is <strong>v1.1.0</strong>. Installers and release notes are published on the repository's Releases page; treat that page as the source of truth.</p>
 <p>Upgrading does not delete the data directory, but when the database schema changes the app migrates it automatically on first launch. Before a large version jump, back up the data directory first.</p>
+<p>When upgrading from 1.0.2 to 1.1.0, the migration clears thumbnails rendered with the retired density recipe. Run Auto Invert once more on older rolls so the filmstrip matches the actual render.</p>
 `
                     },
                     {

@@ -550,6 +550,47 @@ fn contains_hasselblad_imacon_scanner_identifier(bytes: &[u8]) -> bool {
             && contains_ascii_identifier(bytes, b"SCANNER"))
 }
 
+/// TIFF photometric values that mean a page still holds sensor samples rather
+/// than a rendered picture: CFA (Bayer/X-Trans) and LinearRaw.
+fn is_camera_raw_photometric(photometric: u16) -> bool {
+    matches!(photometric, 32803 | 34892)
+}
+
+/// True when the first page has the shape of an Imacon/Flextight scan: one
+/// uncompressed RGB page, and not a camera back's reduced-size preview.
+///
+/// The "reduced resolution" and "mask" subfile bits separate the two container
+/// layouts. A Hasselblad digital back keeps its 8-bit preview in the first IFD
+/// (NewSubfileType 1) and its Bayer page in a SubIFD, while a scanner writes the
+/// scan itself there (NewSubfileType 0).
+fn is_rendered_scanner_page(directory: &ClassicTiffDirectory) -> bool {
+    directory.new_subfile_type & 0b101 == 0
+        && directory.photometric == 2
+        && directory.compression == 1
+        && directory.planar_configuration == 1
+        && directory.samples_per_pixel >= 3
+        && !directory.strip_offsets.is_empty()
+        && matches!(directory.bits_per_sample.first().copied(), Some(8 | 16))
+}
+
+/// True when another page of the same file still holds sensor samples.
+///
+/// The first page is already known to be a rendered RGB image when this is
+/// asked, so only the pages a camera back would keep its capture in are left:
+/// the SubIFDs, and the root's own IFD chain.
+fn fff_has_camera_raw_page(path: &str, directory: &ClassicTiffDirectory) -> bool {
+    if directory.sub_ifd_offsets.iter().any(|offset| {
+        read_classic_tiff_subdirectory(path, *offset)
+            .is_ok_and(|sub| is_camera_raw_photometric(sub.photometric))
+    }) {
+        return true;
+    }
+    (1..=4).any(|page| {
+        read_classic_tiff_directory(path, page)
+            .is_ok_and(|page| is_camera_raw_photometric(page.photometric))
+    })
+}
+
 fn is_scanner_fff_tiff(path: &str) -> bool {
     if !is_fff_extension(path) {
         return false;
@@ -573,7 +614,18 @@ fn is_scanner_fff_tiff(path: &str) -> bool {
     {
         return false;
     }
-    contains_hasselblad_imacon_scanner_identifier(&metadata)
+    if contains_hasselblad_imacon_scanner_identifier(&metadata) {
+        return true;
+    }
+    // The device name above comes from the edit recipe FlexColor writes, not
+    // from the container contract: an Imacon 3F/FFF saved by another tool, or
+    // by a FlexColor version that records only the scan settings, carries no
+    // such string. Recognise the container itself then, so the scan is not
+    // handed to LibRaw as a camera back capture (LibRaw cannot decode it).
+    let Ok(directory) = read_classic_tiff_directory(path, 0) else {
+        return false;
+    };
+    is_rendered_scanner_page(&directory) && !fff_has_camera_raw_page(path, &directory)
 }
 
 fn decode_scanner_fff_tiff_page(
@@ -663,6 +715,7 @@ fn decode_scanner_fff_tiff_page(
 #[derive(Clone, Debug)]
 struct ClassicTiffDirectory {
     little_endian: bool,
+    new_subfile_type: u32,
     width: u32,
     height: u32,
     bits_per_sample: Vec<u16>,
@@ -878,6 +931,8 @@ fn read_classic_tiff_directory_impl(
     if width == 0 || height == 0 {
         return Err("TIFF page has invalid dimensions".into());
     }
+    let new_subfile_type =
+        u32::try_from(first(values(254)?, 0)).map_err(|_| "Invalid TIFF subfile type")?;
     let bits_per_sample = values(258)?
         .unwrap_or_else(|| vec![1])
         .into_iter()
@@ -909,6 +964,7 @@ fn read_classic_tiff_directory_impl(
 
     Ok(ClassicTiffDirectory {
         little_endian: little,
+        new_subfile_type,
         width,
         height,
         bits_per_sample,
@@ -1026,12 +1082,35 @@ fn decode_uncompressed_tiff_directory_reduced(
         .and_then(|width| width.checked_mul(samples))
         .and_then(|count| count.checked_mul(bytes_per_sample))
         .ok_or_else(|| "TIFF scanline length overflowed".to_string())?;
+    // An uncompressed page declares its own geometry, so a wrong or hostile
+    // header can ask for a buffer far larger than the file can possibly hold.
+    // Reject that before allocating: a failed multi-gigabyte allocation aborts
+    // the process instead of returning an error.
+    if !directory.strip_byte_counts.is_empty() {
+        let payload_bytes: u64 = directory.strip_byte_counts.iter().copied().sum();
+        let file_len = std::fs::metadata(path)
+            .map_err(|error| format!("Cannot inspect TIFF {path}: {error}"))?
+            .len();
+        let declared_bytes = (row_bytes as u64).saturating_mul(u64::from(directory.height));
+        if payload_bytes > file_len || payload_bytes < declared_bytes {
+            return Err(format!(
+                "TIFF declares {declared_bytes} bytes of pixels but carries {payload_bytes} \
+                 in a {file_len}-byte file"
+            ));
+        }
+    }
     let output_len = usize::try_from(output_width)
         .ok()
         .and_then(|width| usize::try_from(output_height).ok()?.checked_mul(width))
         .and_then(|pixels| pixels.checked_mul(3))
         .ok_or_else(|| "Reduced TIFF buffer size overflowed".to_string())?;
-    let mut output = vec![0u16; output_len];
+    // Reserve explicitly so an oversized frame is reported as a decode error
+    // instead of taking the application down with the allocator.
+    let mut output = Vec::new();
+    output.try_reserve_exact(output_len).map_err(|_| {
+        format!("TIFF image needs {output_len} samples, which does not fit in memory")
+    })?;
+    output.resize(output_len, 0u16);
     let mut file =
         std::fs::File::open(path).map_err(|error| format!("Cannot reopen TIFF {path}: {error}"))?;
 
@@ -4638,6 +4717,15 @@ fn decode_image_buffer(
     Ok(converted)
 }
 
+/// Long-edge target for a decode mode: the Develop transport stays inside the
+/// proxy contract, while an export reads the frame at its own resolution.
+fn estimate_target_long_edge(mode: DecodeMode) -> u32 {
+    match mode {
+        DecodeMode::DevelopProxy => PROXY_LONG_EDGE as u32,
+        DecodeMode::ExportFull => u32::MAX,
+    }
+}
+
 /// Decode the Smart Auto ProPhoto Estimate. Camera/sRGB values are first fit
 /// into a finite positive transmission domain while preserving luminance;
 /// the resulting ProPhoto values remain a relative display estimate, never a
@@ -4658,6 +4746,13 @@ fn decode_prophoto_estimate_image_buffer_with_policy(
     mode: DecodeMode,
     white_balance: crate::raw_backend::WhiteBalancePolicy,
 ) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    if is_scanner_fff_tiff(path) {
+        // An Imacon/Flextight FFF is a rendered RGB page, not a maze of sensor
+        // samples: LibRaw rejects the file outright, and the reduced TIFF reader
+        // is the decoder that owns its input domain.
+        let linear = decode_tiff_for_smart_auto(path, estimate_target_long_edge(mode))?;
+        return Ok(linear_srgb_u16_to_prophoto_f32(&linear));
+    }
     if !is_raw_extension(path) {
         let source = decode_image_buffer(path, mode)?;
         let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
@@ -4717,16 +4812,27 @@ fn decode_scanner_profiled_estimate_image_buffer(
     profile: Option<&crate::scanner_profile::ScannerInputProfile>,
     target_long_edge: u32,
 ) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
-    let Some(profile) = profile.filter(|_| !is_raw_extension(path) && !is_dng_extension(path))
-    else {
+    // A Bayer capture belongs to LibRaw, and a scanner profile never applies to
+    // one. Scanner FFF is the exception that only looks like a camera RAW: the
+    // extension is shared, the container is a rendered page.
+    if is_raw_extension(path) && !is_scanner_fff_tiff(path) {
+        if is_dng_extension(path) {
+            if let Ok(linear) = decode_reduced_dng_for_working_space(path, target_long_edge) {
+                return Ok(linear_srgb_u16_to_prophoto_f32(&linear));
+            }
+        }
         return decode_prophoto_estimate_image_buffer(path, mode);
-    };
+    }
     let source = if is_tiff_extension(path) || is_scanner_fff_tiff(path) {
+        // Large scans must come from the streaming reader: the generic image
+        // decoder refuses anything past its own allocation ceiling, which turned
+        // every big TIFF and every scanner FFF into an export failure.
         decode_reduced_tiff_for_working_space(path, target_long_edge)
             .or_else(|_| decode_image_buffer(path, mode))?
     } else {
         decode_image_buffer(path, mode)?
     };
+    let profile = profile.filter(|_| !is_dng_extension(path));
     let mut linear = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(source.width(), source.height());
     linear
         .as_mut()
@@ -4739,7 +4845,9 @@ fn decode_scanner_profiled_estimate_image_buffer(
                 pixel[2] as f32 / 65535.0,
             ]);
         });
-    profile.apply_linear_rgb_image(&mut linear)?;
+    if let Some(profile) = profile {
+        profile.apply_linear_rgb_image(&mut linear)?;
+    }
     let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
     linear.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
         let rgb = apply_linear_matrix(
@@ -5241,9 +5349,12 @@ fn default_pipeline_state_for_import(
 fn pipeline_image_kind(path: &str) -> PipelineImageKind {
     if !Path::new(path).is_file() {
         PipelineImageKind::Missing
-    } else if is_raw_extension(path) {
+    } else if is_raw_extension(path) && !is_scanner_fff_tiff(path) {
         PipelineImageKind::RawBayer
-    } else if is_direct_image_extension(path) || is_tiff_extension(path) {
+    } else if is_direct_image_extension(path)
+        || is_tiff_extension(path)
+        || is_scanner_fff_tiff(path)
+    {
         PipelineImageKind::DirectRgb
     } else {
         PipelineImageKind::Unsupported
@@ -6608,7 +6719,8 @@ fn write_raw_dng_export(
     output_path: &std::path::Path,
     metadata: Option<&ExportMetadata>,
 ) -> Result<(), String> {
-    if !is_raw_extension(source_path) {
+    // A scanner `.fff` shares the LibRaw extension list but carries no mosaic.
+    if !is_raw_extension(source_path) || is_scanner_fff_tiff(source_path) {
         return Err(format!(
             "{} is not a camera RAW file, so it has no RAW mosaic to wrap. Export it as a linear DNG instead.",
             std::path::Path::new(source_path)
@@ -14926,10 +15038,10 @@ mod import_contract_tests {
         linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff, measure_roll_highlight_frames,
         persist_import_batch, pipeline_base_density, pipeline_has_base, point_in_film_area,
         prepare_content_render_limits, preserve_smart_auto_content_span,
-        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
-        render_f32_shader_equivalent, render_shader_equivalent, resolve_input_domain,
-        rgb16_image_from_bytes, roll_density_mapping_with_frame_base, roll_physical_density_span,
-        sample_reference_frame_path, sampled_frame_paths_from_anchors,
+        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, read_classic_tiff_directory,
+        reference_density_extreme, render_f32_shader_equivalent, render_shader_equivalent,
+        resolve_input_domain, rgb16_image_from_bytes, roll_density_mapping_with_frame_base,
+        roll_physical_density_span, sample_reference_frame_path, sampled_frame_paths_from_anchors,
         share_smart_auto_density_scale, srgb_proxy_u16_to_prophoto_f32,
         tiff_smart_auto_input_is_estimated, trim_density_endpoints, AutoColorLimits, DecodeMode,
         IMPORT_PREVIEW_LONG_EDGE, MINIMUM_USABLE_CONTENT_SPAN, PROPHOTO_TRANSPORT_MAX,
@@ -15286,6 +15398,117 @@ mod import_contract_tests {
         assert!(!is_scanner_fff_tiff(
             wrong_extension.to_string_lossy().as_ref()
         ));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn push_tiff_entry(file: &mut Vec<u8>, tag: u16, type_code: u16, count: u32, value: u32) {
+        file.extend_from_slice(&tag.to_be_bytes());
+        file.extend_from_slice(&type_code.to_be_bytes());
+        file.extend_from_slice(&count.to_be_bytes());
+        // A SHORT is left-justified in the four-byte value field.
+        let raw = if type_code == 3 {
+            u32::from(value as u16) << 16
+        } else {
+            value
+        };
+        file.extend_from_slice(&raw.to_be_bytes());
+    }
+
+    /// A minimal big-endian `.fff`: an uncompressed 16-bit RGB page whose image
+    /// directory sits at `ifd_offset`, optionally with a CFA page in a SubIFD.
+    fn write_synthetic_fff(
+        path: &std::path::Path,
+        ifd_offset: u32,
+        new_subfile_type: u32,
+        cfa_sub_ifd: bool,
+    ) {
+        const WIDTH: u32 = 64;
+        const HEIGHT: u32 = 48;
+        const ROW_BYTES: u32 = WIDTH * 3 * 2;
+        let entry_count = if cfa_sub_ifd { 12u16 } else { 11u16 };
+        let pixel_offset = ifd_offset + 2 + u32::from(entry_count) * 12 + 4;
+        let pixel_bytes = ROW_BYTES * HEIGHT;
+        let sub_ifd_offset = pixel_offset + pixel_bytes;
+
+        let mut file = Vec::new();
+        file.extend_from_slice(b"MM\0*");
+        file.extend_from_slice(&ifd_offset.to_be_bytes());
+        file.resize(ifd_offset as usize, 0);
+        file.extend_from_slice(&entry_count.to_be_bytes());
+        push_tiff_entry(&mut file, 254, 4, 1, new_subfile_type);
+        push_tiff_entry(&mut file, 256, 3, 1, WIDTH);
+        push_tiff_entry(&mut file, 257, 3, 1, HEIGHT);
+        push_tiff_entry(&mut file, 258, 3, 1, 16);
+        push_tiff_entry(&mut file, 259, 3, 1, 1);
+        push_tiff_entry(&mut file, 262, 3, 1, 2);
+        push_tiff_entry(&mut file, 273, 4, 1, pixel_offset);
+        push_tiff_entry(&mut file, 277, 3, 1, 3);
+        push_tiff_entry(&mut file, 278, 4, 1, HEIGHT);
+        push_tiff_entry(&mut file, 279, 4, 1, pixel_bytes);
+        push_tiff_entry(&mut file, 284, 3, 1, 1);
+        if cfa_sub_ifd {
+            push_tiff_entry(&mut file, 330, 4, 1, sub_ifd_offset);
+        }
+        file.extend_from_slice(&0u32.to_be_bytes());
+        for index in 0..(WIDTH * HEIGHT) {
+            let sample = 1000u16 + (index % 4096) as u16;
+            for _ in 0..3 {
+                file.extend_from_slice(&sample.to_be_bytes());
+            }
+        }
+        if cfa_sub_ifd {
+            file.extend_from_slice(&3u16.to_be_bytes());
+            push_tiff_entry(&mut file, 256, 3, 1, WIDTH);
+            push_tiff_entry(&mut file, 257, 3, 1, HEIGHT);
+            push_tiff_entry(&mut file, 262, 3, 1, 32803);
+            file.extend_from_slice(&0u32.to_be_bytes());
+        }
+        std::fs::write(path, file).unwrap();
+    }
+
+    #[test]
+    fn an_imacon_fff_without_a_device_string_still_uses_the_scanner_reader() {
+        let root = std::env::temp_dir().join(format!(
+            "nexfilm-fff-container-test-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let write_fixture =
+            |name: &str, ifd_offset: u32, new_subfile_type: u32, cfa_sub_ifd: bool| {
+                let path = root.join(name);
+                write_synthetic_fff(&path, ifd_offset, new_subfile_type, cfa_sub_ifd);
+                path
+            };
+
+        // An Imacon 3F/FFF paints its scan settings over the space before the
+        // image directory. Nothing in the container has to name the scanner:
+        // FlexColor writes a device string into its own edit recipe, other
+        // writers leave it out entirely.
+        let imacon = write_fixture("imacon-scan.fff", 0x0009_2800, 0, false);
+        assert!(is_scanner_fff_tiff(imacon.to_string_lossy().as_ref()));
+        for mode in [DecodeMode::DevelopProxy, DecodeMode::ExportFull] {
+            let estimate = decode_scanner_profiled_estimate_image_buffer(
+                imacon.to_string_lossy().as_ref(),
+                mode,
+                None,
+                if mode == DecodeMode::ExportFull {
+                    u32::MAX
+                } else {
+                    2560
+                },
+            )
+            .unwrap_or_else(|error| panic!("scanner FFF estimate decode failed: {error}"));
+            assert_eq!(estimate.dimensions(), (64, 48));
+        }
+
+        // The camera-back layout is the mirror image: an 8-bit reduced-size
+        // preview in the first IFD and the Bayer page in a SubIFD. It has to
+        // stay on the LibRaw path whatever strings it carries.
+        let camera = write_fixture("camera-back.fff", 8, 1, true);
+        assert!(!is_scanner_fff_tiff(camera.to_string_lossy().as_ref()));
+        let camera_scan = write_fixture("camera-scan-page.fff", 8, 0, true);
+        assert!(!is_scanner_fff_tiff(camera_scan.to_string_lossy().as_ref()));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -19637,6 +19860,7 @@ mod import_contract_tests {
         );
     }
 
+    #[test]
     fn scanner_fff_keeps_the_tiff_branch_and_is_never_treated_as_an_estimate() {
         let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("test_picture")
@@ -20195,6 +20419,22 @@ mod import_contract_tests {
                 "{} produced a black proxy",
                 path.display()
             );
+            // The estimate decoder the export runs must reach the same page. It
+            // used to hand every `.fff` to LibRaw, which rejects a scanner
+            // container, so developing worked and exporting the frame did not.
+            let estimate = decode_scanner_profiled_estimate_image_buffer(
+                path.to_string_lossy().as_ref(),
+                DecodeMode::ExportFull,
+                None,
+                u32::MAX,
+            )
+            .unwrap_or_else(|error| panic!("{} export estimate: {error}", path.display()));
+            assert!(
+                estimate.width() > 2560 && estimate.height() > 2560,
+                "{} returned an export estimate at {:?}",
+                path.display(),
+                estimate.dimensions()
+            );
             let reduced =
                 image::imageops::resize(&decoded, 160, 512, image::imageops::FilterType::Triangle);
             let mut geom = GeometryState::default();
@@ -20286,6 +20526,17 @@ mod import_contract_tests {
                     .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
             assert_eq!(proxy.width().max(proxy.height()), 4096);
             assert!(proxy.as_raw().iter().any(|value| *value > 0));
+            // Export takes the same reader. It used to fall through to the
+            // generic image decoder, whose allocation ceiling rejects a
+            // 6723x6723 RGB16 scan outright.
+            let estimate = decode_scanner_profiled_estimate_image_buffer(
+                path.to_string_lossy().as_ref(),
+                DecodeMode::DevelopProxy,
+                None,
+                4096,
+            )
+            .unwrap_or_else(|error| panic!("{} export estimate: {error}", path.display()));
+            assert_eq!(estimate.width().max(estimate.height()), 4096);
             println!(
                 "{}: Nikon TIFF preview {:?}, proxy {:?} in {:?}",
                 path.display(),
