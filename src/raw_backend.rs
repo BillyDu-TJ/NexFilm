@@ -747,14 +747,28 @@ pub(crate) fn split_camera_id(camera_id: &str) -> (String, String) {
     }
 }
 
-/// Reduce LibRaw's four-channel as-shot multipliers to the positive neutral DNG
-/// stores: the colour, in camera coordinates, that has to come out grey.
+/// Convert LibRaw's four-channel as-shot multipliers into the positive neutral a
+/// DNG stores: the colour, in camera coordinates, that has to come out grey.
+///
+/// The two quantities are reciprocals of each other. A multiplier says how much
+/// a channel has to be raised to make the neutral grey; `AsShotNeutral` names
+/// the neutral itself, so a channel that needs a large multiplier carries a
+/// small neutral value. Writing the multipliers straight into the tag inverts
+/// the white balance of every re-wrapped file, which is exactly what a reader
+/// such as LibRaw will then report back.
 pub(crate) fn normalized_as_shot_neutral(as_shot: [f32; 4]) -> Option<[f32; 3]> {
     let green = as_shot[1];
     if !green.is_finite() || green <= 0.0 {
         return None;
     }
-    let neutral = [as_shot[0] / green, 1.0, as_shot[2] / green];
+    let multipliers = [as_shot[0] / green, 1.0, as_shot[2] / green];
+    if multipliers
+        .iter()
+        .any(|channel| !channel.is_finite() || *channel <= 0.0 || *channel > 64.0)
+    {
+        return None;
+    }
+    let neutral = [1.0 / multipliers[0], 1.0, 1.0 / multipliers[2]];
     if neutral
         .iter()
         .any(|channel| !channel.is_finite() || *channel <= 0.0 || *channel > 64.0)
@@ -769,7 +783,9 @@ pub(crate) fn normalized_as_shot_neutral(as_shot: [f32; 4]) -> Option<[f32; 3]> 
 pub(crate) fn color_matrix_from_cam_xyz(cam_xyz: [[f32; 3]; 4]) -> Option<[[f32; 3]; 3]> {
     let rows = [cam_xyz[0], cam_xyz[1], cam_xyz[2]];
     let usable = rows.iter().flatten().all(|value| value.is_finite())
-        && rows.iter().any(|row| row.iter().any(|value| value.abs() > 1.0e-6));
+        && rows
+            .iter()
+            .any(|row| row.iter().any(|value| value.abs() > 1.0e-6));
     usable.then_some(rows)
 }
 
@@ -1466,7 +1482,12 @@ mod macos {
         let data = unsafe { &*processor.data };
         let mosaic = mosaic_from_data(data)?;
         let color = &data.rawdata.color;
-        let cam_mul = [color.cam_mul[0], color.cam_mul[1], color.cam_mul[2], color.cam_mul[3]];
+        let cam_mul = [
+            color.cam_mul[0],
+            color.cam_mul[1],
+            color.cam_mul[2],
+            color.cam_mul[3],
+        ];
         let as_shot = (cam_mul[0] > 0.0 && cam_mul[1] > 0.0 && cam_mul[2] > 0.0).then_some(cam_mul);
         let (make, model) = super::split_camera_id(&mosaic.metadata.camera_id);
         Ok(super::RawContainerSource {
@@ -1718,6 +1739,28 @@ mod contract_tests {
         assert!(normalized_as_shot_gains([0.0, 0.0, 0.0, 0.0]).is_none());
         assert!(normalized_as_shot_gains([-1.0, 1.0, 1.0, 1.0]).is_none());
         assert!(normalized_as_shot_gains([f32::NAN, 1.0, 1.0, 1.0]).is_none());
+    }
+
+    /// `AsShotNeutral` names the neutral, not the multipliers that make it
+    /// grey: the two are reciprocals, and a reader such as LibRaw inverts the
+    /// tag again. Writing the multipliers straight into it flips the white
+    /// balance of every re-wrapped capture.
+    #[test]
+    fn as_shot_neutral_is_the_reciprocal_of_the_multipliers() {
+        // LibRaw orders the four multipliers R, G1, B, G2.
+        let neutral = normalized_as_shot_neutral([2.0, 1.0, 1.5, 1.0]).unwrap();
+        assert!((neutral[0] - 0.5).abs() < 1.0e-6, "{neutral:?}");
+        assert!((neutral[1] - 1.0).abs() < 1.0e-6, "{neutral:?}");
+        assert!((neutral[2] - 1.0 / 1.5).abs() < 1.0e-6, "{neutral:?}");
+        // A camera that needs a blue boost stores a smaller blue neutral.
+        let warm = normalized_as_shot_neutral([1.0, 1.0, 2.0, 1.0]).unwrap();
+        assert!(warm[2] < 1.0 && (warm[0] - 1.0).abs() < 1.0e-6, "{warm:?}");
+        // Unusable metadata still has to be refused rather than guessed.
+        assert!(normalized_as_shot_neutral([0.0, 0.0, 0.0, 0.0]).is_none());
+        assert!(normalized_as_shot_neutral([f32::NAN, 1.0, 1.0, 1.0]).is_none());
+        assert!(normalized_as_shot_neutral([1.0e9, 1.0, 1.0, 1.0]).is_none());
+        // A near-zero multiplier would invert into an unusable neutral.
+        assert!(normalized_as_shot_neutral([1.0, 1.0, 1.0e-9, 1.0]).is_none());
     }
 
     fn metadata() -> RawMetadata {

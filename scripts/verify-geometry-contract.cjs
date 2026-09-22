@@ -200,7 +200,12 @@ assertRectClose(
     displayCrop
 );
 
-const frontend = fs.readFileSync(path.join(__dirname, '..', 'ui', 'main.js'), 'utf8');
+// Normalise the checkout's line endings: a Windows working copy with
+// core.autocrlf=true reads CRLF, and a pattern that spells "\n" would then
+// report a contract violation that the file does not have.
+const frontend = fs
+    .readFileSync(path.join(__dirname, '..', 'ui', 'main.js'), 'utf8')
+    .replace(/\r\n/g, '\n');
 for (const [pattern, message] of [
     [/function fullFrameEditView\(\)/, 'the canvas view needs one shared edit-frame decision'],
     [/if \(!fullFrameEditView\(\)\) \{\n\s+gl\.uniform4f\(u_crop_loc/, 'the preview must draw the full oriented frame while editing'],

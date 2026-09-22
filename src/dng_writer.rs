@@ -373,12 +373,7 @@ pub(crate) fn cfa_dng_bytes(request: &CfaDngRequest<'_>) -> Result<Vec<u8>, Stri
         (50778, Value::Short(vec![illuminant])),
         (
             50829,
-            Value::Long(vec![
-                top,
-                left,
-                top + active_height,
-                left + active_width,
-            ]),
+            Value::Long(vec![top, left, top + active_height, left + active_width]),
         ),
     ];
     if let Some(matrix) = request.xyz_to_camera {
@@ -394,7 +389,10 @@ pub(crate) fn cfa_dng_bytes(request: &CfaDngRequest<'_>) -> Result<Vec<u8>, Stri
         ));
     }
     if let Some(neutral) = request.as_shot_neutral {
-        entries.push((50728, Value::Rational(neutral.map(positive_rational).to_vec())));
+        entries.push((
+            50728,
+            Value::Rational(neutral.map(positive_rational).to_vec()),
+        ));
     }
     if let Some(description) = request.description {
         entries.push((270, Value::Ascii(description.to_string())));
@@ -451,14 +449,17 @@ pub(crate) fn linear_dng_bytes(request: &LinearDngRequest<'_>) -> Result<Vec<u8>
         ),
         (
             50721,
-            Value::SRational(request.xyz_to_space.iter().map(|v| signed_rational(*v)).collect()),
+            Value::SRational(
+                request
+                    .xyz_to_space
+                    .iter()
+                    .map(|v| signed_rational(*v))
+                    .collect(),
+            ),
         ),
         // The exported samples are already neutralised, so the as-shot neutral
         // is unity for every channel.
-        (
-            50728,
-            Value::Rational(vec![[1, 1], [1, 1], [1, 1]]),
-        ),
+        (50728, Value::Rational(vec![[1, 1], [1, 1], [1, 1]])),
         (50778, Value::Short(vec![ILLUMINANT_D50])),
     ];
     if let Some(profile) = request.icc_profile {
@@ -548,7 +549,9 @@ pub(crate) fn read_dng_color_metadata(path: &std::path::Path) -> Option<DngColor
         };
         let total = unit.checked_mul(count)?;
         if total <= 4 {
-            bytes.get(entry + 8..entry + 8 + total).map(|raw| raw.to_vec())
+            bytes
+                .get(entry + 8..entry + 8 + total)
+                .map(|raw| raw.to_vec())
         } else {
             let offset = read_u32(entry + 8)? as usize;
             bytes
@@ -593,12 +596,11 @@ pub(crate) fn read_dng_color_metadata(path: &std::path::Path) -> Option<DngColor
                 ]);
             }
             (50778, 3, 1) => {
-                metadata.calibration_illuminant =
-                    Some(if little {
-                        u16::from_le_bytes(raw.get(..2)?.try_into().ok()?)
-                    } else {
-                        u16::from_be_bytes(raw.get(..2)?.try_into().ok()?)
-                    });
+                metadata.calibration_illuminant = Some(if little {
+                    u16::from_le_bytes(raw.get(..2)?.try_into().ok()?)
+                } else {
+                    u16::from_be_bytes(raw.get(..2)?.try_into().ok()?)
+                });
             }
             (50728, 5, 3) => {
                 let values: Vec<f64> = (0..3).map(fraction).collect::<Option<_>>()?;
@@ -718,9 +720,18 @@ mod tests {
         let bytes = cfa_dng_bytes(&request).unwrap();
         let entries = read_ifd(&bytes);
 
-        assert_eq!(u32::from_le_bytes(entry(&entries, 256).3[..4].try_into().unwrap()), 36);
-        assert_eq!(u32::from_le_bytes(entry(&entries, 257).3[..4].try_into().unwrap()), 26);
-        assert_eq!(u16::from_le_bytes([entry(&entries, 262).3[0], entry(&entries, 262).3[1]]), PHOTOMETRIC_CFA);
+        assert_eq!(
+            u32::from_le_bytes(entry(&entries, 256).3[..4].try_into().unwrap()),
+            36
+        );
+        assert_eq!(
+            u32::from_le_bytes(entry(&entries, 257).3[..4].try_into().unwrap()),
+            26
+        );
+        assert_eq!(
+            u16::from_le_bytes([entry(&entries, 262).3[0], entry(&entries, 262).3[1]]),
+            PHOTOMETRIC_CFA
+        );
         assert_eq!(entry(&entries, 33422).3, vec![0, 1, 1, 2]);
         assert_eq!(entry(&entries, 50706).3, vec![1, 4, 0, 0]);
         assert_eq!(
@@ -873,17 +884,26 @@ mod tests {
             software: "NexFilm Engine test",
             timestamp: "2026:09:18 10:00:00",
         };
-        let path = write_temp("nexfilm-cfa-dng-round-trip.dng", &cfa_dng_bytes(&request).unwrap());
+        let path = write_temp(
+            "nexfilm-cfa-dng-round-trip.dng",
+            &cfa_dng_bytes(&request).unwrap(),
+        );
 
         let read = crate::raw_backend::decode_raw_mosaic(&path)
             .expect("LibRaw must accept the exported DNG");
         assert_eq!((read.width, read.height), (source.width, source.height));
-        assert_eq!(read.samples, source.samples, "raw samples must be untouched");
+        assert_eq!(
+            read.samples, source.samples,
+            "raw samples must be untouched"
+        );
         // Odd origins are aligned up to even Bayer margins, exactly as every
         // dcraw-derived reader would do, so the declared rectangle survives.
         assert_eq!(read.metadata.active_area, [2, 2, 32, 23]);
         assert_eq!(read.metadata.orientation, source.metadata.orientation);
-        let CfaPattern::Bayer { filters: read_filters } = read.metadata.cfa else {
+        let CfaPattern::Bayer {
+            filters: read_filters,
+        } = read.metadata.cfa
+        else {
             panic!("the DNG must stay a Bayer mosaic");
         };
         let positions = [(0, 0), (0, 1), (1, 0), (1, 1)];
@@ -895,7 +915,10 @@ mod tests {
             .iter()
             .map(|(row, column)| cfa_plane(cfa_colour(read_filters, *row, *column)) as usize)
             .collect();
-        assert_eq!(actual, expected, "the CFA phase must survive the round trip");
+        assert_eq!(
+            actual, expected,
+            "the CFA phase must survive the round trip"
+        );
         // The declared black level is the CFA-position average, and the decoder
         // must report exactly that value for every channel.
         let expected_black = (positions
@@ -948,7 +971,10 @@ mod tests {
             software: "NexFilm Engine test",
             timestamp: "2026:09:18 10:00:00",
         };
-        let path = write_temp("nexfilm-cfa-dng-colour-tags.dng", &cfa_dng_bytes(&request).unwrap());
+        let path = write_temp(
+            "nexfilm-cfa-dng-colour-tags.dng",
+            &cfa_dng_bytes(&request).unwrap(),
+        );
 
         let metadata = read_dng_color_metadata(&path).expect("the colour tags must be readable");
         assert_eq!(metadata.calibration_illuminant, Some(ILLUMINANT_D65));
@@ -981,6 +1007,46 @@ mod tests {
         assert_eq!(source.mosaic.samples, mosaic.samples);
         assert_eq!(source.make, "NexFilm");
         assert_eq!(source.model, "Source Reader");
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The white balance has to survive the container change. The tag stores
+    /// the neutral, and the decoder reports the multipliers it derives from it,
+    /// so a re-wrap that stores the wrong member of the reciprocal pair returns
+    /// a different balance than the capture it came from.
+    #[test]
+    fn cfa_dng_keeps_the_white_balance_of_the_capture() {
+        // A camera whose as-shot multipliers are R 2.0, G 1.0, B 1.5, in the
+        // four-channel R, G1, B, G2 form LibRaw reports.
+        let neutral = crate::raw_backend::normalized_as_shot_neutral([2.0, 1.0, 1.5, 1.0]).unwrap();
+        let mosaic = mosaic(0x94949494, [512.0; 4], [16_383.0; 4]);
+        let request = CfaDngRequest {
+            mosaic: &mosaic,
+            xyz_to_camera: Some([[0.67, -0.2, 0.03], [-0.4, 1.2, 0.1], [0.02, -0.15, 0.8]]),
+            calibration_illuminant: None,
+            as_shot_neutral: Some(neutral),
+            make: "NexFilm",
+            model: "White Balance",
+            description: None,
+            software: "NexFilm Engine test",
+            timestamp: "2026:09:21 10:00:00",
+        };
+        let path = write_temp(
+            "nexfilm-cfa-dng-white-balance.dng",
+            &cfa_dng_bytes(&request).unwrap(),
+        );
+
+        let read = crate::raw_backend::read_raw_container_source(&path)
+            .expect("the exported raw DNG must be readable");
+        let reported = read
+            .as_shot_neutral
+            .expect("the decoder must report the stored white balance");
+        for channel in 0..3 {
+            assert!(
+                (reported[channel] - neutral[channel]).abs() < 0.02,
+                "the white balance changed: {reported:?} != {neutral:?}"
+            );
+        }
         std::fs::remove_file(&path).ok();
     }
 
@@ -1028,7 +1094,10 @@ mod tests {
             WhiteBalancePolicy::NormalizedAsShot,
         )
         .expect("LibRaw must accept the exported linear DNG");
-        assert_eq!((decoded.width, decoded.height), (width as u16, height as u16));
+        assert_eq!(
+            (decoded.width, decoded.height),
+            (width as u16, height as u16)
+        );
         assert_eq!(decoded.colors, 3);
         assert_eq!(decoded.bits, 16);
         assert!(

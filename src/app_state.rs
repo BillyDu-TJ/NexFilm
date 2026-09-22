@@ -20,7 +20,12 @@ pub const DENSITY_ANCHOR_ALGORITHM_VERSION: &str = "density_anchor_v2";
 /// Rules the frame-wise display window is derived with. Bumped when a change
 /// makes previously persisted endpoints wrong, so frames analysed by an older
 /// release are re-derived once instead of rendering the retired result.
-pub const DENSITY_WINDOW_RULE_VERSION: u32 = 2;
+///
+/// 3: the content window keeps each channel's own co-sited endpoints again
+/// instead of collapsing them onto one shared scale, so endpoints derived by
+/// rule 2 (shared origin and span, plus a per-channel span response) have to be
+/// re-derived.
+pub const DENSITY_WINDOW_RULE_VERSION: u32 = 3;
 
 fn default_calibration_profile_payload_version() -> u32 {
     CALIBRATION_PROFILE_PAYLOAD_VERSION
@@ -710,11 +715,6 @@ pub struct PipelineProcessingReport {
     /// frame and surfaced in the technical report.
     #[serde(default)]
     pub input_domain: InputDomainRecord,
-    /// Per-channel density response measured for this frame's content window,
-    /// with the bounded gains the display mapping applied. `None` on routes
-    /// that do not measure a content window (roll anchors, legacy recipes).
-    #[serde(default)]
-    pub channel_response: Option<ChannelResponseRecord>,
     /// Version of the display-window rules this frame's endpoints were derived
     /// with. A frame analysed by an older release holds a window that was built
     /// with the retired rules (per-channel content offsets), so its endpoints
@@ -723,33 +723,6 @@ pub struct PipelineProcessingReport {
     /// persisted before this field existed deserializes to.
     #[serde(default)]
     pub analysis_window_rule: u32,
-}
-
-/// Per-channel density response of one frame's content window.
-///
-/// A capture or an upstream renderer can compress a single channel so the
-/// frame covers far less density in it than in the others. Recording the
-/// measurement next to the gains keeps that visible in the technical report
-/// instead of leaving a frame that was compensated indistinguishable from one
-/// the capture left balanced.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ChannelResponseRecord {
-    /// Density span the content covers in R, G and B, above the display
-    /// mapping's shared window origin.
-    pub spans: [f32; 3],
-    /// Largest span divided by the smallest. 1.0 means the channels responded
-    /// alike; the merged camera scans that needed correction measured 3.8.
-    pub imbalance: f32,
-    /// Display span multiplier applied to R, G and B. All ones means the frame
-    /// kept the shared window untouched.
-    pub gains: [f32; 3],
-}
-
-impl ChannelResponseRecord {
-    /// True when the display mapping moved at least one channel's span.
-    pub fn is_compensated(&self) -> bool {
-        self.gains.iter().any(|gain| (*gain - 1.0).abs() > 1.0e-6)
-    }
 }
 
 impl PipelineProcessingReport {
@@ -774,7 +747,6 @@ impl PipelineProcessingReport {
             render_route: "FilmAreaSmartAuto".to_string(),
             fallback_reason: String::new(),
             input_domain: InputDomainRecord::default(),
-            channel_response: None,
             analysis_window_rule: DENSITY_WINDOW_RULE_VERSION,
         }
     }

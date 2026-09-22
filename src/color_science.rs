@@ -564,6 +564,80 @@ pub fn identify_icc_profile(icc: &[u8]) -> Option<ColorSpaceId> {
     None
 }
 
+/// True when an ICC profile's tone curves describe linear light.
+///
+/// A profile's name only identifies its primaries, so a reader cannot tell the
+/// application's linear exports from their display-referred siblings by name
+/// alone: the two share a description and differ only in the curve. Reading the
+/// curve keeps a re-imported linear file in the linear domain instead of
+/// applying a display transfer curve a second time.
+pub fn icc_declares_linear_transfer(icc: &[u8]) -> bool {
+    if icc.len() < 132 || &icc[36..40] != b"acsp" {
+        return false;
+    }
+    let count = u32::from_be_bytes([icc[128], icc[129], icc[130], icc[131]]) as usize;
+    let mut curves = 0usize;
+    let mut linear = 0usize;
+    for index in 0..count {
+        let start = 132 + index * 12;
+        let Some(entry) = icc.get(start..start + 12) else {
+            return false;
+        };
+        if !matches!(&entry[0..4], b"rTRC" | b"gTRC" | b"bTRC") {
+            continue;
+        }
+        curves += 1;
+        let offset = u32::from_be_bytes([entry[4], entry[5], entry[6], entry[7]]) as usize;
+        let size = u32::from_be_bytes([entry[8], entry[9], entry[10], entry[11]]) as usize;
+        if icc
+            .get(offset..offset.saturating_add(size))
+            .is_some_and(|tag| curve_tag_is_identity(tag))
+        {
+            linear += 1;
+        }
+    }
+    curves > 0 && curves == linear
+}
+
+/// The three ICC curve encodings a linear profile may use: an identity `curv`
+/// table, the u8Fixed8 gamma 1.0 form, or a parametric curve of type 0 with
+/// gamma 1.0.
+fn curve_tag_is_identity(tag: &[u8]) -> bool {
+    match tag.get(0..4) {
+        Some(b"curv") => {
+            let Some(count) = tag.get(8..12) else {
+                return false;
+            };
+            match u32::from_be_bytes([count[0], count[1], count[2], count[3]]) {
+                0 => true,
+                1 => tag.get(12..14) == Some([0x01, 0x00].as_slice()),
+                2 => {
+                    let Some(values) = tag.get(12..16) else {
+                        return false;
+                    };
+                    values == [0x00, 0x00, 0xff, 0xff]
+                }
+                _ => false,
+            }
+        }
+        Some(b"para") => {
+            let Some(kind) = tag.get(8..10) else {
+                return false;
+            };
+            if kind != [0x00, 0x00] {
+                return false;
+            }
+            let Some(gamma) = tag.get(12..16) else {
+                return false;
+            };
+            let value =
+                i32::from_be_bytes([gamma[0], gamma[1], gamma[2], gamma[3]]) as f64 / 65_536.0;
+            (value - 1.0).abs() < 1.0e-3
+        }
+        _ => false,
+    }
+}
+
 fn s15fixed16(value: f64) -> [u8; 4] {
     ((value * 65536.0).round() as i32).to_be_bytes()
 }
@@ -692,7 +766,10 @@ fn build_icc_profile_with_transfer(id: ColorSpaceId, transfer: Transfer) -> Vec<
 /// own coordinates, which is exactly this inverse of the ICC-space matrix.
 pub fn xyz_d50_to_color_space_matrix(id: ColorSpaceId) -> [f64; 9] {
     let source = profile(id);
-    let space_to_xyz = matrix_multiply(bradford_adaptation(source.white, D50), native_to_xyz(source));
+    let space_to_xyz = matrix_multiply(
+        bradford_adaptation(source.white, D50),
+        native_to_xyz(source),
+    );
     matrix_inverse(space_to_xyz)
 }
 
@@ -765,7 +842,10 @@ mod tests {
         ] {
             let encoded = build_icc_profile(space);
             let linear = build_linear_icc_profile(space);
-            assert_ne!(encoded, linear, "{space:?} must not reuse the encoded curve");
+            assert_ne!(
+                encoded, linear,
+                "{space:?} must not reuse the encoded curve"
+            );
             assert!(linear.len() >= 128 && &linear[36..40] == b"acsp");
             // The linear profile keeps the same primaries, so its rXYZ tag is
             // byte identical; only the TRC and the description change.
@@ -789,7 +869,8 @@ mod tests {
             if &profile[entry..entry + 4] != signature {
                 continue;
             }
-            let offset = u32::from_be_bytes(profile[entry + 4..entry + 8].try_into().ok()?) as usize;
+            let offset =
+                u32::from_be_bytes(profile[entry + 4..entry + 8].try_into().ok()?) as usize;
             let size = u32::from_be_bytes(profile[entry + 8..entry + 12].try_into().ok()?) as usize;
             return Some(profile[offset..offset + size].to_vec());
         }
