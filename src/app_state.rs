@@ -925,6 +925,16 @@ pub struct DensityAnchors {
     /// per Roll keeps every frame on the same fixed mapping.
     #[serde(default)]
     pub highlight_fraction: Option<f32>,
+    /// The Roll's own frames the film base and the fully exposed leader were
+    /// sampled from.
+    ///
+    /// They are calibration objects rather than photographs. The frame that
+    /// carries the leader is the film at its maximum density, so letting it
+    /// take part in the Roll's white point puts that white point back onto the
+    /// leader and under-exposes every other frame; letting it develop would
+    /// invent a photograph that the user never took.
+    #[serde(default)]
+    pub sampled_frame_paths: Vec<String>,
 }
 
 impl DensityAnchors {
@@ -948,6 +958,14 @@ impl DensityAnchors {
         self.has_roll_base() && self.has_roll_full_exposure()
     }
 
+    /// True when `path` is one of the frames this Roll was calibrated from.
+    pub fn is_sampled_frame(&self, path: &str) -> bool {
+        let target = normalize_frame_path(path);
+        self.sampled_frame_paths
+            .iter()
+            .any(|sampled| normalize_frame_path(sampled) == target)
+    }
+
     pub fn prophoto_contract(&self) -> ProcessingContract {
         if self.is_fully_anchored() {
             ProcessingContract::RollAnchoredProPhotoV11
@@ -957,6 +975,12 @@ impl DensityAnchors {
             ProcessingContract::SmartAutoProPhotoV11
         }
     }
+}
+
+/// Frame paths arrive from the file system, the workspace database and the
+/// front end, so they are compared with one separator and one case.
+pub(crate) fn normalize_frame_path(path: &str) -> String {
+    path.replace('\\', "/").to_lowercase()
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

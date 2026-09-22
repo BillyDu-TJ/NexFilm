@@ -647,6 +647,22 @@ function appendMissingSourceBadge(container, item) {
     container.appendChild(badge);
 }
 
+// Marks a frame the Roll's film base and leader were sampled from: it is
+// reference material, so it never develops and never counts as a photograph.
+function appendCalibrationFrameBadge(container, item) {
+    if (!item) return;
+    const roll = allRolls.find(candidate => candidate.roll_id === item.roll_id);
+    const sampled = roll?.density_anchors?.sampled_frame_paths;
+    if (!Array.isArray(sampled) || sampled.length === 0) return;
+    const path = normalizePath(item.file_path);
+    if (!sampled.some(candidate => normalizePath(candidate) === path)) return;
+    const badge = document.createElement('div');
+    badge.className = 'absolute left-1 bottom-1 bg-black/75 border border-white/25 px-1.5 py-0.5 text-[8px] font-bold tracking-wider text-zinc-200';
+    badge.textContent = i18nText('develop.calibrationFrameBadge');
+    badge.title = i18nText('develop.calibrationFrameHint');
+    container.appendChild(badge);
+}
+
 function uniqueImportPaths(paths) {
     const unique = new Map();
     (paths || []).forEach(path => {
@@ -2057,6 +2073,17 @@ function rollHasCompleteAnchors(rollId) {
     const anchors = roll.density_anchors || {};
     return anchors.d_min_base?.scope === 'roll'
         && anchors.d_max_full_exposure?.scope === 'roll';
+}
+
+// The frames a Roll's film base and leader were sampled from are calibration
+// objects rather than photographs. The leader frame carries the film's maximum
+// density, so letting it develop would invent a picture the user never took,
+// and letting it into the Roll's white point would put that white point back
+// onto the leader and darken every other frame of the Roll.
+function rollCalibrationFramePaths(rollId) {
+    if (!rollId) return new Set();
+    const roll = allRolls.find(candidate => candidate.roll_id === rollId);
+    return new Set((roll?.density_anchors?.sampled_frame_paths || []).map(normalizePath));
 }
 
 function updateInvertActionLayout() {
@@ -5099,6 +5126,7 @@ async function renderLibraryAndFilmstrip(skipFetch = false) {
                 stripDiv.appendChild(stripImg);
                 guardBlackThumbnail(stripImg, findKnownItem(item.id) || item);
                 appendMissingSourceBadge(stripDiv, item);
+                appendCalibrationFrameBadge(stripDiv, item);
             }
             filmstripContainer.appendChild(stripDiv);
         });
@@ -7176,7 +7204,20 @@ async function runAutoInvertRoll(rollId) {
     // Prioritize the frame currently in view, then keep the roll's persisted
     // order for every remaining frame.
     const priorityId = activeId;
-    const frameItems = [...fetchedFrameItems].sort((a, b) => {
+    // Calibration frames stay out of Develop: they are the film base and the
+    // leader, not photographs, and the backend skips them as well.
+    const calibrationPaths = rollCalibrationFramePaths(rollId);
+    const developmentFrames = fetchedFrameItems.filter(
+        frame => !calibrationPaths.has(normalizePath(frame.file_path))
+    );
+    const skippedFrames = fetchedFrameItems.length - developmentFrames.length;
+    if (developmentFrames.length === 0) {
+        // Every frame of this Roll is a calibration reference; there is no
+        // photograph here to develop.
+        showToast(i18nText('develop.rollNoFrames'), 'info');
+        return false;
+    }
+    const frameItems = [...developmentFrames].sort((a, b) => {
         const aPriority = a.id === priorityId ? 0 : 1;
         const bPriority = b.id === priorityId ? 0 : 1;
         return aPriority - bPriority;
@@ -7212,7 +7253,15 @@ async function runAutoInvertRoll(rollId) {
         // Process exactly one frame at a time. Preparation is part of that
         // frame's work, so the first result and progress event are visible
         // immediately instead of waiting for the entire roll to prewarm.
-        const result = { roll_id: rollId, total: frameItems.length, processed: 0, succeeded: 0, failed: 0, failed_ids: [] };
+        const result = {
+            roll_id: rollId,
+            total: frameItems.length,
+            processed: 0,
+            succeeded: 0,
+            failed: 0,
+            skipped: skippedFrames,
+            failed_ids: [],
+        };
         for (const frame of frameItems) {
             if (autoInvertRollCancelRequested || batchToken !== autoInvertRollRevision) break;
             try {
@@ -7252,6 +7301,7 @@ async function runAutoInvertRoll(rollId) {
         showToast(i18nText('develop.rollAutoInvertComplete', {
             succeeded: result.succeeded,
             failed: result.failed,
+            skipped: result.skipped,
         }), result.failed ? 'error' : 'info');
         return true;
     } catch (error) {

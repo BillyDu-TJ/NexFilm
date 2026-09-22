@@ -3503,6 +3503,9 @@ pub struct AutoInvertRollResult {
     pub processed: usize,
     pub succeeded: usize,
     pub failed: usize,
+    /// Frames the Roll was calibrated from: reference material rather than
+    /// photographs, so the batch leaves them alone.
+    pub skipped: usize,
     pub failed_ids: Vec<String>,
 }
 
@@ -4843,6 +4846,7 @@ pub async fn analyze_roll_density_references(
             d_max_full_exposure: full_exposure,
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         })
     })
     .await
@@ -4991,6 +4995,94 @@ fn median_value_result(values: &mut [f32]) -> Result<f32, String> {
     }
 }
 
+/// Separates the frames one aggregate reference was sampled from. A Windows
+/// path cannot contain it.
+const SAMPLED_FRAME_SEPARATOR: char = '|';
+
+/// The frame a `sample_roll_density_reference` sample came from.
+///
+/// A sample records its location as `{roll_id}:{path}:{x}:{y}`. The path itself
+/// can contain a colon (a Windows drive letter), so the two coordinates are
+/// trimmed off the end instead of the string being split into fields.
+fn sample_reference_frame_path(reference_id: &str) -> Option<String> {
+    let mut tail = reference_id.rsplitn(3, ':');
+    let _y = tail.next()?;
+    let _x = tail.next()?;
+    let roll_and_path = tail.next()?;
+    let (_roll_id, path) = roll_and_path.split_once(':')?;
+    (!path.is_empty()).then(|| path.to_string())
+}
+
+/// The reference id of an aggregate: the Roll, the endpoint kind, how many
+/// samples went into it, and every frame those samples were taken on.
+///
+/// Keeping the frames inside the anchor means the anchor itself says which
+/// frames are calibration material, so re-sampling an endpoint on another frame
+/// also releases the old one.
+fn aggregate_reference_id(roll_id: &str, kind: &str, samples: &[DensityAnchor]) -> String {
+    let mut paths: Vec<String> = Vec::new();
+    for sample in samples {
+        // Only individual samples name a frame: an aggregate that was fed back
+        // in would name "aggregate" as if it were a file.
+        if sample
+            .reference_id
+            .as_deref()
+            .is_some_and(|id| id.contains(":aggregate:"))
+        {
+            continue;
+        }
+        let Some(path) = sample
+            .reference_id
+            .as_deref()
+            .and_then(sample_reference_frame_path)
+        else {
+            continue;
+        };
+        if !paths.iter().any(|known| known.eq_ignore_ascii_case(&path)) {
+            paths.push(path);
+        }
+    }
+    let separator = SAMPLED_FRAME_SEPARATOR.to_string();
+    format!(
+        "{roll_id}:aggregate:{kind}:{}:{}",
+        samples.len(),
+        paths.join(&separator)
+    )
+}
+
+/// The frames a Roll's current anchors were sampled from.
+///
+/// These are the Roll's reference frames: they hold the film base and the fully
+/// exposed leader rather than a photograph, so they stay out of Develop and out
+/// of the Roll's shared white point.
+fn sampled_frame_paths_from_anchors(anchors: &DensityAnchors) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    for anchor in [
+        anchors.d_min_base.as_ref(),
+        anchors.d_max_full_exposure.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let Some(reference_id) = anchor.reference_id.as_deref() else {
+            continue;
+        };
+        let Some((_roll_id, aggregate)) = reference_id.split_once(":aggregate:") else {
+            continue;
+        };
+        let Some(sampled) = aggregate.splitn(3, ':').nth(2) else {
+            continue;
+        };
+        for path in sampled.split(SAMPLED_FRAME_SEPARATOR) {
+            if path.is_empty() || paths.iter().any(|known| known == path) {
+                continue;
+            }
+            paths.push(path.to_string());
+        }
+    }
+    paths
+}
+
 /// Merge independently sampled local regions without mixing reference
 /// contracts. The returned anchor keeps one representative provenance record;
 /// its reference id records that it is an aggregate for this Roll.
@@ -5052,7 +5144,7 @@ pub fn aggregate_roll_density_references(
         .collect::<Result<Vec<_>, _>>()?
         .try_into()
         .map_err(|_| "Could not form a three-channel density reference.".to_string())?;
-    merged.reference_id = Some(format!("{roll_id}:aggregate:{kind}:{}", samples.len()));
+    merged.reference_id = Some(aggregate_reference_id(&roll_id, &kind, &samples));
     merged.confidence = if samples
         .iter()
         .any(|sample| sample.confidence == DensityAnchorConfidence::Verified)
@@ -7513,15 +7605,25 @@ pub async fn analyze_proxy_base_color(
     // The first frame analysed on a Roll fixes its white point, so later frames
     // inherit the same mapping instead of each running its own auto exposure.
     {
-        let (item_roll_id, frame_highlight) = {
+        let (item_roll_id, frame_highlight, frame_path) = {
             let item = read_lock(&item_arc);
-            (item.roll_id.clone(), item.runtime_frame_highlight)
+            (
+                item.roll_id.clone(),
+                item.runtime_frame_highlight,
+                item.file_path.clone(),
+            )
         };
-        let roll_missing = read_lock(&state.rolls)
+        // A frame the Roll's anchors were sampled from carries the film's own
+        // maximum density, so its measurement must never become the Roll's
+        // white point.
+        let roll_unmeasured = read_lock(&state.rolls)
             .iter()
             .find(|roll| roll.roll_id == item_roll_id)
-            .is_some_and(|roll| roll.density_anchors.highlight_fraction.is_none());
-        if roll_missing {
+            .is_some_and(|roll| {
+                roll.density_anchors.highlight_fraction.is_none()
+                    && !roll.density_anchors.is_sampled_frame(&frame_path)
+            });
+        if roll_unmeasured {
             if let Some(fraction) = frame_highlight {
                 record_roll_highlight_fraction(&state, &item_roll_id, fraction);
             }
@@ -8089,7 +8191,11 @@ pub async fn auto_invert_roll(
         // batch, so this only covers direct calls.
         let cached = item_arcs.iter().find_map(|(_, item_arc)| {
             let item = read_lock(item_arc);
-            item.runtime_frame_highlight
+            // A sampled frame is not a photograph, so its own measurement is
+            // not a candidate for the Roll's white point either.
+            (!roll_anchors.is_sampled_frame(&item.file_path))
+                .then_some(item.runtime_frame_highlight)
+                .flatten()
         });
         if let Some(fraction) = cached.filter(|value| value.is_finite()) {
             record_roll_highlight_fraction(&state, &roll_id, fraction);
@@ -8106,6 +8212,7 @@ pub async fn auto_invert_roll(
             processed: 0,
             succeeded: 0,
             failed: 0,
+            skipped: 0,
             failed_ids: Vec::new(),
         };
         if emit_progress {
@@ -8117,6 +8224,7 @@ pub async fn auto_invert_roll(
                     "processed": 0,
                     "succeeded": 0,
                     "failed": 0,
+                    "skipped": 0,
                     "done": false
                 }),
             );
@@ -8124,6 +8232,29 @@ pub async fn auto_invert_roll(
         for (id, item_arc) in item_arcs {
             if worker_cancellation.load(Ordering::Acquire) {
                 break;
+            }
+            // The frames the Roll was calibrated from are reference material,
+            // not photographs: developing them would invent a picture the user
+            // never took and would keep their density in the Roll's results.
+            let frame_path = { read_lock(&item_arc).file_path.clone() };
+            if worker_anchors.is_sampled_frame(&frame_path) {
+                result.processed += 1;
+                result.skipped += 1;
+                if emit_progress {
+                    let _ = app_handle.emit(
+                        "auto_invert_roll_progress",
+                        serde_json::json!({
+                            "roll_id": result.roll_id,
+                            "total": result.total,
+                            "processed": result.processed,
+                            "succeeded": result.succeeded,
+                            "failed": result.failed,
+                            "skipped": result.skipped,
+                            "done": result.processed == result.total
+                        }),
+                    );
+                }
+                continue;
             }
             let outcome = (|| -> Result<(), String> {
                 let mut item = write_lock(&item_arc);
@@ -8189,6 +8320,7 @@ pub async fn auto_invert_roll(
                         "processed": result.processed,
                         "succeeded": result.succeeded,
                         "failed": result.failed,
+                        "skipped": result.skipped,
                         "failed_ids": result.failed_ids,
                         "done": result.processed == result.total
                     }),
@@ -8204,6 +8336,7 @@ pub async fn auto_invert_roll(
                     "processed": result.processed,
                     "succeeded": result.succeeded,
                     "failed": result.failed,
+                    "skipped": result.skipped,
                     "failed_ids": result.failed_ids,
                     "done": true,
                     "cancelled": worker_cancellation.load(Ordering::Acquire)
@@ -8310,9 +8443,14 @@ async fn measure_roll_highlight_fraction(
     let worker_cancellation = cancellation.clone();
     let worker_roll_id = roll_id.to_string();
     let worker_app_handle = app_handle.cloned();
-    let (brightest, measured) = tokio::task::spawn_blocking(move || {
+    // The sampled frames are reference material: they carry the film's own
+    // maximum density, so one of them would always win the maximum below and
+    // put the Roll's white point back onto the leader.
+    let worker_anchors = roll.density_anchors.clone();
+    let (brightest, measured, considered) = tokio::task::spawn_blocking(move || {
         measure_roll_highlight_frames(
             &item_arcs,
+            &worker_anchors,
             anchor_base,
             span,
             &worker_cancellation,
@@ -8344,7 +8482,7 @@ async fn measure_roll_highlight_fraction(
     let Some(brightest) = brightest else {
         return Ok(roll.density_anchors.highlight_fraction);
     };
-    if measured < total {
+    if measured < considered {
         if let Some(existing) = roll.density_anchors.highlight_fraction {
             // A frame that could not be measured hides part of the Roll, and a
             // hidden brighter frame is exactly what a lower value would clip.
@@ -8361,15 +8499,24 @@ async fn measure_roll_highlight_fraction(
 /// A frame that was already prepared carries its measurement, so a repeat pass
 /// over the same session only walks memory. `on_frame` receives the number of
 /// frames finished so far and drives the progress events.
+///
+/// The frames the Roll's anchors were sampled from are skipped: they hold the
+/// film base and the fully exposed leader, not a photograph, so they carry the
+/// film's own maximum density and would drag the whole Roll's white point down
+/// onto the leader. The returned counts are `(brightest, measured, considered)`
+/// where `considered` excludes those frames, so "a frame could not be measured"
+/// keeps meaning a frame that hid part of the Roll.
 fn measure_roll_highlight_frames(
     item_arcs: &[Arc<RwLock<FilmItem>>],
+    anchors: &DensityAnchors,
     anchor_base: [f32; 3],
     span: [f32; 3],
     cancellation: &Arc<std::sync::atomic::AtomicBool>,
     mut on_frame: impl FnMut(usize),
-) -> (Option<f32>, usize) {
+) -> (Option<f32>, usize, usize) {
     let mut brightest: Option<f32> = None;
     let mut measured = 0usize;
+    let mut considered = 0usize;
     for (index, item_arc) in item_arcs.iter().enumerate() {
         if cancellation.load(Ordering::Acquire) {
             break;
@@ -8382,6 +8529,11 @@ fn measure_roll_highlight_frames(
                 item.id.clone(),
             )
         };
+        if anchors.is_sampled_frame(&path) {
+            on_frame(index + 1);
+            continue;
+        }
+        considered += 1;
         let fraction = match cached_highlight {
             Some(fraction) => Some(fraction),
             None => match decode_prophoto_estimate_image_buffer(&path, DecodeMode::DevelopProxy) {
@@ -8410,7 +8562,7 @@ fn measure_roll_highlight_frames(
         }
         on_frame(index + 1);
     }
-    (brightest, measured)
+    (brightest, measured, considered)
 }
 
 #[tauri::command]
@@ -13816,6 +13968,22 @@ pub async fn update_roll_density_anchors(
             }
         }
     }
+    // The frames the endpoints were sampled from are the Roll's reference
+    // material: they stay out of Develop and out of the Roll's white point. The
+    // anchors themselves record them, so re-sampling an endpoint on another
+    // frame releases the frame it was measured on before.
+    let sampled = sampled_frame_paths_from_anchors(&anchors);
+    anchors.sampled_frame_paths = roll
+        .image_paths
+        .iter()
+        .filter(|path| {
+            sampled.iter().any(|frame| {
+                crate::app_state::normalize_frame_path(frame)
+                    == crate::app_state::normalize_frame_path(path)
+            })
+        })
+        .cloned()
+        .collect();
     if let (Some(base), Some(full)) = (
         anchors.d_min_base.as_ref(),
         anchors.d_max_full_exposure.as_ref(),
@@ -14750,17 +14918,18 @@ mod import_contract_tests {
         decode_tiff_for_smart_auto, decode_uncompressed_tiff_reduced,
         default_pipeline_state_for_import, density_luma, detect_frame_base_density,
         detect_frame_highlight_fraction, embedded_input_profile,
-        encoded_pixel_to_prophoto_estimate, estimate_film_base_f32, fixed_roll_density_mapping,
-        frame_needs_window_reanalysis, is_better_preview_edge, is_dng_extension,
-        is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
-        is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
-        libraw_decode_error_message, linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff,
-        measure_roll_highlight_frames, persist_import_batch, pipeline_base_density,
-        pipeline_has_base, point_in_film_area, prepare_content_render_limits,
-        preserve_smart_auto_content_span, prophoto_estimate_to_transport_proxy,
-        raw_decode_failure_hint, reference_density_extreme, render_f32_shader_equivalent,
-        render_shader_equivalent, resolve_input_domain, rgb16_image_from_bytes,
-        roll_density_mapping_with_frame_base, roll_physical_density_span,
+        encoded_pixel_to_prophoto_estimate, estimate_film_base_f32, film_block_luma_profile,
+        fixed_roll_density_mapping, frame_needs_window_reanalysis, highlight_block_index,
+        is_better_preview_edge, is_dng_extension, is_lightweight_direct_preview,
+        is_noritsu_rendered_image, is_raw_extension, is_scanner_fff_tiff,
+        is_smart_auto_compatibility, is_tiff_extension, libraw_decode_error_message,
+        linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff, measure_roll_highlight_frames,
+        persist_import_batch, pipeline_base_density, pipeline_has_base, point_in_film_area,
+        prepare_content_render_limits, preserve_smart_auto_content_span,
+        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
+        render_f32_shader_equivalent, render_shader_equivalent, resolve_input_domain,
+        rgb16_image_from_bytes, roll_density_mapping_with_frame_base, roll_physical_density_span,
+        sample_reference_frame_path, sampled_frame_paths_from_anchors,
         share_smart_auto_density_scale, srgb_proxy_u16_to_prophoto_f32,
         tiff_smart_auto_input_is_estimated, trim_density_endpoints, AutoColorLimits, DecodeMode,
         IMPORT_PREVIEW_LONG_EDGE, MINIMUM_USABLE_CONTENT_SPAN, PROPHOTO_TRANSPORT_MAX,
@@ -14817,6 +14986,7 @@ mod import_contract_tests {
             }),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         let state = PipelineState::from_roll_anchors(anchors);
         let mapping = fixed_roll_density_mapping(&state).expect("valid anchors");
@@ -14855,6 +15025,7 @@ mod import_contract_tests {
             }),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         let mut state = PipelineState::from_roll_anchors(anchors);
         state.render_mapping = RenderMapping {
@@ -14930,6 +15101,7 @@ mod import_contract_tests {
             }),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         let mut state = PipelineState::from_roll_anchors(anchors);
         state.render_mapping = RenderMapping {
@@ -16067,6 +16239,7 @@ mod import_contract_tests {
             }),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         let rolls = vec![Roll {
             roll_id: "roll-a".into(),
@@ -16118,6 +16291,7 @@ mod import_contract_tests {
             d_max_full_exposure: Some(sampled(DensityAnchorSource::SampledFullExposure)),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         assert!(!full_only.is_fully_anchored());
         assert_eq!(
@@ -16130,6 +16304,7 @@ mod import_contract_tests {
             d_max_full_exposure: full_only.d_max_full_exposure.clone(),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         assert!(!estimated_and_full.is_fully_anchored());
         assert_eq!(
@@ -16142,6 +16317,7 @@ mod import_contract_tests {
             d_max_full_exposure: full_only.d_max_full_exposure,
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         assert!(complete.is_fully_anchored());
         assert_eq!(
@@ -16173,6 +16349,7 @@ mod import_contract_tests {
             d_max_full_exposure: Some(full),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         let mut limits = AutoColorLimits {
             d_min: [0.20, 0.35, 0.48],
@@ -16225,6 +16402,7 @@ mod import_contract_tests {
             }),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         let mut limits = AutoColorLimits {
             d_min: [0.20, 0.24, 0.32],
@@ -16272,6 +16450,50 @@ mod import_contract_tests {
     }
 
     #[test]
+    fn density_samples_record_which_frames_are_reference_material() {
+        let sample = |path: &str, x: f32| DensityAnchor {
+            density: [0.5, 0.5, 0.5],
+            source: DensityAnchorSource::SampledFilmBase,
+            scope: DensityAnchorScope::Roll,
+            confidence: DensityAnchorConfidence::UserSampled,
+            reference_id: Some(format!("roll-1:{path}:{x:.4}:0.5000")),
+            provenance: DensityAnchorProvenance {
+                input_domain: DataDomain::ProPhotoEstimate,
+                raw_decode_version: Some(crate::persistence::RAW_DECODE_VERSION),
+                algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+                legacy: false,
+                ..Default::default()
+            },
+        };
+        // A Windows path carries its own colon, so the frame has to survive the
+        // round trip through the aggregate's reference id.
+        let samples = vec![
+            sample(r"G:\DCIM\755ND810\_DSC7758.NEF", 0.2),
+            sample(r"G:\DCIM\755ND810\_DSC7758.NEF", 0.8),
+        ];
+        assert_eq!(
+            sample_reference_frame_path(samples[0].reference_id.as_deref().unwrap()).as_deref(),
+            Some(r"G:\DCIM\755ND810\_DSC7758.NEF")
+        );
+        let aggregate = aggregate_roll_density_references("roll-1".into(), "base".into(), samples)
+            .expect("aggregate");
+        let mut anchors = DensityAnchors {
+            d_min_base: Some(aggregate),
+            d_max_full_exposure: None,
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
+        };
+        let derived = sampled_frame_paths_from_anchors(&anchors);
+        assert_eq!(derived, vec![r"G:\DCIM\755ND810\_DSC7758.NEF".to_string()]);
+        // `update_roll_density_anchors` stores exactly this, so the frame stays
+        // out of Develop and out of the Roll's white point.
+        anchors.sampled_frame_paths = derived;
+        assert!(anchors.is_sampled_frame(r"g:\dcim\755nd810\_dsc7758.nef"));
+        assert!(!anchors.is_sampled_frame(r"G:\DCIM\755ND810\_DSC7757.NEF"));
+    }
+
+    #[test]
     fn roll_white_point_is_the_brightest_frame_not_a_sample_average() {
         let state = EngineState::new();
         let anchors = DensityAnchors {
@@ -16293,6 +16515,7 @@ mod import_contract_tests {
             }),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         // Every frame of a Roll shares one white point, so that white point has
         // to describe the brightest frame. Under the previous sample-of-five
@@ -16307,14 +16530,32 @@ mod import_contract_tests {
             state.items.insert(id.to_string(), arc.clone());
             item_arcs.push(arc);
         }
+        // The frame the anchors were sampled from holds the film base and the
+        // leader, so it measures the film's own maximum density. It is
+        // reference material rather than a photograph and must neither win the
+        // maximum nor count as a frame that could not be measured.
+        let mut anchors = anchors;
+        anchors.sampled_frame_paths = vec!["LEADER.TIF".to_string()];
+        let mut leader = test_film_item("leader", "roll-white-point", "leader.tif");
+        leader.runtime_frame_highlight = Some(1.0);
+        let leader_arc = Arc::new(RwLock::new(leader));
+        state.items.insert("leader".to_string(), leader_arc.clone());
+        item_arcs.push(leader_arc);
         let anchor_base = pipeline_base_density(
             &PipelineState::from_roll_anchors(anchors.clone()),
             &BaseColor::default(),
         );
         let span = roll_physical_density_span(&anchors, anchor_base).expect("complete anchors");
         let cancellation = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (brightest, measured) =
-            measure_roll_highlight_frames(&item_arcs, anchor_base, span, &cancellation, |_| {});
+        let (brightest, measured, considered) = measure_roll_highlight_frames(
+            &item_arcs,
+            &anchors,
+            anchor_base,
+            span,
+            &cancellation,
+            |_| {},
+        );
+        assert_eq!(considered, frames.len());
         assert_eq!(measured, frames.len());
         assert!((brightest.expect("a Roll white point") - 0.74).abs() < 1.0e-6);
     }
@@ -16340,6 +16581,7 @@ mod import_contract_tests {
             }),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         let mut state = PipelineState::from_roll_anchors(anchors);
         state.render_mapping = RenderMapping {
@@ -16448,6 +16690,7 @@ mod import_contract_tests {
             d_max_full_exposure: None,
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         let mut limits = AutoColorLimits {
             d_min: [0.12, 0.18, 0.24],
@@ -18076,6 +18319,92 @@ mod import_contract_tests {
         assert!(limits.d_min.iter().all(|value| *value > 0.0));
     }
 
+    /// Where a Roll's one shared white point comes from.
+    ///
+    /// `measure_roll_highlight_frames` decodes every frame of the Roll and keeps
+    /// the largest share of the base-to-leader span that any frame's picture
+    /// blocks reach. The production value is clamped into
+    /// `ROLL_HIGHLIGHT_FLOOR..=ROLL_HIGHLIGHT_CEILING`, so a measurement that
+    /// runs past the fully exposed leader is reported as 1.0 and silently makes
+    /// the whole span the display range. This probe prints the share before the
+    /// clamp, and repeats it with one border band of the capture blanked, so a
+    /// rebate, edge-printing or leader contribution becomes visible.
+    ///
+    /// It walks every fixture it is given. The Roll's own measurement skips the
+    /// frames the anchors were sampled from, so read this probe as "which frames
+    /// could carry the leader", not as the value a Roll ends up with.
+    ///
+    /// * `NEXFILM_WHITE_POINT_FIXTURES` - `;`-separated capture paths.
+    /// * `NEXFILM_WHITE_POINT_BASE` / `NEXFILM_WHITE_POINT_FULL` - the Roll's
+    ///   sampled anchors as `r,g,b` densities.
+    #[test]
+    #[ignore = "manual Roll white-point probe over real captures"]
+    fn roll_white_point_probe() {
+        let parse_anchor = |name: &str, fallback: [f32; 3]| -> [f32; 3] {
+            let Ok(raw) = std::env::var(name) else {
+                return fallback;
+            };
+            let values = raw
+                .split(',')
+                .filter_map(|value| value.trim().parse::<f32>().ok())
+                .collect::<Vec<_>>();
+            if values.len() == 3 {
+                [values[0], values[1], values[2]]
+            } else {
+                fallback
+            }
+        };
+        let base = parse_anchor("NEXFILM_WHITE_POINT_BASE", [0.0; 3]);
+        let full = parse_anchor("NEXFILM_WHITE_POINT_FULL", [0.0; 3]);
+        let span = [full[0] - base[0], full[1] - base[1], full[2] - base[2]];
+        let span_luma = density_luma(span);
+        let clamp = |fraction: f32| {
+            fraction.clamp(super::ROLL_HIGHLIGHT_FLOOR, super::ROLL_HIGHLIGHT_CEILING)
+        };
+        println!("[WPP] base={base:?} full={full:?} span={span:?} span_luma={span_luma:.4}");
+        let Ok(spec) = std::env::var("NEXFILM_WHITE_POINT_FIXTURES") else {
+            return;
+        };
+        for path in spec
+            .split(';')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+        {
+            let Ok(estimate) =
+                decode_prophoto_estimate_image_buffer(path, DecodeMode::DevelopProxy)
+            else {
+                println!("[WPP] {path}: could not decode");
+                continue;
+            };
+            let (width, height) = estimate.dimensions();
+            let detected = detect_frame_base_density(&estimate, base);
+            let used_base = detected.unwrap_or(base);
+            println!(
+                "\n=== {path} ===\n[WPP] size={width}x{height} detected_base={detected:?} used_base={used_base:?} clamped={:?}",
+                detect_frame_highlight_fraction(&estimate, used_base, span).map(clamp)
+            );
+            let Some(profile) = film_block_luma_profile(&estimate, used_base) else {
+                println!("[WPP] {path}: no usable picture blocks");
+                continue;
+            };
+            let block = profile[highlight_block_index(profile.len())];
+            // Blocks sitting on the film's own maximum density are the leader,
+            // the tail or an exposed rebate rather than a scene highlight.
+            let at_film_max = profile
+                .iter()
+                .filter(|value| **value >= span_luma * 0.95)
+                .count();
+            println!(
+                "[WPP] blocks={} p999_block={:.4} share={:.4} clamped={:.4} brightest_block={:.4} at_film_max={at_film_max}",
+                profile.len(),
+                block,
+                block / span_luma,
+                clamp(block / span_luma),
+                profile[profile.len() - 1]
+            );
+        }
+    }
+
     /// Per-channel statistics of a rendered 16-bit transport: mean, quantiles,
     /// how much of the channel sits at an endpoint, and the R/G, B/G ratios the
     /// density report is quoted in.
@@ -18605,6 +18934,7 @@ mod import_contract_tests {
             }),
             retained_records: Vec::new(),
             highlight_fraction: detect_frame_highlight_fraction(estimate, base, span),
+            sampled_frame_paths: Vec::new(),
         }
     }
 
@@ -19530,6 +19860,7 @@ mod import_contract_tests {
             }),
             retained_records: Vec::new(),
             highlight_fraction: Some(0.85),
+            sampled_frame_paths: Vec::new(),
         });
         assert_eq!(
             fully_anchored.contract,
@@ -20961,6 +21292,7 @@ mod export_contract_tests {
             }),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
 
         let source = ImageBuffer::from_pixel(
@@ -21745,6 +22077,7 @@ mod roll_render_tests {
             }),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         }
     }
 

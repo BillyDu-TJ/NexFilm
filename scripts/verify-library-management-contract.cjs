@@ -27,8 +27,15 @@ assert.match(html, /id="btn-auto-color-roll"/);
 assert.match(main, /btnAutoColorRoll\.addEventListener\('click'/);
 assert.match(
     main,
-    /const priorityId = activeId;[\s\S]*const frameItems = \[\.\.\.fetchedFrameItems\]\.sort/,
+    /const priorityId = activeId;[\s\S]*const frameItems = \[\.\.\.developmentFrames\]\.sort/,
     'Roll auto invert must prioritize the active frame before the persisted roll order',
+);
+// The frames a Roll's references were sampled from are calibration objects, so
+// the batch leaves them out instead of developing the leader as a photograph.
+assert.match(
+    main,
+    /rollCalibrationFramePaths\(rollId\)[\s\S]*frame => !calibrationPaths\.has\(normalizePath\(frame\.file_path\)\)/,
+    'Roll auto invert must skip the frames the Roll was calibrated from',
 );
 assert.match(
     main,

@@ -515,6 +515,7 @@ mod tests {
             d_max_full_exposure: Some(full),
             retained_records: Vec::new(),
             highlight_fraction: Some(0.85),
+            sampled_frame_paths: Vec::new(),
         };
         let result = resolve_pipeline(&input);
         assert_eq!(
@@ -537,6 +538,7 @@ mod tests {
             d_max_full_exposure: Some(full),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         let result = resolve_pipeline(&input);
         assert_eq!(
@@ -561,6 +563,7 @@ mod tests {
             d_max_full_exposure: Some(full),
             retained_records: Vec::new(),
             highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
         };
         let result = resolve_pipeline(&input);
         assert_eq!(
