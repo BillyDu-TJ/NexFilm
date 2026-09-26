@@ -14,10 +14,10 @@
         4) 扫描仪机型识别（Documented default）
         5) 兜底按 sRGB 解释并标 estimated
      → 统一工作域：ProPhoto 线性 f32（不经 u16 线性 sRGB 中转）
-     → 统一密度域：逐通道减片基 → D = -log10(T) → 共享窗口原点
-       （channel_offsets 恒为 0）
-     → 通道跨度响应：三通道跨度比 > 1.15 起按各自测量的跨度分配窗口宽度
-       （增益上限 1.35×；跨度比 > 2.0 视为上游截断通道，上限放宽到 3×）
+     → 统一密度域：逐通道减片基 → D = -log10(T) → 显示窗口
+       a) 测到过片基（含被质量判据拒绝的，见第十一节）：逐通道同像素端点，
+          channel_offsets 恒为 0
+       b) 连片基都没测到：三通道共用一个跨度 + 每通道 ±0.20 D 的原点偏移
      → 显示映射：ProPhoto→sRGB → gamma/LUT
 ```
 
@@ -26,7 +26,7 @@
 | 场景 | 片基来源 | 显示窗口 |
 | --- | --- | --- |
 | 按卷导入 + 完整标定 | 采样片基 + 采样片头（物理锚点） | `offset + span[i] × highlight`，逐帧 offset 只做整体位移 |
-| 按卷导入 + 未标定 | 该帧 Film Area 内的片基估计（片边窄带，其次膜面低密度尾部） | 共享原点 + 逐通道跨度响应 |
+| 按卷导入 + 未标定 | 该帧 Film Area 内的片基估计（片边窄带，其次膜面低密度尾部） | 逐通道同像素端点（见第十一节） |
 | Loose Import | 同上 | 同上（与上一条必须逐像素一致） |
 
 输入域记录随帧持久化在 `PipelineProcessingReport::input_domain`，并出现在技术报告中。
@@ -201,3 +201,34 @@ node scripts/verify-density-contract.cjs  （以及 scripts 下其余契约脚�
 - `visual_acceptance_v1_0_2_vs_v1_1`（`--ignored`）：把 14 张不同来源的样本渲染成「上=v1.0.2、下=当前构建」的对比图，写入 `target/visual-acceptance/`。
 - `density_pipeline_sample_report`（`--ignored`）：逐样本打印输入域、片基、窗口、`[STAT]` 对照与 `[COMPARE]`（一个共享跨度 vs 逐通道端点的差异像素数）。
 - 新增/改写的断言：`a_frame_keeps_its_own_co_sited_endpoints`、`a_short_channel_reaches_the_white_point`、`a_frame_wide_tint_is_absorbed_by_the_per_channel_window`、`partial_roll_anchor_keeps_content_derived_display_limits`；`prophoto_master_exposure_preserves_neutrality_with_channel_spans`、`linked_scanner_limits_preserve_co_sited_channel_bounds`、`one_roll_keeps_a_consistent_channel_ratio`、`input_class_and_provenance_never_change_the_density_mapping` 继续通过。
+
+## 十一、被质量判据拒绝、但确实测到的片基不再被丢掉（窗口规则 4）
+
+### 11.1 现象与定位
+
+`test_picture\富士raf` 的 11 张（6×7 彩色负片、机内翻拍）整幅偏蓝：改动前整幅通道比 R/G 0.32–0.63、B/G 1.39–2.12。根因两条：
+
+1. **实测片基被丢弃。** 这批文件翻拍欠曝约 4–5 档，片基只到满量程的 0.2–3%（蓝通道最低 0.17%）。它同时触发 `FILM_BASE_MAX_DENSITY = 1.60`（绝对密度）与 `FILM_BASE_MAX_CHANNEL_SPREAD = 0.75`（通道差）两道判据——两条都隐含"曝光正常"的假设。被拒后片基按 0 处理，该帧落到"共享跨度 + ±0.20 D 原点偏移"的兜底；而色罩的通道差是 0.3–0.5 D，装不进 ±0.20，于是片基在成品里落到 (0.30, 0.40, 0.79)——片基发蓝，整幅发蓝。
+2. **估计器内部先丢了量。** `FilmBaseEstimate` 在被拒时把 `density` 直接置零，报告里因此分不清"测到了但被拒"和"根本没测到"。
+
+### 11.2 改动
+
+- `FilmBaseEstimate` 新增 `candidate`：无论判据是否接受，都保留该帧量到的片基；`density`（渲染实际使用的值）语义不变。
+- `PipelineProcessingReport.film_base_candidate` 持久化该测量值。
+- **显示窗口**：只要这帧确实测到过片基（含被拒绝的），就保留它自己的逐通道同像素端点，不再退到共享跨度兜底。同像素端点用同一批像素为三个通道取值，色罩的通道差已经在里面；实测该帧片基因此落在三通道 0.03 以内的同一显示值上，且不改变明暗。
+- **证据判定** `prescribed_response_evidence`：为每帧记录窗口是否可信（`no_trusted_film_base`、`low_signal_channel`＝某通道基低于满量程 1%、`content_span_imbalance`＝三通道跨度比 > 2）。判定只进技术报告，**不改变渲染**；判定表由 `prescribed_response_evidence_report` 输出。
+- `DENSITY_WINDOW_RULE_VERSION` = 4：用规则 3 推导过端点的帧重新推导一次；完整标定卷（`RollAnchoredDirectInvert`）与采集校正（`CaptureCorrectedV11`）不受影响。
+
+### 11.3 实测
+
+- 整幅通道比（11 帧）：**0.32–0.63 / 1.39–2.12 → 0.80–1.30 / 0.96–1.11**。
+- 作用范围（`prescribed_response_evidence_report` 逐帧窗口逐一对比）：只有这 11 帧的窗口变化；13 张 LR 拼接 + 29 个正常素材（扫描仪 TIFF、诺日士 JPEG、相机翻拍 NEF、哈苏 FFF、DNG）逐行完全一致。
+- 渲染对照（`prescribed_response_render_report`）：2 张拼接、2 张扫描仪、2 张相机翻拍、1 张诺日士的 before/after **文件 MD5 相同**；11 张 RAF 的偏色消失。
+- 片基中性：由构造保证（三通道落在同一显示值）。
+
+### 11.4 已知限制
+
+- **观感差异**：这批 RAF 改动后比 Capture One 的成品更淡、反差更低。这是"无片基路径不套调色曲线"的固有观感（正常素材同样不套），需用户终审；要不要给这条路径配一条预设曲线是独立决定。
+- **绝对残余测不准**：以 Capture One 成品为基准的中性面残余在多次测量中给出 0.18–1.7 的不同结果，取决于配准质量（互相关 0.61–0.88）、朝向、画幅裁切范围，以及"C1 自身是否把雾天天空中和"的观感选择。要给出可信的绝对线，需要场景中存在物理上确定中性的参照（灰卡等）。
+- **LR 拼接那一族未改**：它们有可信片基、本来就往返通道端点，本轮规则不触及。实测其剩余误差是一个很小的逐通道密度偏移（约 R +0.015 D、B −0.014 D）；要定规则需要更多参照正片。
+- **尝试过但撤销的两个方案**（都因测量否决，未留在代码里）：把窗口原点锚在实测片基上（偏色消失但 35–59% 画面被压成纯黑）；把白点改成逐通道分位（实测渲染逐字节不变，因为中性核内几乎没有截断）。相关脚本与读数在 `target\verify-0926\`。
