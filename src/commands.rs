@@ -19673,6 +19673,117 @@ mod import_contract_tests {
                 }
             }
         }
+
+        // NEXFILM_RENDER_SWEEP=1 walks the same fixture set as the evidence
+        // report and compares the before/after render of every frame byte for
+        // byte. That is the regression guarantee for "no other frame changes":
+        // the window table shows the endpoints are identical, this shows the
+        // pixels are.
+        if std::env::var("NEXFILM_RENDER_SWEEP").is_ok_and(|value| value == "1") {
+            let mut swept: Vec<std::path::PathBuf> = Vec::new();
+            for (directory, cap, skip_tiff) in [
+                ("lr合并", usize::MAX, false),
+                ("富士raf", usize::MAX, true),
+                ("尼康扫描仪tiff", usize::MAX, false),
+                ("诺日士jpg", usize::MAX, false),
+                ("尼康nef_raw", 3, false),
+                ("哈苏fff", usize::MAX, false),
+                ("爱普森dng", 3, false),
+                ("精益黑白", 3, false),
+            ] {
+                let Ok(entries) = std::fs::read_dir(root.join(directory)) else {
+                    continue;
+                };
+                let mut listed: Vec<std::path::PathBuf> = entries
+                    .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                    .filter(|path| {
+                        path.is_file()
+                            && !(skip_tiff
+                                && path.extension().is_some_and(|extension| {
+                                    extension.eq_ignore_ascii_case("tif")
+                                }))
+                    })
+                    .collect();
+                listed.sort();
+                swept.extend(listed.into_iter().take(cap));
+            }
+            swept.push(root.join("000021940005.jpg"));
+            for path in swept {
+                let path_string = path.to_string_lossy().to_string();
+                let name = path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let Ok(working) = report_working_estimate(&path_string, edge) else {
+                    println!("[SWEEP] {name} skipped");
+                    continue;
+                };
+                let mut geom = GeometryState::default();
+                if let Ok(legacy) = report_legacy_transport(&path_string, edge) {
+                    let border = crate::film_border::detect_film_border(
+                        &image::DynamicImage::ImageRgb16(legacy),
+                    );
+                    if border.confidence == crate::film_border::DetectionConfidence::High {
+                        geom.calibration_points = Some(border.points);
+                    }
+                }
+                let estimate = estimate_film_base_f32(&working, &geom);
+                let base_density = if estimate.usable {
+                    estimate.density
+                } else {
+                    [0.0; 3]
+                };
+                let mut state = PipelineState::smart_auto();
+                state.processing_report.base_source = if estimate.usable {
+                    "detected_film_base"
+                } else {
+                    "missing_film_base_reference"
+                }
+                .to_string();
+                state.processing_report.input_domain = resolve_input_domain(&path_string, None);
+                let mut rendered = Vec::new();
+                for measured in [None, Some(estimate.candidate)] {
+                    let mut limits = compute_content_limits_f32_with_bounds(
+                        &working,
+                        None,
+                        &geom,
+                        base_density,
+                        None,
+                    )
+                    .expect("content limits");
+                    super::prepare_content_render_limits_with_measured_base(
+                        &mut limits,
+                        &DensityAnchors::default(),
+                        base_density,
+                        measured,
+                    );
+                    let mut params = TuningParams::default();
+                    params.density.d_min = limits.d_min;
+                    params.density.d_max = limits.d_max;
+                    rendered.push(render_f32_shader_equivalent(
+                        &working,
+                        None,
+                        &params,
+                        &geom,
+                        &base_color_from_density(base_density),
+                        &state,
+                        None,
+                    ));
+                }
+                let differing = rendered[0]
+                    .as_raw()
+                    .iter()
+                    .zip(rendered[1].as_raw().iter())
+                    .filter(|(left, right)| left != right)
+                    .count();
+                println!(
+                    "[SWEEP] {name} pixels={} differing_bytes={} identical={}",
+                    rendered[0].width() * rendered[0].height(),
+                    differing,
+                    differing == 0
+                );
+            }
+        }
     }
 
     /// The decision table behind the staged fallback: for every fixture, what
