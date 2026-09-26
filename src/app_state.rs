@@ -723,6 +723,13 @@ pub struct PipelineProcessingReport {
     /// persisted before this field existed deserializes to.
     #[serde(default)]
     pub analysis_window_rule: u32,
+    /// The film-base density this frame measured, kept even when the quality
+    /// gate refused to use it. A rejected candidate used to leave no trace, so
+    /// a frame could render with no mask removed and nothing in the record
+    /// saying a plausible base had been found. Nothing reads this value for
+    /// rendering yet; it is the measurement of record.
+    #[serde(default)]
+    pub film_base_candidate: Option<[f32; 3]>,
 }
 
 impl PipelineProcessingReport {
@@ -748,6 +755,7 @@ impl PipelineProcessingReport {
             fallback_reason: String::new(),
             input_domain: InputDomainRecord::default(),
             analysis_window_rule: DENSITY_WINDOW_RULE_VERSION,
+            film_base_candidate: None,
         }
     }
 

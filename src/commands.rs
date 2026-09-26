@@ -2005,7 +2005,15 @@ fn compute_auto_base_f32(
 /// to the content mapping instead of producing a cast, because after
 /// unification the film base is the only neutral reference.
 struct FilmBaseEstimate {
+    /// The value the pipeline uses. Zero on every channel when the gate refused
+    /// the measurement, which is what keeps a bad candidate from tinting a
+    /// frame.
     density: [f32; 3],
+    /// What the frame actually measured, kept even when the gate refused it. A
+    /// refused candidate used to be replaced by zero with no trace anywhere, so
+    /// a frame could render with no mask removed and nothing in the record
+    /// saying that a plausible base had been found and turned down.
+    candidate: [f32; 3],
     confidence: f32,
     source: &'static str,
     usable: bool,
@@ -2024,6 +2032,16 @@ const FILM_BASE_MAX_CHANNEL_SPREAD: f32 = 0.75;
 /// A clear base sits close to full transmission; anything denser is not a base.
 const FILM_BASE_MIN_DENSITY: f32 = 0.02;
 const FILM_BASE_MAX_DENSITY: f32 = 1.60;
+/// Density above which a channel's film base has no usable signal left once the
+/// mask is stretched out: 2.0 D is 1% of full transmission. Every normal
+/// fixture in this workspace keeps its base above 4%, while the underexposed
+/// camera repros put their blue base at 0.6%.
+const FILM_BASE_LOW_SIGNAL_DENSITY: f32 = 2.0;
+/// Above this ratio between the widest and the narrowest content span, the
+/// window is describing the picture's own colour rather than the film's channel
+/// response. Normal fixtures measure 1.12-1.64; the LR-stitched panoramas and
+/// the underexposed repros measure 1.99-28.9.
+const CONTENT_SPAN_IMBALANCE_LIMIT: f32 = 2.0;
 /// How far the rebate band may sit *denser* than the in-area tail and still
 /// describe the same physical base.
 ///
@@ -2034,6 +2052,54 @@ const FILM_BASE_MAX_DENSITY: f32 = 1.60;
 /// not a visible density error, because a wrong base is exactly what the
 /// positive renders as a cast.
 const FILM_BASE_BAND_AGREEMENT: f32 = 0.05;
+
+/// Why this frame's content window cannot be believed to carry the film's
+/// channel response.
+///
+/// The reasons are recorded for the technical report only. Nothing in this
+/// stage changes how a frame renders: a frame with reasons still goes through
+/// exactly the window it goes through today. The list exists so that a frame
+/// whose measurement is not trustworthy is *labelled* rather than silently
+/// treated as if it were.
+///
+/// Each reason is a statement about the measurement, not about the picture's
+/// looks:
+/// - `no_trusted_film_base`: nothing measurable was left to anchor the neutral
+///   reference, so the window's origin is a scene statistic.
+/// - `low_signal_channel`: a channel's film base sits at or below 1% of full
+///   transmission, so that channel's own span is mostly quantisation noise.
+/// - `content_span_imbalance`: the three content spans differ by more than 2x,
+///   which is what a colour-dominant scene (or a channel the upstream tool
+///   already stretched) does to a window that is supposed to follow the film.
+fn prescribed_response_evidence(
+    measured_base: Option<[f32; 3]>,
+    base_in_use: [f32; 3],
+    content: &AutoColorLimits,
+) -> Vec<&'static str> {
+    let mut reasons = Vec::new();
+    if base_in_use.iter().all(|value| !(*value > 0.0)) {
+        reasons.push("no_trusted_film_base");
+    }
+    if let Some(candidate) = measured_base {
+        let densest = candidate.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        if densest.is_finite() && densest >= FILM_BASE_LOW_SIGNAL_DENSITY {
+            reasons.push("low_signal_channel");
+        }
+    }
+    let spans = [
+        content.d_max[0] - content.d_min[0],
+        content.d_max[1] - content.d_min[1],
+        content.d_max[2] - content.d_min[2],
+    ];
+    if spans.iter().all(|value| value.is_finite() && *value > 0.0) {
+        let widest = spans.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let narrowest = spans.iter().copied().fold(f32::INFINITY, f32::min);
+        if widest / narrowest > CONTENT_SPAN_IMBALANCE_LIMIT {
+            reasons.push("content_span_imbalance");
+        }
+    }
+    reasons
+}
 
 fn validate_film_base_candidate(
     density: [f32; 3],
@@ -2111,8 +2177,15 @@ fn estimate_film_base_f32(
     proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
     geom: &GeometryState,
 ) -> FilmBaseEstimate {
-    let unusable = |fallback_reason: &'static str| FilmBaseEstimate {
+    // Whatever the gate decides, remember what the frame measured: a rejected
+    // candidate must not vanish, because "found a base and refused it" and
+    // "found nothing" are different states that the report has to tell apart.
+    // Only `density` (which stays zero here) is rendered, so a refusal still
+    // leaves every pixel untouched.
+    let mut measured: Option<[f32; 3]> = None;
+    let unusable = |fallback_reason: &'static str, measured: Option<[f32; 3]>| FilmBaseEstimate {
         density: [0.0; 3],
+        candidate: measured.unwrap_or([0.0; 3]),
         confidence: 0.0,
         source: "unavailable",
         usable: false,
@@ -2128,6 +2201,7 @@ fn estimate_film_base_f32(
         } else {
             Some(median_channel_density(&mut band))
         };
+        measured = band_density;
 
         // 2. Lowest-density tail inside the Film Area.
         let tail = compute_auto_base_f32(proxy, geom).unwrap_or(([0.0; 3], 0.0));
@@ -2150,6 +2224,7 @@ fn estimate_film_base_f32(
             {
                 return FilmBaseEstimate {
                     density: band_density,
+                    candidate: band_density,
                     confidence: 0.95,
                     source: "film_edge_band",
                     usable: true,
@@ -2161,11 +2236,15 @@ fn estimate_film_base_f32(
         if tail_usable {
             return FilmBaseEstimate {
                 density: tail.0,
+                candidate: tail.0,
                 confidence: tail.1,
                 source: "film_area_low_density_tail",
                 usable: true,
                 fallback_reason: None,
             };
+        }
+        if measured.is_none() && tail.1 > 0.0 {
+            measured = Some(tail.0);
         }
     }
 
@@ -2180,14 +2259,21 @@ fn estimate_film_base_f32(
         ) {
             Ok(()) if confidence > 0.0 => FilmBaseEstimate {
                 density,
+                candidate: density,
                 confidence: (confidence * 0.5).max(0.05),
                 source: "content_high_quantile",
                 usable: true,
                 fallback_reason: None,
             },
-            Ok(()) | Err(_) => unusable(gate_failure.unwrap_or("missing_film_base_reference")),
+            Ok(()) | Err(_) => unusable(
+                gate_failure.unwrap_or("missing_film_base_reference"),
+                measured.or(Some(density)),
+            ),
         },
-        Err(_) => unusable(gate_failure.unwrap_or("missing_film_base_reference")),
+        Err(_) => unusable(
+            gate_failure.unwrap_or("missing_film_base_reference"),
+            measured,
+        ),
     }
 }
 
@@ -7781,6 +7867,11 @@ pub async fn analyze_proxy_base_color(
                     .then_some(item.relative_transmission_quality.as_ref())
                     .flatten();
                 let mut pending_base_fallback: Option<&'static str> = None;
+                // Whatever the gate decides, remember what the frame actually
+                // measured. A rejected candidate used to leave no trace at all,
+                // which is why a frame could render with no mask removed and
+                // nothing in the report saying a plausible base had been found.
+                let mut measured_film_base: Option<[f32; 3]> = None;
                 let (density, estimated_confidence, estimated_source) = if smart_auto_compatibility
                 {
                     let proxy = item
@@ -7812,6 +7903,7 @@ pub async fn analyze_proxy_base_color(
                     // silently neutralising on a scene sample.
                     let estimate = estimate_film_base_f32(input, &item.geom);
                     pending_base_fallback = estimate.fallback_reason;
+                    measured_film_base = Some(estimate.candidate);
                     if estimate.usable {
                         (
                             estimate.density,
@@ -7847,6 +7939,7 @@ pub async fn analyze_proxy_base_color(
                 ] {
                     report.base_source = estimated_source.to_string();
                     report.base_confidence = format!("{estimated_confidence:.3}");
+                    report.film_base_candidate = measured_film_base;
                     report.analysis_data_domain = if capture_corrected {
                         "relative_transmission_rgb".to_string()
                     } else if smart_auto_compatibility {
@@ -18983,6 +19076,54 @@ mod import_contract_tests {
         }
     }
 
+    /// The evidence list labels a frame whose measurement cannot be trusted.
+    /// Stage 1 records that label; it must not change what the frame renders.
+    #[test]
+    fn prescribed_response_evidence_labels_untrustworthy_measurements() {
+        let balanced = super::AutoColorLimits {
+            d_min: [0.10, 0.12, 0.14],
+            d_max: [0.55, 0.62, 0.68],
+            pipeline_state: None,
+        };
+        let healthy = [0.30, 0.45, 0.55];
+        assert!(super::prescribed_response_evidence(Some(healthy), healthy, &balanced).is_empty());
+
+        // A window whose blue span is nearly three times its red span is
+        // describing the picture, not the film's channel response.
+        let imbalanced = super::AutoColorLimits {
+            d_min: [0.05, 0.10, 0.15],
+            d_max: [0.45, 0.78, 1.25],
+            pipeline_state: None,
+        };
+        assert_eq!(
+            super::prescribed_response_evidence(Some(healthy), healthy, &imbalanced),
+            vec!["content_span_imbalance"]
+        );
+
+        // A base measured at 2.2 D is 0.6% of full transmission: the channel is
+        // mostly quantisation noise once the mask is stretched out.
+        assert_eq!(
+            super::prescribed_response_evidence(Some([1.48, 1.68, 2.20]), healthy, &balanced),
+            vec!["low_signal_channel"]
+        );
+
+        // Nothing measurable was left to anchor the neutral reference.
+        assert_eq!(
+            super::prescribed_response_evidence(None, [0.0; 3], &balanced),
+            vec!["no_trusted_film_base"]
+        );
+
+        // A frame can carry more than one reason at once.
+        assert_eq!(
+            super::prescribed_response_evidence(Some([1.48, 1.68, 2.20]), [0.0; 3], &imbalanced),
+            vec![
+                "no_trusted_film_base",
+                "low_signal_channel",
+                "content_span_imbalance"
+            ]
+        );
+    }
+
     /// §七.8: a film-base candidate that over- or under-subtracts must be
     /// rejected instead of producing a cast. The band around a confirmed Film
     /// Area is only believed when it agrees with the in-area low-density tail.
@@ -19269,6 +19410,126 @@ mod import_contract_tests {
             };
         }
         decode_scanner_profiled_estimate_image_buffer(path, DecodeMode::DevelopProxy, None, edge)
+    }
+
+    /// The decision table behind the staged fallback: for every fixture, what
+    /// the frame measured and why that measurement cannot be trusted. Nothing
+    /// in this stage changes a rendered pixel.
+    ///
+    /// Run with
+    /// `cargo test --lib prescribed_response_evidence_report -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual prescribed-response evidence report over local fixtures"]
+    fn prescribed_response_evidence_report() {
+        let edge: u32 = std::env::var("NEXFILM_REPORT_EDGE")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1200);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        let mut samples: Vec<std::path::PathBuf> = Vec::new();
+        for (directory, cap, loose_only) in [
+            ("lr合并", usize::MAX, false),
+            ("富士raf", usize::MAX, true),
+            ("尼康扫描仪tiff", usize::MAX, false),
+            ("诺日士jpg", usize::MAX, false),
+            ("尼康nef_raw", 3, false),
+            ("哈苏fff", usize::MAX, false),
+            ("爱普森dng", 3, false),
+            ("精益黑白", 3, false),
+        ] {
+            let Ok(entries) = std::fs::read_dir(root.join(directory)) else {
+                continue;
+            };
+            let mut listed: Vec<std::path::PathBuf> = entries
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| {
+                    path.is_file()
+                        && !(loose_only
+                            && path.extension().is_some_and(|extension| {
+                                extension.eq_ignore_ascii_case("tif")
+                            }))
+                })
+                .collect();
+            listed.sort();
+            samples.extend(listed.into_iter().take(cap));
+        }
+        samples.push(root.join("000021940005.jpg"));
+
+        for path in samples {
+            let path_string = path.to_string_lossy().to_string();
+            let file_name = path
+                .file_name()
+                .map(|name| name.to_string_lossy().to_string())
+                .unwrap_or_default();
+            println!("\n=== {file_name} ===");
+            let working = match report_working_estimate(&path_string, edge) {
+                Ok(working) => working,
+                Err(error) => {
+                    println!("[SKIP] {error}");
+                    continue;
+                }
+            };
+            let mut geom = GeometryState::default();
+            if let Ok(legacy) = report_legacy_transport(&path_string, edge) {
+                let border = crate::film_border::detect_film_border(
+                    &image::DynamicImage::ImageRgb16(legacy),
+                );
+                if border.confidence == crate::film_border::DetectionConfidence::High {
+                    geom.calibration_points = Some(border.points);
+                }
+            }
+            let estimate = estimate_film_base_f32(&working, &geom);
+            let base_density = if estimate.usable {
+                estimate.density
+            } else {
+                [0.0; 3]
+            };
+            let limits =
+                compute_content_limits_f32_with_bounds(&working, None, &geom, base_density, None)
+                    .unwrap_or_else(|error| panic!("window for {file_name}: {error}"));
+            let spans = [
+                limits.d_max[0] - limits.d_min[0],
+                limits.d_max[1] - limits.d_min[1],
+                limits.d_max[2] - limits.d_min[2],
+            ];
+            let widest = spans.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let narrowest = spans.iter().copied().fold(f32::INFINITY, f32::min);
+            let candidate = estimate.candidate;
+            let levels = candidate.map(|value| 10.0_f32.powf(-value) * 100.0);
+            let reasons =
+                super::prescribed_response_evidence(Some(candidate), base_density, &limits);
+            println!(
+                "[BASE] source={} usable={} used=({:.3},{:.3},{:.3}) candidate=({:.3},{:.3},{:.3}) levels%=({:.2},{:.2},{:.2}) fallback={:?}",
+                estimate.source,
+                estimate.usable,
+                estimate.density[0],
+                estimate.density[1],
+                estimate.density[2],
+                candidate[0],
+                candidate[1],
+                candidate[2],
+                levels[0],
+                levels[1],
+                levels[2],
+                estimate.fallback_reason
+            );
+            println!(
+                "[WINDOW] confirmed_area={} spans=({:.3},{:.3},{:.3}) imbalance={:.2}",
+                geom.calibration_points.is_some(),
+                spans[0],
+                spans[1],
+                spans[2],
+                widest / narrowest.max(1.0e-6)
+            );
+            println!(
+                "[EVIDENCE] {}",
+                if reasons.is_empty() {
+                    "-".to_string()
+                } else {
+                    reasons.join(", ")
+                }
+            );
+        }
     }
 
     /// Quantitative before/after report for the unified density pipeline.
@@ -23238,6 +23499,7 @@ mod roll_render_tests {
     ) -> FilmBaseEstimate {
         FilmBaseEstimate {
             density,
+            candidate: density,
             confidence,
             source,
             usable: true,
@@ -23305,6 +23567,7 @@ mod roll_render_tests {
         let copied = [0.5775, 0.7360, 0.9848];
         let unusable = FilmBaseEstimate {
             density: [0.4; 3],
+            candidate: [0.4; 3],
             confidence: 0.0,
             source: "unavailable",
             usable: false,
