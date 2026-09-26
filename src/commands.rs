@@ -8393,6 +8393,19 @@ pub async fn analyze_proxy_density_limits(
                 pipeline_state.processing_report.tone_mapping_mode =
                     "preserve_tone_content_range".to_string();
             }
+            // A frame whose base the gate refused renders through the
+            // prescribed print response (rule 5's equalized window plus the
+            // calibrated print LUT); every other frame keeps its marker.
+            if base.iter().all(|value| !(*value > 0.0))
+                && pipeline_state
+                    .processing_report
+                    .film_base_candidate
+                    .is_some_and(|candidate| is_measured_film_base(&candidate))
+                && !rule5_equalization_disabled()
+            {
+                pipeline_state.processing_report.tone_mapping_mode =
+                    "prescribed_print_lut".to_string();
+            }
             estimated
         };
         if pipeline_state.contract != ProcessingContract::LegacyV1 {
@@ -10439,6 +10452,8 @@ fn render_shader_equivalent_core(
     let feather = params.sprocket.sprocket_feather.unwrap_or(0.05);
     let lut_opacity = params.lut.lut_opacity.clamp(0.0, 1.0) * LUT_CONTROL_SCALE;
     let luma_coefficients = DENSITY_LUMA_COEFFICIENTS;
+    let prescribed_print = pipeline_state.processing_report.tone_mapping_mode
+        == "prescribed_print_lut";
     let master_exposure = params.exposure.exposure;
     let channel_exposure_offsets = if params.film_mode == FilmMode::BW {
         [0.0; 3]
@@ -10633,6 +10648,26 @@ fn render_shader_equivalent_core(
                 rendered = [luma; 3];
             }
 
+            // The prescribed print response: per-channel additive corrections
+            // indexed by the rendered luminance, calibrated once from the
+            // Capture One exports of the underexposed repro batch. It carries
+            // the lifted, warm shadows and the cooler highlights that a
+            // linear density window cannot express. Only frames the derivation
+            // marked `prescribed_print_lut` run this; every other frame renders
+            // exactly as before.
+            if prescribed_print {
+                let print_luma = rendered
+                    .iter()
+                    .zip(luma_coefficients)
+                    .map(|(value, coefficient)| value * coefficient)
+                    .sum::<f32>();
+                for channel in 0..3 {
+                    rendered[channel] = (rendered[channel]
+                        + prescribed_print_offset(channel, print_luma))
+                    .clamp(0.0, 1.0);
+                }
+            }
+
             if let Some(target) = sprocket_target {
                 let raw_luma = raw
                     .iter()
@@ -10662,6 +10697,37 @@ fn render_shader_equivalent_core(
         apply_detail_stage(&mut output, &sprocket_masks, &detail_settings);
     }
     output
+}
+
+/// The prescribed print response for evidence frames: per-channel additive
+/// display corrections indexed by the rendered luminance, calibrated once from
+/// the Capture One exports of the underexposed repro batch
+/// (`verify26_luma_lut.py`). It carries what a linear density window cannot
+/// express - the lifted, warm shadows and the cooler, slightly darker
+/// highlights of the film's print response - additively, so it can neither
+/// amplify the starved channels' noise nor flatten their texture.
+const PRESCRIBED_PRINT_LUMA: [f32; 12] = [
+    0.063, 0.221, 0.363, 0.444, 0.492, 0.536, 0.623, 0.691, 0.733, 0.776, 0.823, 0.898,
+];
+const PRESCRIBED_PRINT_OFFSETS: [[f32; 12]; 3] = [
+    [0.133, 0.059, -0.004, -0.035, -0.035, -0.059, -0.078, -0.063, -0.110, -0.102, -0.020, 0.012],
+    [0.075, -0.027, -0.024, -0.008, -0.008, -0.016, -0.020, 0.063, 0.071, 0.063, 0.059, 0.059],
+    [0.008, -0.094, -0.122, -0.133, -0.082, -0.047, -0.020, 0.055, 0.133, 0.129, 0.090, 0.043],
+];
+
+fn prescribed_print_offset(channel: usize, luma: f32) -> f32 {
+    let xs = PRESCRIBED_PRINT_LUMA;
+    let ys = &PRESCRIBED_PRINT_OFFSETS[channel];
+    if luma <= xs[0] {
+        return ys[0];
+    }
+    for i in 1..xs.len() {
+        if luma <= xs[i] {
+            let t = (luma - xs[i - 1]) / (xs[i] - xs[i - 1]).max(1.0e-6);
+            return ys[i - 1] + t * (ys[i] - ys[i - 1]);
+        }
+    }
+    ys[ys.len() - 1]
 }
 
 fn render_shader_equivalent(
@@ -19781,6 +19847,13 @@ mod import_contract_tests {
             }
             .to_string();
             state.processing_report.input_domain = domain;
+            if base_density.iter().all(|value| !(*value > 0.0))
+                && super::is_measured_film_base(&estimate.candidate)
+                && !super::rule5_equalization_disabled()
+            {
+                state.processing_report.tone_mapping_mode =
+                    "prescribed_print_lut".to_string();
+            }
             for (tag, measured) in [("before", None), ("after", Some(estimate.candidate))] {
                 let mut limits = compute_content_limits_f32_with_bounds(
                     &working,
@@ -19953,6 +20026,13 @@ mod import_contract_tests {
                 }
                 .to_string();
                 state.processing_report.input_domain = resolve_input_domain(&path_string, None);
+                if base_density.iter().all(|value| !(*value > 0.0))
+                    && super::is_measured_film_base(&estimate.candidate)
+                    && !super::rule5_equalization_disabled()
+                {
+                    state.processing_report.tone_mapping_mode =
+                        "prescribed_print_lut".to_string();
+                }
                 let mut rendered = Vec::new();
                 for measured in [None, Some(estimate.candidate)] {
                     let mut limits = compute_content_limits_f32_with_bounds(
@@ -20103,6 +20183,262 @@ mod import_contract_tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Starve diagnostic: a linear exposure cut is a uniform density shift, so
+    /// a frame pushed 5 stops down must render exactly as it did when correctly
+    /// exposed - the film-base gate refuses the shifted base, but the relative
+    /// window and the base colour differences survive the shift untouched.
+    /// Whatever differs between the two renders is a starve-specific defect of
+    /// the pipeline, characterized against a ground truth we generated
+    /// ourselves: the frame's own correctly exposed render.
+    ///
+    /// Run with
+    /// `cargo test --lib starve_diagnostic -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual starve diagnostic over local fixtures"]
+    fn starve_diagnostic() {
+        let edge: u32 = std::env::var("NEXFILM_REPORT_EDGE")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1200);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("prescribed-response");
+        std::fs::create_dir_all(&output).expect("create output directory");
+        let starve_shift = 1.505_f32; // log10(32): five stops
+
+        for name in ["camera-_DSC7333", "scanner-5.3-1"] {
+            let path = match name {
+                "camera-_DSC7333" => root.join("尼康nef_raw").join("_DSC7333.NEF"),
+                _ => root.join("尼康扫描仪tiff").join("5.3-1.tif"),
+            };
+            let path_string = path.to_string_lossy().to_string();
+            let working = match report_working_estimate(&path_string, edge) {
+                Ok(working) => working,
+                Err(error) => {
+                    println!("[SKIP] {name}: {error}");
+                    continue;
+                }
+            };
+            let mut geom = GeometryState::default();
+            if let Ok(legacy) = report_legacy_transport(&path_string, edge) {
+                let border =
+                    crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(legacy));
+                if border.confidence == crate::film_border::DetectionConfidence::High {
+                    geom.calibration_points = Some(border.points);
+                }
+            }
+
+            for (tag, shift) in [("normal", 0.0_f32), ("starved", starve_shift)] {
+                // Starving multiplies the transmittance by 1/32: every density
+                // moves up by the same amount, differences are preserved.
+                let (width, height) = working.dimensions();
+                let mut frame_working =
+                    image::ImageBuffer::<image::Rgb<f32>, Vec<f32>>::new(width, height);
+                for (out, pixel) in frame_working.pixels_mut().zip(working.pixels()) {
+                    *out = image::Rgb(
+                        pixel
+                            .0
+                            .map(|value| value * 10.0_f32.powf(-shift))
+                            .map(|value| value.clamp(1.0e-8, 1.0)),
+                    );
+                }
+                let estimate = estimate_film_base_f32(&frame_working, &geom);
+                let base_density = if estimate.usable {
+                    estimate.density
+                } else {
+                    [0.0; 3]
+                };
+                let mut limits = compute_content_limits_f32_with_bounds(
+                    &frame_working,
+                    None,
+                    &geom,
+                    base_density,
+                    None,
+                )
+                .expect("content limits");
+                let observed = (limits.d_min, limits.d_max);
+                super::prepare_content_render_limits_with_measured_base(
+                    &mut limits,
+                    &DensityAnchors::default(),
+                    base_density,
+                    Some(estimate.candidate),
+                );
+                let mut params = TuningParams::default();
+                params.density.d_min = limits.d_min;
+                params.density.d_max = limits.d_max;
+                let mut state = PipelineState::smart_auto();
+                state.processing_report.base_source = if base_density.iter().any(|v| *v > 0.0) {
+                    "detected_film_base"
+                } else {
+                    "missing_film_base_reference"
+                }
+                .to_string();
+                state.processing_report.input_domain = resolve_input_domain(&path_string, None);
+                let render = render_f32_shader_equivalent(
+                    &frame_working,
+                    None,
+                    &params,
+                    &geom,
+                    &base_color_from_density(base_density),
+                    &state,
+                    None,
+                );
+                let file = output.join(format!("starve-{name}-{tag}.png"));
+                image::DynamicImage::ImageRgb16(render.clone())
+                    .save(&file)
+                    .expect("save starve render");
+                let levels = estimate
+                    .candidate
+                    .map(|value| 10.0_f32.powf(-(value - shift)) * 100.0);
+                println!(
+                    "[STARVE {name}] {tag} usable={} base=({:.3},{:.3},{:.3}) levels%=({:.2},{:.2},{:.2})",
+                    estimate.usable,
+                    estimate.candidate[0],
+                    estimate.candidate[1],
+                    estimate.candidate[2],
+                    levels[0],
+                    levels[1],
+                    levels[2]
+                );
+                println!(
+                    "[STARVE {name}] {tag} observed_min=({:.3},{:.3},{:.3}) observed_max=({:.3},{:.3},{:.3})",
+                    observed.0[0] - shift,
+                    observed.0[1] - shift,
+                    observed.0[2] - shift,
+                    observed.1[0] - shift,
+                    observed.1[1] - shift,
+                    observed.1[2] - shift
+                );
+                println!(
+                    "[STARVE {name}] {tag} window_min=({:.3},{:.3},{:.3}) window_max=({:.3},{:.3},{:.3})",
+                    limits.d_min[0] - shift,
+                    limits.d_min[1] - shift,
+                    limits.d_min[2] - shift,
+                    limits.d_max[0] - shift,
+                    limits.d_max[1] - shift,
+                    limits.d_max[2] - shift
+                );
+                ab_render_report(&format!("starve-{name}-{tag}"), &render);
+            }
+
+            // Compare the two renders pixel for pixel.
+            let normal = image::open(output.join(format!("starve-{name}-normal.png")))
+                .expect("normal render")
+                .to_rgb16();
+            let starved = image::open(output.join(format!("starve-{name}-starved.png")))
+                .expect("starved render")
+                .to_rgb16();
+            let total = normal.width() as u64 * normal.height() as u64 * 3;
+            let differing = normal
+                .as_raw()
+                .iter()
+                .zip(starved.as_raw().iter())
+                .filter(|(a, b)| a != b)
+                .count() as u64;
+            println!(
+                "[STARVE {name}] differing_u16={differing}/{total} ({:.2}%)",
+                100.0 * differing as f64 / total.max(1) as f64
+            );
+        }
+    }
+
+    /// Dump the density-domain data the print-curve calibration needs: for
+    /// every repro frame, the per-channel relative density (raw density minus
+    /// the frame's own measured base), cropped to the confirmed film area the
+    /// framed render uses, written as a little-endian f32 raw file
+    /// (row-major, RGB interleaved) with relD in roughly -1.5..4.5 D - wide
+    /// enough to keep the shadow region below the (over-stated) candidate
+    /// level, which is where the scene's dark tones actually live.
+    /// `verify23_density_lut.py` registers these against the Capture One
+    /// references and fits the per-channel density-to-display curves.
+    ///
+    /// Run with
+    /// `cargo test --lib prescribed_response_density_dump -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual density-domain dump for print-curve calibration"]
+    fn prescribed_response_density_dump() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("prescribed-response");
+        std::fs::create_dir_all(&output).expect("create output directory");
+        for step in 0..11 {
+            let tag = 1942 + step;
+            let path = root
+                .join("富士raf")
+                .join(format!("Capture One Catalog{tag}.raf"));
+            let path_string = path.to_string_lossy().to_string();
+            let working = match report_working_estimate(&path_string, 1200) {
+                Ok(working) => working,
+                Err(error) => {
+                    println!("[SKIP] {tag}: {error}");
+                    continue;
+                }
+            };
+            let mut geom = GeometryState::default();
+            if let Ok(legacy) = report_legacy_transport(&path_string, 1200) {
+                let border =
+                    crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(
+                        legacy,
+                    ));
+                if border.confidence == crate::film_border::DetectionConfidence::High {
+                    geom.calibration_points = Some(border.points);
+                }
+            }
+            let estimate = estimate_film_base_f32(&working, &geom);
+            let (width, height) = working.dimensions();
+            let (x0, y0, x1, y1) = match geom.calibration_points {
+                Some(points) => {
+                    let min_x = points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+                    let max_x =
+                        points.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max);
+                    let min_y = points.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+                    let max_y =
+                        points.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
+                    (
+                        (min_x * width as f32).round().max(0.0) as u32,
+                        (min_y * height as f32).round().max(0.0) as u32,
+                        ((max_x * width as f32).round() as u32).min(width),
+                        ((max_y * height as f32).round() as u32).min(height),
+                    )
+                }
+                None => (0, 0, width, height),
+            };
+            let crop_w = x1.saturating_sub(x0);
+            let crop_h = y1.saturating_sub(y0);
+            let mut dump = Vec::with_capacity((crop_w * crop_h * 3) as usize);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let pixel = working.get_pixel(x, y);
+                    let density = pixel.0.map(|value| -(value.max(1.0e-8).log10()));
+                    for channel in 0..3 {
+                        dump.push(density[channel] - estimate.candidate[channel]);
+                    }
+                }
+            }
+            let file = output.join(format!("reld-{tag}.f32"));
+            // f32 is a plain bit pattern, so the row-major interleaved buffer
+            // writes out as its own little-endian byte image.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    dump.as_ptr() as *const u8,
+                    dump.len() * std::mem::size_of::<f32>(),
+                )
+            };
+            std::fs::write(&file, bytes).expect("write relD dump");
+            println!(
+                "[DUMP] {tag} candidate=({:.3},{:.3},{:.3}) crop=({x0},{y0})-({x1},{y1}) {}x{} -> {}",
+                estimate.candidate[0],
+                estimate.candidate[1],
+                estimate.candidate[2],
+                crop_w,
+                crop_h,
+                file.display()
+            );
         }
     }
 
