@@ -3167,6 +3167,10 @@ fn prepare_content_render_limits_with_measured_base(
         // response that used to be layered on it existed only for two merged
         // Lightroom scans whose files clip a channel outright.
         guard_collapsed_content_window(limits);
+        // A measurement alone is not enough: the spans the picture measures are
+        // still the picture's, and on a colour-dominated frame they carry a
+        // visible cast. Only the frames whose base the gate refused get the
+        // preset correction, so a normally exposed frame is untouched.
         [0.0; 3]
     } else {
         let offsets = share_smart_auto_density_scale(limits);
@@ -19210,6 +19214,26 @@ mod import_contract_tests {
         assert!(spread < 0.05, "the base must land near one value: {base_norm:?}");
     }
 
+    /// A frame whose base the gate accepted keeps the window it had: the preset
+    /// gain is for the frames that had to be rescued, not for healthy ones.
+    #[test]
+    fn a_trusted_base_keeps_the_untouched_window() {
+        let measured = [0.30_f32, 0.45, 0.60];
+        let mut limits = super::AutoColorLimits {
+            d_min: [0.05, 0.06, 0.07],
+            d_max: [0.75, 0.85, 0.95],
+            pipeline_state: None,
+        };
+        super::prepare_content_render_limits_with_measured_base(
+            &mut limits,
+            &DensityAnchors::default(),
+            measured,
+            Some(measured),
+        );
+        assert_eq!(limits.d_min, [0.05, 0.06, 0.07]);
+        assert_eq!(limits.d_max, [0.75, 0.85, 0.95]);
+    }
+
     /// Without a measurement the window stays exactly what it is today: one
     /// shared span with clamped channel offsets, which measures the base onto
     /// three different display values. This pins the "no measurement, no
@@ -19570,7 +19594,8 @@ mod import_contract_tests {
             (false, "camera-_DSC7344", root.join("尼康nef_raw").join("_DSC7344.NEF")),
             (false, "noritsu-000000070001", root.join("诺日士jpg").join("000000070001.jpg")),
         ];
-        for (flip, name, path) in samples {
+        for (flip, name, path) in &samples {
+            let (name, path) = (*name, path.clone());
             let path_string = path.to_string_lossy().to_string();
             let working = match report_working_estimate(&path_string, edge) {
                 Ok(working) => working,
@@ -19617,13 +19642,13 @@ mod import_contract_tests {
                     None,
                 )
                 .expect("content limits");
-                super::prepare_content_render_limits_with_measured_base(
-                    &mut limits,
-                    &DensityAnchors::default(),
-                    base_density,
-                    measured,
-                );
-                let mut params = TuningParams::default();
+                    super::prepare_content_render_limits_with_measured_base(
+                        &mut limits,
+                        &DensityAnchors::default(),
+                        base_density,
+                        measured,
+                    );
+                    let mut params = TuningParams::default();
                 params.density.d_min = limits.d_min;
                 params.density.d_max = limits.d_max;
                 let render = render_f32_shader_equivalent(
@@ -19671,6 +19696,45 @@ mod import_contract_tests {
                         .expect("save framed render");
                     println!("[RENDER] {name} {tag}-frame -> {}", frame_file.display());
                 }
+            }
+            // Third variant, for evaluation only: the same co-sited spans with
+            // the window's origins moved onto the base the frame measured. It
+            // is not a shipping rule - it exists so the origin hypothesis can be
+            // compared against the span hypothesis on the same renders.
+            if !base_density.iter().any(|value| *value > 0.0)
+                && estimate.candidate.iter().any(|value| *value > 0.0)
+            {
+                let mut limits = compute_content_limits_f32_with_bounds(
+                    &working,
+                    None,
+                    &geom,
+                    base_density,
+                    None,
+                )
+                .expect("content limits");
+                for channel in 0..3 {
+                    let span = (limits.d_max[channel] - limits.d_min[channel]).max(1.0e-6);
+                    limits.d_min[channel] = estimate.candidate[channel] - base_density[channel];
+                    limits.d_max[channel] = limits.d_min[channel] + span;
+                }
+                let mut params = TuningParams::default();
+                params.density.d_min = limits.d_min;
+                params.density.d_max = limits.d_max;
+                let render = render_f32_shader_equivalent(
+                    &working,
+                    None,
+                    &params,
+                    &geom,
+                    &base_color_from_density(base_density),
+                    &state,
+                    None,
+                );
+                let file = output.join(format!("{name}-anchored.png"));
+                image::DynamicImage::ImageRgb16(render.clone())
+                    .save(&file)
+                    .expect("save anchored render");
+                println!("[RENDER] {name} anchored -> {}", file.display());
+                ab_render_report(&format!("{name}-anchored"), &render);
             }
         }
 
@@ -19782,6 +19846,103 @@ mod import_contract_tests {
                     differing,
                     differing == 0
                 );
+            }
+        }
+
+        // NEXFILM_RENDER_GAINS="0.9,1.0,1.1" sweeps per-channel span gains on
+        // the repro batch and prints each variant's frame-mean channel ratios,
+        // so a preset for the co-sited window can be fitted against Capture
+        // One's own frame means in `target/verify-0926/verify19.py`.
+        if let Ok(list) = std::env::var("NEXFILM_RENDER_GAINS") {
+            let gains: Vec<f32> = list
+                .split(',')
+                .filter_map(|value| value.trim().parse().ok())
+                .collect();
+            if !gains.is_empty() {
+                for (flip, name, path) in &samples {
+                    let (name, path) = (*name, path.clone());
+                    let path_string = path.to_string_lossy().to_string();
+                    let Ok(working) = report_working_estimate(&path_string, edge) else {
+                        continue;
+                    };
+                    let mut geom = GeometryState::default();
+                    if let Ok(legacy) = report_legacy_transport(&path_string, edge) {
+                        let border = crate::film_border::detect_film_border(
+                            &image::DynamicImage::ImageRgb16(legacy),
+                        );
+                        if border.confidence == crate::film_border::DetectionConfidence::High {
+                            geom.calibration_points = Some(border.points);
+                        }
+                    }
+                    let _ = flip;
+                    let estimate = estimate_film_base_f32(&working, &geom);
+                    let base_density = if estimate.usable {
+                        estimate.density
+                    } else {
+                        [0.0; 3]
+                    };
+                    let mut state = PipelineState::smart_auto();
+                    state.processing_report.base_source = if estimate.usable {
+                        "detected_film_base"
+                    } else {
+                        "missing_film_base_reference"
+                    }
+                    .to_string();
+                    state.processing_report.input_domain = resolve_input_domain(&path_string, None);
+                    for run in &gains {
+                        for blue in &gains {
+                            let mut limits = compute_content_limits_f32_with_bounds(
+                                &working,
+                                None,
+                                &geom,
+                                base_density,
+                                None,
+                            )
+                            .expect("content limits");
+                            super::prepare_content_render_limits_with_measured_base(
+                                &mut limits,
+                                &DensityAnchors::default(),
+                                base_density,
+                                Some(estimate.candidate),
+                            );
+                            let mut params = TuningParams::default();
+                            for channel in 0..3 {
+                                let gain = if channel == 0 {
+                                    *run
+                                } else if channel == 1 {
+                                    1.0
+                                } else {
+                                    *blue
+                                };
+                                let span = (limits.d_max[channel] - limits.d_min[channel]).max(1.0e-6);
+                                limits.d_max[channel] = limits.d_min[channel] + span / gain;
+                            }
+                            params.density.d_min = limits.d_min;
+                            params.density.d_max = limits.d_max;
+                            let rendered = render_f32_shader_equivalent(
+                                &working,
+                                None,
+                                &params,
+                                &geom,
+                                &base_color_from_density(base_density),
+                                &state,
+                                None,
+                            );
+                            let mut sums = [0.0f64; 3];
+                            for pixel in rendered.as_raw().chunks_exact(3) {
+                                for (channel, value) in pixel.iter().enumerate() {
+                                    sums[channel] += f64::from(*value);
+                                }
+                            }
+                            let green = sums[1].max(1.0);
+                            println!(
+                                "[GAIN] {name} u_R={run:.2} u_B={blue:.2} R/G={:.4} B/G={:.4}",
+                                sums[0] / green,
+                                sums[2] / green
+                            );
+                        }
+                    }
+                }
             }
         }
     }
