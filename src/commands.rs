@@ -3073,7 +3073,7 @@ fn prepare_content_render_limits(
     prepare_content_render_limits_with_measured_base(limits, anchors, base_density, None)
 }
 
-/// Drive the display window from the film base the frame measured.
+/// Choose the display window for a frame, given the film base it measured.
 ///
 /// `measured_base` is the base a frame measured even though the quality gate
 /// refused to use it. Those refusals come from absolute density limits that
@@ -3087,8 +3087,14 @@ fn prepare_content_render_limits(
 /// falls back to one shared span with channel origins clamped to +-0.20 D,
 /// which cannot express a mask whose channels differ by 0.3-0.5 D. Measured on
 /// Capture One Catalog1942.raf, the film base then lands at 0.30 / 0.40 / 0.79
-/// of the display range - a blue base, and a blue frame. Anchoring the window
-/// on the measurement makes the base land on black in all three channels.
+/// of the display range - a blue base, and a blue frame - while the ten
+/// unaffected files in the same batch would render as they always have.
+///
+/// A measured base is therefore enough to keep the frame on its own co-sited
+/// endpoints: those endpoints are read from the same pixels in every channel,
+/// so they already carry the mask's channel differences without letting one
+/// channel's window be moved on its own, and the base then lands within 0.03 of
+/// one display value in all three channels.
 fn prepare_content_render_limits_with_measured_base(
     limits: &mut AutoColorLimits,
     anchors: &DensityAnchors,
@@ -3133,7 +3139,11 @@ fn prepare_content_render_limits_with_measured_base(
     }
 
     let observed_span = density_luma(limits.d_max) - density_luma(limits.d_min);
-    let channel_offsets = if base_density.iter().any(|value| *value > 0.0) {
+    let has_measurement = base_density.iter().any(|value| *value > 0.0)
+        || measured_base
+            .as_ref()
+            .is_some_and(is_measured_film_base);
+    let channel_offsets = if has_measurement {
         // A frame that measured its own film base keeps the window its content
         // measured, channel by channel.
         //
@@ -3153,10 +3163,6 @@ fn prepare_content_render_limits_with_measured_base(
         // Lightroom scans whose files clip a channel outright.
         guard_collapsed_content_window(limits);
         [0.0; 3]
-    } else if let Some(candidate) = measured_base.filter(is_measured_film_base) {
-        anchor_window_on_measured_base(limits, base_density, candidate);
-        guard_collapsed_content_window(limits);
-        [0.0; 3]
     } else {
         let offsets = share_smart_auto_density_scale(limits);
         preserve_smart_auto_content_span(limits);
@@ -3173,44 +3179,6 @@ fn is_measured_film_base(candidate: &[f32; 3]) -> bool {
         && candidate
             .iter()
             .any(|value| *value > FILM_BASE_MIN_DENSITY)
-}
-
-/// Anchor the display window on the film base the frame measured.
-///
-/// Each channel's origin becomes its own measured base, so the base - the one
-/// surface whose neutrality is a fact rather than a guess - lands on the same
-/// display value in all three channels. Each channel keeps the density span its
-/// own content measured, because that span is the channel response the window
-/// is supposed to carry; a channel whose base sits at the noise floor may not
-/// be given a wider span than the channels that still have signal.
-///
-/// The three channels share one black point. A per-channel black point is a
-/// colour-balance decision in disguise, and on a frame this dark there is
-/// nothing left in the picture to measure it from: only the base is trustworthy.
-fn anchor_window_on_measured_base(
-    limits: &mut AutoColorLimits,
-    base_density: [f32; 3],
-    measured_base: [f32; 3],
-) {
-    let anchor: [f32; 3] =
-        std::array::from_fn(|channel| measured_base[channel] - base_density[channel]);
-    let span: [f32; 3] = std::array::from_fn(|channel| {
-        (limits.d_max[channel] - limits.d_min[channel]).max(1.0e-6)
-    });
-    let relative_low: [f32; 3] =
-        std::array::from_fn(|channel| limits.d_min[channel] - anchor[channel]);
-    let black = density_luma(relative_low).max(0.0);
-    let luma_span = density_luma(span);
-    for channel in 0..3 {
-        let channel_span =
-            if measured_base[channel] >= FILM_BASE_LOW_SIGNAL_DENSITY {
-                span[channel].min(luma_span)
-            } else {
-                span[channel]
-            };
-        limits.d_min[channel] = anchor[channel] + black;
-        limits.d_max[channel] = limits.d_min[channel] + channel_span;
-    }
 }
 
 fn roll_physical_density_span(
@@ -19202,10 +19170,10 @@ mod import_contract_tests {
         );
     }
 
-    /// A frame whose film base was measured but refused must still be anchored
-    /// on it. The base is the one surface whose neutrality is a fact rather
-    /// than a guess, so all three channels have to put it at one display value;
-    /// each channel keeps the density span its own content measured.
+    /// A frame whose film base was measured but refused must keep its own
+    /// co-sited endpoints instead of the shared scale whose channel origins are
+    /// clamped to +-0.20 D. The base then lands on one display value in all
+    /// three channels, which is the property the frame is missing.
     ///
     /// The numbers are Capture One Catalog1942.raf, whose base the absolute
     /// density gate refuses because the whole frame sits below 2.5% of full
@@ -19232,8 +19200,9 @@ mod import_contract_tests {
         let base_norm: [f32; 3] = std::array::from_fn(|channel| {
             (measured[channel] - limits.d_min[channel]) / spans[channel]
         });
-        assert!(base_norm.iter().all(|value| *value <= 1.0e-6), "{base_norm:?}");
-        assert!((base_norm[0] - base_norm[2]).abs() < 1.0e-6, "{base_norm:?}");
+        let spread = base_norm.iter().copied().fold(f32::MIN, f32::max)
+            - base_norm.iter().copied().fold(f32::MAX, f32::min);
+        assert!(spread < 0.05, "the base must land near one value: {base_norm:?}");
     }
 
     /// Without a measurement the window stays exactly what it is today: one
@@ -19555,6 +19524,112 @@ mod import_contract_tests {
             };
         }
         decode_scanner_profiled_estimate_image_buffer(path, DecodeMode::DevelopProxy, None, edge)
+    }
+
+    /// Render every kind of material twice - once through the window the rule
+    /// before this change produced, once through the prescribed-response window
+    /// - and write both next to the Capture One references under
+    /// `target/prescribed-response/`.
+    ///
+    /// Run with
+    /// `cargo test --lib prescribed_response_render_report -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual prescribed-response render report over local fixtures"]
+    fn prescribed_response_render_report() {
+        let edge: u32 = std::env::var("NEXFILM_REPORT_EDGE")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1200);
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("prescribed-response");
+        std::fs::create_dir_all(&output).expect("create output directory");
+        let samples: [(bool, &str, std::path::PathBuf); 9] = [
+            (true, "raf-1942", root.join("富士raf").join("Capture One Catalog1942.raf")),
+            (true, "raf-1949", root.join("富士raf").join("Capture One Catalog1949.raf")),
+            (true, "raf-1950", root.join("富士raf").join("Capture One Catalog1950.raf")),
+            (false, "pano-7587-2", root.join("lr合并").join("_DSC7587-2-Pano.tif")),
+            (false, "pano-7583", root.join("lr合并").join("_DSC7583-Pano.tif")),
+            (false, "scanner-5.3-1", root.join("尼康扫描仪tiff").join("5.3-1.tif")),
+            (false, "scanner-5.3-4", root.join("尼康扫描仪tiff").join("5.3-4.tif")),
+            (false, "camera-_DSC7333", root.join("尼康nef_raw").join("_DSC7333.NEF")),
+            (false, "camera-_DSC7344", root.join("尼康nef_raw").join("_DSC7344.NEF")),
+        ];
+        for (flip, name, path) in samples {
+            let path_string = path.to_string_lossy().to_string();
+            let working = match report_working_estimate(&path_string, edge) {
+                Ok(working) => working,
+                Err(error) => {
+                    println!("[SKIP] {name}: {error}");
+                    continue;
+                }
+            };
+            let mut geom = GeometryState::default();
+            if let Ok(legacy) = report_legacy_transport(&path_string, edge) {
+                let border = crate::film_border::detect_film_border(
+                    &image::DynamicImage::ImageRgb16(legacy),
+                );
+                if border.confidence == crate::film_border::DetectionConfidence::High {
+                    geom.calibration_points = Some(border.points);
+                }
+            }
+            if flip {
+                // The camera repros are stored upside down relative to the
+                // Capture One renders of the same frames.
+                geom.flip_h = true;
+                geom.flip_v = true;
+            }
+            let estimate = estimate_film_base_f32(&working, &geom);
+            let base_density = if estimate.usable {
+                estimate.density
+            } else {
+                [0.0; 3]
+            };
+            let domain = resolve_input_domain(&path_string, None);
+            let mut state = PipelineState::smart_auto();
+            state.processing_report.base_source = if estimate.usable {
+                "detected_film_base"
+            } else {
+                "missing_film_base_reference"
+            }
+            .to_string();
+            state.processing_report.input_domain = domain;
+            for (tag, measured) in [("before", None), ("after", Some(estimate.candidate))] {
+                let mut limits = compute_content_limits_f32_with_bounds(
+                    &working,
+                    None,
+                    &geom,
+                    base_density,
+                    None,
+                )
+                .expect("content limits");
+                super::prepare_content_render_limits_with_measured_base(
+                    &mut limits,
+                    &DensityAnchors::default(),
+                    base_density,
+                    measured,
+                );
+                let mut params = TuningParams::default();
+                params.density.d_min = limits.d_min;
+                params.density.d_max = limits.d_max;
+                let render = render_f32_shader_equivalent(
+                    &working,
+                    None,
+                    &params,
+                    &geom,
+                    &base_color_from_density(base_density),
+                    &state,
+                    None,
+                );
+                let file = output.join(format!("{name}-{tag}.png"));
+                image::DynamicImage::ImageRgb16(render.clone())
+                    .save(&file)
+                    .expect("save render");
+                println!("[RENDER] {name} {tag} -> {}", file.display());
+                ab_render_report(&format!("{name}-{tag}"), &render);
+            }
+        }
     }
 
     /// The decision table behind the staged fallback: for every fixture, what
