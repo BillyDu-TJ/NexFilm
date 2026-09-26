@@ -19583,12 +19583,11 @@ mod import_contract_tests {
                     geom.calibration_points = Some(border.points);
                 }
             }
-            if flip {
-                // The camera repros are stored upside down relative to the
-                // Capture One renders of the same frames.
-                geom.flip_h = true;
-                geom.flip_v = true;
-            }
+            // The scan orientation differs from frame to frame, so the render
+            // report writes the frame the way it is stored; the comparison in
+            // `target/verify-0926` tries all four orientations and picks the one
+            // that aligns with the Capture One render.
+            let _ = flip;
             let estimate = estimate_film_base_f32(&working, &geom);
             let base_density = if estimate.usable {
                 estimate.density
