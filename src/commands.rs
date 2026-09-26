@@ -19628,6 +19628,36 @@ mod import_contract_tests {
                     .expect("save render");
                 println!("[RENDER] {name} {tag} -> {}", file.display());
                 ab_render_report(&format!("{name}-{tag}"), &render);
+                // A third crop that contains only the confirmed Film Area, so the
+                // output can be laid over Capture One's own render of the same
+                // frame instead of over the whole scan.
+                if let Some(points) = geom.calibration_points {
+                    let min_x = points.iter().map(|point| point[0]).fold(f32::INFINITY, f32::min);
+                    let max_x = points.iter().map(|point| point[0]).fold(f32::NEG_INFINITY, f32::max);
+                    let min_y = points.iter().map(|point| point[1]).fold(f32::INFINITY, f32::min);
+                    let max_y = points.iter().map(|point| point[1]).fold(f32::NEG_INFINITY, f32::max);
+                    let mut framed = geom.clone();
+                    framed.crop_rect = crate::app_state::CropRect {
+                        x: min_x,
+                        y: min_y,
+                        width: (max_x - min_x).max(1.0e-3),
+                        height: (max_y - min_y).max(1.0e-3),
+                    };
+                    let frame_render = render_f32_shader_equivalent(
+                        &working,
+                        None,
+                        &params,
+                        &framed,
+                        &base_color_from_density(base_density),
+                        &state,
+                        None,
+                    );
+                    let frame_file = output.join(format!("{name}-{tag}-frame.png"));
+                    image::DynamicImage::ImageRgb16(frame_render)
+                        .save(&frame_file)
+                        .expect("save framed render");
+                    println!("[RENDER] {name} {tag}-frame -> {}", frame_file.display());
+                }
             }
         }
     }
