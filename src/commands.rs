@@ -3145,7 +3145,12 @@ fn prepare_content_render_limits_with_measured_base(
             .is_some_and(is_measured_film_base);
     let channel_offsets = if has_measurement {
         // A frame that measured its own film base keeps the window its content
-        // measured, channel by channel.
+        // measured, channel by channel. A measurement the quality gate refused
+        // counts: the refusals in that case come from absolute density limits
+        // that assume a normally exposed scan, and dropping the measurement
+        // drops the frame into the shared-scale fallback below, whose +-0.20 D
+        // channel origins cannot express a mask that differs by 0.3-0.5 D
+        // between channels. See section eleven of the pipeline document.
         //
         // The endpoints are co-sited: each channel takes its value from the
         // same pixels the frame ranked, so a coloured object cannot move one
