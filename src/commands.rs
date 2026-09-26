@@ -19545,16 +19545,25 @@ mod import_contract_tests {
             .join("target")
             .join("prescribed-response");
         std::fs::create_dir_all(&output).expect("create output directory");
-        let samples: [(bool, &str, std::path::PathBuf); 9] = [
+        let samples: [(bool, &str, std::path::PathBuf); 18] = [
             (true, "raf-1942", root.join("富士raf").join("Capture One Catalog1942.raf")),
+            (true, "raf-1943", root.join("富士raf").join("Capture One Catalog1943.raf")),
+            (true, "raf-1944", root.join("富士raf").join("Capture One Catalog1944.raf")),
+            (true, "raf-1945", root.join("富士raf").join("Capture One Catalog1945.raf")),
+            (true, "raf-1946", root.join("富士raf").join("Capture One Catalog1946.raf")),
+            (true, "raf-1947", root.join("富士raf").join("Capture One Catalog1947.raf")),
+            (true, "raf-1948", root.join("富士raf").join("Capture One Catalog1948.raf")),
             (true, "raf-1949", root.join("富士raf").join("Capture One Catalog1949.raf")),
             (true, "raf-1950", root.join("富士raf").join("Capture One Catalog1950.raf")),
+            (true, "raf-1951", root.join("富士raf").join("Capture One Catalog1951.raf")),
+            (true, "raf-1952", root.join("富士raf").join("Capture One Catalog1952.raf")),
             (false, "pano-7587-2", root.join("lr合并").join("_DSC7587-2-Pano.tif")),
             (false, "pano-7583", root.join("lr合并").join("_DSC7583-Pano.tif")),
             (false, "scanner-5.3-1", root.join("尼康扫描仪tiff").join("5.3-1.tif")),
             (false, "scanner-5.3-4", root.join("尼康扫描仪tiff").join("5.3-4.tif")),
             (false, "camera-_DSC7333", root.join("尼康nef_raw").join("_DSC7333.NEF")),
             (false, "camera-_DSC7344", root.join("尼康nef_raw").join("_DSC7344.NEF")),
+            (false, "noritsu-000000070001", root.join("诺日士jpg").join("000000070001.jpg")),
         ];
         for (flip, name, path) in samples {
             let path_string = path.to_string_lossy().to_string();
