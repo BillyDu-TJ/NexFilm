@@ -25,7 +25,11 @@ pub const DENSITY_ANCHOR_ALGORITHM_VERSION: &str = "density_anchor_v2";
 /// instead of collapsing them onto one shared scale, so endpoints derived by
 /// rule 2 (shared origin and span, plus a per-channel span response) have to be
 /// re-derived.
-pub const DENSITY_WINDOW_RULE_VERSION: u32 = 3;
+///
+/// 4: a frame whose film base was measured but refused by the absolute density
+/// gate anchors its window on that measurement instead of on the clamped
+/// shared scale, so frames analysed by rule 3 have to be re-derived once.
+pub const DENSITY_WINDOW_RULE_VERSION: u32 = 4;
 
 fn default_calibration_profile_payload_version() -> u32 {
     CALIBRATION_PROFILE_PAYLOAD_VERSION

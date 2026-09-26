@@ -3070,6 +3070,31 @@ fn prepare_content_render_limits(
     anchors: &DensityAnchors,
     base_density: [f32; 3],
 ) -> ([f32; 3], bool) {
+    prepare_content_render_limits_with_measured_base(limits, anchors, base_density, None)
+}
+
+/// Drive the display window from the film base the frame measured.
+///
+/// `measured_base` is the base a frame measured even though the quality gate
+/// refused to use it. Those refusals come from absolute density limits that
+/// assume a normally exposed scan - a base denser than 1.60 D, or a channel
+/// spread wider than 0.75 D - and an underexposed camera repro puts its whole
+/// base below 2.5% of full transmission, so every channel trips them while the
+/// base itself is still measurable (this workspace's repros measured 1.4-2.3 D
+/// with the blue channel at 0.2-0.9% of full scale).
+///
+/// Leaving that measurement out is what tints the frame: without it the window
+/// falls back to one shared span with channel origins clamped to +-0.20 D,
+/// which cannot express a mask whose channels differ by 0.3-0.5 D. Measured on
+/// Capture One Catalog1942.raf, the film base then lands at 0.30 / 0.40 / 0.79
+/// of the display range - a blue base, and a blue frame. Anchoring the window
+/// on the measurement makes the base land on black in all three channels.
+fn prepare_content_render_limits_with_measured_base(
+    limits: &mut AutoColorLimits,
+    anchors: &DensityAnchors,
+    base_density: [f32; 3],
+    measured_base: Option<[f32; 3]>,
+) -> ([f32; 3], bool) {
     const MIN_DISPLAY_DENSITY_SPAN: f32 = 0.8;
     let calibrated_span = roll_physical_density_span(anchors, base_density);
 
@@ -3128,12 +3153,64 @@ fn prepare_content_render_limits(
         // Lightroom scans whose files clip a channel outright.
         guard_collapsed_content_window(limits);
         [0.0; 3]
+    } else if let Some(candidate) = measured_base.filter(is_measured_film_base) {
+        anchor_window_on_measured_base(limits, base_density, candidate);
+        guard_collapsed_content_window(limits);
+        [0.0; 3]
     } else {
         let offsets = share_smart_auto_density_scale(limits);
         preserve_smart_auto_content_span(limits);
         offsets
     };
     (channel_offsets, observed_span < MIN_DISPLAY_DENSITY_SPAN)
+}
+
+/// True when a recorded film-base candidate is an actual measurement rather
+/// than the zero placeholder a frame with no candidate carries.
+fn is_measured_film_base(candidate: &[f32; 3]) -> bool {
+    candidate.iter().all(|value| value.is_finite())
+        && candidate.iter().all(|value| *value >= 0.0)
+        && candidate
+            .iter()
+            .any(|value| *value > FILM_BASE_MIN_DENSITY)
+}
+
+/// Anchor the display window on the film base the frame measured.
+///
+/// Each channel's origin becomes its own measured base, so the base - the one
+/// surface whose neutrality is a fact rather than a guess - lands on the same
+/// display value in all three channels. Each channel keeps the density span its
+/// own content measured, because that span is the channel response the window
+/// is supposed to carry; a channel whose base sits at the noise floor may not
+/// be given a wider span than the channels that still have signal.
+///
+/// The three channels share one black point. A per-channel black point is a
+/// colour-balance decision in disguise, and on a frame this dark there is
+/// nothing left in the picture to measure it from: only the base is trustworthy.
+fn anchor_window_on_measured_base(
+    limits: &mut AutoColorLimits,
+    base_density: [f32; 3],
+    measured_base: [f32; 3],
+) {
+    let anchor: [f32; 3] =
+        std::array::from_fn(|channel| measured_base[channel] - base_density[channel]);
+    let span: [f32; 3] = std::array::from_fn(|channel| {
+        (limits.d_max[channel] - limits.d_min[channel]).max(1.0e-6)
+    });
+    let relative_low: [f32; 3] =
+        std::array::from_fn(|channel| limits.d_min[channel] - anchor[channel]);
+    let black = density_luma(relative_low).max(0.0);
+    let luma_span = density_luma(span);
+    for channel in 0..3 {
+        let channel_span =
+            if measured_base[channel] >= FILM_BASE_LOW_SIGNAL_DENSITY {
+                span[channel].min(luma_span)
+            } else {
+                span[channel]
+            };
+        limits.d_min[channel] = anchor[channel] + black;
+        limits.d_max[channel] = limits.d_min[channel] + channel_span;
+    }
 }
 
 fn roll_physical_density_span(
@@ -8252,10 +8329,11 @@ pub async fn analyze_proxy_density_limits(
             let mut estimated =
                 compute_content_limits_f32_with_bounds(input, quality, &geom, base, physical_span)?;
             observed_content_range = Some((estimated.d_min, estimated.d_max));
-            let (offsets, short_content) = prepare_content_render_limits(
+            let (offsets, short_content) = prepare_content_render_limits_with_measured_base(
                 &mut estimated,
                 &pipeline_state.density_anchors,
                 base,
+                pipeline_state.processing_report.film_base_candidate,
             );
             channel_offsets = offsets;
             if short_content {
@@ -19124,6 +19202,73 @@ mod import_contract_tests {
         );
     }
 
+    /// A frame whose film base was measured but refused must still be anchored
+    /// on it. The base is the one surface whose neutrality is a fact rather
+    /// than a guess, so all three channels have to put it at one display value;
+    /// each channel keeps the density span its own content measured.
+    ///
+    /// The numbers are Capture One Catalog1942.raf, whose base the absolute
+    /// density gate refuses because the whole frame sits below 2.5% of full
+    /// transmission.
+    #[test]
+    fn a_refused_film_base_still_anchors_the_window() {
+        let measured = [1.860_f32, 2.169, 2.647];
+        let mut limits = super::AutoColorLimits {
+            d_min: [1.597, 1.847, 2.374],
+            d_max: [2.295, 2.640, 3.104],
+            pipeline_state: None,
+        };
+        super::prepare_content_render_limits_with_measured_base(
+            &mut limits,
+            &DensityAnchors::default(),
+            [0.0; 3],
+            Some(measured),
+        );
+        let spans: [f32; 3] = std::array::from_fn(|channel| {
+            limits.d_max[channel] - limits.d_min[channel]
+        });
+        assert!((spans[0] - 0.698).abs() < 0.01, "{spans:?}");
+        assert!((spans[2] - 0.730).abs() < 0.01, "{spans:?}");
+        let base_norm: [f32; 3] = std::array::from_fn(|channel| {
+            (measured[channel] - limits.d_min[channel]) / spans[channel]
+        });
+        assert!(base_norm.iter().all(|value| *value <= 1.0e-6), "{base_norm:?}");
+        assert!((base_norm[0] - base_norm[2]).abs() < 1.0e-6, "{base_norm:?}");
+    }
+
+    /// Without a measurement the window stays exactly what it is today: one
+    /// shared span with clamped channel offsets, which measures the base onto
+    /// three different display values. This pins the "no measurement, no
+    /// change" half of the rule.
+    #[test]
+    fn a_frame_without_a_measurement_keeps_the_clamped_window() {
+        let measured = [1.860_f32, 2.169, 2.647];
+        let mut limits = super::AutoColorLimits {
+            d_min: [1.597, 1.847, 2.374],
+            d_max: [2.295, 2.640, 3.104],
+            pipeline_state: None,
+        };
+        let (offsets, _) = super::prepare_content_render_limits_with_measured_base(
+            &mut limits,
+            &DensityAnchors::default(),
+            [0.0; 3],
+            None,
+        );
+        assert!(offsets.iter().all(|value| value.abs() <= 0.2005), "{offsets:?}");
+        let spans: [f32; 3] = std::array::from_fn(|channel| {
+            limits.d_max[channel] - limits.d_min[channel]
+        });
+        let base_norm: [f32; 3] = std::array::from_fn(|channel| {
+            (measured[channel] - limits.d_min[channel]) / spans[channel]
+        });
+        assert!(
+            base_norm.iter().copied().fold(f32::MIN, f32::max)
+                - base_norm.iter().copied().fold(f32::MAX, f32::min)
+                > 0.2,
+            "the unanchored window is expected to measure the base onto spread values: {base_norm:?}"
+        );
+    }
+
     /// §七.8: a film-base candidate that over- or under-subtracts must be
     /// rejected instead of producing a cast. The band around a confirmed Film
     /// Area is only believed when it agrees with the in-area low-density tail.
@@ -19484,9 +19629,17 @@ mod import_contract_tests {
             } else {
                 [0.0; 3]
             };
-            let limits =
+            let mut limits =
                 compute_content_limits_f32_with_bounds(&working, None, &geom, base_density, None)
                     .unwrap_or_else(|error| panic!("window for {file_name}: {error}"));
+            let observed = (limits.d_min, limits.d_max);
+            let (offsets, short_content) =
+                super::prepare_content_render_limits_with_measured_base(
+                    &mut limits,
+                    &DensityAnchors::default(),
+                    base_density,
+                    Some(estimate.candidate),
+                );
             let spans = [
                 limits.d_max[0] - limits.d_min[0],
                 limits.d_max[1] - limits.d_min[1],
@@ -19514,12 +19667,47 @@ mod import_contract_tests {
                 estimate.fallback_reason
             );
             println!(
-                "[WINDOW] confirmed_area={} spans=({:.3},{:.3},{:.3}) imbalance={:.2}",
+                "[OBSERVED] d_min=({:.3},{:.3},{:.3}) d_max=({:.3},{:.3},{:.3})",
+                observed.0[0], observed.0[1], observed.0[2],
+                observed.1[0], observed.1[1], observed.1[2]
+            );
+            println!(
+                "[WINDOW] confirmed_area={} d_min=({:.3},{:.3},{:.3}) d_max=({:.3},{:.3},{:.3}) offsets=({:.3},{:.3},{:.3}) spans=({:.3},{:.3},{:.3}) imbalance={:.2} short={}",
                 geom.calibration_points.is_some(),
+                limits.d_min[0],
+                limits.d_min[1],
+                limits.d_min[2],
+                limits.d_max[0],
+                limits.d_max[1],
+                limits.d_max[2],
+                offsets[0],
+                offsets[1],
+                offsets[2],
                 spans[0],
                 spans[1],
                 spans[2],
-                widest / narrowest.max(1.0e-6)
+                widest / narrowest.max(1.0e-6),
+                short_content
+            );
+            // Where the film base lands in the display range: a base that maps
+            // to a different value in each channel is a cast, whatever else the
+            // window does.
+            let film_base = if estimate
+                .candidate
+                .iter()
+                .any(|value| *value > super::FILM_BASE_MIN_DENSITY)
+            {
+                estimate.candidate
+            } else {
+                base_density
+            };
+            let base_norm: [f32; 3] = std::array::from_fn(|channel| {
+                let span = (limits.d_max[channel] - limits.d_min[channel]).max(1.0e-6);
+                (film_base[channel] - base_density[channel] - limits.d_min[channel]) / span
+            });
+            println!(
+                "[BASE-NORM] ({:.3},{:.3},{:.3})",
+                base_norm[0], base_norm[1], base_norm[2]
             );
             println!(
                 "[EVIDENCE] {}",
