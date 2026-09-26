@@ -29,7 +29,13 @@ pub const DENSITY_ANCHOR_ALGORITHM_VERSION: &str = "density_anchor_v2";
 /// 4: a frame whose film base was measured but refused by the absolute density
 /// gate anchors its window on that measurement instead of on the clamped
 /// shared scale, so frames analysed by rule 3 have to be re-derived once.
-pub const DENSITY_WINDOW_RULE_VERSION: u32 = 4;
+///
+/// 5: a frame the evidence labels has its measured base's display position
+/// equalized across the channels. Rule 4 kept the co-sited endpoints, and on a
+/// starved frame those endpoints land the base at a different height in every
+/// channel - the cast the base position carries. Frames analysed by rule 4
+/// have to be re-derived once.
+pub const DENSITY_WINDOW_RULE_VERSION: u32 = 5;
 
 fn default_calibration_profile_payload_version() -> u32 {
     CALIBRATION_PROFILE_PAYLOAD_VERSION

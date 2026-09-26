@@ -3162,15 +3162,20 @@ fn prepare_content_render_limits_with_measured_base(
         // moved the neutral surface of a Fujifilm RAF to B/G 1.599, a Nikon
         // NEF to R/G 0.683 and a Noritsu JPEG to R/G 0.692, while the co-sited
         // window stayed within 0.03 of the retired v1.0.2 recipe on every one
-        // of them. No per-channel correction is applied on top: the window
-        // already carries each channel's response, and the bounded span
-        // response that used to be layered on it existed only for two merged
-        // Lightroom scans whose files clip a channel outright.
+        // of them. No span response is layered on top: the window already
+        // carries each channel's response.
         guard_collapsed_content_window(limits);
-        // A measurement alone is not enough: the spans the picture measures are
-        // still the picture's, and on a colour-dominated frame they carry a
-        // visible cast. Only the frames whose base the gate refused get the
-        // preset correction, so a normally exposed frame is untouched.
+        // A measurement alone is not enough: where the measured base lands in
+        // each channel's display range is decided by the content endpoints,
+        // and on a starved frame those endpoints put the base - the one
+        // surface whose neutrality is a fact - at a different height in every
+        // channel. That offset is the cast: measured on the underexposed
+        // repro batch, the red frames all had their red base 0.05-0.10 of the
+        // display range above their green. Equalizing the base's landing
+        // position across the channels, on the frames the evidence labels,
+        // removed it; a frame without evidence labels renders exactly as
+        // before.
+        equalize_base_display_position(limits, base_density, measured_base);
         [0.0; 3]
     } else {
         let offsets = share_smart_auto_density_scale(limits);
@@ -3178,6 +3183,72 @@ fn prepare_content_render_limits_with_measured_base(
         offsets
     };
     (channel_offsets, observed_span < MIN_DISPLAY_DENSITY_SPAN)
+}
+
+/// Evaluation toggle for the rule-5 base-position equalization: set
+/// `NEXFILM_RULE5_DISABLE=1` to derive windows exactly as rule 4 did. The
+/// byte-for-byte fixture sweep renders both ways to prove which frames the
+/// equalization touches.
+fn rule5_equalization_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| std::env::var("NEXFILM_RULE5_DISABLE").is_ok())
+}
+
+/// Equalize where the frame's measured film base lands in each channel's
+/// display range, taking the green channel's own placement as the target.
+///
+/// The co-sited endpoints decide where the base lands, and on a starved frame
+/// they put it at a different height in every channel - the red frames of the
+/// underexposed repro batch all measured their red base 0.05-0.10 of the
+/// display range above their green, which is exactly the red the frame then
+/// renders. The base's channel differences are a measurement of the film, not
+/// of the picture: its per-frame level error is common-mode across the
+/// channels, so only the differences reach the render, and the common level is
+/// re-anchored on the window's own luma so nothing new is clipped. A channel
+/// whose base candidate lands below the window start is brighter than the
+/// frame's own content - noise-floor pickup - and its origin is left alone.
+///
+/// Only frames the evidence labels run this; a frame without labels renders
+/// exactly the window rule 4 derived.
+fn equalize_base_display_position(
+    limits: &mut AutoColorLimits,
+    base_density: [f32; 3],
+    measured_base: Option<[f32; 3]>,
+) {
+    if rule5_equalization_disabled() {
+        return;
+    }
+    let Some(candidate) = measured_base else {
+        return;
+    };
+    if !is_measured_film_base(&candidate)
+        || prescribed_response_evidence(Some(candidate), base_density, limits).is_empty()
+    {
+        return;
+    }
+    let span: [f32; 3] = std::array::from_fn(|channel| {
+        (limits.d_max[channel] - limits.d_min[channel]).max(1.0e-6)
+    });
+    let base_relative: [f32; 3] =
+        std::array::from_fn(|channel| candidate[channel] - base_density[channel]);
+    let position: [f32; 3] = std::array::from_fn(|channel| {
+        (base_relative[channel] - limits.d_min[channel]) / span[channel]
+    });
+    if !(position[1] >= 0.0) {
+        return;
+    }
+    let target = position[1];
+    let mut shifted = limits.d_min;
+    for channel in 0..3 {
+        if channel != 1 && position[channel] >= 0.0 {
+            shifted[channel] = base_relative[channel] - target * span[channel];
+        }
+    }
+    let common = density_luma(limits.d_min) - density_luma(shifted);
+    for channel in 0..3 {
+        limits.d_min[channel] = shifted[channel] + common;
+        limits.d_max[channel] = limits.d_min[channel] + span[channel];
+    }
 }
 
 /// True when a recorded film-base candidate is an actual measurement rather
@@ -19181,8 +19252,10 @@ mod import_contract_tests {
 
     /// A frame whose film base was measured but refused must keep its own
     /// co-sited endpoints instead of the shared scale whose channel origins are
-    /// clamped to +-0.20 D. The base then lands on one display value in all
-    /// three channels, which is the property the frame is missing.
+    /// clamped to +-0.20 D, and - rule 5 - the measured base must land at one
+    /// display position in all three channels. The co-sited endpoints of the
+    /// underexposed repros put the red base 0.05-0.10 of the display range
+    /// above the green one, which is the red the frame then renders.
     ///
     /// The numbers are Capture One Catalog1942.raf, whose base the absolute
     /// density gate refuses because the whole frame sits below 2.5% of full
@@ -19211,7 +19284,45 @@ mod import_contract_tests {
         });
         let spread = base_norm.iter().copied().fold(f32::MIN, f32::max)
             - base_norm.iter().copied().fold(f32::MAX, f32::min);
-        assert!(spread < 0.05, "the base must land near one value: {base_norm:?}");
+        assert!(spread < 0.03, "the base must land near one value: {base_norm:?}");
+    }
+
+    /// The equalization only moves channels whose base candidate landed inside
+    /// the window. A candidate below the window start is brighter than the
+    /// frame's own content - noise-floor pickup - and moving that origin would
+    /// brighten the channel on the strength of the noise, so it stays put.
+    #[test]
+    fn the_base_position_equalization_skips_noise_floor_channels() {
+        let measured = [0.80_f32, 1.20, 2.20];
+        let original_min = [0.90_f32, 1.10, 2.00];
+        let original_max = [1.50_f32, 1.70, 2.60];
+        let mut limits = super::AutoColorLimits {
+            d_min: original_min,
+            d_max: original_max,
+            pipeline_state: None,
+        };
+        super::prepare_content_render_limits_with_measured_base(
+            &mut limits,
+            &DensityAnchors::default(),
+            [0.0; 3],
+            Some(measured),
+        );
+        let spans: [f32; 3] = std::array::from_fn(|channel| {
+            limits.d_max[channel] - limits.d_min[channel]
+        });
+        assert!(
+            spans.iter().all(|span| (span - 0.60).abs() < 1.0e-4),
+            "spans are never touched: {spans:?}"
+        );
+        let position: [f32; 3] =
+            std::array::from_fn(|channel| (measured[channel] - limits.d_min[channel]) / spans[channel]);
+        // Red started at -1/6 and must not have been dragged to the green
+        // target; blue started at 1/3 and must sit at the green target now.
+        assert!(position[0] < 0.0, "red stays below the window: {position:?}");
+        assert!(
+            (position[1] - position[2]).abs() < 0.03,
+            "blue lands on the green target: {position:?}"
+        );
     }
 
     /// A frame whose base the gate accepted keeps the window it had: the preset
@@ -19851,8 +19962,19 @@ mod import_contract_tests {
                     .zip(rendered[1].as_raw().iter())
                     .filter(|(left, right)| left != right)
                     .count();
+                // Checksum of the rule-derived render, so two runs of this
+                // sweep - one with the rule-5 equalization, one with
+                // NEXFILM_RULE5_DISABLE=1 - can be diffed fixture by fixture.
+                let checksum: u64 = rendered[1]
+                    .as_raw()
+                    .chunks_exact(3)
+                    .step_by(7)
+                    .map(|pixel| {
+                        pixel.iter().map(|v| u64::from(*v)).sum::<u64>()
+                    })
+                    .sum();
                 println!(
-                    "[SWEEP] {name} pixels={} differing_bytes={} identical={}",
+                    "[SWEEP] {name} pixels={} differing_bytes={} identical={} hash={checksum:016x}",
                     rendered[0].width() * rendered[0].height(),
                     differing,
                     differing == 0
@@ -20118,6 +20240,622 @@ mod import_contract_tests {
                     reasons.join(", ")
                 }
             );
+        }
+    }
+
+    /// Pooled-axis window experiment over the two failing fixture families.
+    ///
+    /// For a frame whose evidence says its content window cannot carry the
+    /// film's channel response, this builds the display window on the film's
+    /// neutral axis measured at *roll* level instead of from the frame's own
+    /// content: the mask colour (the channel differences of the measured base)
+    /// and the channel span ratios are pooled over the roll's frames, weighted
+    /// by how much signal each frame's blue base still carries, while the frame
+    /// keeps its own base level (its exposure) and its own green span (its
+    /// scene range). The window start is anchored on the frame's brightest
+    /// content in luma, so content brighter than the measured base is not
+    /// clipped. Nothing here is fitted per frame: one pool per roll, one rule.
+    ///
+    /// The LR-stitched roll is pooled from `_DSC7587-2-Pano.tif` alone - it is
+    /// the only merge produced with Lightroom's auto adjustments disabled, so
+    /// the other merges' measurements describe the bake, not the film.
+    ///
+    /// Run with
+    /// `cargo test --lib pooled_axis_report -- --ignored --nocapture`.
+    /// `NEXFILM_AXIS_WEIGHT_POWER` (default 1) shapes how strongly low-signal
+    /// donors are down-weighted; `NEXFILM_AXIS_MODE` selects the variant:
+    /// `spans` keeps the co-sited window's origins and rescales only the
+    /// per-channel spans to the pooled ratios (the co-sited origins carry the
+    /// frame's own data structure, and the starved frames shift a channel's
+    /// whole rendering by tenths of a display unit when its origin moves);
+    /// `origin` pools the mask colour into the origins and keeps each frame's
+    /// own span ratios; `full` pools both; `statusm` keeps the co-sited window
+    /// and instead transforms the frame's densities through the Status-M
+    /// print-density matrix, so the film's channel response is corrected by
+    /// the published standard instead of by anything measured here.
+    #[test]
+    #[ignore = "manual pooled-axis window experiment over local fixtures"]
+    fn pooled_axis_report() {
+        let edge: u32 = std::env::var("NEXFILM_REPORT_EDGE")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1200);
+        let weight_power: f32 = std::env::var("NEXFILM_AXIS_WEIGHT_POWER")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1.0);
+        let mode = std::env::var("NEXFILM_AXIS_MODE")
+            .unwrap_or_else(|_| "spans".to_string())
+            .to_ascii_lowercase();
+        let span_pool = matches!(mode.as_str(), "" | "spans" | "full" | "basepospool");
+        let origin_pool = matches!(mode.as_str(), "origin" | "full");
+        let status_m = mode == "statusm";
+        let basepos = matches!(mode.as_str(), "basepos" | "basepospool" | "prior");
+        let prior_span = mode == "prior";
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        let output = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("prescribed-response");
+        std::fs::create_dir_all(&output).expect("create output directory");
+
+        struct AxisFrameStats {
+            name: String,
+            path: std::path::PathBuf,
+            calibration_points: Option<[[f32; 2]; 4]>,
+            base_in_use: [f32; 3],
+            candidate: [f32; 3],
+            observed_min: [f32; 3],
+            observed_max: [f32; 3],
+            flagged: bool,
+            reference: Option<std::path::PathBuf>,
+        }
+
+        // (label, directory, donor-name substrings; empty = every frame donates)
+        let rolls: [(&str, &str, &[&str]); 2] = [
+            ("raf", "富士raf", &["Catalog"]),
+            ("pano", "lr合并", &["7587-2"]),
+        ];
+
+        let channel_means = |image: &image::ImageBuffer<image::Rgb<u16>, Vec<u16>>| {
+            let mut sums = [0.0f64; 3];
+            let total = u64::from(image.width()) * u64::from(image.height());
+            for pixel in image.as_raw().chunks_exact(3) {
+                for (channel, value) in pixel.iter().enumerate() {
+                    sums[channel] += f64::from(*value);
+                }
+            }
+            sums.map(|sum| sum / total.max(1) as f64)
+        };
+        let ratio_string = |means: [f64; 3]| {
+            format!(
+                "R/G={:.4} B/G={:.4}",
+                means[0] / means[1].max(1.0e-9),
+                means[2] / means[1].max(1.0e-9)
+            )
+        };
+
+        // Pass one: measure every frame and collect what the pool needs. The
+        // raw decodes run at full resolution, so the images themselves are
+        // dropped here and decoded again for the render pass.
+        let mut measured: Vec<(String, Vec<AxisFrameStats>)> = Vec::new();
+        for (label, directory, donors) in rolls {
+            let mut frames = Vec::new();
+            let Ok(entries) = std::fs::read_dir(root.join(directory)) else {
+                continue;
+            };
+            let mut listed: Vec<std::path::PathBuf> = entries
+                .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+                .filter(|path| path.is_file())
+                .filter(|path| {
+                    directory != "富士raf"
+                        || path
+                            .extension()
+                            .is_some_and(|extension| extension.eq_ignore_ascii_case("raf"))
+                })
+                .collect();
+            listed.sort();
+            for path in listed {
+                let name = path
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let path_string = path.to_string_lossy().to_string();
+                let mut geom = GeometryState::default();
+                if let Ok(legacy) = report_legacy_transport(&path_string, edge) {
+                    let border =
+                        crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(
+                            legacy,
+                        ));
+                    if border.confidence == crate::film_border::DetectionConfidence::High {
+                        geom.calibration_points = Some(border.points);
+                    }
+                }
+                let working = match report_working_estimate(&path_string, edge) {
+                    Ok(working) => working,
+                    Err(error) => {
+                        println!("[SKIP] {name}: {error}");
+                        continue;
+                    }
+                };
+                let estimate = estimate_film_base_f32(&working, &geom);
+                let base_in_use = if estimate.usable {
+                    estimate.density
+                } else {
+                    [0.0; 3]
+                };
+                let limits = match compute_content_limits_f32_with_bounds(
+                    &working, None, &geom, base_in_use, None,
+                ) {
+                    Ok(limits) => limits,
+                    Err(error) => {
+                        println!("[SKIP] {name}: {error}");
+                        continue;
+                    }
+                };
+                let flagged =
+                    !super::prescribed_response_evidence(Some(estimate.candidate), base_in_use, &limits)
+                        .is_empty();
+                let reference = if label == "raf" {
+                    let candidate = path.with_extension("tif");
+                    candidate.is_file().then_some(candidate)
+                } else {
+                    None
+                };
+                println!(
+                    "[MEASURE {label}] {name} usable={} candidate=({:.3},{:.3},{:.3}) observed_min=({:.3},{:.3},{:.3}) observed_max=({:.3},{:.3},{:.3}) flagged={}",
+                    estimate.usable,
+                    estimate.candidate[0],
+                    estimate.candidate[1],
+                    estimate.candidate[2],
+                    limits.d_min[0],
+                    limits.d_min[1],
+                    limits.d_min[2],
+                    limits.d_max[0],
+                    limits.d_max[1],
+                    limits.d_max[2],
+                    flagged
+                );
+                frames.push(AxisFrameStats {
+                    name,
+                    path,
+                    calibration_points: geom.calibration_points,
+                    base_in_use,
+                    candidate: estimate.candidate,
+                    observed_min: limits.d_min,
+                    observed_max: limits.d_max,
+                    flagged,
+                    reference,
+                });
+            }
+            measured.push((label.to_string(), frames));
+        }
+
+        // The pool: the film's mask colour and span ratios, one estimate per
+        // roll. Blue transmittance weights donors whose base still carries
+        // signal over donors whose blue channel sits in the noise floor.
+        let mut pools: Vec<(String, [f32; 3], [f32; 3])> = Vec::new();
+        for (label, frames) in &measured {
+            let mut weight_sum = 0.0f32;
+            let mut diffs = [0.0f32; 3];
+            let mut spans = [0.0f32; 3];
+            let mut donor_count = 0usize;
+            for frame in frames {
+                let is_donor = rolls
+                    .iter()
+                    .find(|(roll_label, _, _)| *roll_label == label.as_str())
+                    .is_some_and(|(_, _, donors)| {
+                        donors.is_empty() || donors.iter().any(|donor| frame.name.contains(donor))
+                    });
+                if !is_donor || !frame.candidate.iter().any(|value| *value > 0.0) {
+                    continue;
+                }
+                let weight = 10.0f32
+                    .powf(-frame.candidate[2])
+                    .max(1.0e-6)
+                    .powf(weight_power);
+                weight_sum += weight;
+                donor_count += 1;
+                let span_g = (frame.observed_max[1] - frame.observed_min[1]).max(1.0e-6);
+                for channel in 0..3 {
+                    diffs[channel] += weight * (frame.candidate[channel] - frame.candidate[1]);
+                    spans[channel] +=
+                        weight * (frame.observed_max[channel] - frame.observed_min[channel]) / span_g;
+                }
+                println!(
+                    "[DONOR {label}] {} weight={:.4} mask=({:+.3},{:+.3},{:+.3}) spanratios=({:.3},{:.3},{:.3})",
+                    frame.name,
+                    weight,
+                    frame.candidate[0] - frame.candidate[1],
+                    0.0,
+                    frame.candidate[2] - frame.candidate[1],
+                    (frame.observed_max[0] - frame.observed_min[0]) / span_g,
+                    (frame.observed_max[1] - frame.observed_min[1]) / span_g,
+                    (frame.observed_max[2] - frame.observed_min[2]) / span_g,
+                );
+            }
+            if weight_sum <= 0.0 {
+                println!("[POOL {label}] no donors");
+                pools.push((label.clone(), [0.0; 3], [1.0; 3]));
+                continue;
+            }
+            let diffs = diffs.map(|value| value / weight_sum);
+            let mut span_ratios = spans.map(|value| value / weight_sum);
+            span_ratios = if span_pool {
+                [span_ratios[0] / span_ratios[1], 1.0, span_ratios[2] / span_ratios[1]]
+            } else {
+                [1.0; 3]
+            };
+            println!(
+                "[POOL {label}] donors={} diffs=({:+.3},{:+.3},{:+.3}) spanratios=({:.3},{:.3},{:.3})",
+                donor_count, diffs[0], diffs[1], diffs[2],
+                span_ratios[0], span_ratios[1], span_ratios[2],
+            );
+            pools.push((label.clone(), diffs, span_ratios));
+        }
+
+        // Pass two: render every flagged frame through its own co-sited window
+        // and through the pooled-axis window, and compare the frame means of
+        // the film-area crop against the Capture One reference's own means.
+        for (label, frames) in &measured {
+            let Some((_, pool_diffs, pool_spans)) =
+                pools.iter().find(|(pool_label, _, _)| pool_label == label)
+            else {
+                continue;
+            };
+            let mut reference_ratios: Vec<(String, f64, f64)> = Vec::new();
+            for frame in frames {
+                let path_string = frame.path.to_string_lossy().to_string();
+                let working = match report_working_estimate(&path_string, edge) {
+                    Ok(working) => working,
+                    Err(error) => {
+                        println!("[SKIP] {}: {error}", frame.name);
+                        continue;
+                    }
+                };
+                // The statusm variant maps the frame's densities through the
+                // published print-density matrix: the base level is kept, the
+                // response above it is corrected by the standard. The window
+                // endpoints go through the same matrix, so the render sees a
+                // consistent pair. The window itself is still measured on the
+                // untransformed frame - the transform is the correction, not
+                // part of the measurement.
+                let status_m_frame = status_m && frame.flagged;
+                // Prior span normalisation: a flagged frame whose measured
+                // channel-span ratios fall outside the envelope every normal
+                // capture in this workspace exhibits (26 normal fixtures: R
+                // 0.87-1.11, B 0.71-1.17, plus a margin for measurement noise)
+                // has its response rescaled to the envelope's median, per
+                // channel, around the film base. The LR merges sit at R
+                // 0.27-0.51 and B 1.49-1.81 - the bake rewrote the channel
+                // response, and this undoes it against the measured prior
+                // rather than against anything estimated from the picture.
+                let span_ratios: [f32; 3] = {
+                    let span_g = (frame.observed_max[1] - frame.observed_min[1]).max(1.0e-6);
+                    std::array::from_fn(|channel| {
+                        (frame.observed_max[channel] - frame.observed_min[channel]) / span_g
+                    })
+                };
+                let prior_scales: [f32; 3] = if prior_span && frame.flagged {
+                    // The envelope carries a fifth of itself as margin, so a
+                    // starved frame's measurement noise cannot trip it: the
+                    // repro batch measures R 0.78-0.92 and stays untouched,
+                    // while the merges at R <= 0.51 and B >= 1.49 cannot miss.
+                    std::array::from_fn(|channel| match channel {
+                        // Green is the reference the ratios are measured
+                        // against; it is never rescaled.
+                        1 => 1.0,
+                        0 => {
+                            let ratio = span_ratios[0];
+                            if (0.696..=1.332).contains(&ratio) {
+                                1.0
+                            } else {
+                                0.93 / ratio.max(0.05)
+                            }
+                        }
+                        _ => {
+                            let ratio = span_ratios[2];
+                            if (0.568..=1.404).contains(&ratio) {
+                                1.0
+                            } else {
+                                1.05 / ratio.max(0.05)
+                            }
+                        }
+                    })
+                } else {
+                    [1.0; 3]
+                };
+                let prior_frame = prior_span && frame.flagged;
+                let transformed: Option<image::ImageBuffer<image::Rgb<f32>, Vec<f32>>> = {
+                    let needs_transform =
+                        status_m_frame || (prior_frame && prior_scales.iter().any(|k| (k - 1.0).abs() > 1.0e-6));
+                    needs_transform.then(|| {
+                        let m = crate::core_math::status_m_crosstalk_matrix();
+                        let base = frame.base_in_use;
+                        let (width, height) = working.dimensions();
+                        let mut image_buffer =
+                            image::ImageBuffer::<image::Rgb<f32>, Vec<f32>>::new(width, height);
+                        for (out, pixel) in image_buffer.pixels_mut().zip(working.pixels()) {
+                            let density = pixel.0.map(|value| -(value.max(1.0e-8).log10()));
+                            let mapped = std::array::from_fn(|channel| {
+                                if status_m_frame {
+                                    let mut value = base[channel];
+                                    for other in 0..3 {
+                                        value +=
+                                            m[(channel, other)] * (density[other] - base[other]);
+                                    }
+                                    value
+                                } else {
+                                    base[channel]
+                                        + prior_scales[channel] * (density[channel] - base[channel])
+                                }
+                            });
+                            *out = image::Rgb(mapped.map(|value| 10.0f32.powf(-value)));
+                        }
+                        image_buffer
+                    })
+                };
+                let mut geom = GeometryState::default();
+                geom.calibration_points = frame.calibration_points;
+                let base_in_use = frame.base_in_use;
+                let mut current =
+                    compute_content_limits_f32_with_bounds(&working, None, &geom, base_in_use, None)
+                        .expect("content limits");
+                super::prepare_content_render_limits_with_measured_base(
+                    &mut current,
+                    &DensityAnchors::default(),
+                    base_in_use,
+                    Some(frame.candidate),
+                );
+                let (axis_min, axis_max) = if frame.flagged
+                    && frame.candidate.iter().any(|value| *value > 0.0)
+                {
+                    // Every variant starts from the post-rule window, so the
+                    // collapsed-span guards stay in force.
+                    let mut min = current.d_min;
+                    let mut max = current.d_max;
+                    if status_m {
+                        let m = crate::core_math::status_m_crosstalk_matrix();
+                        let base = base_in_use;
+                        min = std::array::from_fn(|channel| {
+                            let mut value = base[channel];
+                            for other in 0..3 {
+                                value += m[(channel, other)] * (min[other] - base[other]);
+                            }
+                            value
+                        });
+                        max = std::array::from_fn(|channel| {
+                            let mut value = base[channel];
+                            for other in 0..3 {
+                                value += m[(channel, other)] * (max[other] - base[other]);
+                            }
+                            value
+                        });
+                    }
+                    if prior_frame {
+                        // The endpoints ride the same per-channel rescale as
+                        // the data, around the same fixed base, so the window
+                        // keeps covering exactly the content it covered.
+                        let base_relative: [f32; 3] =
+                            std::array::from_fn(|c| frame.candidate[c] - base_in_use[c]);
+                        min = std::array::from_fn(|c| {
+                            base_relative[c]
+                                + prior_scales[c] * (min[c] - base_relative[c])
+                        });
+                        max = std::array::from_fn(|c| {
+                            base_relative[c]
+                                + prior_scales[c] * (max[c] - base_relative[c])
+                        });
+                    }
+                    if origin_pool {
+                        // The base level comes from this frame (its exposure);
+                        // the base colour comes from the roll (the film's
+                        // mask). The window starts at the frame's brightest
+                        // content in luma, so content brighter than the
+                        // measured base - tail noise on a starved frame, baked
+                        // borders on a merge - is not clipped, while the
+                        // per-channel structure stays on the pooled axis.
+                        let luma_base = density_luma(frame.candidate);
+                        let reconstructed = [
+                            luma_base + pool_diffs[0],
+                            luma_base + pool_diffs[1],
+                            luma_base + pool_diffs[2],
+                        ];
+                        let luma_observed = density_luma(frame.observed_min);
+                        let headroom = (luma_base - luma_observed).max(0.0);
+                        let s_luma = density_luma(*pool_spans).max(1.0e-6);
+                        let start = -headroom / s_luma;
+                        min = std::array::from_fn(|channel| {
+                            reconstructed[channel] + start * pool_spans[channel]
+                        });
+                    }
+                    if span_pool {
+                        let span_g = (max[1] - min[1]).max(1.0e-6);
+                        max = std::array::from_fn(|channel| min[channel] + span_g * pool_spans[channel]);
+                    }
+                    if basepos {
+                        // Equalize where the measured film base lands in each
+                        // channel's display range, taking the green channel's
+                        // own placement as the target, then re-anchor the
+                        // common level on the window's current luma. The
+                        // candidate's per-frame level error is common-mode
+                        // across the channels, so only its channel differences
+                        // - a measurement of the film, not of the picture -
+                        // reach the render; the placement never clips content.
+                        let base_relative: [f32; 3] = std::array::from_fn(|channel| {
+                            frame.candidate[channel] - base_in_use[channel]
+                        });
+                        let span: [f32; 3] = std::array::from_fn(|channel| {
+                            (max[channel] - min[channel]).max(1.0e-6)
+                        });
+                        let position: [f32; 3] = std::array::from_fn(|channel| {
+                            (base_relative[channel] - min[channel]) / span[channel]
+                        });
+                        // A base candidate that lands below the window start is
+                        // brighter than the frame's own content: that channel's
+                        // measurement is noise-floor pickup, and moving its
+                        // origin would brighten the channel on the strength of
+                        // the noise. Only channels whose base landed inside the
+                        // window are equalized; a green target outside the
+                        // window leaves the frame on its co-sited window.
+                        if position[1] >= 0.0 {
+                            let target = position[1];
+                            let mut shifted = min;
+                            for channel in 0..3 {
+                                if channel != 1 && position[channel] >= 0.0 {
+                                    shifted[channel] =
+                                        base_relative[channel] - target * span[channel];
+                                }
+                            }
+                            let common = density_luma(min) - density_luma(shifted);
+                            for channel in 0..3 {
+                                shifted[channel] += common;
+                            }
+                            min = shifted;
+                            max = std::array::from_fn(|channel| min[channel] + span[channel]);
+                        }
+                    }
+                    let base_position: [f32; 3] = std::array::from_fn(|channel| {
+                        let span = (max[channel] - min[channel]).max(1.0e-6);
+                        (frame.candidate[channel] - base_in_use[channel] - min[channel]) / span
+                    });
+                    println!(
+                        "[WINDOW {label}] {} min=({:.3},{:.3},{:.3}) max=({:.3},{:.3},{:.3}) basepos=({:.3},{:.3},{:.3})",
+                        frame.name,
+                        min[0] - base_in_use[0],
+                        min[1] - base_in_use[1],
+                        min[2] - base_in_use[2],
+                        max[0] - base_in_use[0],
+                        max[1] - base_in_use[1],
+                        max[2] - base_in_use[2],
+                        base_position[0],
+                        base_position[1],
+                        base_position[2],
+                    );
+                    (min, max)
+                } else {
+                    (current.d_min, current.d_max)
+                };
+                let window_report = |tag: &str,
+                                     source: &image::ImageBuffer<image::Rgb<f32>, Vec<f32>>,
+                                     d_min: [f32; 3],
+                                     d_max: [f32; 3]| {
+                    let mut params = TuningParams::default();
+                    // The window rides in whatever domain the rule produced:
+                    // relative for a frame whose base the render subtracts,
+                    // absolute for a frame without one. The shader does the
+                    // subtraction, so the endpoints pass through untouched -
+                    // subtracting the base here would subtract it twice.
+                    params.density.d_min = d_min;
+                    params.density.d_max = d_max;
+                    let mut state = PipelineState::smart_auto();
+                    state.processing_report.base_source = if base_in_use.iter().any(|value| *value > 0.0) {
+                        "detected_film_base"
+                    } else {
+                        "missing_film_base_reference"
+                    }
+                    .to_string();
+                    state.processing_report.input_domain = resolve_input_domain(&path_string, None);
+                    let render = render_f32_shader_equivalent(
+                        source,
+                        None,
+                        &params,
+                        &geom,
+                        &base_color_from_density(base_in_use),
+                        &state,
+                        None,
+                    );
+                    let mut means = channel_means(&render);
+                    if tag == "axis" {
+                        let full = output.join(format!("{}-axis-{mode}.png", frame.name));
+                        image::DynamicImage::ImageRgb16(render.clone())
+                            .save(&full)
+                            .expect("save axis render");
+                    }
+                    if let Some(points) = geom.calibration_points {
+                        let min_x = points.iter().map(|point| point[0]).fold(f32::INFINITY, f32::min);
+                        let max_x =
+                            points.iter().map(|point| point[0]).fold(f32::NEG_INFINITY, f32::max);
+                        let min_y = points.iter().map(|point| point[1]).fold(f32::INFINITY, f32::min);
+                        let max_y =
+                            points.iter().map(|point| point[1]).fold(f32::NEG_INFINITY, f32::max);
+                        let mut framed = geom.clone();
+                        framed.crop_rect = crate::app_state::CropRect {
+                            x: min_x,
+                            y: min_y,
+                            width: (max_x - min_x).max(1.0e-3),
+                            height: (max_y - min_y).max(1.0e-3),
+                        };
+                        let frame_render = render_f32_shader_equivalent(
+                            source,
+                            None,
+                            &params,
+                            &framed,
+                            &base_color_from_density(base_in_use),
+                            &state,
+                            None,
+                        );
+                        means = channel_means(&frame_render);
+                        if tag == "axis" {
+                            let file = output.join(format!("{}-axis-{mode}-frame.png", frame.name));
+                            image::DynamicImage::ImageRgb16(frame_render)
+                                .save(&file)
+                                .expect("save framed axis render");
+                        }
+                    }
+                    means
+                };
+                let co_means = window_report("co", &working, current.d_min, current.d_max);
+                let axis_source = transformed.as_ref().unwrap_or(&working);
+                let axis_means = window_report("axis", axis_source, axis_min, axis_max);
+                let reference = frame.reference.as_ref().and_then(|path| {
+                    image::open(path).ok().map(|image| {
+                        let image = image.to_rgb8();
+                        let mut sums = [0.0f64; 3];
+                        let total = image.width() as f64 * image.height() as f64;
+                        for pixel in image.pixels() {
+                            for (channel, value) in pixel.0.iter().enumerate() {
+                                sums[channel] += f64::from(*value);
+                            }
+                        }
+                        sums.map(|sum| sum / total.max(1.0) / 255.0)
+                    })
+                });
+                let report_line = |tag: &str, means: [f64; 3]| {
+                    let ratios = means[0] / means[1].max(1.0e-9);
+                    let blue = means[2] / means[1].max(1.0e-9);
+                    match &reference {
+                        Some(reference) => {
+                            let reference_rg = reference[0] / reference[1].max(1.0e-9);
+                            let reference_bg = reference[2] / reference[1].max(1.0e-9);
+                            let delta = (ratios - reference_rg)
+                                .abs()
+                                .max((blue - reference_bg).abs());
+                            format!(
+                                "{tag} R/G={ratios:.4} B/G={blue:.4} ref={reference_rg:.4},{reference_bg:.4} delta={delta:.3}"
+                            )
+                        }
+                        None => format!("{tag} {}", ratio_string(means)),
+                    }
+                };
+                println!("[AXIS {label}] {} {}", frame.name, report_line("co", co_means));
+                println!("[AXIS {label}] {} {}", frame.name, report_line("axis", axis_means));
+                if let Some(reference) = reference {
+                    reference_ratios.push((
+                        frame.name.clone(),
+                        reference[0] / reference[1].max(1.0e-9),
+                        reference[2] / reference[1].max(1.0e-9),
+                    ));
+                }
+            }
+            if !reference_ratios.is_empty() {
+                let count = reference_ratios.len() as f64;
+                let mean_rg = reference_ratios.iter().map(|(_, rg, _)| rg).sum::<f64>() / count;
+                let mean_bg = reference_ratios.iter().map(|(_, _, bg)| bg).sum::<f64>() / count;
+                println!(
+                    "[REFMEAN {label}] R/G={mean_rg:.4} B/G={mean_bg:.4} over {} references",
+                    reference_ratios.len()
+                );
+            }
         }
     }
 
