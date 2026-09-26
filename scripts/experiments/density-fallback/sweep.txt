@@ -1,0 +1,58 @@
+
+[SWEEP] _DSC7569-Pano.tif pixels=1394400 differing_bytes=0 identical=true
+[SWEEP] _DSC7571-Pano.tif pixels=1414800 differing_bytes=0 identical=true
+[SWEEP] _DSC7573-Pano.tif pixels=1429200 differing_bytes=0 identical=true
+[SWEEP] _DSC7575-Pano.tif pixels=1418400 differing_bytes=0 identical=true
+[SWEEP] _DSC7577-Pano.tif pixels=1416000 differing_bytes=0 identical=true
+[SWEEP] _DSC7579-Pano.tif pixels=1436400 differing_bytes=0 identical=true
+[SWEEP] _DSC7581-Pano.tif pixels=1426800 differing_bytes=0 identical=true
+[SWEEP] _DSC7583-Pano.tif pixels=1428000 differing_bytes=0 identical=true
+[SWEEP] _DSC7585-Pano.tif pixels=1440000 differing_bytes=0 identical=true
+[SWEEP] _DSC7587-2-Pano.tif pixels=1423200 differing_bytes=0 identical=true
+[SWEEP] _DSC7587-Pano.tif pixels=1423200 differing_bytes=0 identical=true
+[SWEEP] _DSC7589-Pano.tif pixels=1417200 differing_bytes=0 identical=true
+[SWEEP] _DSC7591-Pano.tif pixels=1432800 differing_bytes=0 identical=true
+[SWEEP] Capture One Catalog1942.raf pixels=12850560 differing_bytes=30877957 identical=false
+[SWEEP] Capture One Catalog1943.raf pixels=12850560 differing_bytes=29880031 identical=false
+[SWEEP] Capture One Catalog1943.xmp skipped
+[SWEEP] Capture One Catalog1944.raf pixels=12850560 differing_bytes=37769629 identical=false
+[SWEEP] Capture One Catalog1945.raf pixels=12850560 differing_bytes=37391991 identical=false
+[SWEEP] Capture One Catalog1946.raf pixels=12850560 differing_bytes=35490091 identical=false
+[SWEEP] Capture One Catalog1947.raf pixels=12850560 differing_bytes=34878173 identical=false
+[SWEEP] Capture One Catalog1948.raf pixels=12850560 differing_bytes=35890880 identical=false
+[SWEEP] Capture One Catalog1949.raf pixels=12850560 differing_bytes=34536199 identical=false
+[SWEEP] Capture One Catalog1950.raf pixels=12850560 differing_bytes=35596585 identical=false
+[SWEEP] Capture One Catalog1951.raf pixels=12850560 differing_bytes=37677882 identical=false
+[SWEEP] Capture One Catalog1952.raf pixels=12850560 differing_bytes=37653099 identical=false
+[SWEEP] 5.3-1.tif pixels=1440000 differing_bytes=0 identical=true
+[SWEEP] 5.3-2.tif pixels=1440000 differing_bytes=0 identical=true
+[SWEEP] 5.3-3.tif pixels=1440000 differing_bytes=0 identical=true
+[SWEEP] 5.3-4.tif pixels=1440000 differing_bytes=0 identical=true
+[SWEEP] 000000070001.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] 000000070002.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] 000000070003.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] 000000070004.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] 000000070005.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] 000000070006.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] 000000070007.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] 000000070008.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] 000000070009.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] 000000070010.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] 000000070011.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] 000000070012.jpg pixels=23000320 differing_bytes=0 identical=true
+[SWEEP] _DSC7333.NEF pixels=9092160 differing_bytes=0 identical=true
+[SWEEP] _DSC7334.NEF pixels=9092160 differing_bytes=0 identical=true
+[SWEEP] _DSC7335.NEF pixels=9092160 differing_bytes=0 identical=true
+[SWEEP] 1 001-FC导出tif格式导入失败.tif pixels=499200 differing_bytes=0 identical=true
+[SWEEP] 1 001-可以反相.fff pixels=620400 differing_bytes=0 identical=true
+[SWEEP] 任务 _0866.fff pixels=25515000 differing_bytes=0 identical=true
+[SWEEP] 任务 _1233.fff pixels=25515000 differing_bytes=0 identical=true
+[SWEEP] 任务 _1233.xmp skipped
+[SWEEP] 任务 _1343.fff pixels=25515000 differing_bytes=0 identical=true
+[SWEEP] 无法反相.fff pixels=391200 differing_bytes=0 identical=true
+[SWEEP] raw0002.dng pixels=999600 differing_bytes=0 identical=true
+[SWEEP] raw0003.dng pixels=999600 differing_bytes=0 identical=true
+[SWEEP] raw0004.dng pixels=999600 differing_bytes=0 identical=true
+[SWEEP] 000021940005.jpg pixels=6494750 differing_bytes=0 identical=true
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 288 filtered out; finished in 132.87s
+

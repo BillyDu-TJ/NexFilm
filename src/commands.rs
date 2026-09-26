@@ -19574,7 +19574,7 @@ mod import_contract_tests {
             .join("target")
             .join("prescribed-response");
         std::fs::create_dir_all(&output).expect("create output directory");
-        let samples: [(bool, &str, std::path::PathBuf); 18] = [
+        let samples: [(bool, &str, std::path::PathBuf); 29] = [
             (true, "raf-1942", root.join("富士raf").join("Capture One Catalog1942.raf")),
             (true, "raf-1943", root.join("富士raf").join("Capture One Catalog1943.raf")),
             (true, "raf-1944", root.join("富士raf").join("Capture One Catalog1944.raf")),
@@ -19586,8 +19586,19 @@ mod import_contract_tests {
             (true, "raf-1950", root.join("富士raf").join("Capture One Catalog1950.raf")),
             (true, "raf-1951", root.join("富士raf").join("Capture One Catalog1951.raf")),
             (true, "raf-1952", root.join("富士raf").join("Capture One Catalog1952.raf")),
-            (false, "pano-7587-2", root.join("lr合并").join("_DSC7587-2-Pano.tif")),
+            (false, "pano-7569", root.join("lr合并").join("_DSC7569-Pano.tif")),
+            (false, "pano-7571", root.join("lr合并").join("_DSC7571-Pano.tif")),
+            (false, "pano-7573", root.join("lr合并").join("_DSC7573-Pano.tif")),
+            (false, "pano-7575", root.join("lr合并").join("_DSC7575-Pano.tif")),
+            (false, "pano-7577", root.join("lr合并").join("_DSC7577-Pano.tif")),
+            (false, "pano-7579", root.join("lr合并").join("_DSC7579-Pano.tif")),
+            (false, "pano-7581", root.join("lr合并").join("_DSC7581-Pano.tif")),
             (false, "pano-7583", root.join("lr合并").join("_DSC7583-Pano.tif")),
+            (false, "pano-7585", root.join("lr合并").join("_DSC7585-Pano.tif")),
+            (false, "pano-7587-2", root.join("lr合并").join("_DSC7587-2-Pano.tif")),
+            (false, "pano-7587", root.join("lr合并").join("_DSC7587-Pano.tif")),
+            (false, "pano-7589", root.join("lr合并").join("_DSC7589-Pano.tif")),
+            (false, "pano-7591", root.join("lr合并").join("_DSC7591-Pano.tif")),
             (false, "scanner-5.3-1", root.join("尼康扫描仪tiff").join("5.3-1.tif")),
             (false, "scanner-5.3-4", root.join("尼康扫描仪tiff").join("5.3-4.tif")),
             (false, "camera-_DSC7333", root.join("尼康nef_raw").join("_DSC7333.NEF")),
