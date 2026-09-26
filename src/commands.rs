@@ -20626,12 +20626,12 @@ mod import_contract_tests {
                 let mut current =
                     compute_content_limits_f32_with_bounds(&working, None, &geom, base_in_use, None)
                         .expect("content limits");
-                super::prepare_content_render_limits_with_measured_base(
-                    &mut current,
-                    &DensityAnchors::default(),
-                    base_in_use,
-                    Some(frame.candidate),
-                );
+                // Rule 4 as the baseline: the collapsed-span guard, without
+                // the rule-5 equalization. `prepare` now embeds rule 5, so
+                // calling it here would stack the experiment variants on top
+                // of an already-equalized window and the historical variant
+                // table would not reproduce.
+                super::guard_collapsed_content_window(&mut current);
                 let (axis_min, axis_max) = if frame.flagged
                     && frame.candidate.iter().any(|value| *value > 0.0)
                 {
