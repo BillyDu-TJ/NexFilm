@@ -3045,3 +3045,161 @@ body[data-theme] #view-develop > #develop-inspector {
         overflow: visible !important;
     }
 }
+
+/* ------------------------------------------------------------------ */
+/* Collapsible inspector sections, Tone Curve and Detail                */
+/* ------------------------------------------------------------------ */
+
+/* The triangle sits at the right of the section title, exactly where
+   Lightroom keeps it: the title stays, the controls fold away. */
+#develop-inspector .control-group-body {
+    display: block;
+}
+
+/* Section headers carry no fill. The legacy rule that paints the density
+   readout rows ("control-group > .flex.items-center.justify-between") also
+   matched these headings, which left some sections with a grey pill and others
+   without. The printer, input, and print sections already reset it. */
+#develop-inspector [data-collapsible-module] > h3 {
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+#develop-inspector .control-group.is-collapsed > .control-group-body {
+    display: none !important;
+}
+
+#develop-inspector .control-group-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+
+#develop-inspector .control-group-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    min-height: 20px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 5px !important;
+    background: transparent !important;
+    color: var(--ui-muted) !important;
+    cursor: pointer;
+}
+
+#develop-inspector .control-group-toggle:hover,
+#develop-inspector .control-group-toggle:focus-visible {
+    background: var(--ui-surface-soft) !important;
+    color: var(--ui-text) !important;
+    outline: none;
+}
+
+#develop-inspector .control-group-toggle-icon {
+    width: 14px;
+    height: 14px;
+    color: inherit;
+    transition: transform .16s ease;
+}
+
+#develop-inspector .control-group-toggle[aria-expanded="false"] .control-group-toggle-icon {
+    transform: rotate(-90deg);
+}
+
+#develop-inspector .tone-curve-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+#develop-inspector .tone-curve-channels {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 4px;
+}
+
+#develop-inspector button.tone-curve-channel {
+    min-height: 24px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 5px !important;
+    background: var(--ui-control) !important;
+    color: var(--ui-muted) !important;
+    font-size: 10.5px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0 !important;
+    text-transform: none !important;
+    cursor: pointer;
+}
+
+#develop-inspector button.tone-curve-channel.is-active {
+    background: var(--ui-brand) !important;
+    color: #fff !important;
+}
+
+#develop-inspector button.tone-curve-channel-red.is-active {
+    background: #b8443c !important;
+}
+
+#develop-inspector button.tone-curve-channel-green.is-active {
+    background: #2f855a !important;
+}
+
+#develop-inspector button.tone-curve-channel-blue.is-active {
+    background: #3767ab !important;
+}
+
+#develop-inspector .tone-curve-canvas {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: 6px;
+    background: var(--ui-workspace);
+    cursor: crosshair;
+    touch-action: none;
+}
+
+#develop-inspector .tone-curve-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+#develop-inspector button.tone-curve-reset {
+    flex: 0 0 auto;
+    min-height: 24px !important;
+    padding: 0 10px !important;
+    border: 0 !important;
+    border-radius: 5px !important;
+    background: var(--ui-control) !important;
+    color: var(--ui-text) !important;
+    font-size: 10.5px !important;
+    letter-spacing: 0 !important;
+    text-transform: none !important;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+#develop-inspector button.tone-curve-reset:hover {
+    background: var(--ui-surface-soft) !important;
+}
+
+#develop-inspector .detail-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+#develop-inspector .detail-group-title {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--ui-muted);
+}

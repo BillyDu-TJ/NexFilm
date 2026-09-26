@@ -46,6 +46,8 @@ jobs:
           node --check ui/geometry.js
           node --check ui/contact-sheet.js
           node --check ui/density-math.js
+          node --check ui/tone-curve.js
+          node --test ui/tone-curve.test.js
           node scripts/verify-contact-sheet.cjs
           node scripts/verify-density-contract.cjs
           node scripts/verify-histogram-contract.cjs

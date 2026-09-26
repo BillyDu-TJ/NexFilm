@@ -18,6 +18,16 @@
         highlights: { params: ['highlights'] },
         shadows: { params: ['shadows'] },
         saturation: { params: ['saturation'] },
+        curve: { params: ['curve_rgb', 'curve_red', 'curve_green', 'curve_blue'] },
+        sharpen: {
+            params: [
+                'sharpening_amount', 'sharpening_radius',
+                'sharpening_detail', 'sharpening_masking'
+            ]
+        },
+        texture: { params: ['texture'] },
+        clarity: { params: ['clarity'] },
+        dehaze: { params: ['dehaze'] },
         lut: { params: ['lut_path'] },
         lutOpacity: { params: ['lut_opacity'] },
         sprocketPoint: { params: ['sprocket_uv', 'sprocket_target_color'] },

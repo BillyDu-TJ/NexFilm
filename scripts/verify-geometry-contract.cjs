@@ -208,7 +208,8 @@ const frontend = fs
     .replace(/\r\n/g, '\n');
 for (const [pattern, message] of [
     [/function fullFrameEditView\(\)/, 'the canvas view needs one shared edit-frame decision'],
-    [/if \(!fullFrameEditView\(\)\) \{\n\s+gl\.uniform4f\(u_crop_loc/, 'the preview must draw the full oriented frame while editing'],
+    [/if \(!fullFrameEditView\(\)\) \{\n\s+passCrop = cropRect;/, 'the finished view must pass the crop to the render'],
+    [/\} else \{\n\s+passCrop = \{ x: 0, y: 0, width: 1, height: 1 \};/, 'the preview must draw the full oriented frame while editing'],
     [/current_geom\.crop_rect = clampCropRect\(\s*\n?\s*NexFilmGeometry\.anchorRectForAngleChange/, 'a rotated crop has to be re-anchored to the picture'],
     [/anchorQuadForAngleChange/, 'a rotated film area has to be re-anchored to the picture'],
     [/applyGeometryAngle\(target\.angle\)/, 'the crop rotation slider must anchor the geometry'],
@@ -218,7 +219,7 @@ for (const [pattern, message] of [
     [/orientedPointToDisplay\(p, displayFrame\)/, 'the film-area overlay must convert out of the oriented frame'],
     [/if \(isCalibrationMode\) updateCalibrationPolygon\(\);/, 'the canvas layout must refresh the film-area overlay'],
     [/imageSizeIsProvisional/, 'a cached thumbnail must not resize a canvas the proxy already measured'],
-    [/gl\.uniform4f\(u_crop_loc, crop\.x, crop\.y, crop\.width, crop\.height\);/, 'captured thumbnails must carry the finished framing'],
+    [/renderDevelopFrame\('thumbnail', thumbnailFbo, width, height, crop, 0\);/, 'captured thumbnails must carry the finished framing'],
 ]) {
     assert.match(frontend, pattern, message);
 }

@@ -89,9 +89,10 @@ NexFilm Engine 用于将相机翻拍或扫描仪输出的胶片负片转换为�
 - **胶卷与散张工作流**：按画幅、相机、胶片型号、日期和备注导入整卷，也可直接拖入散张；备注用于区分同一款胶片的多卷素材，并显示在胶卷卡片与胶卷资料中；支持继续编辑、追加画面、修改胶卷信息、筛选归档、重定位缺失文件和删除记录。
 - **自动胶片范围识别**：自动检测有效成像区域，也可拖动四角或边缘手动修正；范围仅用于内容分析与边缘排除，不会自动改变画面透视。固定机位扫描时可将范围批量应用到同卷其他画面。
 - **密度域反相与自动校色**：基于线性透射率进行密度转换、片基扣除与统一的通道响应补偿，输入域逐帧记录；提供 Color / B&W、D-Min / D-Max、Printer Lights、曝光、Gamma、对比度、高光、阴影、饱和度、色温和色调控制。算法细节见 [统一密度管线说明](docs/unified-density-pipeline.md) 与 [数据处理管线说明](data_process_pipeline_doc.md)。
+- **曲线与细节**：印片光之后是四条控制点曲线（RGB 主曲线加红绿蓝分通道，带直方图背景，可拖动、加点、删点），观感调整之后是细节分组：锐化的数量 / 半径 / 细节 / 蒙版，以及纹理、清晰度、去朦胧。按住 <kbd>Alt</kbd> 拖动锐化参数可在预览中查看锐化信号或蒙版的灰度视图。半径按长边 2560 像素换算，预览与导出观感一致；每个分组标题右侧的三角可收起参数，状态全局保留。
 - **整卷标定与实验性硬件校正**：可按卷标定共享白点并整卷自动反相；硬件校正视图可管理采集校正配置（dark / open gate / flat / 透射目标）与扫描仪输入配置，用于固定的翻拍或扫描设备。该部分仍标记为实验性。
 - **实时 Develop 工作区**：WebGL 交互预览，支持裁切、拉直、透视、90 度旋转、水平/垂直翻转、缩放平移，以及直方图和波形图。
-- **设置复制与批处理**：可按类别选择要复制的校色、LUT、齿孔和几何参数，再粘贴到其他相似画面。
+- **设置复制与批处理**：可按类别选择要复制的校色、曲线、细节、LUT、齿孔和几何参数，再粘贴到其他相似画面。
 - **打印胶片模拟**：内置 Kodak 与 Ilford 打印胶片/相纸风格 LUT，支持载入自定义 <code>.cube</code> LUT 并调节强度。
 - **完整输出工具**：可导出选中画面或整卷，支持 16/8 位 TIFF、16 位 PNG、JPEG，以及线性 16 位 TIFF、线性 DNG 和相机 RAW DNG；提供输出色彩空间、尺寸、放大策略、锐化、JPEG 质量、命名模板、重名策略和可选 EXIF 胶卷信息。
 - **胶卷接触印样**：生成带胶片型号、拍摄日期、相机和画面编号的 JPEG Contact Sheet。
@@ -112,7 +113,7 @@ Library 与 Develop 显示当前工作卷；历史胶卷保存在 **Rolls**。�
 1. 在 **Library** 选择画面并进入 **Develop**。
 2. 首次编辑先选择 **Set Film Area → Auto Area**。检查检测结果，必要时拖动四角或边缘，再选择 **Save Area**。
 3. 同卷画面位置一致时使用 **Batch Apply**；位置不一致时应逐张确认。
-4. 选择 **Auto Invert** 生成正片，再使用密度、Printer Lights、Aesthetics、Color Balance 和 LUT 完成调整。
+4. 选择 **Auto Invert** 生成正片，再使用密度、印片光、曲线、观感调整、细节、色彩平衡和 LUT 完成调整。
 5. 齿孔或边框干扰校色时，可使用 **Sample Sprocket Hole** 采样；相似画面可通过 **Copy Settings / Paste Settings** 复用参数。
 
 #### 3. 导出与归档
@@ -175,7 +176,10 @@ node --check ui/main.js
 node --check ui/geometry.js
 node --check ui/contact-sheet.js
 node --check ui/density-math.js
+node --check ui/tone-curve.js
+node --test ui/tone-curve.test.js
 node scripts/verify-contact-sheet.cjs
+node scripts/verify-develop-detail-ui.cjs
 node scripts/verify-density-contract.cjs
 node scripts/verify-histogram-contract.cjs
 node scripts/verify-geometry-contract.cjs
@@ -296,9 +300,10 @@ NexFilm Engine converts camera-scanned or scanner-produced film negatives into p
 - **Roll and loose-frame workflows** with format, camera, film stock, date, and note metadata. The note tells several rolls of the same film stock apart and appears on the roll card and in the roll details; drag-and-drop import, archived-roll editing, append, metadata editing, missing-file relocation, and deletion are all supported.
 - **Automatic film-area detection**, with manual corner/edge adjustment and batch reuse for consistently positioned scans. The detected area guides analysis and edge exclusion without automatically changing image perspective.
 - **Density-domain inversion and automatic grading** with per-channel film-base subtraction and one shared channel-response stage, with the input domain recorded per frame; Color / B&W modes, D-Min / D-Max, Printer Lights, exposure, gamma, contrast, highlights, shadows, saturation, temperature, and tint. See the [unified density pipeline](docs/unified-density-pipeline.md) and the [data-processing pipeline](data_process_pipeline_doc.md) for implementation details.
+- **Tone curve and Detail**: four point curves after Printer Lights (composite RGB plus red, green, and blue channels, drawn over the frame's histogram, with dragging, adding, and removing points), and a Detail group after Aesthetics covering sharpening (amount, radius, detail, masking) plus texture, clarity, and dehaze. Holding <kbd>Alt</kbd> while dragging a Sharpening control shows the sharpening signal or the mask as a grayscale view. Every radius is quoted at a 2560 px long edge, so the preview and the export show the same work; a triangle at the right of each section title folds the controls away and the state is remembered.
 - **Roll calibration and experimental hardware calibration**: measure a shared roll white point and run Roll auto invert; the calibration view manages capture profiles (dark / open gate / flat / transmission target) and scanner input profiles for a fixed copy stand or scanner. This part is still marked experimental.
 - **Real-time Develop workspace** powered by WebGL, with crop, straighten, perspective, quarter-turn rotation, horizontal/vertical flip, zoom/pan, histogram, and waveform.
-- **Selective Copy Settings / Paste Settings** for grade, LUT, sprocket, and geometry groups.
+- **Selective Copy Settings / Paste Settings** for grade, curve, detail, LUT, sprocket, and geometry groups.
 - **Print-film emulation** with bundled Kodak and Ilford print-film/paper LUTs, custom <code>.cube</code> LUT loading, and opacity control.
 - **Complete output tools** for selected frames or a full roll: 16/8-bit TIFF, 16-bit PNG, JPEG, linear 16-bit TIFF, linear DNG, and camera RAW DNG; output color space; resizing; optional enlargement; sharpening; JPEG quality; filename templates; conflict policies; and optional roll metadata in EXIF.
 - **JPEG contact sheets** labeled with film stock, date, camera, and frame number.
@@ -319,7 +324,7 @@ Library and Develop show the current working roll; previous rolls remain under *
 1. Select a frame in **Library** and open **Develop**.
 2. On first edit, choose **Set Film Area → Auto Area**. Review the result, adjust corners or edges if needed, then choose **Save Area**.
 3. Use **Batch Apply** only when the scans share the same placement.
-4. Choose **Auto Invert**, then refine Density Limits, Printer Lights, Aesthetics, Color Balance, and LUT settings.
+4. Choose **Auto Invert**, then refine Density Limits, Printer Lights, the Tone Curve, Aesthetics, Detail, Color Balance, and LUT settings.
 5. Use **Sample Sprocket Hole** when perforations or borders affect the grade, and **Copy Settings / Paste Settings** for similar frames.
 
 #### 3. Export and archive

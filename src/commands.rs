@@ -27,9 +27,10 @@ use crate::color_science::{
     parse_output_space, ColorSpaceId, DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
 };
 use crate::core_math::{
-    apply_lens_distortion_uv, apply_perspective_uv, apply_post_gamma_adjustments_with_luma,
-    density_luma, neutral_density_bounds, normalize_density_channel, sprocket_white_mask,
-    trim_density_endpoints, DENSITY_LUMA_COEFFICIENTS,
+    apply_detail_pixel, apply_lens_distortion_uv, apply_perspective_uv,
+    apply_post_gamma_adjustments_with_luma, density_luma, detail_gradient, neutral_density_bounds,
+    normalize_density_channel, sprocket_white_mask, trim_density_endpoints, DetailSettings,
+    ToneCurveSet, DENSITY_LUMA_COEFFICIENTS, DETAIL_LOCAL_DOWNSCALE, DETAIL_REFERENCE_LONG_EDGE,
 };
 use crate::persistence::{self, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
@@ -9543,6 +9544,463 @@ fn apply_usm(buffer: &mut ImageBuffer<Rgb<u16>, Vec<u16>>, sigma: f32, amount: f
         });
 }
 
+/// Bilinear read of a display buffer with the same sampling convention as the
+/// preview's `texture()`: normalized coordinates, clamped to the edge texel.
+#[inline]
+fn sample_rgb16_bilinear(image: &ImageBuffer<Rgb<u16>, Vec<u16>>, uv: [f32; 2]) -> [f32; 3] {
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        return [0.0; 3];
+    }
+    let x = (uv[0] * width as f32 - 0.5).clamp(0.0, (width - 1) as f32);
+    let y = (uv[1] * height as f32 - 0.5).clamp(0.0, (height - 1) as f32);
+    let x0 = x.floor() as u32;
+    let y0 = y.floor() as u32;
+    let x1 = (x0 + 1).min(width - 1);
+    let y1 = (y0 + 1).min(height - 1);
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+    let top_left = image.get_pixel(x0, y0);
+    let top_right = image.get_pixel(x1, y0);
+    let bottom_left = image.get_pixel(x0, y1);
+    let bottom_right = image.get_pixel(x1, y1);
+    let mut out = [0.0f32; 3];
+    for channel in 0..3 {
+        let top =
+            top_left[channel] as f32 + (top_right[channel] as f32 - top_left[channel] as f32) * tx;
+        let bottom = bottom_left[channel] as f32
+            + (bottom_right[channel] as f32 - bottom_left[channel] as f32) * tx;
+        out[channel] = top + (bottom - top) * ty;
+    }
+    out
+}
+
+#[inline]
+fn sample_gray16_bilinear(image: &ImageBuffer<image::Luma<u16>, Vec<u16>>, uv: [f32; 2]) -> f32 {
+    let (width, height) = image.dimensions();
+    if width == 0 || height == 0 {
+        return 0.0;
+    }
+    let x = (uv[0] * width as f32 - 0.5).clamp(0.0, (width - 1) as f32);
+    let y = (uv[1] * height as f32 - 0.5).clamp(0.0, (height - 1) as f32);
+    let x0 = x.floor() as u32;
+    let y0 = y.floor() as u32;
+    let x1 = (x0 + 1).min(width - 1);
+    let y1 = (y0 + 1).min(height - 1);
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+    let top = image.get_pixel(x0, y0)[0] as f32
+        + (image.get_pixel(x1, y0)[0] as f32 - image.get_pixel(x0, y0)[0] as f32) * tx;
+    let bottom = image.get_pixel(x0, y1)[0] as f32
+        + (image.get_pixel(x1, y1)[0] as f32 - image.get_pixel(x0, y1)[0] as f32) * tx;
+    top + (bottom - top) * ty
+}
+
+/// Box-average downscale by a fixed integer factor, expressed as the 2x2 grid of
+/// bilinear taps the preview uses. The tap positions are the centres of the four
+/// base-pixel quadrants the target pixel covers.
+fn downscale_rgb16_box(
+    source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+    factor: u32,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    let (width, height) = source.dimensions();
+    let factor = factor.max(1);
+    let target_width = width.div_ceil(factor).max(1);
+    let target_height = height.div_ceil(factor).max(1);
+    let mut target = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(target_width, target_height);
+    let width = width as f32;
+    let height = height as f32;
+    target
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .enumerate()
+        .for_each(|(index, pixel)| {
+            let x = (index % target_width as usize) as u32;
+            let y = (index / target_width as usize) as u32;
+            let center_x = (x as f32 + 0.5) / target_width as f32;
+            let center_y = (y as f32 + 0.5) / target_height as f32;
+            let offset = 1.0 / factor as f32;
+            let mut accum = [0.0f32; 3];
+            for (dx, dy) in [
+                (-offset, -offset),
+                (offset, -offset),
+                (-offset, offset),
+                (offset, offset),
+            ] {
+                let sample =
+                    sample_rgb16_bilinear(source, [center_x + dx / width, center_y + dy / height]);
+                for channel in 0..3 {
+                    accum[channel] += sample[channel];
+                }
+            }
+            for channel in 0..3 {
+                pixel[channel] = (accum[channel] / 4.0).clamp(0.0, 65535.0) as u16;
+            }
+        });
+    target
+}
+
+/// Separable box blur over a single-channel buffer, the smoothing step of the
+/// haze transmission map.
+fn box_blur_gray16_parallel(
+    source: &ImageBuffer<image::Luma<u16>, Vec<u16>>,
+    radius: usize,
+) -> ImageBuffer<image::Luma<u16>, Vec<u16>> {
+    let (width, height) = (source.width() as usize, source.height() as usize);
+    if width == 0 || height == 0 || radius == 0 {
+        return source.clone();
+    }
+    let mut horizontal = vec![0u16; width * height];
+    horizontal
+        .par_chunks_exact_mut(width)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let source_row = &source.as_raw()[y * width..(y + 1) * width];
+            for (x, value) in row.iter_mut().enumerate() {
+                let mut sum = 0.0f32;
+                for offset in -(radius as isize)..=(radius as isize) {
+                    let sample_x = (x as isize + offset).clamp(0, width as isize - 1) as usize;
+                    sum += source_row[sample_x] as f32;
+                }
+                *value = (sum / (radius * 2 + 1) as f32).clamp(0.0, 65535.0) as u16;
+            }
+        });
+    let mut vertical = vec![0u16; width * height];
+    vertical
+        .par_chunks_exact_mut(width)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for (x, value) in row.iter_mut().enumerate() {
+                let mut sum = 0.0f32;
+                for offset in -(radius as isize)..=(radius as isize) {
+                    let sample_y = (y as isize + offset).clamp(0, height as isize - 1) as usize;
+                    sum += horizontal[sample_y * width + x] as f32;
+                }
+                *value = (sum / (radius * 2 + 1) as f32).clamp(0.0, 65535.0) as u16;
+            }
+        });
+    ImageBuffer::<image::Luma<u16>, Vec<u16>>::from_raw(width as u32, height as u32, vertical)
+        .unwrap_or_else(|| ImageBuffer::new(width as u32, height as u32))
+}
+
+/// Squared-window minimum (the dark channel's spatial step). A separable minimum
+/// over rows then columns is exact for a square window.
+fn min_filter_gray16_parallel(
+    source: &ImageBuffer<image::Luma<u16>, Vec<u16>>,
+    radius: usize,
+) -> ImageBuffer<image::Luma<u16>, Vec<u16>> {
+    let (width, height) = (source.width() as usize, source.height() as usize);
+    if width == 0 || height == 0 || radius == 0 {
+        return source.clone();
+    }
+    let mut horizontal = vec![0u16; width * height];
+    horizontal
+        .par_chunks_exact_mut(width)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let source_row = &source.as_raw()[y * width..(y + 1) * width];
+            for (x, value) in row.iter_mut().enumerate() {
+                let mut minimum = u16::MAX;
+                for offset in -(radius as isize)..=(radius as isize) {
+                    let sample_x = (x as isize + offset).clamp(0, width as isize - 1) as usize;
+                    minimum = minimum.min(source_row[sample_x]);
+                }
+                *value = minimum;
+            }
+        });
+    let mut vertical = vec![0u16; width * height];
+    vertical
+        .par_chunks_exact_mut(width)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for (x, value) in row.iter_mut().enumerate() {
+                let mut minimum = u16::MAX;
+                for offset in -(radius as isize)..=(radius as isize) {
+                    let sample_y = (y as isize + offset).clamp(0, height as isize - 1) as usize;
+                    minimum = minimum.min(horizontal[sample_y * width + x]);
+                }
+                *value = minimum;
+            }
+        });
+    ImageBuffer::<image::Luma<u16>, Vec<u16>>::from_raw(width as u32, height as u32, vertical)
+        .unwrap_or_else(|| ImageBuffer::new(width as u32, height as u32))
+}
+
+/// Downscaled dark channel of the display image: the minimum of the three
+/// channels inside a square window, which is the haze estimate of the Dark
+/// Channel Prior.
+fn dark_channel_gray16(
+    source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+    factor: u32,
+    window_radius: usize,
+) -> ImageBuffer<image::Luma<u16>, Vec<u16>> {
+    let (width, height) = source.dimensions();
+    let factor = factor.max(1);
+    let target_width = width.div_ceil(factor).max(1);
+    let target_height = height.div_ceil(factor).max(1);
+    let mut minimums = ImageBuffer::<image::Luma<u16>, Vec<u16>>::new(target_width, target_height);
+    minimums
+        .as_mut()
+        .par_chunks_exact_mut(1)
+        .enumerate()
+        .for_each(|(index, pixel)| {
+            let x = (index % target_width as usize) as u32;
+            let y = (index / target_width as usize) as u32;
+            let center_x = (x as f32 + 0.5) / target_width as f32;
+            let center_y = (y as f32 + 0.5) / target_height as f32;
+            let offset = 1.0 / factor as f32;
+            let mut minimum = f32::MAX;
+            for (dx, dy) in [
+                (-offset, -offset),
+                (offset, -offset),
+                (-offset, offset),
+                (offset, offset),
+            ] {
+                let sample = sample_rgb16_bilinear(
+                    source,
+                    [center_x + dx / width as f32, center_y + dy / height as f32],
+                );
+                minimum = minimum.min(sample[0].min(sample[1]).min(sample[2]));
+            }
+            pixel[0] = minimum.clamp(0.0, 65535.0) as u16;
+        });
+    if window_radius == 0 {
+        return minimums;
+    }
+    min_filter_gray16_parallel(&minimums, window_radius)
+}
+
+/// The Develop Detail stage, applied to the finished display buffer before the
+/// output sharpening of the export.
+///
+/// The preview runs the same expressions in WebGL. `mask` carries the sprocket
+/// white-out so the frame border is not sharpened as if it were image content.
+fn apply_detail_stage(
+    buffer: &mut ImageBuffer<Rgb<u16>, Vec<u16>>,
+    mask: &[u8],
+    settings: &DetailSettings,
+) {
+    if settings.is_neutral() || buffer.width() == 0 || buffer.height() == 0 {
+        return;
+    }
+    let width = buffer.width();
+    let height = buffer.height();
+    let long_edge = width.max(height) as f32;
+    let needs_fine = settings.sharpening_amount > 0.0 && settings.sharpening_detail > 1e-4;
+    let fine = needs_fine.then(|| gaussian_blur_rgb16_parallel(buffer, settings.fine_sigma()));
+    let texture_blur = (settings.texture.abs() > 1e-4)
+        .then(|| gaussian_blur_rgb16_parallel(buffer, settings.texture_sigma()));
+    let coarse = (settings.sharpening_amount > 0.0)
+        .then(|| gaussian_blur_rgb16_parallel(buffer, settings.sharpening_sigma()));
+    let clarity = (settings.clarity.abs() > 1e-4).then(|| {
+        let factor = DETAIL_LOCAL_DOWNSCALE;
+        let reduced = downscale_rgb16_box(buffer, factor);
+        gaussian_blur_rgb16_parallel(&reduced, settings.clarity_sigma_downscaled(long_edge))
+    });
+    let transmission = (settings.dehaze.abs() > 1e-4).then(|| {
+        let factor = DETAIL_LOCAL_DOWNSCALE;
+        let (window_radius, soften_radius) = settings.dehaze_window_downscaled(long_edge);
+        let dark = dark_channel_gray16(buffer, factor, window_radius);
+        box_blur_gray16_parallel(&dark, soften_radius)
+    });
+
+    // Luma is read by the masking gradient only; keeping it in one pass avoids
+    // re-deriving it from the neighbour taps for every pixel.
+    let luma: Vec<f32> = buffer
+        .as_raw()
+        .par_chunks_exact(3)
+        .map(|pixel| {
+            density_luma([
+                pixel[0] as f32 / 65535.0,
+                pixel[1] as f32 / 65535.0,
+                pixel[2] as f32 / 65535.0,
+            ])
+        })
+        .collect();
+
+    buffer
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .enumerate()
+        .for_each(|(index, pixel)| {
+            let x = (index % width as usize) as u32;
+            let y = (index / width as usize) as u32;
+            let uv = [
+                (x as f32 + 0.5) / width as f32,
+                (y as f32 + 0.5) / height as f32,
+            ];
+            let left = luma[y as usize * width as usize + x.saturating_sub(1) as usize];
+            let right = luma[y as usize * width as usize + (x + 1).min(width - 1) as usize];
+            let up = luma[y.saturating_sub(1) as usize * width as usize + x as usize];
+            let down = luma[(y + 1).min(height - 1) as usize * width as usize + x as usize];
+            let base = [
+                pixel[0] as f32 / 65535.0,
+                pixel[1] as f32 / 65535.0,
+                pixel[2] as f32 / 65535.0,
+            ];
+            let zero = [0.0f32; 3];
+            let fine_blur = fine
+                .as_ref()
+                .map(|image| sample_rgb16_bilinear(image, uv))
+                .unwrap_or(zero)
+                .map(|value| value / 65535.0);
+            let texture_blur_value = texture_blur
+                .as_ref()
+                .map(|image| sample_rgb16_bilinear(image, uv))
+                .unwrap_or(zero)
+                .map(|value| value / 65535.0);
+            let coarse_blur = coarse
+                .as_ref()
+                .map(|image| sample_rgb16_bilinear(image, uv))
+                .unwrap_or(zero)
+                .map(|value| value / 65535.0);
+            let clarity_blur = clarity
+                .as_ref()
+                .map(|image| sample_rgb16_bilinear(image, uv))
+                .unwrap_or(zero)
+                .map(|value| value / 65535.0);
+            let dark_channel = transmission
+                .as_ref()
+                .map(|image| sample_gray16_bilinear(image, uv) / 65535.0)
+                .unwrap_or(0.0);
+            let detail = apply_detail_pixel(
+                base,
+                fine_blur,
+                texture_blur_value,
+                coarse_blur,
+                clarity_blur,
+                dark_channel,
+                detail_gradient(left, right, up, down),
+                mask.get(index)
+                    .map(|value| *value as f32 / 255.0)
+                    .unwrap_or(0.0),
+                settings,
+            );
+            for channel in 0..3 {
+                pixel[channel] = (detail[channel] * 65535.0).clamp(0.0, 65535.0).round() as u16;
+            }
+        });
+}
+
+#[cfg(test)]
+mod develop_detail_tests {
+    use super::{apply_detail_stage, render_shader_equivalent, DetailSettings};
+    use crate::app_state::{BaseColor, GeometryState, TuningParams};
+    use image::{ImageBuffer, Rgb};
+
+    fn gradient_source(size: u32) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+        ImageBuffer::from_fn(size, size, |x, y| {
+            let value = 0.05 + (x * 3 + y) as f32 / (size * 4) as f32 * 0.7;
+            let level = (value.clamp(0.0, 1.0) * 65535.0) as u16;
+            Rgb([level, level, level])
+        })
+    }
+
+    fn render(source: &ImageBuffer<Rgb<u16>, Vec<u16>>, params: &TuningParams) -> Vec<u16> {
+        render_shader_equivalent(
+            source,
+            params,
+            &GeometryState::default(),
+            &BaseColor::default(),
+            None,
+        )
+        .into_raw()
+    }
+
+    #[test]
+    fn tone_curve_moves_the_rendered_display_values() {
+        let source = gradient_source(24);
+        let neutral = render(&source, &TuningParams::default());
+        let mut curved_params = TuningParams::default();
+        curved_params.curve.curve_rgb = vec![[0.0, 0.0], [0.5, 0.25], [1.0, 1.0]];
+        let curved = render(&source, &curved_params);
+
+        assert_ne!(neutral, curved);
+        let darker = neutral
+            .iter()
+            .zip(curved.iter())
+            .filter(|(left, right)| right < left)
+            .count();
+        assert!(
+            darker > neutral.len() / 2,
+            "a pulled-down midpoint should darken most of the frame"
+        );
+    }
+
+    #[test]
+    fn curved_red_channel_only_touches_red() {
+        let source = gradient_source(16);
+        let mut params = TuningParams::default();
+        params.curve.curve_red = vec![[0.0, 0.3], [1.0, 1.0]];
+        let rendered = render(&source, &params);
+        let ok = rendered
+            .chunks_exact(3)
+            .any(|pixel| pixel[0] > pixel[1] + 200 && pixel[1] == pixel[2]);
+        assert!(ok, "the red curve did not separate the red channel");
+    }
+
+    #[test]
+    fn sharpening_increases_edge_contrast_in_the_detail_stage() {
+        // Display-referred step: 12000 next to 40000, well inside the range so
+        // the correction is measurable instead of clipped.
+        let mut buffer = ImageBuffer::from_fn(64, 64, |x, _| {
+            let level = if x < 32 { 12000u16 } else { 40000u16 };
+            Rgb([level, level, level])
+        });
+        let before = buffer.clone().into_raw();
+        let masks = vec![0u8; 64 * 64];
+        let mut settings = DetailSettings::neutral(1.0);
+        settings.sharpening_amount = 100.0;
+        settings.sharpening_detail = 0.0;
+        apply_detail_stage(&mut buffer, &masks, &settings);
+        let after = buffer.into_raw();
+
+        let row = 32usize * 64;
+        let left_of_edge = (row + 31) * 3;
+        let right_of_edge = (row + 32) * 3;
+        assert!(
+            after[left_of_edge] < before[left_of_edge],
+            "the dark side of the step should be pushed down"
+        );
+        assert!(
+            after[right_of_edge] > before[right_of_edge],
+            "the bright side of the step should be pushed up"
+        );
+        // A flat area keeps its tone: the edge correction has to dominate the
+        // kernel's own discrete-sum error by a wide margin.
+        let flat = (32usize * 64 + 3) * 3;
+        let flat_delta = (after[flat] as i32 - before[flat] as i32).abs();
+        let edge_delta = (after[left_of_edge] as i32 - before[left_of_edge] as i32).abs();
+        assert!(
+            edge_delta > flat_delta * 10,
+            "edge delta {edge_delta} did not dominate the flat delta {flat_delta}"
+        );
+    }
+
+    #[test]
+    fn clarity_and_texture_survive_a_neutral_sharpening() {
+        let source = gradient_source(40);
+        let neutral = render(&source, &TuningParams::default());
+        let mut params = TuningParams::default();
+        params.detail.clarity = 60.0;
+        params.detail.texture = 40.0;
+        let rendered = render(&source, &params);
+        assert_ne!(neutral, rendered);
+    }
+
+    #[test]
+    fn detail_stage_leaves_sprocket_overlay_pixels_alone() {
+        let mut buffer = gradient_source(16);
+        let before = buffer.clone();
+        let mut settings = DetailSettings::neutral(1.0);
+        settings.sharpening_amount = 100.0;
+        settings.clarity = 50.0;
+        let masks = vec![255u8; 16 * 16];
+        apply_detail_stage(&mut buffer, &masks, &settings);
+        assert_eq!(before.into_raw(), buffer.into_raw());
+    }
+}
+
 #[inline]
 fn sample_rgb16_nearest(image: &ImageBuffer<Rgb<u16>, Vec<u16>>, uv: [f32; 2]) -> Option<[u16; 3]> {
     if !uv[0].is_finite()
@@ -9806,13 +10264,41 @@ fn render_shader_equivalent_core(
     // fixed mapping while a frame is still trimmable.
     let density_min_offset = params.density.d_min_offset;
     let density_max_offset = params.density.d_max_offset;
+    // The Tone Curve sits between the Printer Lights and the Aesthetics stage,
+    // so it reads the display-referred print and hands the graded value on.
+    let tone_curves = ToneCurveSet::new(
+        &params.curve.curve_rgb,
+        &params.curve.curve_red,
+        &params.curve.curve_green,
+        &params.curve.curve_blue,
+    );
+    let detail_settings = DetailSettings {
+        sharpening_amount: params.detail.sharpening_amount,
+        sharpening_radius: params.detail.sharpening_radius,
+        sharpening_detail: params.detail.sharpening_detail,
+        sharpening_masking: params.detail.sharpening_masking,
+        texture: params.detail.texture,
+        clarity: params.detail.clarity,
+        dehaze: params.detail.dehaze,
+        // Radii are quoted at the reference long edge and converted into the
+        // pixels this render actually produces, so the preview proxy and a
+        // full-resolution export show the same sharpening.
+        scale: (output_width.max(output_height) as f32 / DETAIL_REFERENCE_LONG_EDGE)
+            .clamp(0.1, 8.0),
+    };
+    let detail_is_neutral = detail_settings.is_neutral();
+    // The Detail stage keeps its hands off the sprocket white-out, which is an
+    // overlay rather than image content. One byte per pixel is enough for a
+    // guard that is only ever 0 or 1 in practice.
+    let mut sprocket_masks = vec![0u8; (output_width * output_height) as usize];
 
     let mut output = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(output_width, output_height);
     output
         .as_mut()
         .par_chunks_exact_mut(3)
+        .zip(sprocket_masks.par_chunks_exact_mut(1))
         .enumerate()
-        .for_each(|(index, out_pixel)| {
+        .for_each(|(index, (out_pixel, mask_slot))| {
             let x = (index % output_width as usize) as u32;
             let y = (index / output_width as usize) as u32;
             let crop_uv = [
@@ -9896,6 +10382,7 @@ fn render_shader_equivalent_core(
             } else {
                 (0.0, 0.0, 0.0)
             };
+            let normalized = tone_curves.apply(normalized);
             let baseline = apply_post_gamma_adjustments_with_luma(
                 normalized,
                 params.tone.highlights,
@@ -9939,6 +10426,7 @@ fn render_shader_equivalent_core(
                 let effective_sprocket_uv = sprocket_uv.unwrap_or([0.5, 0.05]);
                 if should_apply_sprocket_mask_for_area(crop_uv, &points, effective_sprocket_uv) {
                     let mask = sprocket_white_mask(raw_luma - target_luma, tolerance, feather);
+                    mask_slot[0] = (mask.clamp(0.0, 1.0) * 255.0).round() as u8;
                     for channel in &mut rendered {
                         *channel += (1.0 - *channel) * mask;
                     }
@@ -9949,6 +10437,9 @@ fn render_shader_equivalent_core(
                 out_pixel[channel] = (rendered[channel] * 65535.0).clamp(0.0, 65535.0) as u16;
             }
         });
+    if !detail_is_neutral {
+        apply_detail_stage(&mut output, &sprocket_masks, &detail_settings);
+    }
     output
 }
 
@@ -14908,6 +15399,12 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
         && !smart_auto_compatibility
         && params.film_mode == FilmMode::Color)
         .then(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb));
+    let tone_curves = ToneCurveSet::new(
+        &params.curve.curve_rgb,
+        &params.curve.curve_red,
+        &params.curve.curve_green,
+        &params.curve.curve_blue,
+    );
 
     pristine_pixels
         .par_chunks(3)
@@ -14950,6 +15447,8 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             } else {
                 positive_linear.map(|value| value.clamp(0.0, 1.0).powf(1.0 / gamma.max(1e-6)))
             };
+            // A fallback thumbnail still has to show the curve the user drew.
+            let gamma_corrected = tone_curves.apply(gamma_corrected);
             let mut final_rgb = apply_post_gamma_adjustments_with_luma(
                 gamma_corrected,
                 0.0,
@@ -14975,6 +15474,43 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             out_px[1] = (final_rgb[1].clamp(0.0, 1.0) * 255.0).round() as u8;
             out_px[2] = (final_rgb[2].clamp(0.0, 1.0) * 255.0).round() as u8;
         });
+
+    // The Detail stage runs on the framed display pixels, exactly like the
+    // preview proxy and the export: a Roll inverted in one batch must not look
+    // unsharpened next to the frame that was graded in Develop. The working
+    // buffer widens to 16 bits for the spatial passes and returns to 8 below.
+    let detail_settings = DetailSettings {
+        sharpening_amount: params.detail.sharpening_amount,
+        sharpening_radius: params.detail.sharpening_radius,
+        sharpening_detail: params.detail.sharpening_detail,
+        sharpening_masking: params.detail.sharpening_masking,
+        texture: params.detail.texture,
+        clarity: params.detail.clarity,
+        dehaze: params.detail.dehaze,
+        scale: (width.max(height) as f32 / DETAIL_REFERENCE_LONG_EDGE).clamp(0.1, 8.0),
+    };
+    if !detail_settings.is_neutral() {
+        let mut detail_buffer =
+            ImageBuffer::<Rgb<u16>, Vec<u16>>::from_fn(width, height, |x, y| {
+                let pixel = thumb_8bit.get_pixel(x, y);
+                Rgb([
+                    pixel[0] as u16 * 257,
+                    pixel[1] as u16 * 257,
+                    pixel[2] as u16 * 257,
+                ])
+            });
+        // No sprocket overlay exists on this compact path, so nothing is masked.
+        apply_detail_stage(&mut detail_buffer, &[], &detail_settings);
+        for (target, source) in thumb_8bit
+            .as_mut()
+            .chunks_exact_mut(3)
+            .zip(detail_buffer.as_raw().chunks_exact(3))
+        {
+            for channel in 0..3 {
+                target[channel] = (source[channel] as f32 / 257.0).round().clamp(0.0, 255.0) as u8;
+            }
+        }
+    }
 
     // The filmstrip and the Cards show this thumbnail: it has to carry the same
     // geometry as the Develop preview and the export, otherwise a flipped frame

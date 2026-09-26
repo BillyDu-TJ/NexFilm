@@ -274,6 +274,34 @@ const copySettingsSourceLabel = document.getElementById('copy-settings-source-la
 const copySettingOptions = Array.from(document.querySelectorAll('.copy-setting-option'));
 const copySettingsGroups = Array.from(document.querySelectorAll('.copy-settings-group'));
 
+// DOM: Tone Curve & Detail
+const toneCurveCanvas = document.getElementById('tone-curve-canvas');
+const toneCurveChannels = document.getElementById('tone-curve-channels');
+const btnResetCurve = document.getElementById('btn-reset-curve');
+const curveChannelButtons = toneCurveChannels
+    ? Array.from(toneCurveChannels.querySelectorAll('.tone-curve-channel'))
+    : [];
+const curveCtx = toneCurveCanvas ? toneCurveCanvas.getContext('2d') : null;
+
+// Global collapse state of the inspector sections, shared with the theme key.
+const COLLAPSED_MODULES_KEY = 'nexfilm-collapsed-modules';
+const COLLAPSED_MODULE_NAMES = [
+    'density', 'printer', 'curve', 'aesthetics', 'detail', 'sprocket', 'input', 'print',
+];
+const collapsibleModules = Array.from(document.querySelectorAll('[data-collapsible-module]'));
+
+let curveChannel = 'rgb';
+let curvePoints = NexFilmToneCurve.defaultCurveState();
+let curveLutDirty = true;
+// Bumped whenever the table's contents change: the Detail chain caches its
+// pixels behind a key that cannot see inside the texture.
+let curveLutRevision = 0;
+let curveLutTexture = null;
+let hasCurveLut = false;
+let curveDragIndex = null;
+let curveHoverPoint = null;
+let curveHistogramCache = { key: null, bins: null };
+
 let currentDMin = [0.1, 0.1, 0.1];
 let currentDMax = [2.0, 2.0, 2.0];
 // Master D-Min/D-Max sliders are a manual trim on top of the endpoints the
@@ -312,14 +340,28 @@ const sliders = {
     shadows: { el: document.getElementById('shadows'), val: document.getElementById('val-shadows') },
     lutOpacity: { el: document.getElementById('lut-opacity'), val: document.getElementById('val-lut-opacity') },
     sprocketTolerance: { el: document.getElementById('sprocket-tolerance'), val: document.getElementById('val-sprocket-tolerance') },
-    sprocketFeather: { el: document.getElementById('sprocket-feather'), val: document.getElementById('val-sprocket-feather') }
+    sprocketFeather: { el: document.getElementById('sprocket-feather'), val: document.getElementById('val-sprocket-feather') },
+    sharpeningAmount: { el: document.getElementById('sharpening-amount'), val: document.getElementById('val-sharpening-amount') },
+    sharpeningRadius: { el: document.getElementById('sharpening-radius'), val: document.getElementById('val-sharpening-radius') },
+    sharpeningDetail: { el: document.getElementById('sharpening-detail'), val: document.getElementById('val-sharpening-detail') },
+    sharpeningMasking: { el: document.getElementById('sharpening-masking'), val: document.getElementById('val-sharpening-masking') },
+    texture: { el: document.getElementById('texture'), val: document.getElementById('val-texture') },
+    clarity: { el: document.getElementById('clarity'), val: document.getElementById('val-clarity') },
+    dehaze: { el: document.getElementById('dehaze'), val: document.getElementById('val-dehaze') }
 };
 
 const twoDecimalSliderKeys = new Set([
     'masterDmin', 'masterDmax', 'exposure', 'gamma', 'contrast', 'saturation', 'highlights', 'shadows',
-    'temperature', 'tint', 'sprocketTolerance', 'sprocketFeather'
+    'temperature', 'tint', 'sprocketTolerance', 'sprocketFeather', 'sharpeningRadius'
 ]);
-const formatSliderValue = (key, value) => Number.parseFloat(value).toFixed(twoDecimalSliderKeys.has(key) ? 2 : 3);
+// Sharpening and Presence read as plain numbers in Lightroom: 37, not 37.000.
+const integerSliderKeys = new Set([
+    'sharpeningAmount', 'sharpeningDetail', 'sharpeningMasking', 'texture', 'clarity', 'dehaze'
+]);
+const formatSliderValue = (key, value) => {
+    if (integerSliderKeys.has(key)) return String(Math.round(Number.parseFloat(value) || 0));
+    return Number.parseFloat(value).toFixed(twoDecimalSliderKeys.has(key) ? 2 : 3);
+};
 
 const imageStates = new Map();
 let copiedSettings = null;
@@ -1420,6 +1462,17 @@ function captureEditState() {
             exp_b: parseFloat(sliders.expb.el.value),
             highlights: parseFloat(sliders.highlights.el.value),
             shadows: parseFloat(sliders.shadows.el.value),
+            curve_rgb: NexFilmToneCurve.clonePoints(curvePoints.rgb),
+            curve_red: NexFilmToneCurve.clonePoints(curvePoints.red),
+            curve_green: NexFilmToneCurve.clonePoints(curvePoints.green),
+            curve_blue: NexFilmToneCurve.clonePoints(curvePoints.blue),
+            sharpening_amount: parseFloat(sliders.sharpeningAmount.el.value),
+            sharpening_radius: parseFloat(sliders.sharpeningRadius.el.value),
+            sharpening_detail: parseFloat(sliders.sharpeningDetail.el.value),
+            sharpening_masking: parseFloat(sliders.sharpeningMasking.el.value),
+            texture: parseFloat(sliders.texture.el.value),
+            clarity: parseFloat(sliders.clarity.el.value),
+            dehaze: parseFloat(sliders.dehaze.el.value),
             lut_path: currentLutPath,
             lut_opacity: parseFloat(sliders.lutOpacity.el.value),
             working_colorspace: currentWorkingColorspace,
@@ -1751,27 +1804,12 @@ function captureActiveCanvasThumbnail() {
         let captureError;
         try {
             gl.getError();
-            gl.useProgram(shaderProgram);
-            gl.bindVertexArray(vao);
-            gl.uniform1i(u_scope_warning_loc, 0);
-            gl.uniform4f(u_crop_loc, crop.x, crop.y, crop.width, crop.height);
-            gl.activeTexture(gl.TEXTURE0);
-            gl.bindTexture(gl.TEXTURE_2D, tex);
-            gl.bindFramebuffer(gl.FRAMEBUFFER, thumbnailFbo);
-            gl.viewport(0, 0, width, height);
-            gl.clearColor(0, 0, 0, 1);
-            gl.clear(gl.COLOR_BUFFER_BIT);
-            gl.drawArrays(gl.TRIANGLES, 0, 6);
+            // The stored thumbnail is the finished frame, so it runs the same
+            // pass chain as the canvas minus the clipping preview.
+            renderDevelopFrame('thumbnail', thumbnailFbo, width, height, crop, 0);
             gl.readPixels(0, 0, width, height, gl.RGBA, gl.UNSIGNED_BYTE, thumbnailReadback);
             captureError = gl.getError();
         } finally {
-            gl.uniform1i(u_scope_warning_loc, getScopeWarningMask());
-            // Hand the crop uniform back to the view the canvas is showing.
-            if (fullFrameEditView()) {
-                gl.uniform4f(u_crop_loc, 0.0, 0.0, 1.0, 1.0);
-            } else {
-                gl.uniform4f(u_crop_loc, crop.x, crop.y, crop.width, crop.height);
-            }
             gl.bindFramebuffer(gl.FRAMEBUFFER, previousFramebuffer);
             gl.viewport(previousViewport[0], previousViewport[1], previousViewport[2], previousViewport[3]);
         }
@@ -1918,6 +1956,17 @@ function saveCurrentState() {
         exp_b: parseFloat(sliders.expb.el.value),
         highlights: parseFloat(sliders.highlights.el.value),
         shadows: parseFloat(sliders.shadows.el.value),
+        curve_rgb: NexFilmToneCurve.clonePoints(curvePoints.rgb),
+        curve_red: NexFilmToneCurve.clonePoints(curvePoints.red),
+        curve_green: NexFilmToneCurve.clonePoints(curvePoints.green),
+        curve_blue: NexFilmToneCurve.clonePoints(curvePoints.blue),
+        sharpening_amount: parseFloat(sliders.sharpeningAmount.el.value),
+        sharpening_radius: parseFloat(sliders.sharpeningRadius.el.value),
+        sharpening_detail: parseFloat(sliders.sharpeningDetail.el.value),
+        sharpening_masking: parseFloat(sliders.sharpeningMasking.el.value),
+        texture: parseFloat(sliders.texture.el.value),
+        clarity: parseFloat(sliders.clarity.el.value),
+        dehaze: parseFloat(sliders.dehaze.el.value),
         lut_path: currentLutPath,
         lut_opacity: parseFloat(sliders.lutOpacity.el.value),
         working_colorspace: currentWorkingColorspace,
@@ -1968,6 +2017,9 @@ async function updateBackendParams(
 let gl;
 let shaderProgram;
 let tex;
+// Counts every proxy texture swap: the Detail chain caches its pixels behind a
+// key that cannot see the texture's contents.
+let proxyTextureRevision = 0;
 let vao;
 let posBuffer;
 let texBuffer;
@@ -2018,6 +2070,15 @@ let u_highlight_threshold_loc;
 let u_calib_pts_loc;
 let u_border_exposure_loc;
 let u_baseline_pass_loc;
+let u_curve_lut_loc;
+let u_has_curve_loc;
+let u_alpha_guard_loc;
+// 1x1 textures that keep every sampler of the base program bound to a texture
+// of the right type. WebGL raises INVALID_OPERATION on a draw when a sampler3D
+// finds a 2D texture on its unit (or the reverse), even if the branch that
+// samples it is not taken.
+let emptyTexture2d = null;
+let emptyTexture3d = null;
 
 let currentBaseDensity = [0, 0, 0];
 let proxyHasAnalyzedBase = false;
@@ -2179,6 +2240,12 @@ function initWebGL() {
     uniform int u_scope_warning;
     uniform float u_shadow_threshold;
     uniform float u_highlight_threshold;
+    // Tone curve lookup, built from the inspector's four control-point curves.
+    uniform mediump sampler2D u_curve_lut;
+    uniform int u_has_curve;
+    // The Detail chain reads the sprocket/clipping guard from alpha; every
+    // other pass has to stay opaque or the canvas would show the page through.
+    uniform int u_alpha_guard;
 
     const mat3 STATUS_M = mat3(
         1.0197, -0.0052, 0.0131,
@@ -2203,6 +2270,27 @@ function initWebGL() {
 
     float getLuma(vec3 c) {
         return dot(c, vec3(0.2126, 0.7152, 0.0722));
+    }
+
+    float curveLutCoord(float value, float size) {
+        return (clamp(value, 0.0, 1.0) * (size - 1.0) + 0.5) / size;
+    }
+
+    // R carries the red curve, G the green curve, B the blue curve and A the
+    // composite RGB curve, which is read after the per-channel curves.
+    vec3 applyToneCurves(vec3 color) {
+        if (u_has_curve == 0) return color;
+        float size = float(textureSize(u_curve_lut, 0).x);
+        vec3 per_channel = vec3(
+            texture(u_curve_lut, vec2(curveLutCoord(color.r, size), 0.5)).r,
+            texture(u_curve_lut, vec2(curveLutCoord(color.g, size), 0.5)).g,
+            texture(u_curve_lut, vec2(curveLutCoord(color.b, size), 0.5)).b
+        );
+        return vec3(
+            texture(u_curve_lut, vec2(curveLutCoord(per_channel.r, size), 0.5)).a,
+            texture(u_curve_lut, vec2(curveLutCoord(per_channel.g, size), 0.5)).a,
+            texture(u_curve_lut, vec2(curveLutCoord(per_channel.b, size), 0.5)).a
+        );
     }
 
     float encodeSrgb(float value) {
@@ -2360,7 +2448,7 @@ function initWebGL() {
                 staged = PROPHOTO_TO_LINEAR_SRGB * staged;
             }
             float safe_gamma = max(u_gamma, 1e-6);
-            outColor = vec4(linearSrgbToDisplay(pow(staged, vec3(1.0 / safe_gamma))), 1.0);
+            outColor = vec4(linearSrgbToDisplay(pow(staged, vec3(1.0 / safe_gamma))), 0.0);
             return;
         }
         
@@ -2427,6 +2515,9 @@ function initWebGL() {
             pow(clamp(positive_linear.g, 0.0, 1.0), 1.0 / safe_gamma),
             pow(clamp(positive_linear.b, 0.0, 1.0), 1.0 / safe_gamma)
         );
+        // The Tone Curve sits between the Printer Lights and the Aesthetics
+        // stage, exactly where the panel puts it.
+        final_rgb = applyToneCurves(final_rgb);
         final_rgb = applyPostGammaAdjustments(final_rgb);
         if (u_has_lut == 1) {
             vec3 lut_in = clamp(final_rgb, 0.0, 1.0);
@@ -2474,15 +2565,19 @@ function initWebGL() {
             float preview_luma = getLuma(final_rgb);
             if ((u_scope_warning & 1) != 0 && preview_luma <= u_shadow_threshold) {
                 final_rgb = mix(final_rgb, vec3(0.05, 0.34, 1.0), 0.78);
+                mask = 1.0;
             } else if ((u_scope_warning & 2) != 0 && preview_luma >= u_highlight_threshold) {
                 final_rgb = mix(final_rgb, vec3(1.0, 0.12, 0.06), 0.78);
+                mask = 1.0;
             }
         }
         
         // Density normalization, user gamma, post-gamma controls, and LUTs
         // already form a display-referred sRGB signal. Do not apply an OETF a
         // second time here.
-        outColor = vec4(clamp(final_rgb, 0.0, 1.0), 1.0);
+        // Alpha carries the sprocket/clipping guard the Detail stage reads: it
+        // has to leave the frame border and the clipping preview alone.
+        outColor = vec4(clamp(final_rgb, 0.0, 1.0), mix(1.0, mask, float(u_alpha_guard)));
     }`;
 
     function createShader(gl, type, source) {
@@ -2560,6 +2655,9 @@ function initWebGL() {
     u_scope_warning_loc = gl.getUniformLocation(shaderProgram, "u_scope_warning");
     u_shadow_threshold_loc = gl.getUniformLocation(shaderProgram, "u_shadow_threshold");
     u_highlight_threshold_loc = gl.getUniformLocation(shaderProgram, "u_highlight_threshold");
+    u_curve_lut_loc = gl.getUniformLocation(shaderProgram, "u_curve_lut");
+    u_has_curve_loc = gl.getUniformLocation(shaderProgram, "u_has_curve");
+    u_alpha_guard_loc = gl.getUniformLocation(shaderProgram, "u_alpha_guard");
     
     gl.getExtension("OES_texture_float_linear");
 
@@ -2597,9 +2695,626 @@ function initWebGL() {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fboTex, 0);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
+    // Sampler placeholders. They live on a texture unit the render paths never
+    // use, so binding them cannot disturb the picture or the LUTs.
+    const placeholder = new Uint8Array([0, 0, 0, 255]);
+    gl.activeTexture(gl.TEXTURE7);
+    emptyTexture2d = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, emptyTexture2d);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, placeholder);
+    emptyTexture3d = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_3D, emptyTexture3d);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texImage3D(
+        gl.TEXTURE_3D, 0, gl.RGBA8, 1, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, placeholder
+    );
+    gl.activeTexture(gl.TEXTURE0);
+
+    initDetailStagePrograms(createShader);
+
     webGLInitialized = true;
 }
 
+// ==========================================
+// Develop Detail stage (WebGL mirror of the Rust detail pipeline)
+// ==========================================
+//
+// Sharpening, Texture, Clarity and Dehaze are spatial operations, so the
+// preview runs them as a pass chain on top of the base Develop render:
+//
+//   base (curve included) -> Gaussian scales -> downscaled clarity/haze -> combine
+//
+// Every expression mirrors src/core_math.rs. The radii are quoted at
+// DETAIL_REFERENCE_LONG_EDGE and converted into the pixels this render really
+// produces, which is what keeps the preview proxy and a full-resolution export
+// showing the same amount of detail work.
+
+const DETAIL_REFERENCE_LONG_EDGE = 2560;
+const DETAIL_MIN_SIGMA = 0.4;
+const DETAIL_FINE_SIGMA = 0.6;
+const DETAIL_TEXTURE_SIGMA = 1.6;
+const DETAIL_CLARITY_EDGE_RATIO = 0.012;
+const DETAIL_LOCAL_DOWNSCALE = 4;
+const DETAIL_DEHAZE_EDGE_RATIO = 1 / 16;
+
+let detailPrograms = null;
+let detailVaos = null;
+let detailFloatSupported = false;
+// Two fixed sets of render targets: the preview and the stored thumbnail. Each
+// one is reallocated only when its own size changes, so a crop drag cannot make
+// the preview's textures churn.
+// The full-size chain and the quarter-size one keep separate target sets: they
+// are different sizes, and sharing a set would reallocate the texture the
+// current pass is reading from.
+const DETAIL_TARGET_SCOPES = ['preview', 'preview-reduced', 'thumbnail', 'thumbnail-reduced'];
+const detailTargets = {};
+const detailTargetSizes = {};
+for (const scope of DETAIL_TARGET_SCOPES) {
+    detailTargets[scope] = new Map();
+    detailTargetSizes[scope] = '';
+}
+
+function detailShaders() {
+    const detailVertexSource = `#version 300 es
+    in vec4 a_position;
+    in vec2 a_texcoord;
+    out vec2 v_texcoord;
+    void main() {
+        gl_Position = a_position;
+        v_texcoord = a_texcoord;
+    }`;
+
+    const blurFragmentSource = `#version 300 es
+    precision highp float;
+    in vec2 v_texcoord;
+    out vec4 outColor;
+    uniform mediump sampler2D u_source;
+    uniform vec2 u_step;
+    uniform float u_sigma;
+    uniform int u_radius;
+    // 0: Gaussian over RGB, 1: minimum of the red channel, 2: box average of
+    // the red channel. The blur, the dark channel and the transmission
+    // smoothing all share the kernel radius rule of the CPU renderer.
+    uniform int u_mode;
+    void main() {
+        vec4 center = texture(u_source, v_texcoord);
+        if (u_mode == 1) {
+            float minimum = 1.0;
+            for (int index = -u_radius; index <= u_radius; index++) {
+                minimum = min(minimum, texture(u_source, v_texcoord + u_step * float(index)).r);
+            }
+            outColor = vec4(minimum, 0.0, 0.0, center.a);
+            return;
+        }
+        if (u_mode == 2) {
+            float total = 0.0;
+            for (int index = -u_radius; index <= u_radius; index++) {
+                total += texture(u_source, v_texcoord + u_step * float(index)).r;
+            }
+            outColor = vec4(total / float(2 * u_radius + 1), 0.0, 0.0, center.a);
+            return;
+        }
+        vec3 total = vec3(0.0);
+        float normalization = sqrt(6.283185307179586) * u_sigma;
+        for (int index = -u_radius; index <= u_radius; index++) {
+            float distance = float(index);
+            float weight = exp(-(distance * distance) / (2.0 * u_sigma * u_sigma)) / normalization;
+            total += texture(u_source, v_texcoord + u_step * distance).rgb * weight;
+        }
+        outColor = vec4(total, center.a);
+    }`;
+
+    const downscaleFragmentSource = `#version 300 es
+    precision highp float;
+    in vec2 v_texcoord;
+    out vec4 outColor;
+    uniform mediump sampler2D u_source;
+    uniform vec2 u_source_texel;
+    uniform float u_offset;
+    // 0: box average of the four quadrant taps, 1: their minimum per channel.
+    uniform int u_mode;
+    void main() {
+        vec2 offset = u_source_texel * u_offset;
+        vec4 top_left = texture(u_source, v_texcoord + vec2(-offset.x, -offset.y));
+        vec4 top_right = texture(u_source, v_texcoord + vec2(offset.x, -offset.y));
+        vec4 bottom_left = texture(u_source, v_texcoord + vec2(-offset.x, offset.y));
+        vec4 bottom_right = texture(u_source, v_texcoord + vec2(offset.x, offset.y));
+        if (u_mode == 1) {
+            float minimum = min(min(min(top_left.r, top_left.g), top_left.b),
+                                min(min(top_right.r, top_right.g), top_right.b));
+            minimum = min(minimum, min(min(bottom_left.r, bottom_left.g), bottom_left.b));
+            minimum = min(minimum, min(min(bottom_right.r, bottom_right.g), bottom_right.b));
+            outColor = vec4(minimum, 0.0, 0.0, top_left.a);
+            return;
+        }
+        outColor = vec4((top_left.rgb + top_right.rgb + bottom_left.rgb + bottom_right.rgb) * 0.25, top_left.a);
+    }`;
+
+    const combineFragmentSource = `#version 300 es
+    precision highp float;
+    in vec2 v_texcoord;
+    out vec4 outColor;
+    uniform mediump sampler2D u_base;
+    uniform mediump sampler2D u_fine;
+    uniform mediump sampler2D u_texture_blur;
+    uniform mediump sampler2D u_coarse;
+    uniform mediump sampler2D u_clarity;
+    uniform mediump sampler2D u_transmission;
+    uniform vec2 u_base_texel;
+    // amount, radius, detail, masking
+    uniform vec4 u_sharpen;
+    // texture, clarity
+    uniform vec2 u_presence;
+    uniform float u_dehaze;
+    uniform int u_has_fine;
+    uniform int u_has_texture;
+    uniform int u_has_coarse;
+    uniform int u_has_clarity;
+    uniform int u_has_transmission;
+    // 0: the finished frame, 1: the sharpening mask, 2: the sharpening signal.
+    uniform int u_preview_mode;
+
+    float getLuma(vec3 color) {
+        return dot(color, vec3(0.2126, 0.7152, 0.0722));
+    }
+
+    float smoothstepRange(float edge0, float edge1, float value) {
+        float t = clamp((value - edge0) / max(edge1 - edge0, 1e-6), 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    }
+
+    void main() {
+        vec4 base_sample = texture(u_base, v_texcoord);
+        vec3 base = base_sample.rgb;
+        // Alpha carries the sprocket white-out and the clipping preview: those
+        // are overlays, and the Detail stage has to leave them alone.
+        float guard = 1.0 - clamp(base_sample.a, 0.0, 1.0);
+        vec3 color = base;
+        if (abs(u_dehaze) > 1e-4 && u_has_transmission == 1) {
+            float dark = texture(u_transmission, v_texcoord).r;
+            float omega = 0.95 * clamp(u_dehaze / 100.0, -1.0, 1.0);
+            float transmission = clamp(1.0 - omega * clamp(dark, 0.0, 1.0), 0.2, 5.0);
+            color = (base - 1.0) / max(transmission, 1e-3) + 1.0;
+        }
+        if (abs(u_presence.y) > 1e-4 && u_has_clarity == 1) {
+            vec3 clarity = texture(u_clarity, v_texcoord).rgb;
+            float midtone = clamp(1.0 - pow(2.0 * getLuma(clarity) - 1.0, 2.0), 0.0, 1.0);
+            color += (base - clarity) * (u_presence.y / 100.0) * 0.8 * midtone * guard;
+        }
+        if (abs(u_presence.x) > 1e-4 && u_has_texture == 1) {
+            vec3 texture_blur = texture(u_texture_blur, v_texcoord).rgb;
+            color += (base - texture_blur) * (u_presence.x / 100.0) * 0.8 * guard;
+        }
+        // The mask is derived from the base render alone, so the mask view can
+        // still show it before any Amount is dialled in.
+        float maskWeight = 1.0;
+        if (u_has_coarse == 1 || u_preview_mode == 1) {
+            float left = getLuma(texture(u_base, v_texcoord - vec2(u_base_texel.x, 0.0)).rgb);
+            float right = getLuma(texture(u_base, v_texcoord + vec2(u_base_texel.x, 0.0)).rgb);
+            float up = getLuma(texture(u_base, v_texcoord - vec2(0.0, u_base_texel.y)).rgb);
+            float down = getLuma(texture(u_base, v_texcoord + vec2(0.0, u_base_texel.y)).rgb);
+            float gradient = abs(right - left) + abs(down - up);
+            float masking = clamp(u_sharpen.w / 100.0, 0.0, 1.0);
+            if (masking > 1e-4) {
+                float threshold = 0.02 + masking * 0.30;
+                maskWeight = smoothstepRange(threshold, threshold + 0.06, gradient);
+            }
+        }
+        float sharpenLuma = 0.0;
+        if (u_has_coarse == 1) {
+            vec3 coarse = base - texture(u_coarse, v_texcoord).rgb;
+            vec3 fine = u_has_fine == 1 ? base - texture(u_fine, v_texcoord).rgb : vec3(0.0);
+            float detail_blend = clamp(u_sharpen.z / 100.0, 0.0, 1.0) * 0.75;
+            vec3 sharpened = coarse + fine * detail_blend;
+            color += sharpened * ((u_sharpen.x / 100.0) * 0.8 * maskWeight * guard);
+            sharpenLuma = getLuma(sharpened);
+        }
+        if (u_preview_mode == 1) {
+            // White where the sharpening reaches, black where it does not.
+            outColor = vec4(vec3(maskWeight), 1.0);
+            return;
+        }
+        if (u_preview_mode == 2) {
+            // Amount, Radius and Detail: the sharpening signal itself, on the
+            // mid grey field the same view uses in Lightroom. The Amount scales
+            // it the way the real effect is scaled; the floor keeps the Radius
+            // and Detail views readable while the Amount is still low.
+            float view = max(u_sharpen.x / 100.0, 0.35) * 0.8 * maskWeight;
+            outColor = vec4(vec3(clamp(0.5 + sharpenLuma * view * 4.0, 0.0, 1.0)), 1.0);
+            return;
+        }
+        outColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+    }`;
+
+    return {
+        detailVertexSource,
+        blurFragmentSource,
+        downscaleFragmentSource,
+        combineFragmentSource,
+    };
+}
+
+function initDetailStagePrograms(compileShader) {
+    const shaders = detailShaders();
+    const build = (fragmentSource) => {
+        const vertexShader = compileShader(gl, gl.VERTEX_SHADER, shaders.detailVertexSource);
+        const fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
+        if (!vertexShader || !fragmentShader) return null;
+        const program = gl.createProgram();
+        gl.attachShader(program, vertexShader);
+        gl.attachShader(program, fragmentShader);
+        gl.linkProgram(program);
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+            console.error('Detail shader link error:', gl.getProgramInfoLog(program));
+            return null;
+        }
+        return program;
+    };
+    detailPrograms = {
+        blur: build(shaders.blurFragmentSource),
+        downscale: build(shaders.downscaleFragmentSource),
+        combine: build(shaders.combineFragmentSource),
+    };
+    detailFloatSupported = Boolean(
+        gl.getExtension('EXT_color_buffer_float') || gl.getExtension('EXT_color_buffer_half_float')
+    );
+    detailVaos = {
+        blur: createQuadVao(detailPrograms.blur),
+        downscale: createQuadVao(detailPrograms.downscale),
+        combine: createQuadVao(detailPrograms.combine),
+    };
+}
+
+// Each program needs its own attribute bindings: attribute locations are
+// per-program, and a VAO records them.
+function createQuadVao(program) {
+    if (!program) return null;
+    const quadVao = gl.createVertexArray();
+    gl.bindVertexArray(quadVao);
+    const positionLocation = gl.getAttribLocation(program, 'a_position');
+    const texcoordLocation = gl.getAttribLocation(program, 'a_texcoord');
+    gl.bindBuffer(gl.ARRAY_BUFFER, posBuffer);
+    gl.enableVertexAttribArray(positionLocation);
+    gl.vertexAttribPointer(positionLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, texBuffer);
+    gl.enableVertexAttribArray(texcoordLocation);
+    gl.vertexAttribPointer(texcoordLocation, 2, gl.FLOAT, false, 0, 0);
+    gl.bindVertexArray(null);
+    return quadVao;
+}
+
+function releaseDetailTargets(scope) {
+    for (const target of detailTargets[scope].values()) {
+        gl.deleteTexture(target.texture);
+        gl.deleteFramebuffer(target.framebuffer);
+    }
+    detailTargets[scope] = new Map();
+    detailTargetSizes[scope] = '';
+    // The cached passes of that scope just lost their textures.
+    detailStageCache.delete(scope);
+}
+
+function detailTargetSet(scope, width, height) {
+    const key = `${width}x${height}`;
+    if (detailTargetSizes[scope] !== key) releaseDetailTargets(scope);
+    detailTargetSizes[scope] = key;
+    return detailTargets[scope];
+}
+
+function ensureDetailTarget(scope, name, width, height) {
+    const set = detailTargetSet(scope, width, height);
+    let target = set.get(name);
+    if (!target) {
+        // Half floats where they can be rendered to: the Detail chain multiplies
+        // its own intermediate values, and an 8-bit buffer would band.
+        const internalFormat = detailFloatSupported ? gl.RGBA16F : gl.RGBA8;
+        const pixelType = detailFloatSupported ? gl.HALF_FLOAT : gl.UNSIGNED_BYTE;
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texImage2D(
+            gl.TEXTURE_2D, 0, internalFormat, width, height, 0, gl.RGBA, pixelType, null
+        );
+        const framebuffer = gl.createFramebuffer();
+        gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+        gl.framebufferTexture2D(
+            gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0
+        );
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        target = { texture, framebuffer, width, height };
+        set.set(name, target);
+    }
+    return target;
+}
+
+function detailSliderValue(key) {
+    const slider = sliders[key];
+    if (!slider) return 0;
+    return Number.parseFloat(slider.el.value) || 0;
+}
+
+function currentDetailSettings(renderedWidth, renderedHeight) {
+    const longEdge = Math.max(renderedWidth, renderedHeight, 1);
+    const scale = Math.min(8, Math.max(0.1, longEdge / DETAIL_REFERENCE_LONG_EDGE));
+    const settings = {
+        amount: detailSliderValue('sharpeningAmount'),
+        radius: detailSliderValue('sharpeningRadius') || 1,
+        detail: detailSliderValue('sharpeningDetail'),
+        masking: detailSliderValue('sharpeningMasking'),
+        texture: detailSliderValue('texture'),
+        clarity: detailSliderValue('clarity'),
+        dehaze: detailSliderValue('dehaze'),
+        scale,
+        longEdge,
+    };
+    settings.active = settings.amount > 0
+        || settings.texture !== 0
+        || settings.clarity !== 0
+        || settings.dehaze !== 0;
+    settings.fineSigma = Math.max(DETAIL_MIN_SIGMA, DETAIL_FINE_SIGMA * scale);
+    settings.textureSigma = Math.max(DETAIL_MIN_SIGMA, DETAIL_TEXTURE_SIGMA * scale);
+    settings.coarseSigma = Math.max(DETAIL_MIN_SIGMA, settings.radius * scale);
+    const claritySigma = Math.max(
+        DETAIL_MIN_SIGMA,
+        (DETAIL_CLARITY_EDGE_RATIO * longEdge) / DETAIL_LOCAL_DOWNSCALE
+    );
+    settings.claritySigma = claritySigma;
+    const dehazeWindow = Math.round(
+        (DETAIL_DEHAZE_EDGE_RATIO * longEdge) / DETAIL_LOCAL_DOWNSCALE
+    );
+    settings.dehazeRadius = Math.min(64, Math.max(1, dehazeWindow));
+    // Integer division, matching the CPU renderer's `(radius / 4).max(1)`.
+    settings.dehazeSoften = Math.max(1, Math.floor(settings.dehazeRadius / 4));
+    return settings;
+}
+
+function gaussianKernelRadius(sigma) {
+    return Math.max(1, Math.ceil(2 * sigma));
+}
+
+function runDetailProgram(entry, framebuffer, width, height, uniforms) {
+    if (!entry || !entry.program || !entry.vao) return false;
+    gl.useProgram(entry.program);
+    gl.bindVertexArray(entry.vao);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.viewport(0, 0, width, height);
+    uniforms(entry.program);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    return true;
+}
+
+function blurDetailSource({
+    scope,
+    source,
+    width,
+    height,
+    sigma,
+    targetName,
+    mode = 0,
+    radius = null,
+}) {
+    const taps = radius === null ? gaussianKernelRadius(sigma) : radius;
+    const passRadius = Math.min(taps, 64);
+    let current = source;
+    for (const [suffix, step] of [['h', [1 / width, 0]], ['v', [0, 1 / height]]]) {
+        const target = ensureDetailTarget(scope, `${targetName}-${suffix}`, width, height);
+        const ok = runDetailProgram(detailStageEntry('blur'), target.framebuffer, width, height, (program) => {
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, current.texture);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_source'), 0);
+            gl.uniform2f(gl.getUniformLocation(program, 'u_step'), step[0], step[1]);
+            gl.uniform1f(gl.getUniformLocation(program, 'u_sigma'), sigma);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_radius'), passRadius);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_mode'), mode);
+        });
+        if (!ok) return null;
+        current = target;
+    }
+    return current;
+}
+
+function detailStageEntry(name) {
+    if (!detailPrograms) return null;
+    return { program: detailPrograms[name], vao: detailVaos?.[name] };
+}
+
+// Which blurs the chain needs. Amount drives the sharpening scales, and the Alt
+// signal view asks for them even before an Amount is dialled in, so that its
+// Radius and Detail views show the edge structure those sliders control.
+function detailBlurWanted(settings, previewMode) {
+    const forceEdges = previewMode === 2;
+    return {
+        fine: forceEdges || (settings.amount > 0 && settings.detail > 0),
+        coarse: forceEdges || settings.amount > 0,
+    };
+}
+
+// The blur passes of the chain. Their inputs are the base render and their own
+// sigmas, never the Detail sliders, so a frame that only moves one of those
+// sliders can reuse what is already in these targets.
+function renderDetailBlurs(scopes, baseTarget, width, height, settings, previewMode = 0) {
+    const scale = DETAIL_LOCAL_DOWNSCALE;
+    const reducedWidth = Math.max(1, Math.ceil(width / scale));
+    const reducedHeight = Math.max(1, Math.ceil(height / scale));
+    const wanted = detailBlurWanted(settings, previewMode);
+
+    let fineTarget = null;
+    if (wanted.fine) {
+        fineTarget = blurDetailSource({
+            scope: scopes.full,
+            source: baseTarget,
+            width,
+            height,
+            sigma: settings.fineSigma,
+            targetName: 'fine',
+        });
+    }
+    let textureTarget = null;
+    if (settings.texture !== 0) {
+        textureTarget = blurDetailSource({
+            scope: scopes.full,
+            source: baseTarget,
+            width,
+            height,
+            sigma: settings.textureSigma,
+            targetName: 'texture',
+        });
+    }
+    let coarseTarget = null;
+    if (wanted.coarse) {
+        coarseTarget = blurDetailSource({
+            scope: scopes.full,
+            source: baseTarget,
+            width,
+            height,
+            sigma: settings.coarseSigma,
+            targetName: 'coarse',
+        });
+    }
+
+    let clarityTarget = null;
+    let transmissionTarget = null;
+    if (settings.clarity !== 0 || settings.dehaze !== 0) {
+        const reduced = ensureDetailTarget(scopes.reduced, 'reduced', reducedWidth, reducedHeight);
+        runDetailProgram(detailStageEntry('downscale'), reduced.framebuffer, reducedWidth, reducedHeight, (program) => {
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, baseTarget.texture);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_source'), 0);
+            gl.uniform2f(
+                gl.getUniformLocation(program, 'u_source_texel'), 1 / width, 1 / height
+            );
+            gl.uniform1f(gl.getUniformLocation(program, 'u_offset'), 1 / scale);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_mode'), 0);
+        });
+        if (settings.clarity !== 0) {
+            clarityTarget = blurDetailSource({
+                scope: scopes.reduced,
+                source: reduced,
+                width: reducedWidth,
+                height: reducedHeight,
+                sigma: settings.claritySigma,
+                targetName: 'clarity',
+            });
+        }
+        if (settings.dehaze !== 0) {
+            const darkTarget = ensureDetailTarget(scopes.reduced, 'dark', reducedWidth, reducedHeight);
+            runDetailProgram(detailStageEntry('downscale'), darkTarget.framebuffer, reducedWidth, reducedHeight, (program) => {
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, baseTarget.texture);
+                gl.uniform1i(gl.getUniformLocation(program, 'u_source'), 0);
+                gl.uniform2f(
+                    gl.getUniformLocation(program, 'u_source_texel'), 1 / width, 1 / height
+                );
+                gl.uniform1f(gl.getUniformLocation(program, 'u_offset'), 1 / scale);
+                gl.uniform1i(gl.getUniformLocation(program, 'u_mode'), 1);
+            });
+            const windowed = blurDetailSource({
+                scope: scopes.reduced,
+                source: darkTarget,
+                width: reducedWidth,
+                height: reducedHeight,
+                sigma: 1,
+                radius: settings.dehazeRadius,
+                mode: 1,
+                targetName: 'dark-window',
+            });
+            transmissionTarget = blurDetailSource({
+                scope: scopes.reduced,
+                source: windowed || darkTarget,
+                width: reducedWidth,
+                height: reducedHeight,
+                sigma: 1,
+                radius: settings.dehazeSoften,
+                mode: 2,
+                targetName: 'transmission',
+            });
+        }
+    }
+
+    return {
+        fine: fineTarget,
+        texture: textureTarget,
+        coarse: coarseTarget,
+        clarity: clarityTarget,
+        transmission: transmissionTarget,
+    };
+}
+
+// The combine pass reads the base render, the blur targets and the slider
+// values, and writes the finished frame. `previewMode` swaps the finished frame
+// for the grayscale views the Sharpening controls show while Alt is held:
+// 1 draws the mask, 2 draws the sharpening signal, 0 draws the picture.
+function renderDetailCombine(
+    baseTarget, targetFramebuffer, width, height, settings, blurs, previewMode = 0
+) {
+    const { fine: fineTarget, texture: textureTarget, coarse: coarseTarget,
+        clarity: clarityTarget, transmission: transmissionTarget } = blurs;
+
+    const combined = runDetailProgram(
+        detailStageEntry('combine'),
+        targetFramebuffer,
+        width,
+        height,
+        (program) => {
+            gl.activeTexture(gl.TEXTURE0);
+            gl.bindTexture(gl.TEXTURE_2D, baseTarget.texture);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_base'), 0);
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, (fineTarget || baseTarget).texture);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_fine'), 1);
+            gl.activeTexture(gl.TEXTURE2);
+            gl.bindTexture(gl.TEXTURE_2D, (textureTarget || baseTarget).texture);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_texture_blur'), 2);
+            gl.activeTexture(gl.TEXTURE3);
+            gl.bindTexture(gl.TEXTURE_2D, (coarseTarget || baseTarget).texture);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_coarse'), 3);
+            gl.activeTexture(gl.TEXTURE4);
+            gl.bindTexture(gl.TEXTURE_2D, (clarityTarget || baseTarget).texture);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_clarity'), 4);
+            gl.activeTexture(gl.TEXTURE5);
+            gl.bindTexture(gl.TEXTURE_2D, (transmissionTarget || baseTarget).texture);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_transmission'), 5);
+            gl.uniform2f(gl.getUniformLocation(program, 'u_base_texel'), 1 / width, 1 / height);
+            gl.uniform4f(
+                gl.getUniformLocation(program, 'u_sharpen'),
+                settings.amount, settings.radius, settings.detail, settings.masking
+            );
+            gl.uniform2f(
+                gl.getUniformLocation(program, 'u_presence'), settings.texture, settings.clarity
+            );
+            gl.uniform1f(gl.getUniformLocation(program, 'u_dehaze'), settings.dehaze);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_has_fine'), fineTarget ? 1 : 0);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_has_texture'), textureTarget ? 1 : 0);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_has_coarse'), coarseTarget ? 1 : 0);
+            gl.uniform1i(gl.getUniformLocation(program, 'u_has_clarity'), clarityTarget ? 1 : 0);
+            gl.uniform1i(
+                gl.getUniformLocation(program, 'u_has_transmission'), transmissionTarget ? 1 : 0
+            );
+            gl.uniform1i(gl.getUniformLocation(program, 'u_preview_mode'), previewMode);
+        }
+    );
+    return combined;
+}
+
+function renderDetailStage(scopes, baseTarget, targetFramebuffer, width, height, settings) {
+    const blurs = renderDetailBlurs(scopes, baseTarget, width, height, settings);
+    return renderDetailCombine(
+        baseTarget, targetFramebuffer, width, height, settings, blurs
+    );
+}
+
+// The programs and their render targets have to exist before the first draw.
 initWebGL();
 
 let hasLUT = false;
@@ -3049,8 +3764,11 @@ updateScopeControls();
 
 let vizTimeout = null;
 let lastVizTime = 0;
+let histogramVersion = 0;
 function updateDataViz(pixels) {
     lastPixels = pixels;
+    histogramVersion += 1;
+    drawToneCurve();
     const now = performance.now();
     if (now - lastVizTime < 33) {
         if (!vizTimeout) {
@@ -3080,14 +3798,77 @@ function requestRender() {
     requestAnimationFrame(renderWebGL);
 }
 
-function renderWebGL() {
-    renderRequested = false;
-    if (!gl || !activeId) return;
-    if (!activeProxyIsFull || !proxyPixels || proxyWidth <= 0 || proxyHeight <= 0) return;
+// The Detail chain is built on top of the base render, and none of that work —
+// neither the base pass nor a single blur — depends on the Detail sliders. Every
+// uniform the base program receives is folded into `basePassKey`, and the chain
+// reuses the pixels it already produced while that key stays the same: a frame
+// that only moves a Detail slider then runs the combine pass and nothing else,
+// which is what keeps a Texture or Clarity drag at frame rate.
+//
+// The key is built from the uploads themselves, so a uniform added later is
+// covered without a second list to keep in sync.
+let basePassKey = 0;
 
+function mixBasePassKey(value) {
+    const number = typeof value === 'number' ? value : Number(value);
+    const quantized = Number.isFinite(number) ? Math.round(number * 1e5) : 0;
+    basePassKey = (Math.imul(basePassKey, 16777619) ^ quantized) | 0;
+}
+
+function mixBasePassKeyText(text) {
+    const value = String(text ?? '');
+    for (let index = 0; index < value.length; index += 1) {
+        basePassKey = (Math.imul(basePassKey, 16777619) ^ value.charCodeAt(index)) | 0;
+    }
+}
+
+function baseUniform1f(location, value) {
+    mixBasePassKey(value);
+    gl.uniform1f(location, value);
+}
+
+function baseUniform1i(location, value) {
+    mixBasePassKey(value);
+    gl.uniform1i(location, value);
+}
+
+function baseUniform3f(location, x, y, z) {
+    mixBasePassKey(x);
+    mixBasePassKey(y);
+    mixBasePassKey(z);
+    gl.uniform3f(location, x, y, z);
+}
+
+function baseUniform4f(location, x, y, z, w) {
+    mixBasePassKey(x);
+    mixBasePassKey(y);
+    mixBasePassKey(z);
+    mixBasePassKey(w);
+    gl.uniform4f(location, x, y, z, w);
+}
+
+function baseUniform2fv(location, values) {
+    for (const value of values) mixBasePassKey(value);
+    gl.uniform2fv(location, values);
+}
+
+function baseUniform3fv(location, values) {
+    for (const value of values) mixBasePassKey(value);
+    gl.uniform3fv(location, values);
+}
+
+function baseUniformMatrix3fv(location, transpose, values) {
+    for (const value of values) mixBasePassKey(value);
+    gl.uniformMatrix3fv(location, transpose, values);
+}
+
+// Every Develop pass shares this uniform block: the base pass, the histogram
+// readback and the thumbnail capture all render the same frame at a different
+// size, and the Detail chain re-runs the base pass into its own target.
+function applyDevelopUniforms({ cropRect, scopeWarning, alphaGuard }) {
+    basePassKey = 0;
     gl.useProgram(shaderProgram);
     gl.bindVertexArray(vao);
-
     const mode = btnModeColor.classList.contains('bg-[#28282c]') ? 0 : 1;
     // dmin/dmax are tracked globally
     const expVal = parseFloat(sliders.exposure.el.value);
@@ -3096,102 +3877,200 @@ function renderWebGL() {
     const expbVal = parseFloat(sliders.expb.el.value);
     const gammaVal = parseFloat(sliders.gamma.el.value);
 
-        gl.uniform3f(
+        baseUniform3f(
             u_base_density_loc,
             proxyHasAnalyzedBase ? currentBaseDensity[0] : 0.0,
             proxyHasAnalyzedBase ? currentBaseDensity[1] : 0.0,
             proxyHasAnalyzedBase ? currentBaseDensity[2] : 0.0,
         );
-    gl.uniform3f(
+    baseUniform3f(
         u_dmin_loc,
         currentDMin[0], currentDMin[1], currentDMin[2]
     );
-    gl.uniform3f(
+    baseUniform3f(
         u_dmax_loc,
         currentDMax[0], currentDMax[1], currentDMax[2]
     );
-    gl.uniform1f(u_dmin_trim_loc, currentDMinOffset);
-    gl.uniform1f(u_dmax_trim_loc, currentDMaxOffset);
-    gl.uniform1f(u_master_exposure_loc, expVal);
-    gl.uniform3f(
+    baseUniform1f(u_dmin_trim_loc, currentDMinOffset);
+    baseUniform1f(u_dmax_trim_loc, currentDMaxOffset);
+    baseUniform1f(u_master_exposure_loc, expVal);
+    baseUniform3f(
         u_exposure_loc,
         mode === 0 ? exprVal * CHANNEL_CONTROL_SCALE : 0.0,
         mode === 0 ? expgVal * CHANNEL_CONTROL_SCALE : 0.0,
         mode === 0 ? expbVal * CHANNEL_CONTROL_SCALE : 0.0
     );
-    gl.uniform1f(u_gamma_loc, gammaVal);
-    gl.uniform1f(u_contrast_loc, parseFloat(sliders.contrast.el.value));
-    gl.uniform1f(u_saturation_loc, parseFloat(sliders.saturation.el.value));
-    gl.uniform1f(u_temperature_loc, parseFloat(sliders.temperature.el.value));
-    gl.uniform1f(u_tint_loc, parseFloat(sliders.tint.el.value));
-    gl.uniform1i(u_mode_loc, mode);
-    gl.uniform1i(u_invert_enabled_loc, proxyHasAnalyzedBase ? 1 : 0);
+    baseUniform1f(u_gamma_loc, gammaVal);
+    baseUniform1f(u_contrast_loc, parseFloat(sliders.contrast.el.value));
+    baseUniform1f(u_saturation_loc, parseFloat(sliders.saturation.el.value));
+    baseUniform1f(u_temperature_loc, parseFloat(sliders.temperature.el.value));
+    baseUniform1f(u_tint_loc, parseFloat(sliders.tint.el.value));
+    baseUniform1i(u_mode_loc, mode);
+    baseUniform1i(u_invert_enabled_loc, proxyHasAnalyzedBase ? 1 : 0);
     // Loose Smart Auto intentionally uses the v1.0.2 linear-sRGB transport
     // and Status-M compatibility math. The contract remains Smart Auto for
     // reporting, but the shader must not decode this texture as ProPhoto.
-    gl.uniform1i(
+    baseUniform1i(
         u_legacy_pipeline_loc,
         currentPipelineContract === 'legacy_v1' || currentProxyDomain === 'legacy_linear_srgb' ? 1 : 0
     );
-    gl.uniform1i(
+    baseUniform1i(
         u_capture_corrected_pipeline_loc,
         currentProxyDomain === 'relative_transmission_rgb' ? 1 : 0
     );
-    gl.uniform1f(u_highlights_loc, parseFloat(sliders.highlights.el.value));
-    gl.uniform1f(u_shadows_loc, parseFloat(sliders.shadows.el.value));
-    gl.uniform1f(u_lut_opacity_loc, parseFloat(sliders.lutOpacity.el.value) * LUT_CONTROL_SCALE);
-    gl.uniform1i(u_has_lut_loc, hasLUT ? 1 : 0);
-    gl.uniform1i(u_lut_is_1d_loc, is1DLUT ? 1 : 0);
-    gl.uniform1i(u_lut3d_loc, 1);
-    gl.uniform1i(u_lut1d_loc, 2);
-    gl.uniform1i(u_image_loc, 0);
+    baseUniform1f(u_highlights_loc, parseFloat(sliders.highlights.el.value));
+    baseUniform1f(u_shadows_loc, parseFloat(sliders.shadows.el.value));
+    baseUniform1f(u_lut_opacity_loc, parseFloat(sliders.lutOpacity.el.value) * LUT_CONTROL_SCALE);
+    baseUniform1i(u_has_lut_loc, hasLUT ? 1 : 0);
+    baseUniform1i(u_lut_is_1d_loc, is1DLUT ? 1 : 0);
     // Film-area points define analysis/masking bounds only. Perspective is an
     // explicit Develop adjustment and is never inferred from these points.
     let pts = current_geom.calibration_points
         || [[0, 0], [1, 0], [1, 1], [0, 1]];
-    gl.uniform4f(
+    baseUniform4f(
         u_perspective_loc,
         current_geom.perspective_vertical,
         current_geom.perspective_horizontal,
         current_geom.perspective_aspect,
         current_geom.perspective_scale
     );
-    gl.uniform1f(u_lens_distortion_loc, current_geom.lens_distortion);
-    gl.uniform2fv(u_sprocket_uv_loc, currentSprocketUV);
-    gl.uniform1f(u_sprocket_tolerance_loc, currentSprocketTolerance);
-    gl.uniform1f(u_sprocket_feather_loc, currentSprocketFeather);
+    baseUniform1f(u_lens_distortion_loc, current_geom.lens_distortion);
+    baseUniform2fv(u_sprocket_uv_loc, currentSprocketUV);
+    baseUniform1f(u_sprocket_tolerance_loc, currentSprocketTolerance);
+    baseUniform1f(u_sprocket_feather_loc, currentSprocketFeather);
     if (currentSprocketTargetColor) {
-        gl.uniform1i(u_has_sprocket_target_color_loc, 1);
-        gl.uniform3fv(u_sprocket_target_color_loc, currentSprocketTargetColor);
+        baseUniform1i(u_has_sprocket_target_color_loc, 1);
+        baseUniform3fv(u_sprocket_target_color_loc, currentSprocketTargetColor);
     } else {
-        gl.uniform1i(u_has_sprocket_target_color_loc, 0);
-        gl.uniform3f(u_sprocket_target_color_loc, 0.0, 0.0, 0.0);
+        baseUniform1i(u_has_sprocket_target_color_loc, 0);
+        baseUniform3f(u_sprocket_target_color_loc, 0.0, 0.0, 0.0);
     }
-    gl.uniform2fv(u_calib_pts_loc, new Float32Array(pts.flat()));
-    // Scope readback always measures the clean image. Clipping warnings are
-    // enabled only for the main preview below.
-    gl.uniform1i(u_scope_warning_loc, 0);
-    gl.uniform1f(u_shadow_threshold_loc, scopeShadowLimit);
-    gl.uniform1f(u_highlight_threshold_loc, scopeHighlightLimit);
+    baseUniform2fv(u_calib_pts_loc, new Float32Array(pts.flat()));
+    baseUniform1i(u_scope_warning_loc, scopeWarning);
+    baseUniform1f(u_shadow_threshold_loc, scopeShadowLimit);
+    baseUniform1f(u_highlight_threshold_loc, scopeHighlightLimit);
+    baseUniform1i(u_alpha_guard_loc, alphaGuard ? 1 : 0);
+    baseUniform4f(u_crop_loc, cropRect.x, cropRect.y, cropRect.width, cropRect.height);
     
     const geometryUv = NexFilmGeometry.createInverseGeometryMatrix(
         proxyWidth,
         proxyHeight,
         current_geom
     );
-    gl.uniformMatrix3fv(u_geometry_uv_loc, false, geometryUv);
+    baseUniformMatrix3fv(u_geometry_uv_loc, false, geometryUv);
 
+    // The curve table is rebuilt only when the curve changed, and it always
+    // works on its own unit so it can never displace the picture texture.
+    ensureCurveLutTexture();
+    baseUniform1i(u_has_curve_loc, hasCurveLut ? 1 : 0);
+    // Every sampler the program declares is bound to a texture of its own type
+    // on every draw, with a 1x1 placeholder standing in when a LUT is off.
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, tex);
-    if (hasLUT) {
-        if (is1DLUT) {
-            gl.activeTexture(gl.TEXTURE2);
-            gl.bindTexture(gl.TEXTURE_2D, lutTex);
-        } else {
-            gl.activeTexture(gl.TEXTURE1);
-            gl.bindTexture(gl.TEXTURE_3D, lutTex);
-        }
+    baseUniform1i(u_image_loc, 0);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_3D, hasLUT && !is1DLUT ? lutTex : emptyTexture3d);
+    baseUniform1i(u_lut3d_loc, 1);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, hasLUT && is1DLUT ? lutTex : emptyTexture2d);
+    baseUniform1i(u_lut1d_loc, 2);
+    gl.activeTexture(gl.TEXTURE3);
+    gl.bindTexture(gl.TEXTURE_2D, hasCurveLut && curveLutTexture ? curveLutTexture : emptyTexture2d);
+    baseUniform1i(u_curve_lut_loc, 3);
+
+    // The sampler units above are constants; the *contents* they point at are
+    // not uniforms, so the proxy texture, the curve table and the loaded LUT
+    // are folded in through their own revisions.
+    mixBasePassKey(proxyTextureRevision);
+    mixBasePassKey(curveLutRevision);
+    mixBasePassKey(developOperationRevision);
+    mixBasePassKey(proxyWidth);
+    mixBasePassKey(proxyHeight);
+    mixBasePassKeyText(activeId);
+    mixBasePassKeyText(currentLutPath);
+    mixBasePassKeyText(currentWorkingColorspace);
+}
+
+function drawDevelopBase(framebuffer, width, height) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.viewport(0, 0, width, height);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+}
+
+// The Detail passes that the last frame of each scope produced. The signature
+// below repeats everything that decides which blurs exist and at what scale;
+// everything else the chain reads is already inside `basePassKey`.
+const detailStageCache = new Map();
+
+function detailStageSignature(width, height, settings, previewMode) {
+    const wanted = detailBlurWanted(settings, previewMode);
+    return [
+        basePassKey,
+        width,
+        height,
+        wanted.coarse ? 1 : 0,
+        wanted.fine ? 1 : 0,
+        settings.texture !== 0 ? 1 : 0,
+        settings.clarity !== 0 ? 1 : 0,
+        settings.dehaze !== 0 ? 1 : 0,
+        settings.fineSigma,
+        settings.textureSigma,
+        settings.coarseSigma,
+        settings.claritySigma,
+        settings.dehazeRadius,
+        settings.dehazeSoften,
+    ].join('|');
+}
+
+// Renders the finished frame — base render plus the Detail stage when any of
+// its controls is off centre — into a framebuffer or, with `null`, the canvas.
+// `previewMode` is passed on to the combine pass and is used by the Sharpening
+// Alt views; the stored thumbnail always renders the finished frame.
+function renderDevelopFrame(
+    scope, framebuffer, width, height, cropRect, scopeWarning, previewMode = 0
+) {
+    const settings = currentDetailSettings(width, height);
+    if ((!settings.active && previewMode === 0) || !detailPrograms?.combine) {
+        detailStageCache.delete(scope);
+        applyDevelopUniforms({ cropRect, scopeWarning, alphaGuard: false });
+        drawDevelopBase(framebuffer, width, height);
+        return;
     }
+    const baseTarget = ensureDetailTarget(scope, 'base', width, height);
+    applyDevelopUniforms({ cropRect, scopeWarning, alphaGuard: true });
+    const signature = detailStageSignature(width, height, settings, previewMode);
+    const cached = detailStageCache.get(scope);
+    if (cached && cached.signature === signature) {
+        // Nothing but a Detail slider moved: the base render and every blur are
+        // still the ones this frame needs, so only the combine pass runs.
+        renderDetailCombine(
+            baseTarget, framebuffer, width, height, settings, cached.blurs, previewMode
+        );
+        return;
+    }
+    drawDevelopBase(baseTarget.framebuffer, width, height);
+    const blurs = renderDetailBlurs(
+        { full: scope, reduced: `${scope}-reduced` },
+        baseTarget,
+        width,
+        height,
+        settings,
+        previewMode
+    );
+    renderDetailCombine(
+        baseTarget, framebuffer, width, height, settings, blurs, previewMode
+    );
+    detailStageCache.set(scope, { signature, blurs });
+}
+
+function renderWebGL() {
+    renderRequested = false;
+    if (!gl || !activeId) return;
+    if (!activeProxyIsFull || !proxyPixels || proxyWidth <= 0 || proxyHeight <= 0) return;
+
+    const cropRect = current_geom.crop_rect;
 
     // Histogram readback stalls the GPU. During slider drags keep the main
     // canvas fully GPU-driven and only sample the small scope buffer at a
@@ -3204,17 +4083,16 @@ function renderWebGL() {
     const shouldRefreshViz = !sliderDragActive && !scopeThresholdDrag
         && (!histogramReadbackReady || now - lastHistogramReadAt >= 33);
     if (shouldRefreshViz) {
-        gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
-        gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-        gl.viewport(0, 0, HIST_W, HIST_H);
-        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        // Scope readback always measures the clean image without the clipping
+        // preview, and it stays on the base pass: the Detail stage is a spatial
+        // effect and the distribution is what the scopes are for.
+        applyDevelopUniforms({ cropRect, scopeWarning: 0, alphaGuard: false });
+        drawDevelopBase(fbo, HIST_W, HIST_H);
         gl.readPixels(0, 0, HIST_W, HIST_H, gl.RGBA, gl.UNSIGNED_BYTE, histogramPixels);
         histogramReadbackReady = true;
         lastHistogramReadAt = now;
         requestAnimationFrame(() => updateDataViz(histogramPixels));
     }
-
-    gl.uniform1i(u_scope_warning_loc, getScopeWarningMask());
 
     // Render to Main Canvas
     const orientedSize = NexFilmGeometry.getOrientedDimensions(
@@ -3222,24 +4100,29 @@ function renderWebGL() {
         proxyHeight,
         current_geom
     );
+    let passCrop;
     if (!fullFrameEditView()) {
-        gl.uniform4f(u_crop_loc, current_geom.crop_rect.x, current_geom.crop_rect.y, current_geom.crop_rect.width, current_geom.crop_rect.height);
-        const nextWidth = Math.max(1, Math.round(orientedSize.width * current_geom.crop_rect.width));
-        const nextHeight = Math.max(1, Math.round(orientedSize.height * current_geom.crop_rect.height));
+        passCrop = cropRect;
+        const nextWidth = Math.max(1, Math.round(orientedSize.width * cropRect.width));
+        const nextHeight = Math.max(1, Math.round(orientedSize.height * cropRect.height));
         if (gl.canvas.width !== nextWidth) gl.canvas.width = nextWidth;
         if (gl.canvas.height !== nextHeight) gl.canvas.height = nextHeight;
     } else {
-        gl.uniform4f(u_crop_loc, 0.0, 0.0, 1.0, 1.0);
+        passCrop = { x: 0, y: 0, width: 1, height: 1 };
         const nextWidth = Math.max(1, Math.round(orientedSize.width));
         const nextHeight = Math.max(1, Math.round(orientedSize.height));
         if (gl.canvas.width !== nextWidth) gl.canvas.width = nextWidth;
         if (gl.canvas.height !== nextHeight) gl.canvas.height = nextHeight;
     }
-    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
-    gl.clearColor(0, 0, 0, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    renderDevelopFrame(
+        'preview',
+        null,
+        gl.canvas.width,
+        gl.canvas.height,
+        passCrop,
+        getScopeWarningMask(),
+        sharpeningPreviewMode()
+    );
 
     // With preserveDrawingBuffer disabled, capture in the same task as the
     // draw call, before the compositor is allowed to discard the back buffer.
@@ -3420,6 +4303,7 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
 
         const previousTexture = tex;
         tex = nextTexture;
+        proxyTextureRevision += 1;
         proxyPixels = pixels;
         proxyWidth = width;
         proxyHeight = height;
@@ -3513,6 +4397,19 @@ function updateUIFromParams(params, geom) {
     sliders.expb.el.value = params.exp_b;
     if (params.highlights !== undefined) sliders.highlights.el.value = params.highlights;
     if (params.shadows !== undefined) sliders.shadows.el.value = params.shadows;
+    const restoredCurves = NexFilmToneCurve.curvesFromParams(params);
+    if (JSON.stringify(restoredCurves) !== JSON.stringify(curvePoints)) {
+        curvePoints = restoredCurves;
+        invalidateCurveLut();
+        drawToneCurve();
+    }
+    if (params.sharpening_amount !== undefined) sliders.sharpeningAmount.el.value = params.sharpening_amount;
+    if (params.sharpening_radius !== undefined) sliders.sharpeningRadius.el.value = params.sharpening_radius;
+    if (params.sharpening_detail !== undefined) sliders.sharpeningDetail.el.value = params.sharpening_detail;
+    if (params.sharpening_masking !== undefined) sliders.sharpeningMasking.el.value = params.sharpening_masking;
+    if (params.texture !== undefined) sliders.texture.el.value = params.texture;
+    if (params.clarity !== undefined) sliders.clarity.el.value = params.clarity;
+    if (params.dehaze !== undefined) sliders.dehaze.el.value = params.dehaze;
     sliders.lutOpacity.el.value = params.lut_opacity ?? 1.0;
     currentWorkingColorspace = normalizeWorkingColorspace(params.working_colorspace || 'linear-srgb');
     selectColorspace.value = currentWorkingColorspace;
@@ -3591,11 +4488,49 @@ function scheduleBackendSync(key) {
     }, 250);
 }
 
+// Lightroom shows the sharpening work itself while Alt is held over one of the
+// Sharpening sliders: Amount, Radius and Detail draw the sharpening signal on a
+// mid grey field, Masking draws the mask. The mode is only ever on for the
+// canvas — the scopes keep measuring the base render and the stored thumbnail
+// always keeps the finished frame.
+const SHARPENING_PREVIEW_MODES = {
+    sharpeningAmount: 2,
+    sharpeningRadius: 2,
+    sharpeningDetail: 2,
+    sharpeningMasking: 1,
+};
+let sharpeningDragKey = null;
+let sharpeningPreviewAlt = false;
+
+function sharpeningPreviewMode() {
+    if (!sharpeningDragKey || !sharpeningPreviewAlt) return 0;
+    return SHARPENING_PREVIEW_MODES[sharpeningDragKey] || 0;
+}
+
+function setSharpeningPreviewAlt(next) {
+    if (next === sharpeningPreviewAlt) return;
+    sharpeningPreviewAlt = next;
+    if (sharpeningDragKey) requestRender();
+}
+
+window.addEventListener('keydown', (event) => {
+    if (event.key === 'Alt') setSharpeningPreviewAlt(true);
+});
+window.addEventListener('keyup', (event) => {
+    if (event.key === 'Alt') setSharpeningPreviewAlt(false);
+});
+// A window that loses focus never delivers the matching keyup.
+window.addEventListener('blur', () => setSharpeningPreviewAlt(false));
+
 for (const key in sliders) {
     const s = sliders[key];
     const endSliderInteraction = () => {
         if (activeSliderEnd !== endSliderInteraction) return;
         activeSliderEnd = null;
+        if (sharpeningDragKey === key) {
+            sharpeningDragKey = null;
+            sharpeningPreviewAlt = false;
+        }
         sliderDragActive = false;
         histogramReadbackReady = false;
         requestRender();
@@ -3604,6 +4539,10 @@ for (const key in sliders) {
     s.el.addEventListener('pointerdown', event => {
         activeSliderEnd = endSliderInteraction;
         sliderDragActive = true;
+        if (SHARPENING_PREVIEW_MODES[key]) {
+            sharpeningDragKey = key;
+            sharpeningPreviewAlt = event.altKey;
+        }
         if (event.detail <= 1) pushUndoState();
     });
     s.el.addEventListener('pointerup', endSliderInteraction);
@@ -3782,6 +4721,487 @@ function setupRangeDoubleClickReset() {
 setupEditableSliderValues();
 setupRangeDoubleClickReset();
 setupRangeWheelInput();
+
+// ==========================================
+// Collapsible inspector sections
+// ==========================================
+
+function readCollapsedModules() {
+    try {
+        const stored = JSON.parse(localStorage.getItem(COLLAPSED_MODULES_KEY) || '[]');
+        return new Set(
+            Array.isArray(stored) ? stored.filter(name => COLLAPSED_MODULE_NAMES.includes(name)) : []
+        );
+    } catch (error) {
+        console.debug('Could not read the collapsed sections', error);
+        return new Set();
+    }
+}
+
+const collapsedModules = readCollapsedModules();
+
+function persistCollapsedModules() {
+    try {
+        localStorage.setItem(COLLAPSED_MODULES_KEY, JSON.stringify(Array.from(collapsedModules)));
+    } catch (error) {
+        console.debug('Could not remember the collapsed sections', error);
+    }
+}
+
+// The triangle in the section header collapses the module the way Lightroom
+// does: the title stays, the controls go. The state is global rather than per
+// frame, and it survives a restart.
+function setModuleCollapsed(name, collapsed, { persist = true } = {}) {
+    const group = collapsibleModules.find(element => element.dataset.collapsibleModule === name);
+    if (!group) return;
+    const toggle = group.querySelector('[data-collapse-toggle]');
+    group.classList.toggle('is-collapsed', collapsed);
+    if (toggle) toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    if (collapsed) collapsedModules.add(name);
+    else collapsedModules.delete(name);
+    if (persist) persistCollapsedModules();
+}
+
+function applyCollapsedModules() {
+    for (const name of COLLAPSED_MODULE_NAMES) {
+        setModuleCollapsed(name, collapsedModules.has(name), { persist: false });
+    }
+}
+
+for (const group of collapsibleModules) {
+    const toggle = group.querySelector('[data-collapse-toggle]');
+    if (!toggle) continue;
+    toggle.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const name = group.dataset.collapsibleModule;
+        setModuleCollapsed(name, !group.classList.contains('is-collapsed'));
+        requestModuleNavSync();
+    });
+}
+
+applyCollapsedModules();
+
+// ==========================================
+// Tone Curve editor
+// ==========================================
+
+function invalidateCurveLut() {
+    curveLutDirty = true;
+    curveLutRevision += 1;
+}
+
+// The preview applies the curve through a 1024-entry RGBA table — red, green,
+// blue and the composite in the alpha channel — which is the table the CPU
+// renderer samples as well.
+function buildCurveLutPixels() {
+    const size = NexFilmToneCurve.LUT_SIZE;
+    const red = NexFilmToneCurve.buildLut(curvePoints.red);
+    const green = NexFilmToneCurve.buildLut(curvePoints.green);
+    const blue = NexFilmToneCurve.buildLut(curvePoints.blue);
+    const rgb = NexFilmToneCurve.buildLut(curvePoints.rgb);
+    const pixels = new Float32Array(size * 4);
+    for (let index = 0; index < size; index += 1) {
+        pixels[index * 4] = red[index];
+        pixels[index * 4 + 1] = green[index];
+        pixels[index * 4 + 2] = blue[index];
+        pixels[index * 4 + 3] = rgb[index];
+    }
+    return pixels;
+}
+
+function ensureCurveLutTexture() {
+    if (!gl) return;
+    if (NexFilmToneCurve.curvesAreIdentity(curvePoints)) {
+        hasCurveLut = false;
+        return;
+    }
+    // Unit 3 is the curve table's own unit: uploading here can never rebind the
+    // picture texture the base pass samples from unit 0.
+    gl.activeTexture(gl.TEXTURE3);
+    if (!curveLutTexture) {
+        curveLutTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, curveLutTexture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA16F,
+            NexFilmToneCurve.LUT_SIZE,
+            1,
+            0,
+            gl.RGBA,
+            gl.FLOAT,
+            buildCurveLutPixels()
+        );
+    } else if (curveLutDirty) {
+        gl.bindTexture(gl.TEXTURE_2D, curveLutTexture);
+        // Updating the contents keeps the allocation and the driver's pending
+        // draws intact; re-specifying the storage every frame is what made the
+        // preview flicker while the curve was being dragged.
+        gl.texSubImage2D(
+            gl.TEXTURE_2D,
+            0,
+            0,
+            0,
+            NexFilmToneCurve.LUT_SIZE,
+            1,
+            gl.RGBA,
+            gl.FLOAT,
+            buildCurveLutPixels()
+        );
+    } else {
+        gl.bindTexture(gl.TEXTURE_2D, curveLutTexture);
+    }
+    curveLutDirty = false;
+    hasCurveLut = true;
+}
+
+function activeCurvePoints() {
+    return curvePoints[curveChannel] || NexFilmToneCurve.identityPoints();
+}
+
+// The plot is inset from the canvas edge. Both endpoints sit on the plot's
+// corners, and a canvas that reaches into the element's rounded corner loses
+// those few pixels twice over: the dot is clipped and, before any of that, the
+// pointerdown that starts the drag is delivered to the element behind it.
+const CURVE_PLOT_PADDING = 9;
+
+function curveCanvasProjection() {
+    const displayWidth = Math.max(1, Math.round(toneCurveCanvas.clientWidth || 1));
+    const displayHeight = Math.max(1, Math.round(toneCurveCanvas.clientHeight || displayWidth));
+    const scale = Math.min(window.devicePixelRatio || 1, 2);
+    const pixelWidth = Math.max(1, Math.round(displayWidth * scale));
+    const pixelHeight = Math.max(1, Math.round(displayHeight * scale));
+    if (toneCurveCanvas.width !== pixelWidth) toneCurveCanvas.width = pixelWidth;
+    if (toneCurveCanvas.height !== pixelHeight) toneCurveCanvas.height = pixelHeight;
+    const padding = Math.round(CURVE_PLOT_PADDING * scale);
+    const size = Math.max(16, Math.min(pixelWidth, pixelHeight) - padding * 2);
+    return {
+        pixelWidth,
+        pixelHeight,
+        size,
+        originX: (pixelWidth - size) / 2,
+        originY: (pixelHeight - size) / 2,
+    };
+}
+
+function curveToPixel(projection, x, y) {
+    return [
+        projection.originX + x * projection.size,
+        projection.originY + (1 - y) * projection.size,
+    ];
+}
+
+function pixelToCurve(projection, clientX, clientY) {
+    const rect = toneCurveCanvas.getBoundingClientRect();
+    const scaleX = projection.pixelWidth / Math.max(1, rect.width);
+    const scaleY = projection.pixelHeight / Math.max(1, rect.height);
+    const x = ((clientX - rect.left) * scaleX - projection.originX) / projection.size;
+    const y = 1 - ((clientY - rect.top) * scaleY - projection.originY) / projection.size;
+    return [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))];
+}
+
+// The canvas paints its own grid, so it has to follow the theme like the rest
+// of the inspector instead of assuming the dark workspace.
+function curvePalette() {
+    const dark = document.body.dataset.theme !== 'light';
+    return dark
+        ? {
+            backdrop: 'rgba(0, 0, 0, 0.22)',
+            grid: 'rgba(255, 255, 255, 0.12)',
+            diagonal: 'rgba(255, 255, 255, 0.18)',
+            histogram: 'rgba(255, 255, 255, 0.14)',
+            channel: { rgb: '#e6e6e6', red: '#e0574f', green: '#4fbe7d', blue: '#5a8fe0' },
+            pointRing: 'rgba(0, 0, 0, 0.65)',
+        }
+        : {
+            backdrop: 'rgba(255, 255, 255, 0.45)',
+            grid: 'rgba(0, 0, 0, 0.10)',
+            diagonal: 'rgba(0, 0, 0, 0.18)',
+            histogram: 'rgba(0, 0, 0, 0.10)',
+            channel: { rgb: '#3b3b3b', red: '#b8443c', green: '#2f855a', blue: '#3767ab' },
+            pointRing: 'rgba(255, 255, 255, 0.75)',
+        };
+}
+
+function drawCurveHistogram(context, projection) {
+    if (!lastPixels || !lastPixels.length) return;
+    // The scope readback only changes between renders, so the bins are cached
+    // per channel and histogram revision: dragging a point redraws the curve,
+    // not the distribution.
+    const cacheKey = `${curveChannel}:${histogramVersion}`;
+    if (curveHistogramCache.key !== cacheKey) {
+        const bins = new Uint32Array(64);
+        for (let index = 0; index < lastPixels.length; index += 4) {
+            const red = lastPixels[index];
+            const green = lastPixels[index + 1];
+            const blue = lastPixels[index + 2];
+            let value;
+            if (curveChannel === 'red') value = red;
+            else if (curveChannel === 'green') value = green;
+            else if (curveChannel === 'blue') value = blue;
+            else value = 0.299 * red + 0.587 * green + 0.114 * blue;
+            bins[Math.min(63, Math.max(0, Math.round(value / 4)))] += 1;
+        }
+        curveHistogramCache = { key: cacheKey, bins };
+    }
+    const bins = curveHistogramCache.bins;
+    let peak = 0;
+    for (const count of bins) peak = Math.max(peak, count);
+    if (peak <= 0) return;
+    context.save();
+    context.beginPath();
+    context.moveTo(projection.originX, projection.originY + projection.size);
+    for (let index = 0; index < bins.length; index += 1) {
+        const x = projection.originX + (index / (bins.length - 1)) * projection.size;
+        const height = Math.pow(bins[index] / peak, 0.5) * projection.size * 0.92;
+        context.lineTo(x, projection.originY + projection.size - height);
+    }
+    context.lineTo(projection.originX + projection.size, projection.originY + projection.size);
+    context.closePath();
+    context.fillStyle = curvePalette().histogram;
+    context.fill();
+    context.restore();
+}
+
+function drawCurveLine(context, projection, points, color, lineWidth, dashed) {
+    const normalized = NexFilmToneCurve.normalizePoints(points);
+    const tangents = null;
+    context.save();
+    context.strokeStyle = color;
+    context.lineWidth = lineWidth;
+    if (dashed) context.setLineDash([4, 4]);
+    context.beginPath();
+    const steps = Math.max(32, Math.round(projection.size / 4));
+    for (let step = 0; step <= steps; step += 1) {
+        const x = step / steps;
+        const y = NexFilmToneCurve.evaluate(normalized, x, tangents);
+        const [pixelX, pixelY] = curveToPixel(projection, x, y);
+        if (step === 0) context.moveTo(pixelX, pixelY);
+        else context.lineTo(pixelX, pixelY);
+    }
+    context.stroke();
+    context.restore();
+}
+
+function drawToneCurve() {
+    if (!curveCtx || !toneCurveCanvas) return;
+    const projection = curveCanvasProjection();
+    const context = curveCtx;
+    const palette = curvePalette();
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, projection.pixelWidth, projection.pixelHeight);
+
+    context.save();
+    context.fillStyle = palette.backdrop;
+    context.fillRect(projection.originX, projection.originY, projection.size, projection.size);
+    drawCurveHistogram(context, projection);
+
+    context.strokeStyle = palette.grid;
+    context.lineWidth = 1;
+    for (let step = 1; step < 4; step += 1) {
+        const [lineX] = curveToPixel(projection, step / 4, 0);
+        const [, lineY] = curveToPixel(projection, 0, step / 4);
+        context.beginPath();
+        context.moveTo(lineX, projection.originY);
+        context.lineTo(lineX, projection.originY + projection.size);
+        context.stroke();
+        context.beginPath();
+        context.moveTo(projection.originX, lineY);
+        context.lineTo(projection.originX + projection.size, lineY);
+        context.stroke();
+    }
+    context.strokeStyle = palette.diagonal;
+    context.setLineDash([3, 3]);
+    context.beginPath();
+    const [startX, startY] = curveToPixel(projection, 0, 0);
+    const [endX, endY] = curveToPixel(projection, 1, 1);
+    context.moveTo(startX, startY);
+    context.lineTo(endX, endY);
+    context.stroke();
+    context.setLineDash([]);
+
+    // The other channels stay visible as thin guides, like the channel tabs in
+    // Lightroom imply: you always see the shape you built on the others.
+    for (const channel of NexFilmToneCurve.CHANNELS) {
+        if (channel === curveChannel) continue;
+        const points = curvePoints[channel];
+        if (NexFilmToneCurve.isIdentity(points)) continue;
+        drawCurveLine(context, projection, points, `${palette.channel[channel]}66`, 1.2, false);
+    }
+    drawCurveLine(
+        context,
+        projection,
+        activeCurvePoints(),
+        palette.channel[curveChannel],
+        2,
+        false
+    );
+
+    const points = NexFilmToneCurve.normalizePoints(activeCurvePoints());
+    context.fillStyle = palette.channel[curveChannel];
+    context.strokeStyle = palette.pointRing;
+    context.lineWidth = 1;
+    points.forEach((point, index) => {
+        const [pixelX, pixelY] = curveToPixel(projection, point[0], point[1]);
+        const highlighted = index === curveDragIndex || (curveHoverPoint === index);
+        context.beginPath();
+        context.arc(pixelX, pixelY, highlighted ? 6 : 4.5, 0, Math.PI * 2);
+        context.fill();
+        context.stroke();
+    });
+    context.restore();
+}
+
+function setCurveChannel(channel) {
+    if (!NexFilmToneCurve.CHANNELS.includes(channel)) return;
+    curveChannel = channel;
+    curveHoverPoint = null;
+    curveChannelButtons.forEach(button => {
+        const isActive = button.dataset.curveChannel === channel;
+        button.classList.toggle('is-active', isActive);
+        button.setAttribute('aria-pressed', isActive ? 'true' : 'false');
+    });
+    drawToneCurve();
+}
+
+// A curve edit invalidates the preview LUT, redraws the editor and persists the
+// new control points through the usual backend sync.
+function commitCurveEdit({ persist = true } = {}) {
+    invalidateCurveLut();
+    drawToneCurve();
+    requestRender();
+    if (!persist) return;
+    scheduleBackendSync('curve');
+    scheduleInstantThumbnailUpdate();
+}
+
+curveChannelButtons.forEach(button => {
+    button.addEventListener('click', () => setCurveChannel(button.dataset.curveChannel));
+});
+
+btnResetCurve?.addEventListener('click', () => {
+    if (!NexFilmToneCurve.isIdentity(activeCurvePoints())) pushUndoState();
+    curvePoints[curveChannel] = NexFilmToneCurve.identityPoints();
+    commitCurveEdit();
+});
+
+toneCurveCanvas?.addEventListener('pointerdown', (event) => {
+    if (!activeId) return;
+    const projection = curveCanvasProjection();
+    const [x, y] = pixelToCurve(projection, event.clientX, event.clientY);
+    const points = NexFilmToneCurve.normalizePoints(activeCurvePoints());
+    const hit = NexFilmToneCurve.findPointIndex(points, x, y, 0.05);
+    pushUndoState();
+    if (hit >= 0) {
+        curveDragIndex = hit;
+    } else {
+        const inserted = NexFilmToneCurve.insertPoint(points, x, y);
+        if (!inserted) return;
+        curvePoints[curveChannel] = inserted;
+        curveDragIndex = NexFilmToneCurve.findPointIndex(inserted, x, y, 0.05);
+    }
+    // A curve drag is a slider drag as far as the rest of the workspace is
+    // concerned: the scope readback and the filmstrip capture stay out of the
+    // way, so the preview keeps its frame rate and the histogram stops jumping.
+    sliderDragActive = true;
+    toneCurveCanvas.style.cursor = 'grabbing';
+    try {
+        toneCurveCanvas.setPointerCapture(event.pointerId);
+    } catch (error) {
+        // A synthetic pointer has nothing to capture. The drag still works
+        // through the canvas listeners, and the window release handlers below
+        // end it whether or not capture was granted.
+        console.debug('Curve drag capture skipped', error);
+    }
+    event.preventDefault();
+    commitCurveEdit({ persist: false });
+});
+
+toneCurveCanvas?.addEventListener('pointermove', (event) => {
+    if (!activeId) return;
+    const projection = curveCanvasProjection();
+    const [x, y] = pixelToCurve(projection, event.clientX, event.clientY);
+    if (curveDragIndex === null) {
+        const hover = NexFilmToneCurve.findPointIndex(activeCurvePoints(), x, y, 0.05);
+        if (hover !== curveHoverPoint) {
+            curveHoverPoint = hover;
+            const hovered = NexFilmToneCurve.normalizePoints(activeCurvePoints());
+            toneCurveCanvas.style.cursor = hover < 0
+                ? 'crosshair'
+                : (hover === 0 || hover === hovered.length - 1 ? 'ns-resize' : 'grab');
+            drawToneCurve();
+        }
+        return;
+    }
+    const points = NexFilmToneCurve.normalizePoints(activeCurvePoints());
+    const isEndpoint = curveDragIndex === 0 || curveDragIndex === points.length - 1;
+    if (isEndpoint) {
+        // The endpoints keep their input value, the way Lightroom's point curve
+        // does. Pulling one sideways instead grows a new control point that
+        // follows the pointer, so a horizontal drag is never a dead end.
+        const endpointX = curveDragIndex === 0 ? 0 : 1;
+        if (Math.abs(x - endpointX) > 0.06) {
+            const inserted = NexFilmToneCurve.insertPoint(points, x, y);
+            if (inserted) {
+                curvePoints[curveChannel] = inserted;
+                curveDragIndex = NexFilmToneCurve.findPointIndex(inserted, x, y, 0.08);
+                commitCurveEdit({ persist: false });
+                return;
+            }
+        }
+    }
+    curvePoints[curveChannel] = NexFilmToneCurve.movePoint(
+        activeCurvePoints(),
+        curveDragIndex,
+        x,
+        y
+    );
+    commitCurveEdit({ persist: false });
+}, { passive: true });
+
+function finishCurveDrag() {
+    if (curveDragIndex === null) return;
+    curveDragIndex = null;
+    sliderDragActive = false;
+    histogramReadbackReady = false;
+    toneCurveCanvas.style.cursor = 'crosshair';
+    requestRender();
+    commitCurveEdit();
+}
+
+toneCurveCanvas?.addEventListener('pointerup', finishCurveDrag);
+toneCurveCanvas?.addEventListener('pointercancel', finishCurveDrag);
+window.addEventListener('pointerup', finishCurveDrag);
+window.addEventListener('pointercancel', finishCurveDrag);
+toneCurveCanvas?.addEventListener('pointerleave', () => {
+    if (curveHoverPoint === null) return;
+    curveHoverPoint = null;
+    drawToneCurve();
+});
+
+toneCurveCanvas?.addEventListener('contextmenu', (event) => {
+    if (!activeId) return;
+    const projection = curveCanvasProjection();
+    const [x, y] = pixelToCurve(projection, event.clientX, event.clientY);
+    const points = NexFilmToneCurve.normalizePoints(activeCurvePoints());
+    const hit = NexFilmToneCurve.findPointIndex(points, x, y, 0.05);
+    if (hit <= 0 || hit >= points.length - 1) return;
+    event.preventDefault();
+    pushUndoState();
+    curvePoints[curveChannel] = NexFilmToneCurve.removePoint(points, hit);
+    curveHoverPoint = null;
+    commitCurveEdit();
+});
+
+if (typeof ResizeObserver !== 'undefined' && toneCurveCanvas) {
+    const curveResizeObserver = new ResizeObserver(() => drawToneCurve());
+    curveResizeObserver.observe(toneCurveCanvas);
+}
 
 function enableUI() {
     for (const key in sliders) {
@@ -7704,6 +9124,18 @@ btnResetColor.addEventListener('click', async () => {
     sliders.highlights.el.value = 0;
     sliders.shadows.el.value = 0;
     sliders.lutOpacity.el.value = 1;
+    // Reset clears the whole colour grade, so the curve and the Detail module
+    // go back to their neutral state with it.
+    curvePoints = NexFilmToneCurve.defaultCurveState();
+    invalidateCurveLut();
+    drawToneCurve();
+    sliders.sharpeningAmount.el.value = 0;
+    sliders.sharpeningRadius.el.value = 1;
+    sliders.sharpeningDetail.el.value = 25;
+    sliders.sharpeningMasking.el.value = 0;
+    sliders.texture.el.value = 0;
+    sliders.clarity.el.value = 0;
+    sliders.dehaze.el.value = 0;
     
     for (const key in sliders) {
         const s = sliders[key];
@@ -8170,7 +9602,7 @@ copySettingsPreset.addEventListener('change', () => {
         tone: [
             'filmBase', 'filmMode', 'densityLimits', 'printerRed', 'printerGreen', 'printerBlue',
             'temperature', 'tint', 'exposure', 'gamma', 'highlights', 'shadows',
-            'contrast', 'saturation', 'lut', 'lutOpacity', 'workingSpace'
+            'contrast', 'saturation', 'curve', 'lut', 'lutOpacity', 'workingSpace'
         ],
         geometry: ['crop', 'rotateFlip', 'perspective']
     };
@@ -9298,6 +10730,8 @@ function applyTheme(theme) {
     const label = document.getElementById('theme-value') || document.getElementById('menu-theme-toggle')?.querySelector('span');
     if (label) label.textContent = i18nText(isDarkTheme ? 'theme.dark' : 'theme.light');
     localStorage.setItem('nexfilm-theme', isDarkTheme ? 'dark' : 'light');
+    // The tone curve paints its own grid and has to follow the theme.
+    drawToneCurve();
 }
 
 applyTheme(isDarkTheme ? 'dark' : 'light');

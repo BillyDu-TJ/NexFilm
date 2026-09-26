@@ -483,7 +483,9 @@
                     <button type="button" class="module-nav-btn" data-target="inspector-actions" aria-label="Actions" data-i18n-aria-label="develop.actions" title="Actions" data-i18n-title="develop.actions"><span aria-hidden="true"></span></button>
                     <button type="button" class="module-nav-btn" data-target="inspector-density" aria-label="Density Limits" data-i18n-aria-label="develop.densityLimits" title="Density Limits" data-i18n-title="develop.densityLimits"><span aria-hidden="true"></span></button>
                     <button type="button" class="module-nav-btn" data-target="inspector-printer" aria-label="Printer Lights" data-i18n-aria-label="develop.printerLights" title="Printer Lights" data-i18n-title="develop.printerLights"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-curve" aria-label="Tone Curve" data-i18n-aria-label="develop.toneCurve" title="Tone Curve" data-i18n-title="develop.toneCurve"><span aria-hidden="true"></span></button>
                     <button type="button" class="module-nav-btn" data-target="inspector-aesthetics" aria-label="Aesthetics" data-i18n-aria-label="develop.aesthetics" title="Aesthetics" data-i18n-title="develop.aesthetics"><span aria-hidden="true"></span></button>
+                    <button type="button" class="module-nav-btn" data-target="inspector-detail" aria-label="Detail" data-i18n-aria-label="develop.detail" title="Detail" data-i18n-title="develop.detail"><span aria-hidden="true"></span></button>
                     <button type="button" class="module-nav-btn" data-target="inspector-sprocket" aria-label="Sprocket Settings" data-i18n-aria-label="develop.sprocketSettings" title="Sprocket Settings" data-i18n-title="develop.sprocketSettings"><span aria-hidden="true"></span></button>
                     <button type="button" class="module-nav-btn" data-target="inspector-input" aria-label="Input Color Science" data-i18n-aria-label="develop.inputColorScience" title="Input Color Science" data-i18n-title="develop.inputColorScience"><span aria-hidden="true"></span></button>
                     <button type="button" class="module-nav-btn" data-target="inspector-print" aria-label="Print Film Emulation" data-i18n-aria-label="develop.printFilmEmulation" title="Print Film Emulation" data-i18n-title="develop.printFilmEmulation"><span aria-hidden="true"></span></button>
@@ -651,11 +653,17 @@
                     </div>
 
                     <!-- Density Targets -->
-                    <div id="inspector-density" class="control-group border-t border-[#28282c] pt-6">
-                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
-                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
-                            Density Limits
+                    <div id="inspector-density" class="control-group border-t border-[#28282c] pt-6" data-collapsible-module="density">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center justify-between gap-2">
+                            <span class="flex items-center gap-2">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
+                                Density Limits
+                            </span>
+                            <button type="button" class="control-group-toggle" data-collapse-toggle aria-expanded="true" aria-controls="inspector-density-body" aria-label="Collapse or expand this section" data-i18n-aria-label="develop.collapseSection" title="Collapse or expand this section" data-i18n-title="develop.collapseSection">
+                                <svg class="control-group-toggle-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9l6 6 6-6"></path></svg>
+                            </button>
                         </h3>
+                        <div id="inspector-density-body" class="control-group-body">
                         <div class="flex flex-col gap-5">
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
@@ -691,19 +699,26 @@
                                 </div>
                             </div>
                         </div>
+                        </div>
                     </div>
 
                     <!-- Printer Lights -->
-                    <div id="inspector-printer" class="control-group border-t border-[#28282c] pt-6">
+                    <div id="inspector-printer" class="control-group border-t border-[#28282c] pt-6" data-collapsible-module="printer">
                         <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center justify-between gap-2">
                             <span class="flex items-center gap-2">
                                 <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01"></path></svg>
                                 Printer Lights
                             </span>
-                            <button id="btn-wb-eyedropper" class="text-zinc-400 hover:text-white p-1" title="White Balance Eyedropper" data-i18n-title="develop.whiteBalancePicker" disabled>
-                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
-                            </button>
+                            <span class="control-group-actions">
+                                <button id="btn-wb-eyedropper" class="text-zinc-400 hover:text-white p-1" title="White Balance Eyedropper" data-i18n-title="develop.whiteBalancePicker" disabled>
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z"></path></svg>
+                                </button>
+                                <button type="button" class="control-group-toggle" data-collapse-toggle aria-expanded="true" aria-controls="inspector-printer-body" aria-label="Collapse or expand this section" data-i18n-aria-label="develop.collapseSection" title="Collapse or expand this section" data-i18n-title="develop.collapseSection">
+                                    <svg class="control-group-toggle-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9l6 6 6-6"></path></svg>
+                                </button>
+                            </span>
                         </h3>
+                        <div id="inspector-printer-body" class="control-group-body">
                         <div class="flex flex-col gap-5">
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
@@ -727,14 +742,51 @@
                                 <input type="range" id="expb" class="w-full custom-range blue-track" min="-1.00" max="1.00" step="0.001" value="0.00" disabled>
                             </div>
                         </div>
+                        </div>
+                    </div>
+
+                    <!-- Tone Curve -->
+                    <!-- Tone Curve -->
+                    <div id="inspector-curve" class="control-group border-t border-[#28282c] pt-6" data-collapsible-module="curve">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center justify-between gap-2">
+                            <span class="flex items-center gap-2">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 19c4 0 3.2-14 8-14s4 14 8 14"></path></svg>
+                                <span data-i18n="develop.toneCurve">Tone Curve</span>
+                            </span>
+                            <button type="button" class="control-group-toggle" data-collapse-toggle aria-expanded="true" aria-controls="inspector-curve-body" aria-label="Collapse or expand this section" data-i18n-aria-label="develop.collapseSection" title="Collapse or expand this section" data-i18n-title="develop.collapseSection">
+                                <svg class="control-group-toggle-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9l6 6 6-6"></path></svg>
+                            </button>
+                        </h3>
+                        <div id="inspector-curve-body" class="control-group-body">
+                            <div class="tone-curve-panel">
+                                <div id="tone-curve-channels" class="tone-curve-channels" role="group" aria-label="Curve channel" data-i18n-aria-label="curve.channels">
+                                    <button type="button" class="tone-curve-channel is-active" data-curve-channel="rgb" aria-pressed="true">RGB</button>
+                                    <button type="button" class="tone-curve-channel tone-curve-channel-red" data-curve-channel="red" aria-pressed="false">R</button>
+                                    <button type="button" class="tone-curve-channel tone-curve-channel-green" data-curve-channel="green" aria-pressed="false">G</button>
+                                    <button type="button" class="tone-curve-channel tone-curve-channel-blue" data-curve-channel="blue" aria-pressed="false">B</button>
+                                </div>
+                                <div class="tone-curve-frame">
+                                    <canvas id="tone-curve-canvas" class="tone-curve-canvas" role="img" aria-label="Tone curve editor" data-i18n-aria-label="curve.editor"></canvas>
+                                </div>
+                                <div class="tone-curve-footer">
+                                    <button id="btn-reset-curve" type="button" class="tone-curve-reset" data-i18n="curve.resetChannel">Reset Channel</button>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Aesthetics -->
-                    <div id="inspector-aesthetics" class="control-group border-t border-[#28282c] pt-6">
+                    <div id="inspector-aesthetics" class="control-group border-t border-[#28282c] pt-6" data-collapsible-module="aesthetics">
                         <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
-                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
-                            Aesthetics
+                            <span class="flex items-center gap-2">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                                Aesthetics
+                            </span>
+                            <button type="button" class="control-group-toggle" data-collapse-toggle aria-expanded="true" aria-controls="inspector-aesthetics-body" aria-label="Collapse or expand this section" data-i18n-aria-label="develop.collapseSection" title="Collapse or expand this section" data-i18n-title="develop.collapseSection">
+                                <svg class="control-group-toggle-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9l6 6 6-6"></path></svg>
+                            </button>
                         </h3>
+                        <div id="inspector-aesthetics-body" class="control-group-body">
                         <div class="flex flex-col gap-5">
                             <div class="slider-container">
                                 <div class="flex justify-between items-center mb-2">
@@ -796,13 +848,94 @@
                                 </div>
                             </div>
                         </div>
+                        </div>
+                    </div>
+
+                    <!-- Detail -->
+                    <div id="inspector-detail" class="control-group border-t border-[#28282c] pt-6" data-collapsible-module="detail">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center justify-between gap-2">
+                            <span class="flex items-center gap-2">
+                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v18M3 12h18M6 6l12 12M18 6L6 18"></path></svg>
+                                <span data-i18n="develop.detail">Detail</span>
+                            </span>
+                            <button type="button" class="control-group-toggle" data-collapse-toggle aria-expanded="true" aria-controls="inspector-detail-body" aria-label="Collapse or expand this section" data-i18n-aria-label="develop.collapseSection" title="Collapse or expand this section" data-i18n-title="develop.collapseSection">
+                                <svg class="control-group-toggle-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9l6 6 6-6"></path></svg>
+                            </button>
+                        </h3>
+                        <div id="inspector-detail-body" class="control-group-body">
+                            <div class="flex flex-col gap-6">
+                                <div class="detail-group">
+                                    <div class="detail-group-title" data-i18n="detail.sharpening">Sharpening</div>
+                                    <div class="flex flex-col gap-5">
+                                        <div class="slider-container">
+                                            <div class="flex justify-between items-center mb-2">
+                                                <label class="text-[11px] font-medium text-zinc-300 tracking-wide" data-i18n="detail.amount">Amount</label>
+                                                <span id="val-sharpening-amount" class="text-[10px] font-mono text-zinc-400">0</span>
+                                            </div>
+                                            <input type="range" id="sharpening-amount" class="w-full custom-range silver-track" min="0" max="150" step="1" value="0" disabled>
+                                        </div>
+                                        <div class="slider-container">
+                                            <div class="flex justify-between items-center mb-2">
+                                                <label class="text-[11px] font-medium text-zinc-300 tracking-wide" data-i18n="detail.radius">Radius</label>
+                                                <span id="val-sharpening-radius" class="text-[10px] font-mono text-zinc-400">1.00</span>
+                                            </div>
+                                            <input type="range" id="sharpening-radius" class="w-full custom-range silver-track" min="0.5" max="3" step="0.1" value="1" disabled>
+                                        </div>
+                                        <div class="slider-container">
+                                            <div class="flex justify-between items-center mb-2">
+                                                <label class="text-[11px] font-medium text-zinc-300 tracking-wide" data-i18n="detail.detail">Detail</label>
+                                                <span id="val-sharpening-detail" class="text-[10px] font-mono text-zinc-400">25</span>
+                                            </div>
+                                            <input type="range" id="sharpening-detail" class="w-full custom-range silver-track" min="0" max="100" step="1" value="25" disabled>
+                                        </div>
+                                        <div class="slider-container">
+                                            <div class="flex justify-between items-center mb-2">
+                                                <label class="text-[11px] font-medium text-zinc-300 tracking-wide" data-i18n="detail.masking">Masking</label>
+                                                <span id="val-sharpening-masking" class="text-[10px] font-mono text-zinc-400">0</span>
+                                            </div>
+                                            <input type="range" id="sharpening-masking" class="w-full custom-range silver-track" min="0" max="100" step="1" value="0" disabled>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="detail-group">
+                                    <div class="detail-group-title" data-i18n="detail.presence">Presence</div>
+                                    <div class="flex flex-col gap-5">
+                                        <div class="slider-container">
+                                            <div class="flex justify-between items-center mb-2">
+                                                <label class="text-[11px] font-medium text-zinc-300 tracking-wide" data-i18n="detail.texture">Texture</label>
+                                                <span id="val-texture" class="text-[10px] font-mono text-zinc-400">0</span>
+                                            </div>
+                                            <input type="range" id="texture" class="w-full custom-range silver-track" min="-100" max="100" step="1" value="0" disabled>
+                                        </div>
+                                        <div class="slider-container">
+                                            <div class="flex justify-between items-center mb-2">
+                                                <label class="text-[11px] font-medium text-zinc-300 tracking-wide" data-i18n="detail.clarity">Clarity</label>
+                                                <span id="val-clarity" class="text-[10px] font-mono text-zinc-400">0</span>
+                                            </div>
+                                            <input type="range" id="clarity" class="w-full custom-range silver-track" min="-100" max="100" step="1" value="0" disabled>
+                                        </div>
+                                        <div class="slider-container">
+                                            <div class="flex justify-between items-center mb-2">
+                                                <label class="text-[11px] font-medium text-zinc-300 tracking-wide" data-i18n="detail.dehaze">Dehaze</label>
+                                                <span id="val-dehaze" class="text-[10px] font-mono text-zinc-400">0</span>
+                                            </div>
+                                            <input type="range" id="dehaze" class="w-full custom-range silver-track" min="-100" max="100" step="1" value="0" disabled>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Sprocket Settings -->
-                    <div id="inspector-sprocket" class="control-group border-t border-[#28282c] pt-6">
-                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2">
-                            Sprocket Settings
+                    <div id="inspector-sprocket" class="control-group border-t border-[#28282c] pt-6" data-collapsible-module="sprocket">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center justify-between gap-2">
+                            <span class="flex items-center gap-2" data-i18n="develop.sprocketSettings">Sprocket Settings</span>
+                            <button type="button" class="control-group-toggle" data-collapse-toggle aria-expanded="true" aria-controls="inspector-sprocket-body" aria-label="Collapse or expand this section" data-i18n-aria-label="develop.collapseSection" title="Collapse or expand this section" data-i18n-title="develop.collapseSection">
+                                <svg class="control-group-toggle-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9l6 6 6-6"></path></svg>
+                            </button>
                         </h3>
+                        <div id="inspector-sprocket-body" class="control-group-body">
                         <div class="flex flex-col gap-5">
                             <button id="btn-sprocket-picker" title="Sample a sprocket hole to remove perforations from the positive border" data-i18n-title="develop.sampleSprocket" class="w-full px-3 py-2 text-[10px] font-bold tracking-widest uppercase bg-zinc-800 hover:bg-zinc-700 text-zinc-100 rounded transition-colors shadow-sm border border-zinc-700/50 disabled:opacity-50" disabled>Sample Sprocket Hole</button>
                             <div>
@@ -826,13 +959,18 @@
                                 </div>
                             </div>
                         </div>
+                        </div>
                     </div>
 
                     <!-- Input Color Science -->
-                    <div id="inspector-input" class="control-group border-t border-[#28282c] pt-6 pb-6">
-                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2 cursor-pointer">
-                            Input Color Science
+                    <div id="inspector-input" class="control-group border-t border-[#28282c] pt-6 pb-6" data-collapsible-module="input">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center justify-between gap-2">
+                            <span class="flex items-center gap-2" data-i18n="develop.inputColorScience">Input Color Science</span>
+                            <button type="button" class="control-group-toggle" data-collapse-toggle aria-expanded="true" aria-controls="inspector-input-body" aria-label="Collapse or expand this section" data-i18n-aria-label="develop.collapseSection" title="Collapse or expand this section" data-i18n-title="develop.collapseSection">
+                                <svg class="control-group-toggle-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9l6 6 6-6"></path></svg>
+                            </button>
                         </h3>
+                        <div id="inspector-input-body" class="control-group-body">
                         <div class="flex flex-col gap-5">
                             <!-- Density Capture -->
                             <div id="inspector-density-capture" class="develop-calibration-profile">
@@ -862,13 +1000,18 @@
                                 </select>
                             </div>
                         </div>
+                        </div>
                     </div>
                     
                     <!-- Print Film Emulation -->
-                    <div id="inspector-print" class="control-group border-t border-[#28282c] pt-6 pb-6">
-                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center gap-2 cursor-pointer">
-                            Print Film Emulation
+                    <div id="inspector-print" class="control-group border-t border-[#28282c] pt-6 pb-6" data-collapsible-module="print">
+                        <h3 class="text-[10px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-5 flex items-center justify-between gap-2">
+                            <span class="flex items-center gap-2" data-i18n="develop.printFilmEmulation">Print Film Emulation</span>
+                            <button type="button" class="control-group-toggle" data-collapse-toggle aria-expanded="true" aria-controls="inspector-print-body" aria-label="Collapse or expand this section" data-i18n-aria-label="develop.collapseSection" title="Collapse or expand this section" data-i18n-title="develop.collapseSection">
+                                <svg class="control-group-toggle-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 9l6 6 6-6"></path></svg>
+                            </button>
                         </h3>
+                        <div id="inspector-print-body" class="control-group-body">
                         <div class="flex flex-col gap-5">
                             <div class="flex flex-col gap-2">
                                 <select id="select-builtin-lut" class="bg-[#1C1C1E] border border-[#28282c] text-zinc-300 text-[12px] rounded px-3 py-1.5 focus:outline-none focus:border-zinc-500">
@@ -883,6 +1026,7 @@
                                 </div>
                                 <input type="range" id="lut-opacity" class="w-full custom-range silver-track" min="0.00" max="1.00" step="0.01" value="1.00" disabled>
                             </div>
+                        </div>
                         </div>
                     </div>
                 </div>
@@ -1001,6 +1145,17 @@
                         <label><input type="checkbox" value="highlights" class="copy-setting-option"><span data-i18n="fields.highlights">Highlights</span></label>
                         <label><input type="checkbox" value="shadows" class="copy-setting-option"><span data-i18n="fields.shadows">Shadows</span></label>
                         <label><input type="checkbox" value="saturation" class="copy-setting-option"><span data-i18n="fields.saturation">Saturation</span></label>
+                    </fieldset>
+                    <fieldset class="copy-settings-group">
+                        <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="develop.toneCurve">Tone Curve</span></label></legend>
+                        <label><input type="checkbox" value="curve" class="copy-setting-option"><span data-i18n="copy.curveAllChannels">Tone Curve (all four channels)</span></label>
+                    </fieldset>
+                    <fieldset class="copy-settings-group">
+                        <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="develop.detail">Detail</span></label></legend>
+                        <label><input type="checkbox" value="sharpen" class="copy-setting-option"><span data-i18n="detail.sharpening">Sharpening</span></label>
+                        <label><input type="checkbox" value="texture" class="copy-setting-option"><span data-i18n="detail.texture">Texture</span></label>
+                        <label><input type="checkbox" value="clarity" class="copy-setting-option"><span data-i18n="detail.clarity">Clarity</span></label>
+                        <label><input type="checkbox" value="dehaze" class="copy-setting-option"><span data-i18n="detail.dehaze">Dehaze</span></label>
                     </fieldset>
                     <fieldset class="copy-settings-group">
                         <legend><label><input type="checkbox" class="copy-settings-group-toggle"><span data-i18n="copy.transform">Transform</span></label></legend>
@@ -1568,6 +1723,7 @@
     <script src="color-science.js"></script>
     <script src="selection.js"></script>
     <script src="settings-copy.js"></script>
+    <script src="tone-curve.js"></script>
     <script src="export-settings.js"></script>
     <script src="i18n.js"></script>
     <script src="documentation-data.js"></script>

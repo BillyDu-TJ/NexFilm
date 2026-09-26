@@ -19,6 +19,23 @@ function extractTemplate(name) {
 
 const vertex = extractTemplate('vsSource');
 const fragment = extractTemplate('fsSource');
+// The Develop Detail stage is a second pass chain of its own; a shader that does
+// not compile there would leave the preview without sharpening or clarity.
+const detailVertex = extractTemplate('detailVertexSource');
+const detailFragments = [
+    extractTemplate('blurFragmentSource'),
+    extractTemplate('downscaleFragmentSource'),
+    extractTemplate('combineFragmentSource'),
+];
+const programs = [
+    { name: 'develop', vertex, fragments: [fragment] },
+    { name: 'detail', vertex: detailVertex, fragments: detailFragments },
+];
+for (const program of programs) {
+    if (!program.vertex || program.fragments.some(source => !source)) {
+        throw new Error(`Missing shader sources for the ${program.name} program`);
+    }
+}
 const chromeCandidates = [
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -29,7 +46,7 @@ if (!browser) throw new Error('Chrome or Edge was not found');
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexfilm-shader-'));
 const htmlPath = path.join(tempDir, 'verify.html');
-const scriptData = JSON.stringify({ vertex, fragment }).replaceAll('<', '\\u003c');
+const scriptData = JSON.stringify(programs).replaceAll('<', '\\u003c');
 const html = `<!doctype html><meta charset="utf-8"><canvas id="c" width="8" height="8"></canvas>
 <pre id="result">pending</pre><script>
 const sources = ${scriptData};
@@ -45,19 +62,25 @@ if (!gl) {
         gl.compileShader(shader);
         return { shader, ok: gl.getShaderParameter(shader, gl.COMPILE_STATUS), log: gl.getShaderInfoLog(shader) || '' };
     }
-    const vs = compile(gl.VERTEX_SHADER, sources.vertex);
-    const fs = compile(gl.FRAGMENT_SHADER, sources.fragment);
-    if (!vs.ok) {
-        finish({ ok: false, stage: 'vertex', log: vs.log });
-    } else if (!fs.ok) {
-        finish({ ok: false, stage: 'fragment', log: fs.log });
-    } else {
-        const program = gl.createProgram();
-        gl.attachShader(program, vs.shader);
-        gl.attachShader(program, fs.shader);
-        gl.linkProgram(program);
-        finish({ ok: gl.getProgramParameter(program, gl.LINK_STATUS), stage: 'link', log: gl.getProgramInfoLog(program) || '' });
-    }
+    const result = (function validate() {
+        for (const program of sources) {
+            const vs = compile(gl.VERTEX_SHADER, program.vertex);
+            if (!vs.ok) return { ok: false, stage: program.name + ' vertex', log: vs.log };
+            for (const fragment of program.fragments) {
+                const fs = compile(gl.FRAGMENT_SHADER, fragment);
+                if (!fs.ok) return { ok: false, stage: program.name + ' fragment', log: fs.log };
+                const linked = gl.createProgram();
+                gl.attachShader(linked, vs.shader);
+                gl.attachShader(linked, fs.shader);
+                gl.linkProgram(linked);
+                if (!gl.getProgramParameter(linked, gl.LINK_STATUS)) {
+                    return { ok: false, stage: program.name + ' link', log: gl.getProgramInfoLog(linked) || '' };
+                }
+            }
+        }
+        return { ok: true, stage: 'all', log: '' };
+    })();
+    finish(result);
 }
 </script>`;
 
@@ -82,7 +105,8 @@ try {
     if (!result.ok) {
         throw new Error(`${result.stage} shader validation failed: ${result.log}`);
     }
-    console.log('WebGL2 shaders compiled and linked successfully.');
+    const shaderCount = programs.reduce((total, program) => total + program.fragments.length, 0);
+    console.log(`WebGL2 shaders compiled and linked successfully (${shaderCount} programs).`);
 } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
 }

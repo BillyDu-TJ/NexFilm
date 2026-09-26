@@ -203,7 +203,9 @@ assert.match(mainSource, /d_min_offset: currentDMinOffset/);
 // raw offset cannot tint the frame green.
 assert.match(mainSource, /u_dmin_trim/);
 assert.match(mainSource, /endpoint_span \/ endpoint_span_luma/);
-assert.match(mainSource, /gl\.uniform1f\(u_dmax_trim_loc, currentDMaxOffset\)/);
+// The upload goes through the keyed helper the Detail chain reads, so the
+// uniform call itself is either the plain one or `baseUniform1f`.
+assert.match(mainSource, /(?:gl\.uniform1f|baseUniform1f)\(u_dmax_trim_loc, currentDMaxOffset\)/);
 assert.match(commandSource, /fn trim_density_endpoints|trim_density_endpoints\(/);
 assert.doesNotMatch(
     commandSource,

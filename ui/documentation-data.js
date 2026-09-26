@@ -77,7 +77,7 @@
     <li><strong>进入工作台。</strong>在<strong>图库</strong>中双击任意一张缩略图，或点击顶部的<strong>工作台</strong>标签。</li>
     <li><strong>确认胶片范围。</strong>点击工具栏的<strong>设置胶片范围</strong>，再点击<strong>自动识别</strong>。检查框线是否紧贴画面边缘：尺孔和胶片边缘外露的白色灯板必须排除在外。必要时拖动四角或边缘手柄修正，然后点击<strong>保存范围</strong>。</li>
     <li><strong>反相。</strong>点击<strong>自动反相</strong>。软件会测量这一帧的片基并生成正片。同卷画面位置一致时，确认第一张后可以用<strong>批量应用</strong>把胶片范围和片基标记下发到其余画面。</li>
-    <li><strong>微调。</strong>在右侧检查器中调整密度范围、印片灯光、美学等参数。所有调整都是非破坏性的，可以随时用 <kbd>Ctrl</kbd>+<kbd>Z</kbd>（macOS 为 <kbd>⌘</kbd>+<kbd>Z</kbd>）撤销。</li>
+    <li><strong>微调。</strong>在右侧检查器中调整密度范围、印片光、曲线、观感调整、细节等参数。所有调整都是非破坏性的，可以随时用 <kbd>Ctrl</kbd>+<kbd>Z</kbd>（macOS 为 <kbd>⌘</kbd>+<kbd>Z</kbd>）撤销。</li>
     <li><strong>导出。</strong>点击右上角的<strong>导出</strong>输出选中画面，或点击<strong>导出胶卷</strong>输出整卷。在对话框中确认格式、尺寸和目标文件夹后开始导出。</li>
 </ol>
 <div class="doc-callout">
@@ -152,7 +152,7 @@
                         id: 'inspector',
                         heading: '检查器',
                         content: `
-<p>工作台右侧的检查器按功能分组排列：示波器、反相与重置、密度范围、印片灯光、观感调整、齿孔设置、输入色彩科学、印片胶片模拟。检查器左缘的模块导航条每个点对应一组，点击即可跳到该组，滚轮在检查器空白处滚动会翻动分组。校正配置与扫描仪输入两个 Profile 下拉框位于<strong>输入色彩科学</strong>分组内，不再单独占一组。</p>
+<p>工作台右侧的检查器按功能分组排列：示波器、反相与重置、密度范围、印片光、曲线、观感调整、细节、齿孔设置、输入色彩科学、印片胶片模拟。检查器左缘的模块导航条每个点对应一组，点击即可跳到该组，滚轮在检查器空白处滚动会翻动分组。校正配置与扫描仪输入两个 Profile 下拉框位于<strong>输入色彩科学</strong>分组内，不再单独占一组。</p>
 <p>两组操作细节值得记住：</p>
 <ul>
     <li>滑块需要先点击一次，之后才能用鼠标滚轮微调。这样可以避免误触滚轮改掉参数。</li>
@@ -349,14 +349,49 @@
         <tr><td><strong>示波器</strong></td><td>直方图和波形图。两者都可以切换到显示通道或亮度，用于判断影调分布和色彩是否溢出。</td></tr>
         <tr><td><strong>密度范围</strong></td><td>Master D-Min 与 Master D-Max 两个端点，以及三个通道各自的微调。下面的读数显示本帧实际测得的密度端点。</td></tr>
         <tr><td><strong>印片灯光</strong></td><td>曝光、红青、绿品红、蓝黄四组控制。右上角的吸管是<strong>白平衡吸管</strong>，点击画面中的中性灰区域即可校正整体偏色，它调整的是通道曝光偏移，不是片基采样。</td></tr>
-        <tr><td><strong>美学</strong></td><td>对比度、高光、阴影、饱和度、色温和色调等观感参数。这些参数作用在反相之后，不会改变物理基准。</td></tr>
+        <tr><td><strong>曲线</strong></td><td>四条控制点曲线：RGB 主曲线加红、绿、蓝三条分通道。拖动控制点即可调整，单击空白处添加，右键删除，端点可以上下移动（提起黑场或压低白场），<strong>重置该通道</strong>恢复当前通道。曲线作用在印片光之后、观感调整之前，背景是本帧的直方图。</td></tr>
+        <tr><td><strong>观感调整</strong></td><td>曝光、Gamma、对比度、高光、阴影、饱和度、色温和色调等观感参数。这些参数作用在反相之后，不会改变物理基准。</td></tr>
+        <tr><td><strong>细节</strong></td><td><strong>锐化</strong>的数量、半径、细节与蒙版，以及<strong>偏好</strong>组的纹理、清晰度和去朦胧。数量为 0 时整个分组不参与计算。</td></tr>
         <tr><td><strong>齿孔设置</strong></td><td><strong>采样齿孔</strong>用于在正片边框上去除齿孔痕迹，另有容差与羽化两个参数控制识别范围与过渡。</td></tr>
         <tr><td><strong>输入色彩科学</strong></td><td>显示当前画面的采集色彩空间，并承载校正配置与扫描仪输入两个 Profile 下拉框。解码阶段确定后一般不需要改动。</td></tr>
         <tr><td><strong>印片胶片模拟</strong></td><td>选择内置的印片胶片与相纸 LUT，或载入自定义 <code>.cube</code> 文件，并用不透明度控制强度。选择"无内置 LUT"表示不做模拟。</td></tr>
     </tbody>
 </table>
+<p>从<strong>密度范围</strong>开始，每个分组的标题右侧都有一个三角：点一下收起该分组的参数，标题保留，再点一下重新展开。收起状态是全局的，重启后仍会保留。左侧模块导航栏点击只负责跳转到对应分组，不会展开被收起的分组。</p>
 <p><strong>输入色彩科学</strong>分组内还有两个下拉框：<strong>Calibration Config Profile</strong> 按胶卷绑定硬件校正配置，<strong>Scanner Input Profile</strong> 为扫描仪指定输入配置。两者都默认使用自动判断，只有在校正配置已经建立时才需要手动选择。</p>
 <p>输出的色彩空间不在检查器中设置，而是在导出对话框里选择。</p>
+`
+                    },
+                    {
+                        id: 'curve-and-detail',
+                        heading: '曲线与细节',
+                        content: `
+<p>这两个分组都作用在反相之后的成片上，不改变密度基准。位置也说明了作用顺序：<strong>曲线</strong>在印片光之后、观感调整之前；<strong>细节</strong>在观感调整之后。</p>
+<p><strong>曲线</strong>提供四条控制点曲线。红、绿、蓝三条分通道先作用，RGB 主曲线再读取它们的结果，与常见修图软件的色调曲线一致。插值使用单调三次曲线：无论控制点怎样拖动，曲线都不会在两点之间反向或越出 0–1 范围。每条曲线最多 16 个控制点。</p>
+<ul>
+    <li>拖动控制点即可调整；单击空白处添加控制点，右键删除。</li>
+    <li>两端的控制点输入值固定在 0 与 1，只能上下移动，用来提起黑场或压低白场。</li>
+    <li>横向拖动端点不会没有反应：越过一小段距离后，它会拉出一个跟随指针的中间控制点。</li>
+    <li><strong>重置该通道</strong>把当前通道恢复为直线。</li>
+</ul>
+<p><strong>细节</strong>分为锐化与偏好两组，参数名称与常见修图软件保持一致：</p>
+<table class="doc-table">
+    <thead>
+        <tr><th>控制</th><th>作用</th><th>范围</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><strong>数量</strong></td><td>锐化强度。为 0 时整个锐化阶段不参与计算，画面逐像素保持原样。</td><td>0 – 150</td></tr>
+        <tr><td><strong>半径</strong></td><td>锐化作用的尺度，半径越大，影响的边缘越宽。</td><td>0.5 – 3.0</td></tr>
+        <tr><td><strong>细节</strong></td><td>在大结构边缘与细部纹理之间加权，低值只在明显边缘上锐化。</td><td>0 – 100</td></tr>
+        <tr><td><strong>蒙版</strong></td><td>把锐化限制在边缘上：100 时只有明显边缘会被处理，平坦区域不会被放大噪点。</td><td>0 – 100</td></tr>
+        <tr><td><strong>纹理</strong></td><td>中等频率的局部对比，用于强调织物、皮肤等质感。</td><td>-100 – 100</td></tr>
+        <tr><td><strong>清晰度</strong></td><td>较大尺度的局部对比，并按中间调加权，避免两端被进一步压缩。</td><td>-100 – 100</td></tr>
+        <tr><td><strong>去朦胧</strong></td><td>去除灰雾并恢复反差，负值反过来增加雾感。</td><td>-100 – 100</td></tr>
+    </tbody>
+</table>
+<p>这些控制都参与导出计算，导出对话框中的<strong>输出锐化</strong>是独立的另一步，作用在缩放之后的输出像素上。</p>
+<p>按住 <kbd>Alt</kbd> 拖动这四个锐化参数时，预览画布换成灰度视图：<strong>数量</strong>、<strong>半径</strong>与<strong>细节</strong>显示锐化信号本身（中间灰底上的边缘），<strong>蒙版</strong>显示蒙版的黑白分布，方便判断半径宽窄与蒙版阈值是否合适。该视图只作用于预览画布，示波器与缩略图仍读取正常成片。</p>
+<p>算法均为公开实现：锐化、纹理与清晰度是不同尺度上的高反差保留（局部对比），去朦胧使用暗通道先验估计透射率并以显示白点作为大气光。所有半径都按长边 2560 像素换算到当前渲染分辨率，预览与导出因此得到相同的观感。</p>
 `
                     },
                     {
@@ -376,7 +411,7 @@
     </tbody>
 </table>
 <p>批量应用之所以在每张画面上重新测量片基，是因为即使机位固定，光源照度分布、镜头暗角和胶片的轻微位移都会让不同画面的片基读数有细微差别。直接沿用源帧的数值会把这点差别放大成偏色。只有在目标画面完全测不到片基时，软件才沿用继承值，并提示确认胶片范围后重新反相。</p>
-<p>粘贴设置的对话框按类别分组：扫描与密度、片基去色罩与反相、胶片模式、密度范围、变换、透视调整、印片胶片模拟、内置或自定义 LUT、齿孔采样点。面板上方提供"全部可用设置""影调与色彩""仅几何调整"三个预设，也可以逐项勾选。</p>
+<p>粘贴设置的对话框按类别分组：扫描与密度、片基去色罩与反相、胶片模式、密度范围、印片光、观感调整、曲线、细节、变换、透视调整、印片胶片模拟、内置或自定义 LUT、齿孔采样点。面板上方提供"全部可用设置""影调与色彩""仅几何调整"三个预设，也可以逐项勾选。"影调与色彩"包含曲线但不包含细节，与常见修图软件的分组一致。</p>
 `
                     },
                     {
@@ -569,7 +604,8 @@
                         id: 'preview-vs-export',
                         heading: '预览和导出结果不完全一致',
                         content: `
-<p>工作台预览使用有界代理图以保持交互流畅：默认长边 2560 像素，需要时会提高到 4096。导出会对每个选中画面做全分辨率解码。两者使用同一套密度管线，因此影调与色彩应当一致，但在像素级别上，锐化、噪点和极细的边纹仍可能出现轻微差别。正式批量输出前导出样片核对，是最稳妥的做法。</p>
+<p>工作台预览使用有界代理图以保持交互流畅：默认长边 2560 像素，需要时会提高到 4096。导出会对每个选中画面做全分辨率解码。两者使用同一套密度管线，因此影调与色彩应当一致。细节分组里的半径、纹理、清晰度与去朦胧都按长边 2560 像素为基准换算到当前渲染分辨率，所以预览里的锐化观感与导出文件一致；但代理图毕竟是被缩小的图像，极细的噪点与边纹仍可能出现轻微差别。正式批量输出前导出样片核对，是最稳妥的做法。</p>
+<p>示波器与直方图读取的是<strong>细节</strong>分组之前的基础渲染结果，用于判断影调分布。曲线会反映在示波器中，锐化、清晰度与去朦胧不会。</p>
 `
                     },
                     {
@@ -801,9 +837,11 @@
         <tr><td>按住 <kbd>Space</kbd> 拖动</td><td>平移画布</td><td>已打开画面时</td></tr>
         <tr><td>鼠标滚轮</td><td>缩放预览；在底片条上横向翻动</td><td>工作台中</td></tr>
         <tr><td>鼠标滚轮</td><td>微调滑块数值</td><td>先点击过该滑块</td></tr>
+        <tr><td>按住 <kbd>Alt</kbd> 拖动</td><td>锐化的数量、半径、细节显示锐化信号的灰度视图，蒙版显示蒙版本身</td><td>按住锐化参数拖动时</td></tr>
     </tbody>
 </table>
 <p>画布上还支持以下鼠标操作：拖动平移，滚轮以指针位置为中心缩放。检查器中的滑块支持拖动和点击轨道定位。</p>
+<p><kbd>Alt</kbd> 视图只替换预览画布上的画面，示波器与缩略图仍然读取正常成片，导出的文件也不受影响；松开 <kbd>Alt</kbd> 或松开鼠标即回到正常画面。</p>
 `
                     },
                     {
@@ -937,7 +975,7 @@
     <li><strong>Open Develop.</strong> Double-click any thumbnail in <strong>Library</strong>, or select the <strong>Develop</strong> tab.</li>
     <li><strong>Confirm the film area.</strong> Choose <strong>Set Film Area</strong>, then <strong>Auto Area</strong>. Check that the outline hugs the image: sprocket holes and any bare light panel must stay outside. Adjust corners or edges if needed, then choose <strong>Save Area</strong>.</li>
     <li><strong>Invert.</strong> Choose <strong>Auto Invert</strong>. The app measures the film base for this frame and produces a positive. When every frame sits in the same place, use <strong>Batch Apply</strong> to send the area and base marker to the rest of the roll.</li>
-    <li><strong>Refine.</strong> Adjust Density Limits, Printer Lights, Aesthetics, and the other groups in the inspector. Every adjustment is non-destructive, and <kbd>Ctrl</kbd>+<kbd>Z</kbd> (<kbd>⌘</kbd>+<kbd>Z</kbd> on macOS) undoes it.</li>
+    <li><strong>Refine.</strong> Adjust Density Limits, Printer Lights, the Tone Curve, Aesthetics, Detail, and the other groups in the inspector. Every adjustment is non-destructive, and <kbd>Ctrl</kbd>+<kbd>Z</kbd> (<kbd>⌘</kbd>+<kbd>Z</kbd> on macOS) undoes it.</li>
     <li><strong>Export.</strong> Use <strong>Export</strong> for the selected frames or <strong>Export Roll</strong> for the whole roll, confirm format, size, and destination, then start the export.</li>
 </ol>
 <div class="doc-callout">
@@ -1012,7 +1050,7 @@
                         id: 'inspector',
                         heading: 'The inspector',
                         content: `
-<p>The inspector on the right of Develop is grouped by function: Scopes, Invert &amp; Reset, Density Limits, Printer Lights, Aesthetics, Sprocket Settings, Input Color Science, Print Film Emulation. Each dot on the module strip beside the inspector maps to one group, and the wheel scrolls between groups when the pointer is over empty inspector space. The Calibration Config Profile and Scanner Input Profile selectors live inside the <strong>Input Color Science</strong> group rather than occupying groups of their own.</p>
+<p>The inspector on the right of Develop is grouped by function: Scopes, Invert &amp; Reset, Density Limits, Printer Lights, Tone Curve, Aesthetics, Detail, Sprocket Settings, Input Color Science, Print Film Emulation. Each dot on the module strip beside the inspector maps to one group, and the wheel scrolls between groups when the pointer is over empty inspector space. The Calibration Config Profile and Scanner Input Profile selectors live inside the <strong>Input Color Science</strong> group rather than occupying groups of their own.</p>
 <p>Two interaction details are worth remembering:</p>
 <ul>
     <li>A slider must be clicked once before the mouse wheel will adjust it. This prevents accidental changes while scrolling the panel.</li>
@@ -1208,14 +1246,49 @@
         <tr><td><strong>Scopes</strong></td><td>Histogram and waveform, each switchable between channels and luminance, for judging tone distribution and clipping.</td></tr>
         <tr><td><strong>Density Limits</strong></td><td>Master D-Min and Master D-Max plus per-channel trims. The readout below shows the endpoints actually measured for this frame.</td></tr>
         <tr><td><strong>Printer Lights</strong></td><td>Exposure plus red/cyan, green/magenta, and blue/yellow. The eyedropper in the panel header is the <strong>White Balance Eyedropper</strong>: click a neutral grey area in the picture to correct an overall cast. It adjusts channel exposure offsets, not the film base sample.</td></tr>
+        <tr><td><strong>Tone Curve</strong></td><td>Four point curves: the composite RGB curve plus red, green, and blue channels. Drag a point to move it, click an empty spot to add one, right-click to remove one. The endpoints move vertically, which is how a lifted black point or a pulled-down white point is expressed; <strong>Reset Channel</strong> restores the active channel. The curve runs between Printer Lights and Aesthetics, with the frame's histogram behind it.</td></tr>
         <tr><td><strong>Aesthetics</strong></td><td>Contrast, highlights, shadows, saturation, temperature, and tint. These act after inversion and do not change the physical reference.</td></tr>
+        <tr><td><strong>Detail</strong></td><td><strong>Sharpening</strong> with amount, radius, detail, and masking, plus the <strong>Presence</strong> group: texture, clarity, and dehaze. At zero amount the sharpening stage does no work at all.</td></tr>
         <tr><td><strong>Sprocket Settings</strong></td><td><strong>Sample Sprocket Hole</strong> removes perforation marks from the positive border, with tolerance and feather controls for detection range and transition.</td></tr>
         <tr><td><strong>Input Color Science</strong></td><td>Shows the capture colour space of the current frame and holds the Calibration Config and Scanner Input profile selectors. Once decoding has resolved it, it rarely needs changing.</td></tr>
         <tr><td><strong>Print Film Emulation</strong></td><td>Choose a bundled print film or paper LUT, or load a custom <code>.cube</code> file, with opacity control. "No Built-in LUT" disables the emulation.</td></tr>
     </tbody>
 </table>
+<p>From <strong>Density Limits</strong> onwards every group carries a triangle at the right of its title: click it to fold the controls away while the title stays, and click again to open them. The state is global and survives a restart. The module strip on the left only scrolls to a group; it never re-opens a collapsed one.</p>
 <p>Two selectors inside the <strong>Input Color Science</strong> group: <strong>Calibration Config Profile</strong> binds a hardware calibration profile to the roll, and <strong>Scanner Input Profile</strong> names the input profile for a scanner. Both default to automatic and only need changing after a profile exists.</p>
 <p>The output colour space is not set in the inspector; it is chosen in the export dialog.</p>
+`
+                    },
+                    {
+                        id: 'curve-and-detail',
+                        heading: 'Tone curve and Detail',
+                        content: `
+<p>Both groups act on the finished positive, not on the density reference underneath it. Their place in the panel is also their order: the <strong>Tone Curve</strong> runs after Printer Lights and before Aesthetics, and <strong>Detail</strong> runs after Aesthetics.</p>
+<p>The <strong>Tone Curve</strong> holds four point curves. The red, green, and blue channels run first and the composite RGB curve then reads their result, matching the tone curve other editors expose. Interpolation is a monotone cubic: however the control points are dragged, the curve never doubles back between two of them and never leaves the 0–1 range. A curve carries up to 16 points.</p>
+<ul>
+    <li>Drag a control point to move it; click an empty spot to add one, right-click to remove one.</li>
+    <li>The two endpoints are pinned to input 0 and 1 and move vertically only, which is how a lifted black point or a pulled-down white point is drawn.</li>
+    <li>Pulling an endpoint sideways is not a dead end: past a short distance it grows an interior control point that follows the pointer.</li>
+    <li><strong>Reset Channel</strong> restores the active channel to a straight line.</li>
+</ul>
+<p><strong>Detail</strong> splits into Sharpening and Presence, with the control names other editors use:</p>
+<table class="doc-table">
+    <thead>
+        <tr><th>Control</th><th>What it does</th><th>Range</th></tr>
+    </thead>
+    <tbody>
+        <tr><td><strong>Amount</strong></td><td>Sharpening strength. At 0 the whole sharpening stage is skipped and every pixel is left untouched.</td><td>0 – 150</td></tr>
+        <tr><td><strong>Radius</strong></td><td>The scale sharpening works at: a larger radius reaches wider edges.</td><td>0.5 – 3.0</td></tr>
+        <tr><td><strong>Detail</strong></td><td>Weights the balance between structural edges and fine texture; a low value sharpens only the obvious edges.</td><td>0 – 100</td></tr>
+        <tr><td><strong>Masking</strong></td><td>Restricts sharpening to edges: at 100 only strong edges are touched, so flat areas keep their grain and noise.</td><td>0 – 100</td></tr>
+        <tr><td><strong>Texture</strong></td><td>Mid-frequency local contrast for fabric, skin, and similar structure.</td><td>-100 – 100</td></tr>
+        <tr><td><strong>Clarity</strong></td><td>Large-scale local contrast, weighted towards the midtones so neither end is compressed further.</td><td>-100 – 100</td></tr>
+        <tr><td><strong>Dehaze</strong></td><td>Removes a veil and restores contrast; a negative value adds haze instead.</td><td>-100 – 100</td></tr>
+    </tbody>
+</table>
+<p>These controls take part in the export as well. <strong>Output sharpening</strong> in the export dialog is a separate step that runs on the resized output pixels.</p>
+<p>Holding <kbd>Alt</kbd> while dragging one of the four Sharpening controls swaps the preview canvas for a grayscale view: <strong>Amount</strong>, <strong>Radius</strong>, and <strong>Detail</strong> show the sharpening signal itself — edges on a mid grey field — and <strong>Masking</strong> shows the mask in black and white, which is how to judge the radius and the mask threshold. The view only replaces the preview canvas; the scopes and the stored thumbnail keep reading the finished frame.</p>
+<p>Every algorithm is a published one: sharpening, texture, and clarity are high-pass (local contrast) stages at different scales, and dehaze estimates transmission with the Dark Channel Prior using the display white as the atmospheric light. All radii are quoted at a 2560 px long edge and converted to the resolution being rendered, so the preview and the export show the same amount of work.</p>
 `
                     },
                     {
@@ -1235,7 +1308,7 @@
     </tbody>
 </table>
 <p>Batch Apply re-measures the base on every frame because even with a fixed setup, uneven illumination, lens vignetting, and small film shifts make base readings differ slightly between frames. Reusing one reading would turn that difference into a colour cast. Only when a target frame has no measurable base does the app keep the inherited value, and it tells you to confirm the film area and run Auto Invert again.</p>
-<p>The paste dialog groups settings: Scan and Density, Film Base and Inversion, Film Mode, Density Limits, Transform, Perspective, Print Film Emulation, built-in or custom LUT, and the sampled sprocket point. Three presets above the list select all settings, tone and colour, or geometry only, and individual rows can be ticked.</p>
+<p>The paste dialog groups settings: Scan and Density, Film Base and Inversion, Film Mode, Density Limits, Printer Lights, Aesthetics, Tone Curve, Detail, Transform, Perspective, Print Film Emulation, built-in or custom LUT, and the sampled sprocket point. Three presets above the list select all settings, tone and colour, or geometry only, and individual rows can be ticked. "Tone and colour" includes the curve but leaves Detail out, matching the grouping other editors use.</p>
 `
                     },
                     {
@@ -1428,7 +1501,8 @@
                         id: 'preview-vs-export',
                         heading: 'Preview and export are not identical',
                         content: `
-<p>Develop uses a bounded proxy to stay responsive: 2560 px on the long edge by default, raised to 4096 when needed. Export decodes every selected frame at full resolution. Both go through the same density pipeline, so tone and colour should match, but at pixel level, sharpening, noise, and very fine edges can still differ slightly. Exporting a test frame before a full batch is the reliable check.</p>
+<p>Develop uses a bounded proxy to stay responsive: 2560 px on the long edge by default, raised to 4096 when needed. Export decodes every selected frame at full resolution. Both go through the same density pipeline, so tone and colour should match. Every radius in the Detail group is quoted at a 2560 px long edge and converted into the pixels being rendered, so the sharpening you see is the sharpening you export; a scaled proxy still cannot reproduce the very finest noise and edge detail, so exporting a test frame before a full batch remains the reliable check.</p>
+<p>The scopes and histogram read the base render from before the <strong>Detail</strong> group, which is what makes them a tone-distribution tool. The curve is included; sharpening, clarity, and dehaze are not.</p>
 `
                     },
                     {
@@ -1660,9 +1734,11 @@
         <tr><td>Hold <kbd>Space</kbd> and drag</td><td>Pan the canvas</td><td>While a frame is open</td></tr>
         <tr><td>Mouse wheel</td><td>Zoom the preview; scroll the filmstrip sideways</td><td>In Develop</td></tr>
         <tr><td>Mouse wheel</td><td>Adjust a slider value</td><td>After clicking that slider once</td></tr>
+        <tr><td>Hold <kbd>Alt</kbd> and drag</td><td>Amount, Radius, and Detail show the sharpening signal as a grayscale view; Masking shows the mask itself</td><td>While dragging a Sharpening control</td></tr>
     </tbody>
 </table>
 <p>The canvas also supports dragging to pan and wheel zooming centred on the pointer. Sliders in the inspector support dragging and clicking the track to jump.</p>
+<p>An <kbd>Alt</kbd> view replaces the picture on the preview canvas only: the scopes and the stored thumbnail still read the finished frame, and exported files are unaffected. Releasing <kbd>Alt</kbd> or the mouse button returns to the normal picture.</p>
 `
                     },
                     {

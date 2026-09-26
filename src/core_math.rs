@@ -344,13 +344,445 @@ pub fn sprocket_white_mask(luma_difference: f32, tolerance: f32, feather: f32) -
     (1.0 - transition).powi(3)
 }
 
+/// Length of the shared tone-curve lookup table.
+///
+/// The WebGL preview also samples a 1024-entry table, so a curve drawn in the
+/// inspector reaches the exported file through the same maths: a monotone cubic
+/// (Fritsch-Carlson) through the control points, sampled onto this grid and read
+/// back with linear interpolation.
+pub const TONE_CURVE_LUT_SIZE: usize = 1024;
+
+/// Control points a single curve may carry, endpoints included.
+pub const MAX_TONE_CURVE_POINTS: usize = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ToneCurveLut {
+    samples: [f32; TONE_CURVE_LUT_SIZE],
+}
+
+impl ToneCurveLut {
+    pub fn identity() -> Self {
+        let mut samples = [0.0f32; TONE_CURVE_LUT_SIZE];
+        for (index, sample) in samples.iter_mut().enumerate() {
+            *sample = index as f32 / (TONE_CURVE_LUT_SIZE - 1) as f32;
+        }
+        Self { samples }
+    }
+
+    pub fn from_points(points: &[[f32; 2]]) -> Self {
+        let points = normalize_curve_points(points);
+        let tangents = monotone_curve_tangents(&points);
+        let mut samples = [0.0f32; TONE_CURVE_LUT_SIZE];
+        for (index, sample) in samples.iter_mut().enumerate() {
+            let x = index as f32 / (TONE_CURVE_LUT_SIZE - 1) as f32;
+            *sample = evaluate_monotone_curve(&points, &tangents, x).clamp(0.0, 1.0);
+        }
+        Self { samples }
+    }
+
+    /// Linear read-back of the table. The preview samples the same grid, so a
+    /// value between two entries interpolates identically on both sides.
+    #[inline]
+    pub fn sample(&self, x: f32) -> f32 {
+        let position = x.clamp(0.0, 1.0) * (TONE_CURVE_LUT_SIZE - 1) as f32;
+        let low = position.floor() as usize;
+        let high = (low + 1).min(TONE_CURVE_LUT_SIZE - 1);
+        let fraction = position - low as f32;
+        self.samples[low] + (self.samples[high] - self.samples[low]) * fraction
+    }
+
+    pub fn samples(&self) -> &[f32; TONE_CURVE_LUT_SIZE] {
+        &self.samples
+    }
+
+    pub fn is_identity(&self) -> bool {
+        self.samples.iter().enumerate().all(|(index, value)| {
+            (value - index as f32 / (TONE_CURVE_LUT_SIZE - 1) as f32).abs() < 1e-6
+        })
+    }
+}
+
+fn normalize_curve_points(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let mut normalized: Vec<[f32; 2]> = points
+        .iter()
+        .filter(|point| point[0].is_finite() && point[1].is_finite())
+        .map(|point| [point[0].clamp(0.0, 1.0), point[1].clamp(0.0, 1.0)])
+        .collect();
+    normalized.sort_by(|left, right| left[0].partial_cmp(&right[0]).unwrap());
+    // Two control points may not share an x: the later one wins, which is what
+    // the editor does when a dragged point lands on its neighbour.
+    let mut deduplicated: Vec<[f32; 2]> = Vec::with_capacity(normalized.len());
+    for point in normalized {
+        match deduplicated.last_mut() {
+            Some(previous) if (previous[0] - point[0]).abs() < 1e-6 => *previous = point,
+            _ => deduplicated.push(point),
+        }
+    }
+    if deduplicated.is_empty() {
+        return vec![[0.0, 0.0], [1.0, 1.0]];
+    }
+    // The endpoints exist so the curve always spans the full input range. Only
+    // their output may move, which is how a lifted black point is expressed.
+    if deduplicated[0][0] > 1e-6 {
+        let first = deduplicated[0][1];
+        deduplicated.insert(0, [0.0, first]);
+    }
+    if deduplicated.last().map(|point| point[0]).unwrap_or(1.0) < 1.0 - 1e-6 {
+        let last = deduplicated.last().map(|point| point[1]).unwrap_or(1.0);
+        deduplicated.push([1.0, last]);
+    }
+    deduplicated.truncate(MAX_TONE_CURVE_POINTS);
+    deduplicated
+}
+
+/// Fritsch-Carlson tangents: the classic monotone cubic that cannot overshoot
+/// between two control points.
+fn monotone_curve_tangents(points: &[[f32; 2]]) -> Vec<f32> {
+    let count = points.len();
+    if count < 2 {
+        return vec![0.0; count];
+    }
+    let slopes: Vec<f32> = (0..count - 1)
+        .map(|index| {
+            let dx = points[index + 1][0] - points[index][0];
+            if dx.abs() < 1e-8 {
+                0.0
+            } else {
+                (points[index + 1][1] - points[index][1]) / dx
+            }
+        })
+        .collect();
+    let mut tangents = vec![0.0f32; count];
+    tangents[0] = slopes[0];
+    tangents[count - 1] = slopes[count - 2];
+    for index in 1..count - 1 {
+        let previous = slopes[index - 1];
+        let next = slopes[index];
+        if previous * next <= 0.0 {
+            // A local extremum keeps a flat tangent, so the curve stays inside
+            // the bracket the user drew.
+            tangents[index] = 0.0;
+        } else {
+            tangents[index] = (previous + next) * 0.5;
+        }
+    }
+    for index in 0..count - 1 {
+        if slopes[index].abs() < 1e-8 {
+            tangents[index] = 0.0;
+            tangents[index + 1] = 0.0;
+            continue;
+        }
+        let alpha = tangents[index] / slopes[index];
+        let beta = tangents[index + 1] / slopes[index];
+        let magnitude = alpha.hypot(beta);
+        if magnitude > 3.0 {
+            let scale = 3.0 / magnitude;
+            tangents[index] = scale * alpha * slopes[index];
+            tangents[index + 1] = scale * beta * slopes[index];
+        }
+    }
+    tangents
+}
+
+fn evaluate_monotone_curve(points: &[[f32; 2]], tangents: &[f32], x: f32) -> f32 {
+    if points.len() < 2 {
+        return x;
+    }
+    let clamped = x.clamp(points[0][0], points[points.len() - 1][0]);
+    let mut segment = points.len() - 2;
+    for index in 0..points.len() - 1 {
+        if clamped <= points[index + 1][0] + 1e-9 {
+            segment = index;
+            break;
+        }
+    }
+    let [x0, y0] = points[segment];
+    let [x1, y1] = points[segment + 1];
+    let width = x1 - x0;
+    if width.abs() < 1e-8 {
+        return y1;
+    }
+    let t = ((clamped - x0) / width).clamp(0.0, 1.0);
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let h00 = 2.0 * t3 - 3.0 * t2 + 1.0;
+    let h10 = t3 - 2.0 * t2 + t;
+    let h01 = -2.0 * t3 + 3.0 * t2;
+    let h11 = t3 - t2;
+    h00 * y0 + h10 * width * tangents[segment] + h01 * y1 + h11 * width * tangents[segment + 1]
+}
+
+/// The four curves of the Develop Tone Curve panel. The per-channel curves run
+/// first and the composite RGB curve reads their result, which is the order the
+/// Lightroom point curve uses.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToneCurveSet {
+    rgb: ToneCurveLut,
+    red: ToneCurveLut,
+    green: ToneCurveLut,
+    blue: ToneCurveLut,
+    identity: bool,
+}
+
+impl ToneCurveSet {
+    pub fn new(rgb: &[[f32; 2]], red: &[[f32; 2]], green: &[[f32; 2]], blue: &[[f32; 2]]) -> Self {
+        let set = Self {
+            rgb: ToneCurveLut::from_points(rgb),
+            red: ToneCurveLut::from_points(red),
+            green: ToneCurveLut::from_points(green),
+            blue: ToneCurveLut::from_points(blue),
+            identity: false,
+        };
+        let identity = set.rgb.is_identity()
+            && set.red.is_identity()
+            && set.green.is_identity()
+            && set.blue.is_identity();
+        Self { identity, ..set }
+    }
+
+    pub fn identity() -> Self {
+        Self {
+            rgb: ToneCurveLut::identity(),
+            red: ToneCurveLut::identity(),
+            green: ToneCurveLut::identity(),
+            blue: ToneCurveLut::identity(),
+            identity: true,
+        }
+    }
+
+    /// Cached at construction: the render loop asks this once per pixel.
+    #[inline]
+    pub fn is_identity(&self) -> bool {
+        self.identity
+    }
+
+    #[inline]
+    pub fn apply(&self, rgb: [f32; 3]) -> [f32; 3] {
+        if self.is_identity() {
+            return rgb;
+        }
+        let per_channel = [
+            self.red.sample(rgb[0].clamp(0.0, 1.0)),
+            self.green.sample(rgb[1].clamp(0.0, 1.0)),
+            self.blue.sample(rgb[2].clamp(0.0, 1.0)),
+        ];
+        [
+            self.rgb.sample(per_channel[0]),
+            self.rgb.sample(per_channel[1]),
+            self.rgb.sample(per_channel[2]),
+        ]
+    }
+}
+
+/// Radius used when a detail control is at zero would otherwise collapse to a
+/// sub-pixel kernel on a bounded preview proxy.
+pub const DETAIL_MIN_SIGMA: f32 = 0.4;
+/// Reference long edge the user-facing radii are quoted at. The Develop preview
+/// keeps its proxy near this size, so a radius of 1.0 means one preview pixel
+/// there and the same share of the frame in an export of any resolution.
+pub const DETAIL_REFERENCE_LONG_EDGE: f32 = 2560.0;
+/// Fine-detail scale of the sharpening stage, in native pixels.
+pub const DETAIL_FINE_SIGMA: f32 = 0.6;
+/// Mid-frequency scale of the Texture control, in native pixels.
+pub const DETAIL_TEXTURE_SIGMA: f32 = 1.6;
+/// Clarity works on structure: a share of the rendered long edge.
+pub const DETAIL_CLARITY_EDGE_RATIO: f32 = 0.012;
+/// Downscale factor used for clarity and haze transmission.
+pub const DETAIL_LOCAL_DOWNSCALE: u32 = 4;
+/// Dark-channel window of the haze estimate, as a share of the rendered edge.
+pub const DETAIL_DEHAZE_EDGE_RATIO: f32 = 1.0 / 16.0;
+/// Dark Channel Prior omega: how much of the estimated veil is removed.
+pub const DETAIL_DEHAZE_OMEGA: f32 = 0.95;
+pub const DETAIL_CLARITY_GAIN: f32 = 0.8;
+pub const DETAIL_TEXTURE_GAIN: f32 = 0.8;
+pub const DETAIL_SHARPENING_GAIN: f32 = 0.8;
+pub const DETAIL_SHARPENING_DETAIL_GAIN: f32 = 0.75;
+pub const DETAIL_MASK_MIN_EDGE: f32 = 0.02;
+pub const DETAIL_MASK_EDGE_SPAN: f32 = 0.30;
+pub const DETAIL_MASK_SOFTNESS: f32 = 0.06;
+
+/// Everything the Detail stage needs to describe itself. `scale` is the rendered
+/// long edge divided by [`DETAIL_REFERENCE_LONG_EDGE`]: the Develop preview works
+/// on a bounded proxy and the export works on the whole scan, so every radius is
+/// converted into rendered pixels and both sides show the same sharpening.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DetailSettings {
+    pub sharpening_amount: f32,
+    pub sharpening_radius: f32,
+    pub sharpening_detail: f32,
+    pub sharpening_masking: f32,
+    pub texture: f32,
+    pub clarity: f32,
+    pub dehaze: f32,
+    pub scale: f32,
+}
+
+impl DetailSettings {
+    pub fn neutral(scale: f32) -> Self {
+        Self {
+            sharpening_amount: 0.0,
+            sharpening_radius: 1.0,
+            sharpening_detail: 25.0,
+            sharpening_masking: 0.0,
+            texture: 0.0,
+            clarity: 0.0,
+            dehaze: 0.0,
+            scale,
+        }
+    }
+
+    pub fn is_neutral(&self) -> bool {
+        self.sharpening_amount <= 0.0
+            && self.texture.abs() < 1e-4
+            && self.clarity.abs() < 1e-4
+            && self.dehaze.abs() < 1e-4
+    }
+
+    /// Rendered-pixel sigma of the radius-driven sharpening blur.
+    pub fn sharpening_sigma(&self) -> f32 {
+        (self.sharpening_radius * self.scale).max(DETAIL_MIN_SIGMA)
+    }
+
+    pub fn fine_sigma(&self) -> f32 {
+        (DETAIL_FINE_SIGMA * self.scale).max(DETAIL_MIN_SIGMA)
+    }
+
+    pub fn texture_sigma(&self) -> f32 {
+        (DETAIL_TEXTURE_SIGMA * self.scale).max(DETAIL_MIN_SIGMA)
+    }
+
+    /// Sigma of the clarity blur on the downscaled working buffer.
+    pub fn clarity_sigma_downscaled(&self, rendered_long_edge: f32) -> f32 {
+        let sigma = DETAIL_CLARITY_EDGE_RATIO * rendered_long_edge / DETAIL_LOCAL_DOWNSCALE as f32;
+        sigma.max(DETAIL_MIN_SIGMA)
+    }
+
+    /// Dark-channel window radius on the downscaled working buffer, and the
+    /// radius of the box blur that softens the transmission map.
+    pub fn dehaze_window_downscaled(&self, rendered_long_edge: f32) -> (usize, usize) {
+        let window = DETAIL_DEHAZE_EDGE_RATIO * rendered_long_edge / DETAIL_LOCAL_DOWNSCALE as f32;
+        let radius = window.round().clamp(1.0, 64.0) as usize;
+        let soften = (radius / 4).max(1);
+        (radius, soften)
+    }
+}
+
+/// Transmission of the haze estimate for one pixel. `strength` is the slider in
+/// -1..1; a negative value thickens the veil again, which is what a negative
+/// Dehaze control does.
+#[inline]
+pub fn dehaze_transmission(dark_channel: f32, strength: f32) -> f32 {
+    let omega = DETAIL_DEHAZE_OMEGA * strength.clamp(-1.0, 1.0);
+    (1.0 - omega * dark_channel.clamp(0.0, 1.0)).clamp(0.2, 5.0)
+}
+
+/// Dark Channel Prior restoration with the display white as the atmospheric
+/// light: I = J * t + A * (1 - t) solved for J.
+#[inline]
+pub fn dehaze_restore(color: [f32; 3], transmission: f32) -> [f32; 3] {
+    let safe = transmission.max(1e-3);
+    [
+        (color[0] - 1.0) / safe + 1.0,
+        (color[1] - 1.0) / safe + 1.0,
+        (color[2] - 1.0) / safe + 1.0,
+    ]
+}
+
+/// Masking weight of the sharpening stage: 1 everywhere at zero masking, and
+/// progressively edge-only as the slider rises.
+#[inline]
+pub fn sharpening_mask_weight(gradient: f32, masking: f32) -> f32 {
+    let masking = (masking / 100.0).clamp(0.0, 1.0);
+    if masking <= 1e-4 {
+        return 1.0;
+    }
+    let threshold = DETAIL_MASK_MIN_EDGE + masking * DETAIL_MASK_EDGE_SPAN;
+    shader_smoothstep(threshold, threshold + DETAIL_MASK_SOFTNESS, gradient)
+}
+
+/// Luma gradient used by the sharpening mask: central differences one pixel
+/// apart, summed over both axes. Both renderers sample the same taps.
+#[inline]
+pub fn detail_gradient(left: f32, right: f32, up: f32, down: f32) -> f32 {
+    (right - left).abs() + (down - up).abs()
+}
+
+/// One pixel of the shared Detail stage.
+///
+/// Order matches the panel: the haze estimate restores the veil the scene never
+/// had, Clarity and Texture add local contrast, and Sharpening comes last so it
+/// reads the finished tone. Lightroom's sliders are reproduced as closely as an
+/// open implementation allows; the radii below are the documented mapping.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_detail_pixel(
+    base: [f32; 3],
+    fine_blur: [f32; 3],
+    texture_blur: [f32; 3],
+    coarse_blur: [f32; 3],
+    clarity_blur: [f32; 3],
+    dark_channel: f32,
+    gradient: f32,
+    sprocket_mask: f32,
+    settings: &DetailSettings,
+) -> [f32; 3] {
+    if settings.is_neutral() {
+        return base;
+    }
+    let guard = 1.0 - sprocket_mask.clamp(0.0, 1.0);
+    let mut color = if settings.dehaze.abs() > 1e-4 {
+        dehaze_restore(
+            base,
+            dehaze_transmission(dark_channel, settings.dehaze / 100.0),
+        )
+    } else {
+        base
+    };
+
+    if settings.clarity.abs() > 1e-4 && guard > 0.0 {
+        // Midtone weighting keeps Clarity off the clipped ends of the frame,
+        // where a local-contrast push would only crush detail further.
+        let blurred_luma = density_luma(clarity_blur);
+        let midtone = (1.0 - (2.0 * blurred_luma - 1.0).powi(2)).clamp(0.0, 1.0);
+        let gain = (settings.clarity / 100.0) * DETAIL_CLARITY_GAIN * midtone * guard;
+        for channel in 0..3 {
+            color[channel] += (base[channel] - clarity_blur[channel]) * gain;
+        }
+    }
+
+    if settings.texture.abs() > 1e-4 && guard > 0.0 {
+        let gain = (settings.texture / 100.0) * DETAIL_TEXTURE_GAIN * guard;
+        for channel in 0..3 {
+            color[channel] += (base[channel] - texture_blur[channel]) * gain;
+        }
+    }
+
+    if settings.sharpening_amount > 0.0 && guard > 0.0 {
+        let weight = sharpening_mask_weight(gradient, settings.sharpening_masking) * guard;
+        let gain = (settings.sharpening_amount / 100.0) * DETAIL_SHARPENING_GAIN * weight;
+        let detail_blend =
+            (settings.sharpening_detail / 100.0).clamp(0.0, 1.0) * DETAIL_SHARPENING_DETAIL_GAIN;
+        for channel in 0..3 {
+            let coarse = base[channel] - coarse_blur[channel];
+            let fine = base[channel] - fine_blur[channel];
+            color[channel] += (coarse + fine * detail_blend) * gain;
+        }
+    }
+
+    [
+        color[0].clamp(0.0, 1.0),
+        color[1].clamp(0.0, 1.0),
+        color[2].clamp(0.0, 1.0),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_homography, apply_lens_distortion_uv, apply_perspective_uv,
-        apply_post_gamma_adjustments, contrast_channel, density_luma, neutral_density_bounds,
-        neutralize_rgb, normalize_density_channel, shader_homography, sprocket_white_mask,
-        trim_density_endpoints,
+        apply_detail_pixel, apply_homography, apply_lens_distortion_uv, apply_perspective_uv,
+        apply_post_gamma_adjustments, contrast_channel, dehaze_restore, dehaze_transmission,
+        density_luma, neutral_density_bounds, neutralize_rgb, normalize_density_channel,
+        shader_homography, sharpening_mask_weight, sprocket_white_mask, trim_density_endpoints,
+        DetailSettings, ToneCurveSet,
     };
 
     #[test]
@@ -534,5 +966,135 @@ mod tests {
     fn sprocket_mask_matches_shader_endpoints() {
         assert!((sprocket_white_mask(0.0, 0.1, 0.05) - 1.0).abs() < 1e-6);
         assert_eq!(sprocket_white_mask(0.2, 0.1, 0.05), 0.0);
+    }
+
+    #[test]
+    fn identity_curve_passes_the_display_value_through() {
+        let curves = ToneCurveSet::identity();
+        assert!(curves.is_identity());
+        for value in [0.0, 0.18, 0.5, 0.82, 1.0] {
+            let mapped = curves.apply([value, value, value]);
+            assert!(
+                (mapped[0] - value).abs() < 2e-3,
+                "{value} moved to {} on the identity curve",
+                mapped[0]
+            );
+        }
+    }
+
+    #[test]
+    fn point_curve_is_monotone_and_keeps_its_endpoints() {
+        // A control point dragged above its neighbour's tone must not push the
+        // curve backwards between them.
+        let curves = ToneCurveSet::new(
+            &[[0.0, 0.0], [0.35, 0.55], [0.65, 0.6], [1.0, 1.0]],
+            &[[0.0, 0.0], [1.0, 1.0]],
+            &[[0.0, 0.0], [1.0, 1.0]],
+            &[[0.0, 0.0], [1.0, 1.0]],
+        );
+        let mut previous = -1.0;
+        for step in 0..=100 {
+            let x = step as f32 / 100.0;
+            let mapped = curves.apply([x, x, x])[0];
+            assert!(mapped >= previous - 1e-4, "curve decreased at {x}");
+            assert!((0.0..=1.0).contains(&mapped));
+            previous = mapped;
+        }
+        assert!(curves.apply([0.0; 3])[0].abs() < 2e-3);
+        assert!((curves.apply([1.0; 3])[0] - 1.0).abs() < 2e-3);
+    }
+
+    #[test]
+    fn lifted_black_point_and_channel_curves_are_separate_controls() {
+        let lifted = ToneCurveSet::new(
+            &[[0.0, 0.2], [1.0, 1.0]],
+            &[[0.0, 0.0], [1.0, 1.0]],
+            &[[0.0, 0.0], [1.0, 1.0]],
+            &[[0.0, 0.0], [1.0, 1.0]],
+        );
+        assert!((lifted.apply([0.0; 3])[0] - 0.2).abs() < 5e-3);
+
+        // The per-channel curve runs first and the composite curve reads its
+        // result: a red lift followed by a global lift compounds.
+        let channels = ToneCurveSet::new(
+            &[[0.0, 0.0], [1.0, 0.5]],
+            &[[0.0, 0.5], [1.0, 1.0]],
+            &[[0.0, 0.0], [1.0, 1.0]],
+            &[[0.0, 0.0], [1.0, 1.0]],
+        );
+        let mapped = channels.apply([0.0, 0.0, 0.0]);
+        assert!((mapped[0] - 0.25).abs() < 5e-3, "red was {}", mapped[0]);
+        assert!(mapped[1].abs() < 5e-3);
+    }
+
+    #[test]
+    fn detail_stage_is_neutral_at_rest() {
+        let settings = DetailSettings::neutral(1.0);
+        assert!(settings.is_neutral());
+        let base = [0.3, 0.4, 0.5];
+        assert_eq!(
+            apply_detail_pixel(base, base, base, base, base, 0.2, 0.0, 0.0, &settings),
+            base
+        );
+    }
+
+    #[test]
+    fn sharpening_adds_local_contrast_around_a_step() {
+        let mut settings = DetailSettings::neutral(1.0);
+        settings.sharpening_amount = 100.0;
+        settings.sharpening_detail = 0.0;
+        // A dark pixel beside a bright one: the high pass is negative, so the
+        // USM correction pushes it further down.
+        let darkened = apply_detail_pixel(
+            [0.4; 3], [0.4; 3], [0.4; 3], [0.55; 3], [0.4; 3], 0.0, 0.0, 0.0, &settings,
+        );
+        assert!(
+            darkened[0] < 0.4,
+            "expected a darker edge, got {}",
+            darkened[0]
+        );
+    }
+
+    #[test]
+    fn masking_keeps_flat_areas_out_of_the_sharpening() {
+        assert!((sharpening_mask_weight(0.0, 0.0) - 1.0).abs() < 1e-6);
+        assert_eq!(sharpening_mask_weight(0.02, 100.0), 0.0);
+        assert!((sharpening_mask_weight(0.6, 100.0) - 1.0).abs() < 1e-3);
+        let partial = sharpening_mask_weight(0.20, 50.0);
+        assert!(
+            partial > 0.0 && partial < 1.0,
+            "partial weight was {partial}"
+        );
+    }
+
+    #[test]
+    fn dehaze_pulls_the_veil_out_and_pushes_it_back() {
+        let hazy = [0.6, 0.65, 0.7];
+        let removed = dehaze_restore(hazy, dehaze_transmission(0.6, 0.5));
+        assert!(removed[0] < hazy[0]);
+        // White stays white whatever the transmission is.
+        let white = dehaze_restore([1.0; 3], dehaze_transmission(0.9, 1.0));
+        for channel in white {
+            assert!((channel - 1.0).abs() < 1e-5);
+        }
+        let added = dehaze_restore(hazy, dehaze_transmission(0.6, -0.5));
+        assert!(added[0] > hazy[0] || added[1] > hazy[1]);
+    }
+
+    #[test]
+    fn curvature_scale_shrinks_the_detail_radii_on_a_proxy() {
+        let full = DetailSettings {
+            sharpening_amount: 50.0,
+            scale: 1.0,
+            ..DetailSettings::neutral(1.0)
+        };
+        let preview = DetailSettings {
+            scale: 0.43,
+            ..full
+        };
+        assert!(preview.sharpening_sigma() < full.sharpening_sigma());
+        let (window, soften) = full.dehaze_window_downscaled(2560.0);
+        assert!(window >= 1 && soften >= 1);
+        assert!(window > soften);
     }
 }

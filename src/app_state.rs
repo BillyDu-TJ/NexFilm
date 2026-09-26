@@ -1200,6 +1200,88 @@ impl Default for ToneParams {
     }
 }
 
+/// A point curve is stored as its control points in input/output display
+/// coordinates. Both endpoints always exist: their output may move, which is how
+/// a lifted black point or a pulled-down white point is expressed.
+pub fn default_tone_curve() -> Vec<[f32; 2]> {
+    vec![[0.0, 0.0], [1.0, 1.0]]
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct CurveParams {
+    #[serde(default = "default_tone_curve")]
+    pub curve_rgb: Vec<[f32; 2]>,
+    #[serde(default = "default_tone_curve")]
+    pub curve_red: Vec<[f32; 2]>,
+    #[serde(default = "default_tone_curve")]
+    pub curve_green: Vec<[f32; 2]>,
+    #[serde(default = "default_tone_curve")]
+    pub curve_blue: Vec<[f32; 2]>,
+}
+
+impl Default for CurveParams {
+    fn default() -> Self {
+        Self {
+            curve_rgb: default_tone_curve(),
+            curve_red: default_tone_curve(),
+            curve_green: default_tone_curve(),
+            curve_blue: default_tone_curve(),
+        }
+    }
+}
+
+fn default_sharpening_radius() -> f32 {
+    1.0
+}
+
+fn default_sharpening_detail() -> f32 {
+    25.0
+}
+
+/// The Develop "Detail" module: sharpening plus the local-contrast trio. Every
+/// control is neutral at rest, so a stored frame from an older version renders
+/// exactly as it did before this module existed.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+pub struct DetailParams {
+    #[serde(default)]
+    pub sharpening_amount: f32,
+    #[serde(default = "default_sharpening_radius")]
+    pub sharpening_radius: f32,
+    #[serde(default = "default_sharpening_detail")]
+    pub sharpening_detail: f32,
+    #[serde(default)]
+    pub sharpening_masking: f32,
+    #[serde(default)]
+    pub texture: f32,
+    #[serde(default)]
+    pub clarity: f32,
+    #[serde(default)]
+    pub dehaze: f32,
+}
+
+impl Default for DetailParams {
+    fn default() -> Self {
+        Self {
+            sharpening_amount: 0.0,
+            sharpening_radius: default_sharpening_radius(),
+            sharpening_detail: default_sharpening_detail(),
+            sharpening_masking: 0.0,
+            texture: 0.0,
+            clarity: 0.0,
+            dehaze: 0.0,
+        }
+    }
+}
+
+impl DetailParams {
+    pub fn is_neutral(&self) -> bool {
+        self.sharpening_amount <= 0.0
+            && self.texture.abs() < 1e-4
+            && self.clarity.abs() < 1e-4
+            && self.dehaze.abs() < 1e-4
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 pub struct SprocketParams {
     pub sprocket_uv: Option<Vec<f32>>,
@@ -1269,6 +1351,10 @@ pub struct TuningParams {
     #[serde(flatten)]
     pub tone: ToneParams,
     #[serde(flatten)]
+    pub curve: CurveParams,
+    #[serde(flatten)]
+    pub detail: DetailParams,
+    #[serde(flatten)]
     pub sprocket: SprocketParams,
     #[serde(flatten)]
     pub lut: LutParams,
@@ -1283,6 +1369,8 @@ impl Default for TuningParams {
             density: DensityParams::default(),
             exposure: ExposureParams::default(),
             tone: ToneParams::default(),
+            curve: CurveParams::default(),
+            detail: DetailParams::default(),
             sprocket: SprocketParams::default(),
             lut: LutParams::default(),
             raw_decode: RawDecodeParams::default(),
@@ -1319,6 +1407,98 @@ mod tuning_params_tests {
 
         let params: TuningParams = serde_json::from_value(legacy).unwrap();
         assert_eq!(params.tone.tint, 0.25);
+    }
+
+    #[test]
+    fn legacy_tuning_json_defaults_the_curve_and_detail_modules() {
+        let mut legacy = serde_json::to_value(TuningParams::default()).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        for key in [
+            "curve_rgb",
+            "curve_red",
+            "curve_green",
+            "curve_blue",
+            "sharpening_amount",
+            "sharpening_radius",
+            "sharpening_detail",
+            "sharpening_masking",
+            "texture",
+            "clarity",
+            "dehaze",
+        ] {
+            object.remove(key);
+        }
+
+        let params: TuningParams = serde_json::from_value(legacy).unwrap();
+        assert_eq!(params.curve, crate::app_state::CurveParams::default());
+        assert_eq!(params.detail, crate::app_state::DetailParams::default());
+        assert!(params.detail.is_neutral());
+        assert_eq!(params.curve.curve_rgb, vec![[0.0, 0.0], [1.0, 1.0]]);
+    }
+
+    #[test]
+    fn develop_curve_and_detail_fields_round_trip_under_their_wire_names() {
+        // The frontend writes these exact keys; a rename here would silently
+        // drop the user's curve and Detail work on the way to the database.
+        let edits = serde_json::json!({
+            "curve_rgb": [[0.0, 0.0], [0.5, 0.4], [1.0, 1.0]],
+            "curve_red": [[0.0, 0.1], [1.0, 1.0]],
+            "curve_green": [[0.0, 0.0], [1.0, 1.0]],
+            "curve_blue": [[0.0, 0.0], [1.0, 0.9]],
+            "sharpening_amount": 70.0,
+            "sharpening_radius": 1.4,
+            "sharpening_detail": 30.0,
+            "sharpening_masking": 20.0,
+            "texture": 12.0,
+            "clarity": -8.0,
+            "dehaze": 25.0,
+        });
+        let mut value = serde_json::to_value(TuningParams::default()).unwrap();
+        let object = value.as_object_mut().unwrap();
+        for (key, field) in edits.as_object().unwrap() {
+            object.insert(key.clone(), field.clone());
+        }
+
+        let params: TuningParams = serde_json::from_value(value).unwrap();
+        assert_eq!(params.curve.curve_rgb.len(), 3);
+        assert_eq!(params.curve.curve_red, vec![[0.0, 0.1], [1.0, 1.0]]);
+        assert_eq!(params.curve.curve_blue, vec![[0.0, 0.0], [1.0, 0.9]]);
+        assert_eq!(params.detail.sharpening_amount, 70.0);
+        assert_eq!(params.detail.sharpening_radius, 1.4);
+        assert_eq!(params.detail.sharpening_detail, 30.0);
+        assert_eq!(params.detail.sharpening_masking, 20.0);
+        assert_eq!(params.detail.texture, 12.0);
+        assert_eq!(params.detail.clarity, -8.0);
+        assert_eq!(params.detail.dehaze, 25.0);
+        assert!(!params.detail.is_neutral());
+
+        let serialized = serde_json::to_value(&params).unwrap();
+        // f32 storage rounds the decimal control points, so the check is that
+        // every field still travels under the key the frontend writes.
+        for key in [
+            "curve_rgb",
+            "curve_red",
+            "curve_green",
+            "curve_blue",
+            "sharpening_amount",
+            "sharpening_radius",
+            "sharpening_detail",
+            "sharpening_masking",
+            "texture",
+            "clarity",
+            "dehaze",
+        ] {
+            assert!(
+                serialized.get(key).is_some(),
+                "missing {key} after serialization"
+            );
+        }
+        assert_eq!(serialized["curve_rgb"].as_array().unwrap().len(), 3);
+        let blue_endpoint = serialized["curve_blue"][1][1].as_f64().unwrap();
+        assert!(
+            (blue_endpoint - 0.9).abs() < 1e-6,
+            "the blue endpoint must survive the round trip, got {blue_endpoint}"
+        );
     }
 }
 

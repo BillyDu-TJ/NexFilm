@@ -79,6 +79,59 @@ assert.deepEqual(contrastOnly.params, { contrast: 0.25 });
 assert.equal(mergeCopyPayload(currentParams, currentGeom, contrastOnly).params.contrast, 0.25);
 assert.equal(mergeCopyPayload(currentParams, currentGeom, contrastOnly).params.gamma, 1);
 
+const curveOnly = createCopyPayload(
+    {
+        ...sourceParams,
+        curve_rgb: [[0, 0], [0.5, 0.4], [1, 1]],
+        curve_red: [[0, 0.1], [1, 1]],
+        curve_green: [[0, 0], [1, 1]],
+        curve_blue: [[0, 0], [1, 1]],
+        sharpening_amount: 70,
+        sharpening_radius: 1.4,
+        sharpening_detail: 30,
+        sharpening_masking: 20,
+        texture: 12,
+        clarity: -8,
+        dehaze: 25
+    },
+    sourceGeom,
+    ['curve']
+);
+assert.deepEqual(Object.keys(curveOnly.params).sort(), ['curve_blue', 'curve_green', 'curve_red', 'curve_rgb']);
+assert.deepEqual(curveOnly.params.curve_rgb, [[0, 0], [0.5, 0.4], [1, 1]]);
+
+const detailOnly = createCopyPayload(
+    {
+        ...sourceParams,
+        curve_rgb: [[0, 0], [0.5, 0.4], [1, 1]],
+        sharpening_amount: 70,
+        sharpening_radius: 1.4,
+        sharpening_detail: 30,
+        sharpening_masking: 20,
+        texture: 12,
+        clarity: -8,
+        dehaze: 25
+    },
+    sourceGeom,
+    ['sharpen', 'clarity']
+);
+assert.deepEqual(detailOnly.params, {
+    sharpening_amount: 70,
+    sharpening_radius: 1.4,
+    sharpening_detail: 30,
+    sharpening_masking: 20,
+    clarity: -8
+});
+
+const mergedDetail = mergeCopyPayload(
+    { ...currentParams, texture: 5, clarity: 0 },
+    currentGeom,
+    detailOnly
+);
+assert.equal(mergedDetail.params.clarity, -8);
+assert.equal(mergedDetail.params.texture, 5);
+assert.equal(mergedDetail.params.sharpening_amount, 70);
+
 const legacyEdit = mergeCopyPayload(
     currentParams,
     currentGeom,
