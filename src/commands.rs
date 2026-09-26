@@ -3172,9 +3172,9 @@ fn prepare_content_render_limits_with_measured_base(
         // channel. That offset is the cast: measured on the underexposed
         // repro batch, the red frames all had their red base 0.05-0.10 of the
         // display range above their green. Equalizing the base's landing
-        // position across the channels, on the frames the evidence labels,
-        // removed it; a frame without evidence labels renders exactly as
-        // before.
+        // position across the channels removed it; frames with a trusted base
+        // already consumed the base's neutrality when subtracting it, so they
+        // render exactly as before.
         equalize_base_display_position(limits, base_density, measured_base);
         [0.0; 3]
     } else {
@@ -3197,19 +3197,23 @@ fn rule5_equalization_disabled() -> bool {
 /// Equalize where the frame's measured film base lands in each channel's
 /// display range, taking the green channel's own placement as the target.
 ///
-/// The co-sited endpoints decide where the base lands, and on a starved frame
-/// they put it at a different height in every channel - the red frames of the
-/// underexposed repro batch all measured their red base 0.05-0.10 of the
-/// display range above their green, which is exactly the red the frame then
-/// renders. The base's channel differences are a measurement of the film, not
-/// of the picture: its per-frame level error is common-mode across the
-/// channels, so only the differences reach the render, and the common level is
-/// re-anchored on the window's own luma so nothing new is clipped. A channel
-/// whose base candidate lands below the window start is brighter than the
-/// frame's own content - noise-floor pickup - and its origin is left alone.
+/// Only a frame whose base the gate *refused* runs this. Its window lives in
+/// absolute density, and the co-sited endpoints decide where the measured base
+/// lands - on a starved frame they put it at a different height in every
+/// channel, and the red frames of the underexposed repro batch all measured
+/// their red base 0.05-0.10 of the display range above their green, which is
+/// exactly the red the frame then renders. The base's channel differences are
+/// a measurement of the film, not of the picture: its per-frame level error is
+/// common-mode across the channels, so only the differences reach the render,
+/// and the common level is re-anchored on the window's own luma so nothing new
+/// is clipped. A channel whose base candidate lands below the window start is
+/// brighter than the frame's own content - noise-floor pickup - and its origin
+/// is left alone.
 ///
-/// Only frames the evidence labels run this; a frame without labels renders
-/// exactly the window rule 4 derived.
+/// A frame with a *trusted* base never runs this: subtracting that base per
+/// channel already consumed its neutrality, so its landing position carries
+/// scene structure rather than base colour, and moving origins with it would
+/// inject the scene into the window.
 fn equalize_base_display_position(
     limits: &mut AutoColorLimits,
     base_density: [f32; 3],
@@ -3221,9 +3225,7 @@ fn equalize_base_display_position(
     let Some(candidate) = measured_base else {
         return;
     };
-    if !is_measured_film_base(&candidate)
-        || prescribed_response_evidence(Some(candidate), base_density, limits).is_empty()
-    {
+    if base_density.iter().any(|value| *value > 0.0) || !is_measured_film_base(&candidate) {
         return;
     }
     let span: [f32; 3] = std::array::from_fn(|channel| {
@@ -19345,6 +19347,30 @@ mod import_contract_tests {
         assert_eq!(limits.d_max, [0.75, 0.85, 0.95]);
     }
 
+    /// A frame with a trusted base renders exactly the rule-4 window even when
+    /// the evidence labels it: subtracting the base per channel already
+    /// consumed its neutrality, so the base's landing position carries scene
+    /// structure, and equalizing it would inject the scene into the origins.
+    /// The numbers are _DSC7581-Pano.tif, whose spans sit far outside the
+    /// balanced envelope.
+    #[test]
+    fn a_flagged_frame_with_a_trusted_base_is_not_equalized() {
+        let base = [0.075_f32, 0.207, 0.418];
+        let mut limits = super::AutoColorLimits {
+            d_min: [-0.001, -0.002, -0.004],
+            d_max: [0.186, 0.682, 1.235],
+            pipeline_state: None,
+        };
+        super::prepare_content_render_limits_with_measured_base(
+            &mut limits,
+            &DensityAnchors::default(),
+            base,
+            Some(base),
+        );
+        assert_eq!(limits.d_min, [-0.001, -0.002, -0.004]);
+        assert_eq!(limits.d_max, [0.186, 0.682, 1.235]);
+    }
+
     /// Without a measurement the window stays exactly what it is today: one
     /// shared span with clamped channel offsets, which measures the base onto
     /// three different display values. This pins the "no measurement, no
@@ -20673,46 +20699,20 @@ mod import_contract_tests {
                         max = std::array::from_fn(|channel| min[channel] + span_g * pool_spans[channel]);
                     }
                     if basepos {
-                        // Equalize where the measured film base lands in each
-                        // channel's display range, taking the green channel's
-                        // own placement as the target, then re-anchor the
-                        // common level on the window's current luma. The
-                        // candidate's per-frame level error is common-mode
-                        // across the channels, so only its channel differences
-                        // - a measurement of the film, not of the picture -
-                        // reach the render; the placement never clips content.
-                        let base_relative: [f32; 3] = std::array::from_fn(|channel| {
-                            frame.candidate[channel] - base_in_use[channel]
-                        });
-                        let span: [f32; 3] = std::array::from_fn(|channel| {
-                            (max[channel] - min[channel]).max(1.0e-6)
-                        });
-                        let position: [f32; 3] = std::array::from_fn(|channel| {
-                            (base_relative[channel] - min[channel]) / span[channel]
-                        });
-                        // A base candidate that lands below the window start is
-                        // brighter than the frame's own content: that channel's
-                        // measurement is noise-floor pickup, and moving its
-                        // origin would brighten the channel on the strength of
-                        // the noise. Only channels whose base landed inside the
-                        // window are equalized; a green target outside the
-                        // window leaves the frame on its co-sited window.
-                        if position[1] >= 0.0 {
-                            let target = position[1];
-                            let mut shifted = min;
-                            for channel in 0..3 {
-                                if channel != 1 && position[channel] >= 0.0 {
-                                    shifted[channel] =
-                                        base_relative[channel] - target * span[channel];
-                                }
-                            }
-                            let common = density_luma(min) - density_luma(shifted);
-                            for channel in 0..3 {
-                                shifted[channel] += common;
-                            }
-                            min = shifted;
-                            max = std::array::from_fn(|channel| min[channel] + span[channel]);
-                        }
+                        // Delegate to the shipping rule-5 equalization so this
+                        // experiment can never drift from what production does.
+                        let mut window = super::AutoColorLimits {
+                            d_min: min,
+                            d_max: max,
+                            pipeline_state: None,
+                        };
+                        super::equalize_base_display_position(
+                            &mut window,
+                            base_in_use,
+                            Some(frame.candidate),
+                        );
+                        min = window.d_min;
+                        max = window.d_max;
                     }
                     let base_position: [f32; 3] = std::array::from_fn(|channel| {
                         let span = (max[channel] - min[channel]).max(1.0e-6);
