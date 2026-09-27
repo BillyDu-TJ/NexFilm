@@ -10683,6 +10683,14 @@ fn render_shader_equivalent_core(
                     (rendered[1] / k).clamp(0.0, 1.0),
                     (rendered[2] * gain_b / k).clamp(0.0, 1.0),
                 ];
+                // The print stage: evidence frames leave the density window
+                // linear, with none of the contrast a film print applies, so
+                // they read washed against every reference that prints through
+                // a film curve. This runs the Kodak Vision 2383 print film's
+                // published characteristic curve - soft highlight shoulder,
+                // steepened straight line, firm blacks - as the print stage
+                // the density window stands in for.
+                rendered = prescribed_print_tone_set().apply(rendered);
             }
 
             if let Some(target) = sprocket_target {
@@ -10780,10 +10788,58 @@ fn prescribed_chroma_fade(luma: f32) -> f32 {
     PRESCRIBED_CHROMA_FADE_FLOOR + (1.0 - PRESCRIBED_CHROMA_FADE_FLOOR) * w
 }
 
-/// The per-frame normalizer's bound: a scene's genuine colour must survive
-/// the pull toward neutral, so the correction never exceeds about 8% per
-/// channel in log terms.
-const PRESCRIBED_CHROMA_BOUND: f32 = 0.08;
+/// The per-frame normalizer's bound. Starved frames' windows carry per-channel
+/// span imbalances of 10-30%, which no smaller authority can reach; the user
+/// has accepted that a genuinely coloured scene - a stylized sunset - will be
+/// pulled toward neutral in exchange.
+const PRESCRIBED_CHROMA_BOUND: f32 = 0.25;
+
+/// The print stage's tone response, shaped after the Kodak Vision 2383 color
+/// print film's published characteristic curve (the sensiometric D-LogE table
+/// of the film's three dye layers, averaged and placed with the midtone
+/// anchored): the highlight shoulder compresses, the straight line steepens,
+/// and the blacks firm up. Evidence frames leave the density window linear -
+/// none of a film print's contrast - which is why they read washed against
+/// references that print through a film curve.
+const PRESCRIBED_PRINT_TONE: [[f32; 2]; 21] = [
+    [0.0, 0.0],
+    [0.05, 0.0257],
+    [0.1, 0.0579],
+    [0.15, 0.0951],
+    [0.2, 0.1394],
+    [0.25, 0.1868],
+    [0.3, 0.2388],
+    [0.35, 0.2985],
+    [0.4, 0.362],
+    [0.45, 0.4277],
+    [0.5, 0.5],
+    [0.55, 0.5677],
+    [0.6, 0.6311],
+    [0.65, 0.6917],
+    [0.7, 0.7511],
+    [0.75, 0.8054],
+    [0.8, 0.8565],
+    [0.85, 0.9018],
+    [0.9, 0.9398],
+    [0.95, 0.9719],
+    [1.0, 1.0],
+];
+
+/// The print tone curve as a curve set: the same response on each channel
+/// (the print film's per-dye-layer seasoning is deliberately left out, so the
+/// tone stage stays colour-neutral and the chroma layers keep their say).
+fn prescribed_print_tone_set() -> &'static ToneCurveSet {
+    static SET: std::sync::OnceLock<ToneCurveSet> = std::sync::OnceLock::new();
+    SET.get_or_init(|| {
+        let identity = [[0.0f32, 0.0], [1.0, 1.0]];
+        ToneCurveSet::new(
+            &identity,
+            &PRESCRIBED_PRINT_TONE,
+            &PRESCRIBED_PRINT_TONE,
+            &PRESCRIBED_PRINT_TONE,
+        )
+    })
+}
 
 /// Estimate the frame's residual cast from the rendered frame: the median
 /// log-chroma of luminance edges inside the mid-tone window. Edges are robust
