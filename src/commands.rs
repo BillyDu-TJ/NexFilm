@@ -20125,7 +20125,7 @@ mod import_contract_tests {
         for (flip, name, path) in &samples {
             let (name, path) = (*name, path.clone());
             let path_string = path.to_string_lossy().to_string();
-            let working = match report_working_estimate(&path_string, edge) {
+            let mut working = match report_working_estimate(&path_string, edge) {
                 Ok(working) => working,
                 Err(error) => {
                     println!("[SKIP] {name}: {error}");
@@ -20139,6 +20139,31 @@ mod import_contract_tests {
                 );
                 if border.confidence == crate::film_border::DetectionConfidence::High {
                     geom.calibration_points = Some(border.points);
+                }
+            }
+            // NEXFILM_BRIGHTEN=1: the "preprocess, then normal path" experiment.
+            // Scale each channel's transmission so the straddling band lands at
+            // 0.45 D, then let the completely untouched pipeline run on the
+            // brightened scan - base estimation, gates, window, render.
+            if std::env::var("NEXFILM_BRIGHTEN").is_ok_and(|value| value == "1") {
+                let mut band = super::collect_film_area_band_rgb32(
+                        &working,
+                        None,
+                        &geom,
+                        super::FILM_BASE_BAND_WIDTH,
+                    );
+                if band.len() >= 64 {
+                    let band_density = super::median_channel_density(&mut band);
+                    let mut brightened = working.clone();
+                    for (_x, _y, pixel) in brightened.enumerate_pixels_mut() {
+                        for channel in 0..3 {
+                            let gain = 10f32.powf(band_density[channel] - 0.45);
+                            pixel[channel] = (pixel[channel] * gain).min(0.99);
+                        }
+                    }
+                    working = brightened;
+                    println!("[BRIGHTEN] {name} band=({:.3},{:.3},{:.3})",
+                        band_density[0], band_density[1], band_density[2]);
                 }
             }
             // The scan orientation differs from frame to frame, so the render

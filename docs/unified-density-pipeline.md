@@ -366,4 +366,22 @@ band/tail 都失败才启用），并按环形测量让 7 帧中的 3 帧先变�
 （片基平台位置、罩色度指纹）保留在 harness 里，供将来卷级物理锚定使用。
 估计器实现回退到 12.5/12.6 状态；`film_base_ring_profile` 探针保留。
 
+### 12.8 "先拉亮再走正常路径"的实验与否决（2026-09-27）
+
+针对暗曝光扫描的直觉方案：检测到欠曝后先把扫描拉亮（按带候选密度做每通道透过率增益，
+把片基平移回正常范围），再走完全未改动的正常管线。harness 以 `NEXFILM_BRIGHTEN=1`
+实现了该实验（`prescribed_response_render_report`）。
+
+结果：7 个有标定点的帧全部**变差或持平**（1947: 0.978→1.320、1946: 0.942→1.147、
+1950: 0.986→1.221、1949: 1.008→0.777），与 12.7 的可信路径结果完全一致。机制：
+渲染的窗口永远由画面内容推导，把整条密度轴抬多高窗口就跟多高——**拉亮被窗口原样吸收**，
+不改变任何渲染数学；它唯一改变的是片基门槛的判定，翻转为可信后反而关掉了规则 5 均衡
+与打样响应层这两层现行有效的补偿。无标定点的帧（1944/1945/1951/1952）不受影响。
+LR 拼接族的片基本就在正常范围、早已是可信路径，其偏色来自拼接本身的通道失衡
+（imbalance 1.9–6.6），与扫描明暗无关，拉亮同样帮不上。
+
+结论：对单帧渲染而言，任何每通道的仿射预处理（拉亮、按片基增益）都会被内容窗口吸收；
+能改变结果的只有"画面之外"的信息注入（现有两层即此类）或改变渲染数学的非仿射手段
+（色调曲线、跨度校正——均为产品决策）。
+
 - 复现：`cargo test --lib pooled_axis_report -- --ignored --nocapture`（`NEXFILM_AXIS_MODE=spans|origin|full|statusm|prior|basepos` 各变体）；渲染对照与 sweep 见 `prescribed_response_render_report`；拼图脚本 `scripts/experiments/density-fallback/compose_axis_review.py`。三层重构的标定与验收：`verify27_joint_calib.py`（联合标定，产出 `target/prescribed-response/profile.json`）→ `verify28_apply.py`（估计器 bake-off + WB 投影形状残差）→ `verify29_fade_test.py`（渐隐窗与 1942 天空分解）→ `verify30_final_review.py`（Rust 落地帧均值 + 最终拼图）；双跑 sweep 见上文 `NEXFILM_RENDER_SWEEP=1` × `NEXFILM_PRINT_LUT_DISABLE=1`。
