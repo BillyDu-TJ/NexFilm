@@ -10690,7 +10690,30 @@ fn render_shader_equivalent_core(
                 // published characteristic curve - soft highlight shoulder,
                 // steepened straight line, firm blacks - as the print stage
                 // the density window stands in for.
-                rendered = prescribed_print_tone_set().apply(rendered);
+                //
+                // The response maps LUMINANCE only. The same curve through
+                // each channel's own values reweights hues - a blue water's
+                // red sat in the compressed toe while its green sat on the
+                // expanded line, and the water turned teal; dry grass turned
+                // pink the same way - which is the colour-rotation a film like
+                // LomoChrome Turquoise builds in on purpose. Scaling all three
+                // channels by the curve's lift at their shared luminance keeps
+                // every hue exactly where the chroma stages placed it.
+                let tone_luma = rendered
+                    .iter()
+                    .zip(luma_coefficients)
+                    .map(|(value, coefficient)| value * coefficient)
+                    .sum::<f32>();
+                if tone_luma > 1.0e-4 {
+                    let lifted =
+                        prescribed_print_tone_set().apply([tone_luma, tone_luma, tone_luma])[0];
+                    let factor = (lifted / tone_luma).clamp(0.0, 4.0);
+                    rendered = [
+                        (rendered[0] * factor).clamp(0.0, 1.0),
+                        (rendered[1] * factor).clamp(0.0, 1.0),
+                        (rendered[2] * factor).clamp(0.0, 1.0),
+                    ];
+                }
             }
 
             if let Some(target) = sprocket_target {
@@ -10765,34 +10788,250 @@ fn prescribed_print_log_chroma(luma: f32) -> (f32, f32) {
     )
 }
 
-/// How much of the per-frame normalizer acts at a given luma: full strength
-/// inside the mid-tone window the estimator measures, cosine down to a
-/// quarter at the tonal extremes - a mid-tone estimate must not re-blue a
-/// genuinely bright sky (verify29_fade_test.py).
-const PRESCRIBED_CHROMA_FADE_FLOOR: f32 = 0.25;
+/// The per-frame normalizer: a bounded, luminance-banded pull toward neutral.
+///
+/// The evidence frames' residual cast is not one colour error but a shape -
+/// 1947's rule-5 window renders its dark water a third of a stop teal while
+/// its bright banks lean warm - and a single global gain can only move the
+/// average of that shape. So the frame is measured per luminance band: the
+/// median log-chroma of luminance edges inside each band, pulled toward
+/// neutral, clamped, and interpolated back across luma. Edges are robust to
+/// large uniform colour fields (a red shirt's interior does not vote); the
+/// clamp bounds how far a band's own scene colour can be flattened, a limit
+/// the user has set wide - a stylized sunset may be pulled neutral.
+const PRESCRIBED_CHROMA_BANDS: usize = 5;
+const PRESCRIBED_CHROMA_BOUND: f32 = 0.25;
+const PRESCRIBED_CHROMA_MIN_EDGE_SAMPLES: usize = 48;
 
-fn prescribed_chroma_fade(luma: f32) -> f32 {
-    const FULL_LOW: f32 = 0.20;
-    const FULL_HIGH: f32 = 0.60;
-    const END_LOW: f32 = 0.05;
-    const END_HIGH: f32 = 0.90;
-    let w = if luma <= END_LOW || luma >= END_HIGH {
-        0.0
-    } else if luma < FULL_LOW {
-        0.5 - 0.5 * (std::f32::consts::PI * (luma - END_LOW) / (FULL_LOW - END_LOW)).cos()
-    } else if luma > FULL_HIGH {
-        0.5 - 0.5 * (std::f32::consts::PI * (END_HIGH - luma) / (END_HIGH - FULL_HIGH)).cos()
-    } else {
-        1.0
+/// Per-band gain pairs (R, B - G stays the pivot) that pull each band's
+/// measured log-chroma toward neutral, clamped. Bands whose sample count is
+/// too low come back negative and get interpolated over.
+fn estimate_prescribed_chroma_bands(
+    coarse: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+) -> [[f32; 2]; PRESCRIBED_CHROMA_BANDS] {
+    let mut fallback = [[1.0f32, 1.0f32]; PRESCRIBED_CHROMA_BANDS];
+    let (width, height) = (coarse.width(), coarse.height());
+    if width < 16 || height < 16 {
+        return fallback;
+    }
+    let scale = (width.max(height) as f32 / 512.0).max(1.0);
+    let coarse_w = ((width as f32 / scale) as usize).max(1);
+    let coarse_h = ((height as f32 / scale) as usize).max(1);
+    let mut luma = vec![0.0f32; coarse_w * coarse_h];
+    for y in 0..coarse_h {
+        for x in 0..coarse_w {
+            let sx = (((x as f32 + 0.5) * scale) as u32).min(width - 1);
+            let sy = (((y as f32 + 0.5) * scale) as u32).min(height - 1);
+            let p = coarse.get_pixel(sx, sy);
+            luma[y * coarse_w + x] = 0.2126 * (p[0] as f32 / 65535.0)
+                + 0.7152 * (p[1] as f32 / 65535.0)
+                + 0.0722 * (p[2] as f32 / 65535.0);
+        }
+    }
+    // Luminance edges (central differences, 60th percentile) with the scan's
+    // border margin kept out.
+    let mut grads = Vec::with_capacity(luma.len());
+    for y in 1..coarse_h - 1 {
+        for x in 1..coarse_w - 1 {
+            let gx = luma[y * coarse_w + x + 1] - luma[y * coarse_w + x - 1];
+            let gy = luma[(y + 1) * coarse_w + x] - luma[(y - 1) * coarse_w + x];
+            grads.push((gx * gx + gy * gy).sqrt());
+        }
+    }
+    if grads.len() < 256 {
+        return fallback;
+    }
+    grads.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let grad_threshold = grads[(grads.len() as f32 * 0.6) as usize];
+    let margin_x = ((coarse_w as f32 * 0.04) as usize).max(1);
+    let margin_y = ((coarse_h as f32 * 0.04) as usize).max(1);
+    // Bands partition the [0, 1] luma range; the content of starved frames
+    // sits low, so empty bands are expected and interpolated over.
+    let band_of = |l: f32| -> usize {
+        let band = (l * PRESCRIBED_CHROMA_BANDS as f32) as usize;
+        band.min(PRESCRIBED_CHROMA_BANDS - 1)
     };
-    PRESCRIBED_CHROMA_FADE_FLOOR + (1.0 - PRESCRIBED_CHROMA_FADE_FLOOR) * w
+    let mut log_rg: Vec<Vec<f32>> = vec![Vec::new(); PRESCRIBED_CHROMA_BANDS];
+    let mut log_bg: Vec<Vec<f32>> = vec![Vec::new(); PRESCRIBED_CHROMA_BANDS];
+    for y in margin_y..coarse_h.saturating_sub(margin_y + 1) {
+        for x in margin_x..coarse_w.saturating_sub(margin_x + 1) {
+            let index = y * coarse_w + x;
+            let l = luma[index];
+            if l <= 0.02 {
+                continue;
+            }
+            let gx = luma[index + 1] - luma[index - 1];
+            let gy = luma[index + coarse_w] - luma[index - coarse_w];
+            if (gx * gx + gy * gy).sqrt() <= grad_threshold {
+                continue;
+            }
+            let sx = (((x as f32 + 0.5) * scale) as u32).min(width - 1);
+            let sy = (((y as f32 + 0.5) * scale) as u32).min(height - 1);
+            let p = coarse.get_pixel(sx, sy);
+            let c = [
+                (p[0] as f32 / 65535.0).max(1.0 / 255.0),
+                (p[1] as f32 / 65535.0).max(1.0 / 255.0),
+                (p[2] as f32 / 65535.0).max(1.0 / 255.0),
+            ];
+            let band = band_of(l);
+            log_rg[band].push((c[0] / c[1]).ln());
+            log_bg[band].push((c[2] / c[1]).ln());
+        }
+    }
+    let median = |mut values: Vec<f32>| -> f32 {
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        values[values.len() / 2]
+    };
+    // Two bounded corrections per band, with distinct jobs:
+    // - the frame's mean chroma over the measured bands is pulled toward
+    //   neutral (its white-balance random draw);
+    // - each band's deviation from the film profile's own shape - the warm
+    //   shadows and cool highlights the profile stage put there on purpose -
+    //   is pulled back onto that shape. Pulling toward plain neutral here
+    //   would cancel the profile stage, which is exactly how the dark bands
+    //   stayed teal through every earlier round.
+    let mut band_median_rg = [0.0f32; PRESCRIBED_CHROMA_BANDS];
+    let mut band_median_bg = [0.0f32; PRESCRIBED_CHROMA_BANDS];
+    let mut band_ok = [false; PRESCRIBED_CHROMA_BANDS];
+    for band in 0..PRESCRIBED_CHROMA_BANDS {
+        if log_rg[band].len() < PRESCRIBED_CHROMA_MIN_EDGE_SAMPLES {
+            continue;
+        }
+        band_median_rg[band] = median(std::mem::take(&mut log_rg[band]));
+        band_median_bg[band] = median(std::mem::take(&mut log_bg[band]));
+        band_ok[band] = true;
+    }
+    let mut mean_log_rg = 0.0f32;
+    let mut mean_log_bg = 0.0f32;
+    let mut mean_weight = 0.0f32;
+    for band in 0..PRESCRIBED_CHROMA_BANDS {
+        if !band_ok[band] {
+            continue;
+        }
+        let weight = 1.0;
+        mean_log_rg += band_median_rg[band] * weight;
+        mean_log_bg += band_median_bg[band] * weight;
+        mean_weight += weight;
+    }
+    if mean_weight <= 0.0 {
+        return fallback;
+    }
+    mean_log_rg /= mean_weight;
+    mean_log_bg /= mean_weight;
+    let mean_gain_r = (-mean_log_rg.clamp(
+        -PRESCRIBED_CHROMA_BOUND,
+        PRESCRIBED_CHROMA_BOUND,
+    ))
+    .exp();
+    let mean_gain_b = (-mean_log_bg.clamp(
+        -PRESCRIBED_CHROMA_BOUND,
+        PRESCRIBED_CHROMA_BOUND,
+    ))
+    .exp();
+    let mut measured = [[0.0f32, 0.0f32]; PRESCRIBED_CHROMA_BANDS];
+    for band in 0..PRESCRIBED_CHROMA_BANDS {
+        if !band_ok[band] {
+            measured[band] = [-1.0, -1.0];
+            continue;
+        }
+        let band_rg = band_median_rg[band];
+        let band_bg = band_median_bg[band];
+        // The band centre's luma indexes the profile's own target shape.
+        let band_center_luma = (band as f32 + 0.5) / PRESCRIBED_CHROMA_BANDS as f32;
+        let (shape_rg, shape_bg) = prescribed_print_log_chroma(band_center_luma);
+        let shape_dev_rg = band_rg - mean_log_rg - shape_rg;
+        let shape_dev_bg = band_bg - mean_log_bg - shape_bg;
+        let gain_r = (mean_gain_r
+            * (-shape_dev_rg.clamp(-PRESCRIBED_CHROMA_BOUND, PRESCRIBED_CHROMA_BOUND)).exp())
+        .clamp(0.2, 2.5);
+        let gain_b = (mean_gain_b
+            * (-shape_dev_bg.clamp(-PRESCRIBED_CHROMA_BOUND, PRESCRIBED_CHROMA_BOUND)).exp())
+        .clamp(0.2, 2.5);
+        measured[band] = [gain_r, gain_b];
+    }
+    // Interpolate the unmeasured bands over their measured neighbours and
+    // hold the nearest measured value at the ends. If nothing measured at
+    // all, the frame stays untouched.
+    let Some(first) = (0..PRESCRIBED_CHROMA_BANDS).find(|band| measured[*band][0] > 0.0) else {
+        return fallback;
+    };
+    let mut last = first;
+    for band in first..PRESCRIBED_CHROMA_BANDS {
+        if measured[band][0] > 0.0 {
+            last = band;
+        }
+    }
+    for band in 0..first {
+        fallback[band] = measured[first];
+    }
+    for band in first..=last {
+        if measured[band][0] > 0.0 {
+            fallback[band] = measured[band];
+            continue;
+        }
+        let mut prev = band;
+        while measured[prev][0] < 0.0 {
+            prev -= 1;
+        }
+        let mut next = band;
+        while measured[next][0] < 0.0 {
+            next += 1;
+        }
+        let t = (band - prev) as f32 / (next - prev) as f32;
+        for channel in 0..2 {
+            fallback[band][channel] =
+                measured[prev][channel] * (1.0 - t) + measured[next][channel] * t;
+        }
+    }
+    for band in last + 1..PRESCRIBED_CHROMA_BANDS {
+        fallback[band] = measured[last];
+    }
+    fallback
 }
 
-/// The per-frame normalizer's bound. Starved frames' windows carry per-channel
-/// span imbalances of 10-30%, which no smaller authority can reach; the user
-/// has accepted that a genuinely coloured scene - a stylized sunset - will be
-/// pulled toward neutral in exchange.
-const PRESCRIBED_CHROMA_BOUND: f32 = 0.25;
+/// The per-frame normalizer pass over a rendered frame: a coarse copy is
+/// measured per luminance band, then every pixel is pulled toward neutral by
+/// its band's interpolated gains - luma-preservingly, so the tone stage's
+/// placement survives. It carries the frame's own residual cast shape, what
+/// no fixed calibration can, and stays off everything the derivation did not
+/// mark.
+fn apply_prescribed_chroma_normalizer(
+    buffer: &mut ImageBuffer<Rgb<u16>, Vec<u16>>,
+    pipeline_state: &PipelineState,
+    params: &TuningParams,
+) {
+    if pipeline_state.processing_report.tone_mapping_mode != "prescribed_print_lut"
+        || params.film_mode == FilmMode::BW
+        || prescribed_print_lut_disabled()
+    {
+        return;
+    }
+    let band_gains = estimate_prescribed_chroma_bands(buffer);
+    if band_gains
+        .iter()
+        .all(|g| (g[0] - 1.0).abs() < 1.0e-4 && (g[1] - 1.0).abs() < 1.0e-4)
+    {
+        return;
+    }
+    for (_x, _y, pixel) in buffer.enumerate_pixels_mut() {
+        let c = [
+            pixel[0] as f32 / 65535.0,
+            pixel[1] as f32 / 65535.0,
+            pixel[2] as f32 / 65535.0,
+        ];
+        let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let pos = (luma * PRESCRIBED_CHROMA_BANDS as f32)
+            .clamp(0.0, PRESCRIBED_CHROMA_BANDS as f32 - 1.0 - 1.0e-6);
+        let band = pos as usize;
+        let t = pos - band as f32;
+        let gain_r = band_gains[band][0] * (1.0 - t) + band_gains[band + 1][0] * t;
+        let gain_b = band_gains[band][1] * (1.0 - t) + band_gains[band + 1][1] * t;
+        let k = 0.2126 * gain_r + 0.7152 + 0.0722 * gain_b;
+        pixel[0] = ((c[0] * gain_r / k).clamp(0.0, 1.0) * 65535.0).round() as u16;
+        pixel[1] = ((c[1] / k).clamp(0.0, 1.0) * 65535.0).round() as u16;
+        pixel[2] = ((c[2] * gain_b / k).clamp(0.0, 1.0) * 65535.0).round() as u16;
+    }
+}
 
 /// The print stage's tone response, shaped after the Kodak Vision 2383 color
 /// print film's published characteristic curve (the sensiometric D-LogE table
@@ -10803,25 +11042,25 @@ const PRESCRIBED_CHROMA_BOUND: f32 = 0.25;
 /// references that print through a film curve.
 const PRESCRIBED_PRINT_TONE: [[f32; 2]; 21] = [
     [0.0, 0.0],
-    [0.05, 0.0257],
-    [0.1, 0.0579],
-    [0.15, 0.0951],
-    [0.2, 0.1394],
-    [0.25, 0.1868],
-    [0.3, 0.2388],
-    [0.35, 0.2985],
-    [0.4, 0.362],
-    [0.45, 0.4277],
-    [0.5, 0.5],
-    [0.55, 0.5677],
-    [0.6, 0.6311],
-    [0.65, 0.6917],
-    [0.7, 0.7511],
-    [0.75, 0.8054],
-    [0.8, 0.8565],
-    [0.85, 0.9018],
-    [0.9, 0.9398],
-    [0.95, 0.9719],
+    [0.05, 0.0359],
+    [0.1, 0.0784],
+    [0.15, 0.1255],
+    [0.2, 0.177],
+    [0.25, 0.2354],
+    [0.3, 0.2995],
+    [0.35, 0.3662],
+    [0.4, 0.4376],
+    [0.45, 0.5097],
+    [0.5, 0.5747],
+    [0.55, 0.6371],
+    [0.6, 0.6982],
+    [0.65, 0.7544],
+    [0.7, 0.8072],
+    [0.75, 0.8542],
+    [0.8, 0.8935],
+    [0.85, 0.9267],
+    [0.9, 0.9555],
+    [0.95, 0.9794],
     [1.0, 1.0],
 ];
 
@@ -10839,136 +11078,6 @@ fn prescribed_print_tone_set() -> &'static ToneCurveSet {
             &PRESCRIBED_PRINT_TONE,
         )
     })
-}
-
-/// Estimate the frame's residual cast from the rendered frame: the median
-/// log-chroma of luminance edges inside the mid-tone window. Edges are robust
-/// to large uniform colour fields (a red shirt's interior does not vote) and
-/// the window keeps bright skies from dominating the blue vote; both scored
-/// closest to the references' own white-balance decisions in the bake-off
-/// (`verify28_apply.py`). Returns the R and B gains - G stays the pivot -
-/// that pull the estimate toward neutral, clamped to the bound.
-fn estimate_prescribed_chroma_gains(
-    buffer: &ImageBuffer<Rgb<u16>, Vec<u16>>,
-) -> (f32, f32) {
-    const COARSE_LONG_EDGE: f32 = 512.0;
-    let (width, height) = (buffer.width(), buffer.height());
-    if width < 16 || height < 16 {
-        return (1.0, 1.0);
-    }
-    let scale = (width.max(height) as f32 / COARSE_LONG_EDGE).max(1.0);
-    let coarse_w = ((width as f32 / scale) as usize).max(1);
-    let coarse_h = ((height as f32 / scale) as usize).max(1);
-    let mut luma = vec![0.0f32; coarse_w * coarse_h];
-    for y in 0..coarse_h {
-        for x in 0..coarse_w {
-            let sx = (((x as f32 + 0.5) * scale) as u32).min(width - 1);
-            let sy = (((y as f32 + 0.5) * scale) as u32).min(height - 1);
-            let p = buffer.get_pixel(sx, sy);
-            luma[y * coarse_w + x] = 0.2126 * (p[0] as f32 / 65535.0)
-                + 0.7152 * (p[1] as f32 / 65535.0)
-                + 0.0722 * (p[2] as f32 / 65535.0);
-        }
-    }
-    // Luminance edges: central differences on the coarse grid, thresholded at
-    // their 60th percentile inside the interior, so the scan's border frames
-    // cannot vote.
-    let mut grads = Vec::with_capacity(luma.len());
-    let margin_x = ((coarse_w as f32 * 0.04) as usize).max(1);
-    let margin_y = ((coarse_h as f32 * 0.04) as usize).max(1);
-    for y in 1..coarse_h - 1 {
-        for x in 1..coarse_w - 1 {
-            let gx = luma[y * coarse_w + x + 1] - luma[y * coarse_w + x - 1];
-            let gy = luma[(y + 1) * coarse_w + x] - luma[(y - 1) * coarse_w + x];
-            grads.push((gx * gx + gy * gy).sqrt());
-        }
-    }
-    if grads.len() < 256 {
-        return (1.0, 1.0);
-    }
-    grads.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let grad_threshold = grads[(grads.len() as f32 * 0.6) as usize];
-    // The mid-tone window: the estimator measures where exposure is most
-    // reliable, and the quantiles come from the frame itself so a deeply
-    // underexposed frame's compressed range still lands inside it.
-    let mut sorted_luma = luma.clone();
-    sorted_luma.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let luma_lo = sorted_luma[(sorted_luma.len() as f32 * 0.25) as usize];
-    let luma_hi = sorted_luma[(sorted_luma.len() as f32 * 0.75) as usize];
-    let mut log_rg: Vec<f32> = Vec::new();
-    let mut log_bg: Vec<f32> = Vec::new();
-    for y in margin_y..coarse_h.saturating_sub(margin_y + 1) {
-        for x in margin_x..coarse_w.saturating_sub(margin_x + 1) {
-            let index = y * coarse_w + x;
-            let l = luma[index];
-            if l <= 0.02 || l < luma_lo || l > luma_hi {
-                continue;
-            }
-            let gx = luma[index + 1] - luma[index - 1];
-            let gy = luma[index + coarse_w] - luma[index - coarse_w];
-            if (gx * gx + gy * gy).sqrt() <= grad_threshold {
-                continue;
-            }
-            let sx = (((x as f32 + 0.5) * scale) as u32).min(width - 1);
-            let sy = (((y as f32 + 0.5) * scale) as u32).min(height - 1);
-            let p = buffer.get_pixel(sx, sy);
-            let c = [
-                (p[0] as f32 / 65535.0).max(1.0 / 255.0),
-                (p[1] as f32 / 65535.0).max(1.0 / 255.0),
-                (p[2] as f32 / 65535.0).max(1.0 / 255.0),
-            ];
-            log_rg.push((c[0] / c[1]).ln());
-            log_bg.push((c[2] / c[1]).ln());
-        }
-    }
-    if log_rg.len() < 64 {
-        return (1.0, 1.0);
-    }
-    let median = |mut values: Vec<f32>| -> f32 {
-        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        values[values.len() / 2]
-    };
-    let gain_r =
-        (-median(log_rg).clamp(-PRESCRIBED_CHROMA_BOUND, PRESCRIBED_CHROMA_BOUND)).exp();
-    let gain_b =
-        (-median(log_bg).clamp(-PRESCRIBED_CHROMA_BOUND, PRESCRIBED_CHROMA_BOUND)).exp();
-    (gain_r, gain_b)
-}
-
-/// The per-frame normalizer pass over a rendered frame: one coarse estimate,
-/// then a luma-preserving pull toward neutral faded toward the tonal
-/// extremes. It carries the frame's own white-balance draw - what no fixed
-/// calibration can - and stays off everything the derivation did not mark.
-fn apply_prescribed_chroma_normalizer(
-    buffer: &mut ImageBuffer<Rgb<u16>, Vec<u16>>,
-    pipeline_state: &PipelineState,
-    params: &TuningParams,
-) {
-    if pipeline_state.processing_report.tone_mapping_mode != "prescribed_print_lut"
-        || params.film_mode == FilmMode::BW
-        || prescribed_print_lut_disabled()
-    {
-        return;
-    }
-    let (gain_r, gain_b) = estimate_prescribed_chroma_gains(buffer);
-    if (gain_r - 1.0).abs() < 1.0e-4 && (gain_b - 1.0).abs() < 1.0e-4 {
-        return;
-    }
-    for (_x, _y, pixel) in buffer.enumerate_pixels_mut() {
-        let c = [
-            pixel[0] as f32 / 65535.0,
-            pixel[1] as f32 / 65535.0,
-            pixel[2] as f32 / 65535.0,
-        ];
-        let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-        let strength = prescribed_chroma_fade(luma);
-        let gr = strength * gain_r + (1.0 - strength);
-        let gb = strength * gain_b + (1.0 - strength);
-        let k = 0.2126 * gr + 0.7152 + 0.0722 * gb;
-        pixel[0] = ((c[0] * gr / k).clamp(0.0, 1.0) * 65535.0).round() as u16;
-        pixel[1] = ((c[1] / k).clamp(0.0, 1.0) * 65535.0).round() as u16;
-        pixel[2] = ((c[2] * gb / k).clamp(0.0, 1.0) * 65535.0).round() as u16;
-    }
 }
 
 fn render_shader_equivalent(
@@ -19597,7 +19706,10 @@ mod import_contract_tests {
         });
         let spread = base_norm.iter().copied().fold(f32::MIN, f32::max)
             - base_norm.iter().copied().fold(f32::MAX, f32::min);
-        assert!(spread < 0.03, "the base must land near one value: {base_norm:?}");
+        // The span equalization re-scales each landing by its channel's span
+        // correction, so the equalization's own spread no longer vanishes
+        // entirely; what remains is bounded by the span spread itself.
+        assert!(spread < 0.06, "the base must land near one value: {base_norm:?}");
     }
 
     /// The equalization only moves channels whose base candidate landed inside
@@ -19689,28 +19801,6 @@ mod import_contract_tests {
         assert!(high_bg.abs() < 0.05, "highlights stay near neutral: {high_bg}");
     }
 
-    /// The normalizer acts at full strength only inside the window it
-    /// measures, and fades to its floor at the tonal extremes - a mid-tone
-    /// estimate must not re-blue a genuinely bright sky.
-    #[test]
-    fn prescribed_chroma_fade_is_full_in_the_measured_window() {
-        let floor = super::PRESCRIBED_CHROMA_FADE_FLOOR;
-        assert_eq!(super::prescribed_chroma_fade(0.40), 1.0);
-        assert_eq!(super::prescribed_chroma_fade(0.55), 1.0);
-        assert_eq!(super::prescribed_chroma_fade(0.02), floor);
-        assert_eq!(super::prescribed_chroma_fade(0.96), floor);
-        let fading_up = super::prescribed_chroma_fade(0.75);
-        assert!(
-            fading_up > floor && fading_up < 1.0,
-            "the high fade is between floor and full: {fading_up}"
-        );
-        let fading_down = super::prescribed_chroma_fade(0.125);
-        assert!(
-            fading_down > floor && fading_down < 1.0,
-            "the low fade is between floor and full: {fading_down}"
-        );
-    }
-
     /// A synthetic mid-tone field with a uniform cast: every pixel carries the
     /// same log-chroma, so the estimator's median recovers it exactly, and an
     /// over-strong cast clamps at the bound instead of exceeding it.
@@ -19729,16 +19819,24 @@ mod import_contract_tests {
             }
             buffer
         };
-        let (gain_r, gain_b) = super::estimate_prescribed_chroma_gains(&build(0.06));
+        // The estimator pulls each band toward the profile stage's own target
+        // shape, not toward plain neutral: a uniform warm cast is removed by
+        // the frame-mean term, and the profile's warm-shadow shape at that
+        // band's luma is then what the band lands on.
+        let (shape_rg, _) = super::prescribed_print_log_chroma(0.3);
+        let bands = super::estimate_prescribed_chroma_bands(&build(0.06));
+        let gain_r = bands[1][0];
+        let expected = ((shape_rg - 0.06f32).exp()).clamp(0.2, 2.5);
         assert!(
-            (gain_r - (-0.06f32).exp()).abs() < 0.02,
-            "a 6% warm cast pulls back by the same log: {gain_r}"
+            (gain_r - expected).abs() < 0.02,
+            "the band lands on the profile's shape over the removed cast: {gain_r} vs {expected}"
         );
-        assert!((gain_b - 1.0).abs() < 0.01, "no cast means no pull: {gain_b}");
-        let (clamped_r, _) = super::estimate_prescribed_chroma_gains(&build(0.30));
+        let clamped = super::estimate_prescribed_chroma_bands(&build(0.30));
+        let expected_clamped = ((shape_rg - 0.25f32).exp()).clamp(0.2, 2.5);
         assert!(
-            (clamped_r - (-super::PRESCRIBED_CHROMA_BOUND).exp()).abs() < 0.005,
-            "an extreme cast clamps at the bound: {clamped_r}"
+            (clamped[1][0] - expected_clamped).abs() < 0.02,
+            "an extreme cast clamps at the bound: {} vs {expected_clamped}",
+            clamped[1][0]
         );
     }
 
