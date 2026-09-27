@@ -20756,6 +20756,92 @@ mod import_contract_tests {
         }
     }
 
+    /// Ring-density profile around the confirmed Film Area: for each offset
+    /// band inside and outside the frame boundary, the per-channel median
+    /// density and the sample count. This says where the physical rebate base
+    /// actually sits in these captures, how thick it is, and what it measures
+    /// - the numbers the base-sampling fix has to be designed against.
+    /// Diagnostic only; renders nothing.
+    ///
+    /// Run with
+    /// `cargo test --lib film_base_ring_profile -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual film-base ring profile over local fixtures"]
+    fn film_base_ring_profile() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        for step in 0..11 {
+            let tag = 1942 + step;
+            let path = root
+                .join("富士raf")
+                .join(format!("Capture One Catalog{tag}.raf"));
+            let path_string = path.to_string_lossy().to_string();
+            let Ok(working) = report_working_estimate(&path_string, 1200) else {
+                println!("[SKIP] {tag}");
+                continue;
+            };
+            let mut geom = GeometryState::default();
+            if let Ok(legacy) = report_legacy_transport(&path_string, 1200) {
+                let border =
+                    crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(
+                        legacy,
+                    ));
+                if border.confidence == crate::film_border::DetectionConfidence::High {
+                    geom.calibration_points = Some(border.points);
+                }
+            }
+            let Some(points) = geom.calibration_points else {
+                println!("[{tag}] 无标定点（confirmed_area=false）");
+                continue;
+            };
+            let estimate = estimate_film_base_f32(&working, &geom);
+            let tail = compute_auto_base_f32(&working, &geom).unwrap_or(([0.0; 3], 0.0));
+            println!(
+                "[{tag}] tail=({:.3},{:.3},{:.3}) share={:.4}  candidate=({:.3},{:.3},{:.3}) usable={} reason={:?}",
+                tail.0[0],
+                tail.0[1],
+                tail.0[2],
+                tail.1,
+                estimate.candidate[0],
+                estimate.candidate[1],
+                estimate.candidate[2],
+                estimate.usable,
+                estimate.fallback_reason
+            );
+            // Band = {uv: in(a) && !in(b)} with |a| < |b|: positive margins
+            // shrink (inside bands), negative margins expand (outside bands).
+            let bands: [(&str, f32, f32); 8] = [
+                ("in 0.1-0.4%", 0.001, 0.004),
+                ("in 0.4-1.0%", 0.004, 0.010),
+                ("out 0.1-0.4%", -0.004, -0.001),
+                ("out 0.4-1.0%", -0.010, -0.004),
+                ("out 1.0-1.6%", -0.016, -0.010),
+                ("out 1.6-2.4%", -0.024, -0.016),
+                ("out 2.4-3.4%", -0.034, -0.024),
+                ("out 3.4-5.0%", -0.050, -0.034),
+            ];
+            for (label, a, b) in bands {
+                let mut ring = super::collect_mapped_rgb32(&working, None, &geom, true, |uv| {
+                    super::point_in_film_area(uv, &points, a)
+                        && !super::point_in_film_area(uv, &points, b)
+                });
+                if ring.len() < 16 {
+                    println!("    {label}: n={}", ring.len());
+                    continue;
+                }
+                let density = super::median_channel_density(&mut ring);
+                println!(
+                    "    {label}: n={:>5}  密度=({:.3},{:.3},{:.3})  R/G {:.3} B/G {:.3}",
+                    ring.len(),
+                    density[0],
+                    density[1],
+                    density[2],
+                    density[0] / density[1].max(1.0e-6),
+                    density[2] / density[1].max(1.0e-6),
+                );
+            }
+        }
+    }
+
     /// The decision table behind the staged fallback: for every fixture, what
     /// the frame measured and why that measurement cannot be trusted. Nothing
     /// in this stage changes a rendered pixel.
