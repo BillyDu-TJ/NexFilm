@@ -3194,6 +3194,15 @@ fn rule5_equalization_disabled() -> bool {
     *DISABLED.get_or_init(|| std::env::var("NEXFILM_RULE5_DISABLE").is_ok())
 }
 
+/// Calibration switch: render marked frames through the equalized window but
+/// without the prescribed print response, so a recalibration of that response
+/// starts from the window's own output instead of stacking on the previous
+/// calibration.
+fn prescribed_print_lut_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| std::env::var("NEXFILM_PRINT_LUT_DISABLE").is_ok())
+}
+
 /// Equalize where the frame's measured film base lands in each channel's
 /// display range, taking the green channel's own placement as the target.
 ///
@@ -10648,24 +10657,32 @@ fn render_shader_equivalent_core(
                 rendered = [luma; 3];
             }
 
-            // The prescribed print response: per-channel additive corrections
-            // indexed by the rendered luminance, calibrated once from the
-            // Capture One exports of the underexposed repro batch. It carries
-            // the lifted, warm shadows and the cooler highlights that a
-            // linear density window cannot express. Only frames the derivation
-            // marked `prescribed_print_lut` run this; every other frame renders
-            // exactly as before.
-            if prescribed_print {
+            // The prescribed print response: per-channel chroma gains indexed
+            // by the rendered luminance, calibrated once from the Capture One
+            // exports of the underexposed repro batch with each frame's white
+            // balance projected out. It carries the film's crossover - warm
+            // blue-starved shadows over cooler highlights - that a linear
+            // density window cannot express, while preserving every pixel's
+            // luminance, so it can neither lift the blacks nor gray the mids
+            // the way the additive calibration it replaced had to. Only frames
+            // the derivation marked `prescribed_print_lut` run this; every
+            // other frame renders exactly as before. The per-frame normalizer
+            // runs later, over the finished frame.
+            if prescribed_print && !prescribed_print_lut_disabled() {
                 let print_luma = rendered
                     .iter()
                     .zip(luma_coefficients)
                     .map(|(value, coefficient)| value * coefficient)
                     .sum::<f32>();
-                for channel in 0..3 {
-                    rendered[channel] = (rendered[channel]
-                        + prescribed_print_offset(channel, print_luma))
-                    .clamp(0.0, 1.0);
-                }
+                let (log_rg, log_bg) = prescribed_print_log_chroma(print_luma);
+                let gain_r = log_rg.exp();
+                let gain_b = log_bg.exp();
+                let k = 0.2126 * gain_r + 0.7152 + 0.0722 * gain_b;
+                rendered = [
+                    (rendered[0] * gain_r / k).clamp(0.0, 1.0),
+                    (rendered[1] / k).clamp(0.0, 1.0),
+                    (rendered[2] * gain_b / k).clamp(0.0, 1.0),
+                ];
             }
 
             if let Some(target) = sprocket_target {
@@ -10699,35 +10716,203 @@ fn render_shader_equivalent_core(
     output
 }
 
-/// The prescribed print response for evidence frames: per-channel additive
-/// display corrections indexed by the rendered luminance, calibrated once from
-/// the Capture One exports of the underexposed repro batch
-/// (`verify26_luma_lut.py`). It carries what a linear density window cannot
-/// express - the lifted, warm shadows and the cooler, slightly darker
-/// highlights of the film's print response - additively, so it can neither
-/// amplify the starved channels' noise nor flatten their texture.
+/// The prescribed print response for evidence frames: per-channel chroma
+/// gains indexed by the rendered luminance, calibrated once from the Capture
+/// One exports of the underexposed repro batch with each frame's white
+/// balance projected out (`verify27_joint_calib.py`). It carries what a
+/// linear density window cannot express - the film's crossover, warm
+/// blue-starved shadows over cooler highlights - while holding neutral
+/// pixels' luminance exactly and saturated ones' to second order, so unlike
+/// the additive calibration it replaces it can neither lift the blacks nor
+/// gray the mids.
 const PRESCRIBED_PRINT_LUMA: [f32; 12] = [
-    0.063, 0.221, 0.363, 0.444, 0.492, 0.536, 0.623, 0.691, 0.733, 0.776, 0.823, 0.898,
+    0.052, 0.245, 0.377, 0.451, 0.501, 0.549, 0.606, 0.660, 0.701, 0.751, 0.809, 0.890,
 ];
-const PRESCRIBED_PRINT_OFFSETS: [[f32; 12]; 3] = [
-    [0.133, 0.059, -0.004, -0.035, -0.035, -0.059, -0.078, -0.063, -0.110, -0.102, -0.020, 0.012],
-    [0.075, -0.027, -0.024, -0.008, -0.008, -0.016, -0.020, 0.063, 0.071, 0.063, 0.059, 0.059],
-    [0.008, -0.094, -0.122, -0.133, -0.082, -0.047, -0.020, 0.055, 0.133, 0.129, 0.090, 0.043],
+const PRESCRIBED_PRINT_LOG_RG: [f32; 12] = [
+    0.129, 0.129, 0.129, 0.102, -0.038, 0.026, -0.046, 0.007, -0.043, -0.043, -0.007, 0.028,
+];
+const PRESCRIBED_PRINT_LOG_BG: [f32; 12] = [
+    -0.331, -0.331, -0.331, -0.233, -0.088, -0.093, -0.003, 0.031, 0.032, 0.033, 0.016, 0.003,
 ];
 
-fn prescribed_print_offset(channel: usize, luma: f32) -> f32 {
+/// Log-chroma gains for the band the rendered luma falls in, linear between
+/// band centres and held beyond the ends.
+fn prescribed_print_log_chroma(luma: f32) -> (f32, f32) {
     let xs = PRESCRIBED_PRINT_LUMA;
-    let ys = &PRESCRIBED_PRINT_OFFSETS[channel];
-    if luma <= xs[0] {
-        return ys[0];
+    let interp = |ys: &[f32; 12]| -> f32 {
+        if luma <= xs[0] {
+            return ys[0];
+        }
+        for i in 1..xs.len() {
+            if luma <= xs[i] {
+                let t = (luma - xs[i - 1]) / (xs[i] - xs[i - 1]).max(1.0e-6);
+                return ys[i - 1] + t * (ys[i] - ys[i - 1]);
+            }
+        }
+        ys[ys.len() - 1]
+    };
+    (
+        interp(&PRESCRIBED_PRINT_LOG_RG),
+        interp(&PRESCRIBED_PRINT_LOG_BG),
+    )
+}
+
+/// How much of the per-frame normalizer acts at a given luma: full strength
+/// inside the mid-tone window the estimator measures, cosine down to a
+/// quarter at the tonal extremes - a mid-tone estimate must not re-blue a
+/// genuinely bright sky (verify29_fade_test.py).
+const PRESCRIBED_CHROMA_FADE_FLOOR: f32 = 0.25;
+
+fn prescribed_chroma_fade(luma: f32) -> f32 {
+    const FULL_LOW: f32 = 0.20;
+    const FULL_HIGH: f32 = 0.60;
+    const END_LOW: f32 = 0.05;
+    const END_HIGH: f32 = 0.90;
+    let w = if luma <= END_LOW || luma >= END_HIGH {
+        0.0
+    } else if luma < FULL_LOW {
+        0.5 - 0.5 * (std::f32::consts::PI * (luma - END_LOW) / (FULL_LOW - END_LOW)).cos()
+    } else if luma > FULL_HIGH {
+        0.5 - 0.5 * (std::f32::consts::PI * (END_HIGH - luma) / (END_HIGH - FULL_HIGH)).cos()
+    } else {
+        1.0
+    };
+    PRESCRIBED_CHROMA_FADE_FLOOR + (1.0 - PRESCRIBED_CHROMA_FADE_FLOOR) * w
+}
+
+/// The per-frame normalizer's bound: a scene's genuine colour must survive
+/// the pull toward neutral, so the correction never exceeds about 8% per
+/// channel in log terms.
+const PRESCRIBED_CHROMA_BOUND: f32 = 0.08;
+
+/// Estimate the frame's residual cast from the rendered frame: the median
+/// log-chroma of luminance edges inside the mid-tone window. Edges are robust
+/// to large uniform colour fields (a red shirt's interior does not vote) and
+/// the window keeps bright skies from dominating the blue vote; both scored
+/// closest to the references' own white-balance decisions in the bake-off
+/// (`verify28_apply.py`). Returns the R and B gains - G stays the pivot -
+/// that pull the estimate toward neutral, clamped to the bound.
+fn estimate_prescribed_chroma_gains(
+    buffer: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+) -> (f32, f32) {
+    const COARSE_LONG_EDGE: f32 = 512.0;
+    let (width, height) = (buffer.width(), buffer.height());
+    if width < 16 || height < 16 {
+        return (1.0, 1.0);
     }
-    for i in 1..xs.len() {
-        if luma <= xs[i] {
-            let t = (luma - xs[i - 1]) / (xs[i] - xs[i - 1]).max(1.0e-6);
-            return ys[i - 1] + t * (ys[i] - ys[i - 1]);
+    let scale = (width.max(height) as f32 / COARSE_LONG_EDGE).max(1.0);
+    let coarse_w = ((width as f32 / scale) as usize).max(1);
+    let coarse_h = ((height as f32 / scale) as usize).max(1);
+    let mut luma = vec![0.0f32; coarse_w * coarse_h];
+    for y in 0..coarse_h {
+        for x in 0..coarse_w {
+            let sx = (((x as f32 + 0.5) * scale) as u32).min(width - 1);
+            let sy = (((y as f32 + 0.5) * scale) as u32).min(height - 1);
+            let p = buffer.get_pixel(sx, sy);
+            luma[y * coarse_w + x] = 0.2126 * (p[0] as f32 / 65535.0)
+                + 0.7152 * (p[1] as f32 / 65535.0)
+                + 0.0722 * (p[2] as f32 / 65535.0);
         }
     }
-    ys[ys.len() - 1]
+    // Luminance edges: central differences on the coarse grid, thresholded at
+    // their 60th percentile inside the interior, so the scan's border frames
+    // cannot vote.
+    let mut grads = Vec::with_capacity(luma.len());
+    let margin_x = ((coarse_w as f32 * 0.04) as usize).max(1);
+    let margin_y = ((coarse_h as f32 * 0.04) as usize).max(1);
+    for y in 1..coarse_h - 1 {
+        for x in 1..coarse_w - 1 {
+            let gx = luma[y * coarse_w + x + 1] - luma[y * coarse_w + x - 1];
+            let gy = luma[(y + 1) * coarse_w + x] - luma[(y - 1) * coarse_w + x];
+            grads.push((gx * gx + gy * gy).sqrt());
+        }
+    }
+    if grads.len() < 256 {
+        return (1.0, 1.0);
+    }
+    grads.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let grad_threshold = grads[(grads.len() as f32 * 0.6) as usize];
+    // The mid-tone window: the estimator measures where exposure is most
+    // reliable, and the quantiles come from the frame itself so a deeply
+    // underexposed frame's compressed range still lands inside it.
+    let mut sorted_luma = luma.clone();
+    sorted_luma.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let luma_lo = sorted_luma[(sorted_luma.len() as f32 * 0.25) as usize];
+    let luma_hi = sorted_luma[(sorted_luma.len() as f32 * 0.75) as usize];
+    let mut log_rg: Vec<f32> = Vec::new();
+    let mut log_bg: Vec<f32> = Vec::new();
+    for y in margin_y..coarse_h.saturating_sub(margin_y + 1) {
+        for x in margin_x..coarse_w.saturating_sub(margin_x + 1) {
+            let index = y * coarse_w + x;
+            let l = luma[index];
+            if l <= 0.02 || l < luma_lo || l > luma_hi {
+                continue;
+            }
+            let gx = luma[index + 1] - luma[index - 1];
+            let gy = luma[index + coarse_w] - luma[index - coarse_w];
+            if (gx * gx + gy * gy).sqrt() <= grad_threshold {
+                continue;
+            }
+            let sx = (((x as f32 + 0.5) * scale) as u32).min(width - 1);
+            let sy = (((y as f32 + 0.5) * scale) as u32).min(height - 1);
+            let p = buffer.get_pixel(sx, sy);
+            let c = [
+                (p[0] as f32 / 65535.0).max(1.0 / 255.0),
+                (p[1] as f32 / 65535.0).max(1.0 / 255.0),
+                (p[2] as f32 / 65535.0).max(1.0 / 255.0),
+            ];
+            log_rg.push((c[0] / c[1]).ln());
+            log_bg.push((c[2] / c[1]).ln());
+        }
+    }
+    if log_rg.len() < 64 {
+        return (1.0, 1.0);
+    }
+    let median = |mut values: Vec<f32>| -> f32 {
+        values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        values[values.len() / 2]
+    };
+    let gain_r =
+        (-median(log_rg).clamp(-PRESCRIBED_CHROMA_BOUND, PRESCRIBED_CHROMA_BOUND)).exp();
+    let gain_b =
+        (-median(log_bg).clamp(-PRESCRIBED_CHROMA_BOUND, PRESCRIBED_CHROMA_BOUND)).exp();
+    (gain_r, gain_b)
+}
+
+/// The per-frame normalizer pass over a rendered frame: one coarse estimate,
+/// then a luma-preserving pull toward neutral faded toward the tonal
+/// extremes. It carries the frame's own white-balance draw - what no fixed
+/// calibration can - and stays off everything the derivation did not mark.
+fn apply_prescribed_chroma_normalizer(
+    buffer: &mut ImageBuffer<Rgb<u16>, Vec<u16>>,
+    pipeline_state: &PipelineState,
+    params: &TuningParams,
+) {
+    if pipeline_state.processing_report.tone_mapping_mode != "prescribed_print_lut"
+        || params.film_mode == FilmMode::BW
+        || prescribed_print_lut_disabled()
+    {
+        return;
+    }
+    let (gain_r, gain_b) = estimate_prescribed_chroma_gains(buffer);
+    if (gain_r - 1.0).abs() < 1.0e-4 && (gain_b - 1.0).abs() < 1.0e-4 {
+        return;
+    }
+    for (_x, _y, pixel) in buffer.enumerate_pixels_mut() {
+        let c = [
+            pixel[0] as f32 / 65535.0,
+            pixel[1] as f32 / 65535.0,
+            pixel[2] as f32 / 65535.0,
+        ];
+        let luma = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+        let strength = prescribed_chroma_fade(luma);
+        let gr = strength * gain_r + (1.0 - strength);
+        let gb = strength * gain_b + (1.0 - strength);
+        let k = 0.2126 * gr + 0.7152 + 0.0722 * gb;
+        pixel[0] = ((c[0] * gr / k).clamp(0.0, 1.0) * 65535.0).round() as u16;
+        pixel[1] = ((c[1] / k).clamp(0.0, 1.0) * 65535.0).round() as u16;
+        pixel[2] = ((c[2] * gb / k).clamp(0.0, 1.0) * 65535.0).round() as u16;
+    }
 }
 
 fn render_shader_equivalent(
@@ -10766,7 +10951,7 @@ fn render_shader_equivalent_with_state(
     pipeline_state: &PipelineState,
     lut: Option<&ParsedLut>,
 ) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
-    render_shader_equivalent_core(
+    let mut rendered = render_shader_equivalent_core(
         source.width(),
         source.height(),
         |uv| {
@@ -10783,7 +10968,9 @@ fn render_shader_equivalent_with_state(
         base_color,
         pipeline_state,
         lut,
-    )
+    );
+    apply_prescribed_chroma_normalizer(&mut rendered, pipeline_state, params);
+    rendered
 }
 
 fn render_f32_shader_equivalent(
@@ -10806,7 +10993,7 @@ fn render_f32_shader_equivalent(
     } else {
         (source_width, source_height)
     };
-    render_shader_equivalent_core(
+    let mut rendered = render_shader_equivalent_core(
         layout_width,
         layout_height,
         |uv| {
@@ -10818,7 +11005,9 @@ fn render_f32_shader_equivalent(
         base_color,
         pipeline_state,
         lut,
-    )
+    );
+    apply_prescribed_chroma_normalizer(&mut rendered, pipeline_state, params);
+    rendered
 }
 
 #[derive(Clone)]
@@ -19411,6 +19600,131 @@ mod import_contract_tests {
         );
         assert_eq!(limits.d_min, [0.05, 0.06, 0.07]);
         assert_eq!(limits.d_max, [0.75, 0.85, 0.95]);
+    }
+
+    /// The prescribed print response is chroma-only: its gains renormalize by
+    /// the gains' own luma, so a neutral pixel's luminance survives exactly
+    /// and a saturated one's moves only second-order - the property that lets
+    /// it carry the crossover without the lifted, gray blacks the additive
+    /// calibration produced.
+    #[test]
+    fn prescribed_print_chroma_preserves_pixel_luma() {
+        let mut checked = 0;
+        for step in 0..48 {
+            let luma = 0.02 + 0.96 * (step as f32 / 47.0);
+            let (log_rg, log_bg) = super::prescribed_print_log_chroma(luma);
+            let (gain_r, gain_b) = (log_rg.exp(), log_bg.exp());
+            let k = 0.2126 * gain_r + 0.7152 + 0.0722 * gain_b;
+            let after = (0.2126 * luma * gain_r + 0.7152 * luma + 0.0722 * luma * gain_b) / k;
+            assert!(
+                (after - luma).abs() < 1.0e-5,
+                "a neutral pixel at luma {luma} shifts to {after}"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 48);
+        // And the crossover is where the calibration put it: warm, blue-
+        // starved shadows, near-neutral highlights.
+        let (shadow_rg, shadow_bg) = super::prescribed_print_log_chroma(0.06);
+        let (high_rg, high_bg) = super::prescribed_print_log_chroma(0.88);
+        assert!(shadow_rg > 0.08, "shadows must warm up: {shadow_rg}");
+        assert!(shadow_bg < -0.25, "shadows must lose blue: {shadow_bg}");
+        assert!(high_rg.abs() < 0.05, "highlights stay near neutral: {high_rg}");
+        assert!(high_bg.abs() < 0.05, "highlights stay near neutral: {high_bg}");
+    }
+
+    /// The normalizer acts at full strength only inside the window it
+    /// measures, and fades to its floor at the tonal extremes - a mid-tone
+    /// estimate must not re-blue a genuinely bright sky.
+    #[test]
+    fn prescribed_chroma_fade_is_full_in_the_measured_window() {
+        let floor = super::PRESCRIBED_CHROMA_FADE_FLOOR;
+        assert_eq!(super::prescribed_chroma_fade(0.40), 1.0);
+        assert_eq!(super::prescribed_chroma_fade(0.55), 1.0);
+        assert_eq!(super::prescribed_chroma_fade(0.02), floor);
+        assert_eq!(super::prescribed_chroma_fade(0.96), floor);
+        let fading_up = super::prescribed_chroma_fade(0.75);
+        assert!(
+            fading_up > floor && fading_up < 1.0,
+            "the high fade is between floor and full: {fading_up}"
+        );
+        let fading_down = super::prescribed_chroma_fade(0.125);
+        assert!(
+            fading_down > floor && fading_down < 1.0,
+            "the low fade is between floor and full: {fading_down}"
+        );
+    }
+
+    /// A synthetic mid-tone field with a uniform cast: every pixel carries the
+    /// same log-chroma, so the estimator's median recovers it exactly, and an
+    /// over-strong cast clamps at the bound instead of exceeding it.
+    #[test]
+    fn prescribed_chroma_estimator_pulls_a_measured_cast_toward_neutral() {
+        let build = |cast_rg: f32| -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+            let mut buffer = ImageBuffer::new(256, 256);
+            for y in 0..256u32 {
+                for x in 0..256u32 {
+                    let value = 0.30
+                        + 0.10 * (x as f32 / 16.0).sin() * (y as f32 / 16.0).cos();
+                    let green = (value * 65535.0).round() as u16;
+                    let red = ((value * cast_rg.exp()).clamp(0.0, 1.0) * 65535.0).round() as u16;
+                    buffer.put_pixel(x, y, Rgb([red, green, green]));
+                }
+            }
+            buffer
+        };
+        let (gain_r, gain_b) = super::estimate_prescribed_chroma_gains(&build(0.06));
+        assert!(
+            (gain_r - (-0.06f32).exp()).abs() < 0.02,
+            "a 6% warm cast pulls back by the same log: {gain_r}"
+        );
+        assert!((gain_b - 1.0).abs() < 0.01, "no cast means no pull: {gain_b}");
+        let (clamped_r, _) = super::estimate_prescribed_chroma_gains(&build(0.30));
+        assert!(
+            (clamped_r - (-super::PRESCRIBED_CHROMA_BOUND).exp()).abs() < 0.005,
+            "an extreme cast clamps at the bound: {clamped_r}"
+        );
+    }
+
+    /// The normalizer is part of the prescribed response, so it runs only
+    /// where the derivation set the marker - every other frame's render is
+    /// untouched by it.
+    #[test]
+    fn prescribed_chroma_normalizer_only_runs_where_marked() {
+        let mut buffer = ImageBuffer::new(64, 64);
+        for y in 0..64u32 {
+            for x in 0..64u32 {
+                let value = 0.35 + 0.05 * ((x ^ y) as f32 / 32.0).sin();
+                let green = (value * 65535.0).round() as u16;
+                let red = ((value * 1.10) * 65535.0).round() as u16;
+                buffer.put_pixel(x, y, Rgb([red, green, green]));
+            }
+        }
+        let params = TuningParams::default();
+        let mut marked = buffer.clone();
+        let mut state = PipelineState::default();
+        state.processing_report.tone_mapping_mode = "prescribed_print_lut".to_string();
+        super::apply_prescribed_chroma_normalizer(&mut marked, &state, &params);
+        let mut unmarked = buffer.clone();
+        super::apply_prescribed_chroma_normalizer(
+            &mut unmarked,
+            &PipelineState::default(),
+            &params,
+        );
+        assert_ne!(marked, buffer, "a marked frame gets normalized");
+        assert_eq!(unmarked, buffer, "an unmarked frame renders untouched");
+        // And the pull goes the measured direction: the warm cast cools.
+        let before: f32 = buffer
+            .pixels()
+            .map(|p| p[0] as f32 / p[1] as f32)
+            .sum::<f32>()
+            / (buffer.width() * buffer.height()) as f32;
+        let after: f32 = marked
+            .pixels()
+            .map(|p| p[0] as f32 / p[1] as f32)
+            .sum::<f32>()
+            / (marked.width() * marked.height()) as f32;
+        assert!(after < before, "a warm frame must cool: {before} -> {after}");
     }
 
     /// A frame with a trusted base renders exactly the rule-4 window even when

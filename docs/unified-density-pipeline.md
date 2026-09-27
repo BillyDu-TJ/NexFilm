@@ -304,4 +304,38 @@ node scripts/verify-density-contract.cjs  （以及 scripts 下其余契约脚�
   曝光/跨度的随机性，固定标定覆盖不到；下一步是"有界逐帧色度归一化"（C1 的自动白平衡同类
   调整，需产品决策），以及用更多参照提高标定质量（现仅 4 帧配准达标）。
 
-- 复现：`cargo test --lib pooled_axis_report -- --ignored --nocapture`（`NEXFILM_AXIS_MODE=spans|origin|full|statusm|prior|basepos` 各变体）；渲染对照与 sweep 见 `prescribed_response_render_report`；拼图脚本 `scripts/experiments/density-fallback/compose_axis_review.py`。
+### 12.6 三层重构：档案 + 有界逐帧归一化（2026-09-27）
+
+加性 LUT 的两个结构性缺陷在验收中被确认：它把 C1 参照的**逐帧白平衡决策**（帧均值散布
+R/G 0.875–1.087）连同胶片响应一起学进了常数——用常数拟合别人的逐帧决策，±0.1 残差原理上
+封不死；且加性模型修暗部色相时必然耦合抬亮度（最暗档 +0.133R/+0.075G），产生"发灰的黑"。
+重构为三层，各管各的误差源：
+
+- **第 1 层 固定档案**（`PRESCRIBED_PRINT_LOG_RG/LOG_BG`，12 档亮度索引）：只学胶片
+  crossover 的**形状**。标定（`verify27_joint_calib.py`）用双向中位数分解
+  `log(参照色度) − log(我们的色度) = 档案(档) + 白平衡(帧)`，每帧白平衡作 nuisance 投影掉；
+  档案按拟合档中位归零，常数归入逐帧项。配准升级为 8 朝向（发现 1944/45/51/52 存在镜像翻转）
+  ×5 尺度，达标帧 4→5（1946 新纳入）；最暗两档是噪底，从第 3 档起拟合、向下恒定外推。
+  留一验证显示形状跨帧可迁移（LOO 残差仅温和高于拟合内）。**亮度形状被数据否决**：
+  分档亮度差逐帧反号（1942 与 1950 相反），是逐帧曝光决策不是胶片常数——色调归窗口与产品决策。
+- **第 2 层 窗口推导**：规则 4/5 原样保留（帧均值对齐已完成，10/11 ≤0.103）。
+- **第 3 层 有界逐帧归一化**（`apply_prescribed_chroma_normalizer`，渲染后一遍）：中间调内
+  灰边缘估计器（边缘对大面积均匀色场稳健、中间调窗防天空支配蓝票——对比 C1 逐帧决策的
+  bake-off 胜出）估每帧残余色偏，拉向中性，**钳位 ±8% log**、按亮度渐隐（[0.20,0.60] 全强度，
+  余弦衰减到 [0.05,0.90] 的 1/4——中间调估计不得给真蓝天再补蓝）。1949 黄昏保护探针通过：
+  保持中性，不追 C1 的风格化。
+
+落地：核心内逐像素色度增益（亮度保持式，中性像素亮度严格不变、饱和像素二阶）+
+包装函数后处理一遍归一化；`NEXFILM_PRINT_LUT_DISABLE=1` 同时关闭两层供 A/B。
+验证：276 单测全过（新增 5 条契约：档案亮度保持、渐隐窗、估计器拉回+钳位、标记门控）；
+双跑 sweep（`NEXFILM_RENDER_SWEEP=1` vs `NEXFILM_PRINT_LUT_DISABLE=1`）**42/53 逐字节一致，
+11 个改变帧全部 RAF**，与加性 LUT 时代足迹完全一致；Rust 落地帧均值 R/G 散布
+0.942–1.141（出货 0.796–1.128），1943 从 1.128/0.871 → 1.050/0.915，1952 从 0.865/1.082 →
+1.001/1.043。最终拼图 `_review-final-three-layer.png`（出货 | Rust 三层 | C1，按配准朝向）。
+
+**未竟**（交付决策用）：整体仍比 C1 偏淡——色调/对比度维度，C1 的逐帧自动曝光所致，
+分档数据显示无跨帧共享的色调曲线可标定（1942/1950 高光反号），属产品决策（预设曲线或有界
+逐帧对比度）；1945 仍是最差帧（1.141，跨度级残差超出 ±8% 钳位）；1942 型亮天空保留约
++0.08 B/G（渐隐只压了一半）；C1 的逐帧暖/冷风格化（如 1946 的 0.875）按设计不追。
+
+- 复现：`cargo test --lib pooled_axis_report -- --ignored --nocapture`（`NEXFILM_AXIS_MODE=spans|origin|full|statusm|prior|basepos` 各变体）；渲染对照与 sweep 见 `prescribed_response_render_report`；拼图脚本 `scripts/experiments/density-fallback/compose_axis_review.py`。三层重构的标定与验收：`verify27_joint_calib.py`（联合标定，产出 `target/prescribed-response/profile.json`）→ `verify28_apply.py`（估计器 bake-off + WB 投影形状残差）→ `verify29_fade_test.py`（渐隐窗与 1942 天空分解）→ `verify30_final_review.py`（Rust 落地帧均值 + 最终拼图）；双跑 sweep 见上文 `NEXFILM_RENDER_SWEEP=1` × `NEXFILM_PRINT_LUT_DISABLE=1`。
