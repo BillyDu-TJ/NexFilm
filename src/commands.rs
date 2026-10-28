@@ -22791,6 +22791,262 @@ mod import_contract_tests {
         }
         Some(out)
     }
+
+    /// Blue-channel diagnostic for camera-scanned colour negatives.
+    ///
+    /// Renders each frame three ways from the same decode, film area, film
+    /// base and per-channel endpoints, so only the colour basis differs:
+    /// A = current build (camera->sRGB matrix + chroma compression before the
+    ///     log, ProPhoto basis for the inversion, ProPhoto->sRGB after it),
+    /// D = A's inversion, but the positive is read as sRGB (no post matrix),
+    /// C = inversion in camera-native RGB, camera->sRGB applied to the positive.
+    ///
+    /// `NEXFILM_DIAG_FILES` = `;`-separated paths, `NEXFILM_DIAG_OUT` = folder.
+    /// Run with `cargo test --lib blue_channel_diagnostic -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual diagnostic over local camera scans"]
+    fn blue_channel_diagnostic() {
+        let files = std::env::var("NEXFILM_DIAG_FILES").unwrap_or_default();
+        let output_root =
+            std::path::PathBuf::from(std::env::var("NEXFILM_DIAG_OUT").unwrap_or_else(|_| {
+                format!("{}/target/blue-diagnostic", env!("CARGO_MANIFEST_DIR"))
+            }));
+        std::fs::create_dir_all(&output_root).unwrap();
+        let prophoto_to_srgb =
+            linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb);
+
+        for path in files.split(';').filter(|value| !value.trim().is_empty()) {
+            let name = std::path::Path::new(path)
+                .file_stem()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let legacy = report_legacy_transport(path, 1600).unwrap();
+            let border = crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(
+                legacy.clone(),
+            ));
+            let mut geom = GeometryState::default();
+            if border.confidence == crate::film_border::DetectionConfidence::High {
+                geom.calibration_points = Some(border.points);
+            }
+
+            let options = crate::raw_backend::DecodeOptions {
+                half_size: true,
+                demosaic_quality: 3,
+                output_bps: 16,
+                no_auto_bright: true,
+                output_color: 0,
+                linear_gamma: true,
+                use_camera_wb: false,
+            };
+            let camera = crate::raw_backend::decode_smart_auto_rgb_with_policy(
+                path,
+                &options,
+                crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
+            )
+            .unwrap();
+            let camera_to_srgb = camera.camera_to_srgb;
+            let camera_image = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(
+                camera.width,
+                camera.height,
+                camera.pixels,
+            )
+            .unwrap();
+            let working =
+                decode_prophoto_estimate_image_buffer(path, DecodeMode::DevelopProxy).unwrap();
+            assert_eq!(working.dimensions(), camera_image.dimensions());
+
+            // How much of the negative the pre-inversion gamut compression
+            // rewrites, and how often the blue row of the camera matrix goes
+            // non-positive on an orange-masked negative.
+            let mut compressed = 0usize;
+            let mut blue_floor = 0usize;
+            let mut blue_negative = 0usize;
+            let mut chroma_scale_sum = 0.0f64;
+            let total = (camera_image.width() * camera_image.height()) as usize;
+            for pixel in camera_image.pixels() {
+                let srgb = apply_linear_matrix(pixel.0, camera_to_srgb);
+                let fitted = compress_linear_srgb_for_density(srgb);
+                let luma = crate::core_math::density_luma(srgb);
+                if srgb[2] <= 0.0 {
+                    blue_negative += 1;
+                }
+                let floor = (1.0 / 65_535.0f32).max(luma.max(0.0) * 0.10);
+                if srgb[2] < floor {
+                    blue_floor += 1;
+                }
+                if (0..3).any(|c| (fitted[c] - srgb[c]).abs() > 1e-4 * srgb[c].abs().max(1e-3)) {
+                    compressed += 1;
+                }
+                let spread_in = (srgb[2] - luma).abs().max(1e-9);
+                chroma_scale_sum += ((fitted[2] - luma).abs() / spread_in).min(1.0) as f64;
+            }
+            println!(
+                "[INPUT] {name}: rgb_cam blue row = [{:.3}, {:.3}, {:.3}]",
+                camera_to_srgb[6], camera_to_srgb[7], camera_to_srgb[8]
+            );
+            println!(
+                "[INPUT] {name}: compression rewrote {:.1}% of pixels; blue below floor {:.1}%; blue <= 0 {:.1}%; mean blue chroma kept {:.2}",
+                100.0 * compressed as f64 / total as f64,
+                100.0 * blue_floor as f64 / total as f64,
+                100.0 * blue_negative as f64 / total as f64,
+                chroma_scale_sum / total as f64,
+            );
+
+            // Same analysis functions for both bases.
+            let analyse = |image: &ImageBuffer<Rgb<f32>, Vec<f32>>| {
+                let estimate = estimate_film_base_f32(image, &geom);
+                let base = if estimate.usable {
+                    estimate.density
+                } else {
+                    [0.0; 3]
+                };
+                let mut limits =
+                    compute_content_limits_f32_with_bounds(image, None, &geom, base, None).unwrap();
+                let (offsets, _) =
+                    prepare_content_render_limits(&mut limits, &DensityAnchors::default(), base);
+                (estimate.usable, base, limits, offsets)
+            };
+            let (usable_a, base_a, limits_a, offsets_a) = analyse(&working);
+            let (usable_c, base_c, limits_c, _) = analyse(&camera_image);
+            println!(
+                "[WINDOW] {name}: prophoto base={usable_a} {:?} span={:?}",
+                base_a,
+                [0, 1, 2].map(|c| limits_a.d_max[c] - limits_a.d_min[c])
+            );
+            println!(
+                "[WINDOW] {name}: camera   base={usable_c} {:?} span={:?}",
+                base_c,
+                [0, 1, 2].map(|c| limits_c.d_max[c] - limits_c.d_min[c])
+            );
+
+            // A: the production render path.
+            let mut state = PipelineState::smart_auto();
+            state.processing_report.base_source = if usable_a {
+                "detected_film_base"
+            } else {
+                "missing_film_base_reference"
+            }
+            .to_string();
+            state.render_mapping.density_low = limits_a.d_min;
+            state.render_mapping.density_high = limits_a.d_max;
+            state.render_mapping.channel_offsets = offsets_a;
+            let mut params = TuningParams::default();
+            params.density.d_min = limits_a.d_min;
+            params.density.d_max = limits_a.d_max;
+            let render_a = render_f32_shader_equivalent(
+                &working,
+                None,
+                &params,
+                &geom,
+                &base_color_from_density(base_a),
+                &state,
+                None,
+            );
+
+            let invert = |image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+                          base: [f32; 3],
+                          d_min: [f32; 3],
+                          d_max: [f32; 3],
+                          matrix: Option<[f32; 9]>| {
+                let mut out = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(image.width(), image.height());
+                for (target, source) in out.pixels_mut().zip(image.pixels()) {
+                    let normalized = [0, 1, 2].map(|c| {
+                        let density = -source.0[c].max(1e-6).log10() - base[c];
+                        crate::core_math::normalize_density_channel(
+                            density, d_min[c], d_max[c], 0.0, 0.0, 1.0,
+                        )
+                    });
+                    let display = matrix
+                        .map(|m| apply_linear_matrix(normalized, m))
+                        .unwrap_or(normalized);
+                    target.0 = display.map(|v| (v.clamp(0.0, 1.0) * 65535.0).round() as u16);
+                }
+                out
+            };
+            let render_d = invert(&working, base_a, limits_a.d_min, limits_a.d_max, None);
+            let render_c = invert(
+                &camera_image,
+                base_c,
+                limits_c.d_min,
+                limits_c.d_max,
+                Some(camera_to_srgb),
+            );
+            // Sanity: the shortcut inverter reproduces A when given A's matrix.
+            let check = invert(
+                &working,
+                base_a,
+                limits_a.d_min,
+                limits_a.d_max,
+                Some(prophoto_to_srgb),
+            );
+            let mismatch = check
+                .pixels()
+                .zip(render_a.pixels())
+                .filter(|(a, b)| (0..3).any(|c| (a.0[c] as i32 - b.0[c] as i32).abs() > 300))
+                .count();
+            println!(
+                "[CHECK] {name}: shortcut vs production A differ on {:.2}% of pixels",
+                100.0 * mismatch as f64 / total as f64
+            );
+
+            for (label, render) in [
+                ("A_current", &render_a),
+                ("D_no_post_matrix", &render_d),
+                ("C_camera_native", &render_c),
+            ] {
+                let mut clipped = 0usize;
+                let mut blue = 0usize;
+                let mut blue_saturation = 0.0f64;
+                let mut purple = 0usize;
+                for pixel in render.pixels() {
+                    let rgb = pixel.0.map(|v| v as f32 / 65535.0);
+                    if rgb.iter().any(|v| *v <= 0.0 || *v >= 1.0) {
+                        clipped += 1;
+                    }
+                    let max = rgb[0].max(rgb[1]).max(rgb[2]);
+                    let min = rgb[0].min(rgb[1]).min(rgb[2]);
+                    if max <= 0.05 || max - min < 0.08 {
+                        continue;
+                    }
+                    let delta = max - min;
+                    let hue = if max == rgb[0] {
+                        60.0 * (((rgb[1] - rgb[2]) / delta).rem_euclid(6.0))
+                    } else if max == rgb[1] {
+                        60.0 * ((rgb[2] - rgb[0]) / delta + 2.0)
+                    } else {
+                        60.0 * ((rgb[0] - rgb[1]) / delta + 4.0)
+                    };
+                    if (190.0..250.0).contains(&hue) {
+                        blue += 1;
+                        blue_saturation += (delta / max) as f64;
+                    } else if (250.0..300.0).contains(&hue) {
+                        purple += 1;
+                    }
+                }
+                println!(
+                    "[OUT] {name} {label}: clipped {:.1}%  blue-hue {:.1}% (mean sat {:.2})  purple-hue {:.1}%",
+                    100.0 * clipped as f64 / total as f64,
+                    100.0 * blue as f64 / total as f64,
+                    blue_saturation / blue.max(1) as f64,
+                    100.0 * purple as f64 / total as f64,
+                );
+            }
+
+            let tiles = [&render_a, &render_d, &render_c].map(|image| fit_long_edge(image, 700));
+            let width: u32 = tiles.iter().map(|t| t.width()).sum::<u32>() + 8;
+            let height = tiles.iter().map(|t| t.height()).max().unwrap();
+            let mut sheet =
+                ImageBuffer::<Rgb<u16>, Vec<u16>>::from_pixel(width, height, Rgb([65535; 3]));
+            let mut left = 0;
+            for tile in &tiles {
+                image::imageops::replace(&mut sheet, tile, left as i64, 0);
+                left += tile.width() + 4;
+            }
+            let path = output_root.join(format!("{name}_A-D-C.jpg"));
+            ab_save_preview(path.clone(), &sheet);
+            println!("[SHEET] {}", path.display());
+        }
+    }
 }
 
 #[cfg(test)]
