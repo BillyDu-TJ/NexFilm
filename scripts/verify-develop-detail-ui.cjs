@@ -501,11 +501,14 @@ setTimeout(async () => {
 </script>`;
 
 const chromeCandidates = [
+    process.env.CHROME_PATH,
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
     'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
     'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
     'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
 ];
-const browser = chromeCandidates.find(fs.existsSync);
+const browser = chromeCandidates.find((candidate) => candidate && fs.existsSync(candidate));
 if (!browser) throw new Error('Chrome or Edge was not found');
 
 const pagePath = path.join(root, 'develop-detail-verify.html');

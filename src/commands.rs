@@ -10,7 +10,7 @@ use crate::app_state::{
     InputDomainSource, InputPrimaries, InputReference, InputTransferCurve,
     PipelineProcessingReport, PipelineState, ProcessingContract, RenderMapping, RenderMode, Roll,
     RollBaseStatus, RollCalibrationFormat, RollCalibrationMode, RollCalibrationStatus,
-    RollDmaxStatus, RollFrameStatus, RollToneStatus, TuningParams,
+    RollDmaxStatus, RollFrameStatus, RollToneStatus, TuningParams, WorkingBasis,
     CALIBRATION_PROFILE_PAYLOAD_VERSION, CALIBRATION_PROFILE_SCHEMA_VERSION,
 };
 use crate::batch_settings::{BatchCopyResult, ImageKey};
@@ -1827,7 +1827,18 @@ fn build_response_buffer_from_proxy_with_state(
             }
             _ => 0,
         };
-    let mut out = vec![0u8; (width * height * 8) as usize + 28];
+    // Flag 8: the texture is a camera-native working buffer, and the nine
+    // row-major f32 of its camera -> sRGB matrix follow the fixed header. The
+    // shader displays the positive (and the staged negative) through it
+    // instead of ProPhoto -> sRGB, so the matrix travels with the very pixels
+    // it belongs to.
+    let camera_to_display = pipeline_state
+        .processing_report
+        .camera_to_display
+        .filter(|_| flags & 2 != 0);
+    let flags = flags | if camera_to_display.is_some() { 8 } else { 0 };
+    let header = 28 + if camera_to_display.is_some() { 36 } else { 0 };
+    let mut out = vec![0u8; (width * height * 8) as usize + header];
     out[0..4].copy_from_slice(&width.to_le_bytes());
     out[4..8].copy_from_slice(&height.to_le_bytes());
     for channel in 0..3 {
@@ -1836,10 +1847,16 @@ fn build_response_buffer_from_proxy_with_state(
     }
     out[20..24].copy_from_slice(&u32::from(is_full_proxy).to_le_bytes());
     out[24..28].copy_from_slice(&flags.to_le_bytes());
+    if let Some(matrix) = camera_to_display {
+        for (index, value) in matrix.iter().enumerate() {
+            let start = 28 + index * 4;
+            out[start..start + 4].copy_from_slice(&value.to_le_bytes());
+        }
+    }
     proxy
         .as_raw()
         .par_chunks_exact(3)
-        .zip(out[28..].par_chunks_exact_mut(8))
+        .zip(out[header..].par_chunks_exact_mut(8))
         .enumerate()
         .for_each(|(index, (pixel, target))| {
             for channel in 0..3 {
@@ -4727,10 +4744,11 @@ fn estimate_target_long_edge(mode: DecodeMode) -> u32 {
     }
 }
 
-/// Decode the Smart Auto ProPhoto Estimate. Camera/sRGB values are first fit
-/// into a finite positive transmission domain while preserving luminance;
-/// the resulting ProPhoto values remain a relative display estimate, never a
-/// measured Density Input RGB.
+/// Decode the Smart Auto working buffer. sRGB inputs are first fit into a
+/// finite positive transmission domain while preserving luminance and stored
+/// as a ProPhoto estimate; a LibRaw camera RAW stays in camera-native RGB (see
+/// `smart_auto_working_basis`). Either way the values remain a relative
+/// estimate, never a measured Density Input RGB.
 fn decode_prophoto_estimate_image_buffer(
     path: &str,
     mode: DecodeMode,
@@ -4743,6 +4761,72 @@ fn decode_prophoto_estimate_image_buffer(
 }
 
 fn decode_prophoto_estimate_image_buffer_with_policy(
+    path: &str,
+    mode: DecodeMode,
+    white_balance: crate::raw_backend::WhiteBalancePolicy,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    decode_smart_auto_estimate_with_policy(path, mode, white_balance).map(|(image, _)| image)
+}
+
+/// The Smart Auto working basis a path decodes into. It is a function of the
+/// path alone, so the preview, the export, the Roll anchors and the resolver
+/// always agree on it without decoding the frame first.
+///
+/// A LibRaw camera RAW stays in camera RGB: on an orange-masked negative the
+/// blue channel is tiny, and a camera matrix (whose blue row subtracts a large
+/// share of green) plus the luma-relative gamut floor applied before the log
+/// rewrote exactly the pixels that print blue. DNG keeps the ProPhoto
+/// estimate: a LinearRaw DNG is already a rendered scan, and the reduced DNG
+/// reader that serves it cannot be told apart from a Bayer DNG by the path.
+fn smart_auto_working_basis(path: &str) -> crate::app_state::WorkingBasis {
+    if is_raw_extension(path) && !is_scanner_fff_tiff(path) && !is_dng_extension(path) {
+        crate::app_state::WorkingBasis::CameraNative
+    } else {
+        crate::app_state::WorkingBasis::ProPhotoEstimate
+    }
+}
+
+/// Decode the Smart Auto working buffer and the matrix that maps its
+/// normalized positive to linear sRGB. The matrix is `Some` only for the
+/// camera-native basis; every ProPhoto estimate uses the ProPhoto -> sRGB
+/// conversion and returns `None`.
+fn decode_smart_auto_estimate_with_policy(
+    path: &str,
+    mode: DecodeMode,
+    white_balance: crate::raw_backend::WhiteBalancePolicy,
+) -> Result<(ImageBuffer<Rgb<f32>, Vec<f32>>, Option<[f32; 9]>), String> {
+    if smart_auto_working_basis(path) == crate::app_state::WorkingBasis::CameraNative {
+        let options = crate::raw_backend::DecodeOptions {
+            half_size: mode == DecodeMode::DevelopProxy,
+            demosaic_quality: 3,
+            output_bps: 16,
+            no_auto_bright: true,
+            output_color: 0,
+            linear_gamma: true,
+            use_camera_wb: false,
+        };
+        let decoded =
+            crate::raw_backend::decode_smart_auto_rgb_with_policy(path, &options, white_balance)
+                .map_err(|error| libraw_decode_error_message(path, error))?;
+        eprintln!("[RAW Pipeline] {} / camera-native density", decoded.label);
+        return camera_native_working_buffer(decoded);
+    }
+    decode_prophoto_basis_estimate(path, mode, white_balance).map(|image| (image, None))
+}
+
+/// The LibRaw camera RGB is the working buffer as it stands: the density
+/// stage takes its log directly, and the camera matrix only travels along for
+/// the positive.
+fn camera_native_working_buffer(
+    decoded: crate::raw_backend::CameraRgbEstimate,
+) -> Result<(ImageBuffer<Rgb<f32>, Vec<f32>>, Option<[f32; 9]>), String> {
+    let image =
+        ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(decoded.width, decoded.height, decoded.pixels)
+            .ok_or_else(|| "Failed to allocate the camera-native working buffer".to_string())?;
+    Ok((image, Some(decoded.camera_to_srgb)))
+}
+
+fn decode_prophoto_basis_estimate(
     path: &str,
     mode: DecodeMode,
     white_balance: crate::raw_backend::WhiteBalancePolicy,
@@ -4807,22 +4891,39 @@ fn decode_prophoto_estimate_image_buffer_with_policy(
     Ok(converted)
 }
 
+#[cfg(test)]
 fn decode_scanner_profiled_estimate_image_buffer(
     path: &str,
     mode: DecodeMode,
     profile: Option<&crate::scanner_profile::ScannerInputProfile>,
     target_long_edge: u32,
 ) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    decode_scanner_profiled_estimate_with_matrix(path, mode, profile, target_long_edge)
+        .map(|(image, _)| image)
+}
+
+/// The Smart Auto working buffer of any input, with the camera -> sRGB matrix
+/// its positive is displayed through (`None` for the ProPhoto estimate).
+fn decode_scanner_profiled_estimate_with_matrix(
+    path: &str,
+    mode: DecodeMode,
+    profile: Option<&crate::scanner_profile::ScannerInputProfile>,
+    target_long_edge: u32,
+) -> Result<(ImageBuffer<Rgb<f32>, Vec<f32>>, Option<[f32; 9]>), String> {
     // A Bayer capture belongs to LibRaw, and a scanner profile never applies to
     // one. Scanner FFF is the exception that only looks like a camera RAW: the
     // extension is shared, the container is a rendered page.
     if is_raw_extension(path) && !is_scanner_fff_tiff(path) {
         if is_dng_extension(path) {
             if let Ok(linear) = decode_reduced_dng_for_working_space(path, target_long_edge) {
-                return Ok(linear_srgb_u16_to_prophoto_f32(&linear));
+                return Ok((linear_srgb_u16_to_prophoto_f32(&linear), None));
             }
         }
-        return decode_prophoto_estimate_image_buffer(path, mode);
+        return decode_smart_auto_estimate_with_policy(
+            path,
+            mode,
+            crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
+        );
     }
     let source = if is_tiff_extension(path) || is_scanner_fff_tiff(path) {
         // Large scans must come from the streaming reader: the generic image
@@ -4857,7 +4958,7 @@ fn decode_scanner_profiled_estimate_image_buffer(
         );
         pixel.copy_from_slice(&rgb);
     });
-    Ok(linear)
+    Ok((linear, None))
 }
 
 fn reference_density_extreme(
@@ -4920,6 +5021,7 @@ fn sampled_roll_anchor(path: &str, source: DensityAnchorSource) -> Result<Densit
             raw_decode_version: Some(RAW_DECODE_VERSION),
             algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
             legacy: false,
+            working_basis: smart_auto_working_basis(path),
             ..Default::default()
         },
     })
@@ -5053,6 +5155,7 @@ pub async fn sample_roll_density_reference(
                     algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION
                         .to_string(),
                     legacy: false,
+                    working_basis: smart_auto_working_basis(&item.file_path),
                     ..Default::default()
                 },
             )
@@ -5424,6 +5527,7 @@ fn pipeline_resolver_input(
         roll,
         profiles,
         pipeline_image_kind(path),
+        smart_auto_working_basis(path),
         runtime_failure,
     )
 }
@@ -5433,6 +5537,7 @@ fn pipeline_resolver_input_for_kind(
     roll: Option<&Roll>,
     profiles: &[CalibrationProfileView],
     image_kind: PipelineImageKind,
+    working_basis: crate::app_state::WorkingBasis,
     runtime_failure: Option<String>,
 ) -> PipelineResolverInput {
     let roll_profile_id = roll.and_then(|roll| roll.calibration_profile_id.clone());
@@ -5463,6 +5568,7 @@ fn pipeline_resolver_input_for_kind(
         image_kind,
         density_anchors: anchors,
         raw_decode_version: RAW_DECODE_VERSION,
+        working_basis,
         runtime_failure,
     }
 }
@@ -5488,6 +5594,8 @@ fn state_from_resolution_with_frame_base(
     // capability the resolver selected, so it always comes from the persisted
     // per-frame analysis.
     report.input_domain = persisted.processing_report.input_domain.clone();
+    // So does the basis of the working buffer the positive is displayed from.
+    report.camera_to_display = persisted.processing_report.camera_to_display;
     let expected_domain = match resolution.resolved_path {
         ProcessingContract::CaptureCorrectedV11 => "relative_transmission_rgb",
         ProcessingContract::LegacyV1 => "legacy_linear_srgb",
@@ -5592,6 +5700,9 @@ fn resolution_density_provenance(
         raw_decode_version: Some(RAW_DECODE_VERSION),
         algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
         legacy: false,
+        // Only Capture Corrected samples read this provenance; the working
+        // basis is a Smart Auto property and is not checked for them.
+        working_basis: Default::default(),
     }
 }
 
@@ -7222,7 +7333,19 @@ pub async fn switch_active_image(
     item.params = params;
     item.geom = geom;
     item.base_color = base_color;
+    // The camera matrix is a property of the decoded file. A record persisted
+    // before this frame's first decode in this session does not carry it yet,
+    // but the retained working proxy does not change basis by being reselected.
+    let decoded_camera_to_display = item.pipeline_state.processing_report.camera_to_display;
     item.pipeline_state = pipeline_state;
+    if item
+        .pipeline_state
+        .processing_report
+        .camera_to_display
+        .is_none()
+    {
+        item.pipeline_state.processing_report.camera_to_display = decoded_camera_to_display;
+    }
     clear_retired_legacy_domain(&mut item.pipeline_state);
 
     // Return the current resolved capability, not the persisted request. This
@@ -7381,6 +7504,8 @@ pub async fn prepare_proxy(
         prophoto_estimate: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
         capture_corrected: Option<CaptureCorrectedProxyData>,
         fallback_reason: Option<String>,
+        /// Camera -> sRGB matrix of a camera-native working buffer.
+        camera_to_display: Option<[f32; 9]>,
     }
 
     let decode_path = file_path.clone();
@@ -7401,18 +7526,20 @@ pub async fn prepare_proxy(
                             prophoto_estimate: None,
                             capture_corrected: Some(capture_corrected),
                             fallback_reason: None,
+                            camera_to_display: None,
                         });
                     }
                     Err(error) => {
                         eprintln!(
                             "[RAW Pipeline] Capture Corrected unavailable; falling back to Smart Auto / ProPhoto Estimate for this invocation: {error}"
                         );
-                        let mut estimate = decode_scanner_profiled_estimate_image_buffer(
-                            &decode_path,
-                            decode_mode,
-                            scanner_profile.as_ref(),
-                            target_long_edge,
-                        )?;
+                        let (mut estimate, camera_to_display) =
+                            decode_scanner_profiled_estimate_with_matrix(
+                                &decode_path,
+                                decode_mode,
+                                scanner_profile.as_ref(),
+                                target_long_edge,
+                            )?;
                         let (width, height) = estimate.dimensions();
                         let ratio =
                             (target_long_edge as f32 / width.max(height) as f32).min(1.0);
@@ -7429,6 +7556,7 @@ pub async fn prepare_proxy(
                             prophoto_estimate: Some(estimate),
                             capture_corrected: None,
                             fallback_reason: Some(error),
+                            camera_to_display,
                         });
                     }
                 }
@@ -7462,19 +7590,22 @@ pub async fn prepare_proxy(
                     prophoto_estimate: Some(estimate),
                     capture_corrected: None,
                     fallback_reason: None,
+                    camera_to_display: None,
                 });
             }
             if contract != ProcessingContract::LegacyV1 {
+                let mut camera_to_display = None;
                 let mut estimate = if scanner_profile.is_some()
                     && !is_raw_extension(&decode_path)
                     && !is_dng_extension(&decode_path)
                 {
-                    decode_scanner_profiled_estimate_image_buffer(
+                    decode_scanner_profiled_estimate_with_matrix(
                         &decode_path,
                         decode_mode,
                         scanner_profile.as_ref(),
                         target_long_edge,
                     )?
+                    .0
                 } else if is_dng_extension(&decode_path) {
                     let linear = decode_reduced_dng_for_working_space(&decode_path, target_long_edge)
                         .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
@@ -7498,12 +7629,14 @@ pub async fn prepare_proxy(
                         }
                     }
                 } else {
-                    decode_scanner_profiled_estimate_image_buffer(
+                    let (estimate, matrix) = decode_scanner_profiled_estimate_with_matrix(
                         &decode_path,
                         decode_mode,
                         scanner_profile.as_ref(),
                         target_long_edge,
-                    )?
+                    )?;
+                    camera_to_display = matrix;
+                    estimate
                 };
                 let (width, height) = estimate.dimensions();
                 let ratio = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
@@ -7521,11 +7654,12 @@ pub async fn prepare_proxy(
                     prophoto_estimate: Some(estimate),
                     capture_corrected: None,
                     fallback_reason: None,
+                    camera_to_display,
                 });
             }
 
             if scanner_profile.is_some() && !is_raw_extension(&decode_path) {
-                let mut estimate = decode_scanner_profiled_estimate_image_buffer(
+                let (mut estimate, camera_to_display) = decode_scanner_profiled_estimate_with_matrix(
                     &decode_path,
                     decode_mode,
                     scanner_profile.as_ref(),
@@ -7546,6 +7680,7 @@ pub async fn prepare_proxy(
                     prophoto_estimate: Some(estimate),
                     capture_corrected: None,
                     fallback_reason: None,
+                    camera_to_display,
                 });
             }
             let img_buffer = if is_dng_extension(&decode_path) {
@@ -7574,6 +7709,7 @@ pub async fn prepare_proxy(
                 prophoto_estimate: None,
                 capture_corrected: None,
                 fallback_reason: None,
+                camera_to_display: None,
             })
         })
         .await
@@ -7625,6 +7761,9 @@ pub async fn prepare_proxy(
     );
     clear_retired_legacy_domain(&mut final_state);
     final_state.processing_report.input_domain = input_domain;
+    // The positive of a camera-native working buffer is displayed through the
+    // matrix of the decode that produced it, everywhere it is rendered.
+    final_state.processing_report.camera_to_display = prepared.camera_to_display;
     if final_resolution.resolved_path != ProcessingContract::LegacyV1
         && tiff_smart_auto_input_is_estimated(&file_path)
     {
@@ -7692,6 +7831,8 @@ pub async fn prepare_proxy(
         clear_retired_legacy_domain(&mut item.pipeline_state);
         item.pipeline_state.processing_report.input_domain =
             final_state.processing_report.input_domain.clone();
+        item.pipeline_state.processing_report.camera_to_display =
+            final_state.processing_report.camera_to_display;
         item.runtime_pipeline_state = Some(final_state);
         item.runtime_density_provenance = Some(density_provenance);
         item.runtime_pipeline_key = Some(final_resolution_key);
@@ -8753,6 +8894,9 @@ pub async fn reset_image_development(
                     };
                     report.uses_physical_anchors = !prophoto_estimate;
                 }
+                // A reset clears the analysis, not the basis of the retained
+                // working proxy.
+                report.camera_to_display = item.pipeline_state.processing_report.camera_to_display;
                 report
             };
             pipeline
@@ -10181,6 +10325,17 @@ fn collect_mapped_rgb32(
     values
 }
 
+/// Matrix from the normalized positive to linear sRGB: the frame's own camera
+/// matrix when its density stage ran in camera-native RGB, ProPhoto -> sRGB
+/// for every ProPhoto estimate.
+fn positive_to_display_matrix(pipeline_state: &PipelineState) -> [f32; 9] {
+    pipeline_state
+        .processing_report
+        .camera_to_display
+        .filter(|matrix| matrix.iter().all(|value| value.is_finite()))
+        .unwrap_or_else(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb))
+}
+
 fn render_shader_equivalent_core(
     source_width: u32,
     source_height: u32,
@@ -10257,7 +10412,7 @@ fn render_shader_equivalent_core(
         && pipeline_state.contract != ProcessingContract::CaptureCorrectedV11
         && !smart_auto_compatibility
         && params.film_mode == FilmMode::Color)
-        .then(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb));
+        .then(|| positive_to_display_matrix(pipeline_state));
     let (bw_dmin, bw_dmax) = neutral_density_bounds(params.density.d_min, params.density.d_max);
     // The Master D-Min/D-Max sliders shift whichever endpoints the active
     // route derived. Keeping the shift separate lets a sampled Roll keep its
@@ -11681,6 +11836,7 @@ pub async fn batch_export_images(
                     image_kind: PipelineImageKind::Unsupported,
                     density_anchors: DensityAnchors::default(),
                     raw_decode_version: RAW_DECODE_VERSION,
+                    working_basis: Default::default(),
                     runtime_failure: None,
                 },
                 capture_profile: None,
@@ -11894,7 +12050,7 @@ pub async fn batch_export_images(
                                 .ok_or_else(|| "verified Capture Profile is missing".to_string())
                                 .and_then(|profile| decode_capture_corrected_image_buffer(&file_path, profile));
                             match capture_result {
-                                Ok(capture) => Ok((capture.image, Some(capture.quality))),
+                                Ok(capture) => Ok((capture.image, Some(capture.quality), None)),
                                 Err(error) => {
                                     let mut fallback_input = snapshot.resolver_input.clone();
                                     fallback_input.runtime_failure = Some(error.clone());
@@ -11910,31 +12066,35 @@ pub async fn batch_export_images(
                                         fallback.resolved_path,
                                         fallback.processing_report.fallback_reasons.join(",")
                                     ));
-                                    decode_scanner_profiled_estimate_image_buffer(
+                                    decode_scanner_profiled_estimate_with_matrix(
                                         &file_path,
                                         DecodeMode::ExportFull,
                                         snapshot.scanner_profile.as_ref(),
                                         u32::MAX,
                                     )
-                                    .map(|estimate| (estimate, None))
+                                    .map(|(estimate, matrix)| (estimate, None, matrix))
                                 }
                             }
                         } else {
-                            decode_scanner_profiled_estimate_image_buffer(
+                            decode_scanner_profiled_estimate_with_matrix(
                                 &file_path,
                                 DecodeMode::ExportFull,
                                 snapshot.scanner_profile.as_ref(),
                                 u32::MAX,
                             )
-                            .map(|estimate| (estimate, None))
+                            .map(|(estimate, matrix)| (estimate, None, matrix))
                         };
-                        let (input, quality_mask) = match decoded_f32 {
+                        let (input, quality_mask, camera_to_display) = match decoded_f32 {
                             Ok(decoded) => decoded,
                             Err(error) => {
                                 lock_mutex(&failures).push(format!("Failed to decode {}: {error}", file_path));
                                 return;
                             }
                         };
+                        // The export decodes the frame again, so its own decode
+                        // decides the display basis rather than a record that
+                        // may predate the frame's first camera-native decode.
+                        render_pipeline_state.processing_report.camera_to_display = camera_to_display;
                         // A base inherited from another frame is a place-holder:
                         // this decode is the first chance to measure the film on
                         // its own pixels, and the export must not print another
@@ -13338,7 +13498,7 @@ fn selected_roll_item_state(
     state: &EngineState,
     roll_id: &str,
     image_id: Option<&str>,
-) -> Option<(PipelineState, bool, PipelineImageKind)> {
+) -> Option<(PipelineState, bool, PipelineImageKind, WorkingBasis)> {
     let requested = image_id
         .and_then(|id| state.items.get(id))
         .and_then(|entry| {
@@ -13348,6 +13508,7 @@ fn selected_roll_item_state(
                     item.pipeline_state.clone(),
                     item.geom.calibration_points.is_some(),
                     pipeline_image_kind(&item.file_path),
+                    smart_auto_working_basis(&item.file_path),
                 )
             })
         });
@@ -13359,6 +13520,7 @@ fn selected_roll_item_state(
                     item.pipeline_state.clone(),
                     item.geom.calibration_points.is_some(),
                     pipeline_image_kind(&item.file_path),
+                    smart_auto_working_basis(&item.file_path),
                 )
             })
         })
@@ -13386,7 +13548,7 @@ fn roll_calibration_format(value: &str) -> RollCalibrationFormat {
 fn build_roll_calibration_status(
     roll: &Roll,
     profiles: &[CalibrationProfileView],
-    selected_state: Option<(PipelineState, bool, PipelineImageKind)>,
+    selected_state: Option<(PipelineState, bool, PipelineImageKind, WorkingBasis)>,
 ) -> RollCalibrationStatus {
     let format = roll_calibration_format(&roll.format);
     let requested_profile_id = roll.calibration_profile_id.clone();
@@ -13395,11 +13557,17 @@ fn build_roll_calibration_status(
             .iter()
             .find(|view| view.profile.profile_id == profile_id)
     });
-    let (pipeline, frame_set, image_kind) = selected_state.unwrap_or_else(|| {
+    let (pipeline, frame_set, image_kind, working_basis) = selected_state.unwrap_or_else(|| {
         (
             pipeline_state_for_roll_profile(roll, profiles),
             false,
             PipelineImageKind::RawBayer,
+            // Without a loaded frame, the Roll's own sources say which basis
+            // its anchors have to be sampled in.
+            roll.image_paths
+                .first()
+                .map(|path| smart_auto_working_basis(path))
+                .unwrap_or_default(),
         )
     });
     let resolution = resolve_pipeline(&pipeline_resolver_input_for_kind(
@@ -13407,6 +13575,7 @@ fn build_roll_calibration_status(
         Some(roll),
         profiles,
         image_kind,
+        working_basis,
         None,
     ));
     let resolved_profile = resolution
@@ -13994,6 +14163,7 @@ mod calibration_profile_contract_tests {
                 PipelineState::smart_auto(),
                 true,
                 PipelineImageKind::RawBayer,
+                crate::app_state::WorkingBasis::CameraNative,
             )),
         );
 
@@ -14019,6 +14189,7 @@ mod calibration_profile_contract_tests {
                 PipelineState::smart_auto(),
                 true,
                 PipelineImageKind::RawBayer,
+                crate::app_state::WorkingBasis::CameraNative,
             )),
         );
 
@@ -14055,7 +14226,12 @@ mod calibration_profile_contract_tests {
         let status = build_roll_calibration_status(
             &roll,
             &[verified],
-            Some((state, true, PipelineImageKind::RawBayer)),
+            Some((
+                state,
+                true,
+                PipelineImageKind::RawBayer,
+                crate::app_state::WorkingBasis::CameraNative,
+            )),
         );
         assert_eq!(status.resolved_profile_id.as_deref(), Some("profile-a"));
         assert!(!status.fallback_to_smart_auto);
@@ -14075,6 +14251,7 @@ mod calibration_profile_contract_tests {
                 PipelineState::smart_auto(),
                 true,
                 PipelineImageKind::RawBayer,
+                crate::app_state::WorkingBasis::CameraNative,
             )),
         );
 
@@ -21804,6 +21981,311 @@ mod import_contract_tests {
         }
         Some(out)
     }
+
+    /// Blue-channel diagnostic for camera-scanned colour negatives.
+    ///
+    /// Renders each frame three ways from the same LibRaw decode and film
+    /// area, each with its own film base and per-channel endpoints:
+    /// A = the production route: the Develop/export decoder's camera-native
+    ///     working buffer, rendered by the shared render core with the
+    ///     persisted camera->sRGB matrix,
+    /// R = the retired route (camera->sRGB matrix + chroma compression before
+    ///     the log, ProPhoto basis for the inversion, ProPhoto->sRGB after it),
+    /// C = reference: inversion in camera-native RGB by a minimal inverter,
+    ///     camera->sRGB applied to the positive.
+    ///
+    /// `NEXFILM_DIAG_FILES` = `;`-separated paths, `NEXFILM_DIAG_OUT` = folder.
+    /// Run with `cargo test --lib blue_channel_diagnostic -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual diagnostic over local camera scans"]
+    fn blue_channel_diagnostic() {
+        let files = std::env::var("NEXFILM_DIAG_FILES").unwrap_or_default();
+        let output_root =
+            std::path::PathBuf::from(std::env::var("NEXFILM_DIAG_OUT").unwrap_or_else(|_| {
+                format!("{}/target/blue-diagnostic", env!("CARGO_MANIFEST_DIR"))
+            }));
+        std::fs::create_dir_all(&output_root).unwrap();
+        let prophoto_to_srgb =
+            linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb);
+
+        for path in files.split(';').filter(|value| !value.trim().is_empty()) {
+            let name = std::path::Path::new(path)
+                .file_stem()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let legacy = report_legacy_transport(path, 1600).unwrap();
+            let border = crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(
+                legacy.clone(),
+            ));
+            let mut geom = GeometryState::default();
+            if border.confidence == crate::film_border::DetectionConfidence::High {
+                geom.calibration_points = Some(border.points);
+            }
+
+            let options = crate::raw_backend::DecodeOptions {
+                half_size: true,
+                demosaic_quality: 3,
+                output_bps: 16,
+                no_auto_bright: true,
+                output_color: 0,
+                linear_gamma: true,
+                use_camera_wb: false,
+            };
+            let camera = crate::raw_backend::decode_smart_auto_rgb_with_policy(
+                path,
+                &options,
+                crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
+            )
+            .unwrap();
+            let camera_to_srgb = camera.camera_to_srgb;
+            let camera_image = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(
+                camera.width,
+                camera.height,
+                camera.pixels,
+            )
+            .unwrap();
+            // The production working buffer, from the decoder Develop and the
+            // export both call, with the matrix the frame persists.
+            let (working, production_matrix) = super::decode_scanner_profiled_estimate_with_matrix(
+                path,
+                DecodeMode::DevelopProxy,
+                None,
+                super::PROXY_LONG_EDGE as u32,
+            )
+            .unwrap();
+            assert_eq!(working.dimensions(), camera_image.dimensions());
+            assert_eq!(production_matrix, Some(camera_to_srgb));
+            // The retired route, rebuilt from the same camera RGB.
+            let srgb_to_prophoto =
+                linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
+            let mut retired = camera_image.clone();
+            for pixel in retired.pixels_mut() {
+                let srgb =
+                    compress_linear_srgb_for_density(apply_linear_matrix(pixel.0, camera_to_srgb));
+                pixel.0 = apply_linear_matrix(srgb, srgb_to_prophoto);
+            }
+
+            // How much of the negative the pre-inversion gamut compression
+            // rewrites, and how often the blue row of the camera matrix goes
+            // non-positive on an orange-masked negative.
+            let mut compressed = 0usize;
+            let mut blue_floor = 0usize;
+            let mut blue_negative = 0usize;
+            let mut chroma_scale_sum = 0.0f64;
+            let total = (camera_image.width() * camera_image.height()) as usize;
+            for pixel in camera_image.pixels() {
+                let srgb = apply_linear_matrix(pixel.0, camera_to_srgb);
+                let fitted = compress_linear_srgb_for_density(srgb);
+                let luma = crate::core_math::density_luma(srgb);
+                if srgb[2] <= 0.0 {
+                    blue_negative += 1;
+                }
+                let floor = (1.0 / 65_535.0f32).max(luma.max(0.0) * 0.10);
+                if srgb[2] < floor {
+                    blue_floor += 1;
+                }
+                if (0..3).any(|c| (fitted[c] - srgb[c]).abs() > 1e-4 * srgb[c].abs().max(1e-3)) {
+                    compressed += 1;
+                }
+                let spread_in = (srgb[2] - luma).abs().max(1e-9);
+                chroma_scale_sum += ((fitted[2] - luma).abs() / spread_in).min(1.0) as f64;
+            }
+            println!(
+                "[INPUT] {name}: rgb_cam blue row = [{:.3}, {:.3}, {:.3}]",
+                camera_to_srgb[6], camera_to_srgb[7], camera_to_srgb[8]
+            );
+            println!(
+                "[INPUT] {name}: compression rewrote {:.1}% of pixels; blue below floor {:.1}%; blue <= 0 {:.1}%; mean blue chroma kept {:.2}",
+                100.0 * compressed as f64 / total as f64,
+                100.0 * blue_floor as f64 / total as f64,
+                100.0 * blue_negative as f64 / total as f64,
+                chroma_scale_sum / total as f64,
+            );
+
+            // Same analysis functions for both bases.
+            let analyse = |image: &ImageBuffer<Rgb<f32>, Vec<f32>>| {
+                let estimate = estimate_film_base_f32(image, &geom);
+                let base = if estimate.usable {
+                    estimate.density
+                } else {
+                    [0.0; 3]
+                };
+                let mut limits =
+                    compute_content_limits_f32_with_bounds(image, None, &geom, base, None).unwrap();
+                let (offsets, _) =
+                    prepare_content_render_limits(&mut limits, &DensityAnchors::default(), base);
+                (estimate.usable, base, limits, offsets)
+            };
+            let (usable_a, base_a, limits_a, offsets_a) = analyse(&working);
+            let (usable_r, base_r, limits_r, offsets_r) = analyse(&retired);
+            let (usable_c, base_c, limits_c, _) = analyse(&camera_image);
+            println!(
+                "[WINDOW] {name}: production base={usable_a} {:?} span={:?}",
+                base_a,
+                [0, 1, 2].map(|c| limits_a.d_max[c] - limits_a.d_min[c])
+            );
+            println!(
+                "[WINDOW] {name}: retired    base={usable_r} {:?} span={:?}",
+                base_r,
+                [0, 1, 2].map(|c| limits_r.d_max[c] - limits_r.d_min[c])
+            );
+            println!(
+                "[WINDOW] {name}: camera     base={usable_c} {:?} span={:?}",
+                base_c,
+                [0, 1, 2].map(|c| limits_c.d_max[c] - limits_c.d_min[c])
+            );
+
+            // The shared render core, given the frame state production builds.
+            let render_core = |image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+                               usable: bool,
+                               base: [f32; 3],
+                               limits: &AutoColorLimits,
+                               offsets: [f32; 3],
+                               camera_to_display: Option<[f32; 9]>| {
+                let mut state = PipelineState::smart_auto();
+                state.processing_report.base_source = if usable {
+                    "detected_film_base"
+                } else {
+                    "missing_film_base_reference"
+                }
+                .to_string();
+                state.processing_report.camera_to_display = camera_to_display;
+                state.render_mapping.density_low = limits.d_min;
+                state.render_mapping.density_high = limits.d_max;
+                state.render_mapping.channel_offsets = offsets;
+                let mut params = TuningParams::default();
+                params.density.d_min = limits.d_min;
+                params.density.d_max = limits.d_max;
+                render_f32_shader_equivalent(
+                    image,
+                    None,
+                    &params,
+                    &geom,
+                    &base_color_from_density(base),
+                    &state,
+                    None,
+                )
+            };
+            // A: the production route; R: the retired one.
+            let render_a = render_core(
+                &working,
+                usable_a,
+                base_a,
+                &limits_a,
+                offsets_a,
+                production_matrix,
+            );
+            let render_r = render_core(&retired, usable_r, base_r, &limits_r, offsets_r, None);
+
+            let invert = |image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+                          base: [f32; 3],
+                          d_min: [f32; 3],
+                          d_max: [f32; 3],
+                          matrix: Option<[f32; 9]>| {
+                let mut out = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(image.width(), image.height());
+                for (target, source) in out.pixels_mut().zip(image.pixels()) {
+                    let normalized = [0, 1, 2].map(|c| {
+                        let density = -source.0[c].max(1e-6).log10() - base[c];
+                        crate::core_math::normalize_density_channel(
+                            density, d_min[c], d_max[c], 0.0, 0.0, 1.0,
+                        )
+                    });
+                    let display = matrix
+                        .map(|m| apply_linear_matrix(normalized, m))
+                        .unwrap_or(normalized);
+                    target.0 = display.map(|v| (v.clamp(0.0, 1.0) * 65535.0).round() as u16);
+                }
+                out
+            };
+            let render_c = invert(
+                &camera_image,
+                base_c,
+                limits_c.d_min,
+                limits_c.d_max,
+                Some(camera_to_srgb),
+            );
+            // Sanity: the shortcut inverter reproduces each production render
+            // when given that route's buffer, window and display matrix.
+            let mismatch = |left: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+                            right: &ImageBuffer<Rgb<u16>, Vec<u16>>| {
+                let count = left
+                    .pixels()
+                    .zip(right.pixels())
+                    .filter(|(a, b)| (0..3).any(|c| (a.0[c] as i32 - b.0[c] as i32).abs() > 300))
+                    .count();
+                100.0 * count as f64 / total as f64
+            };
+            let check_r = invert(
+                &retired,
+                base_r,
+                limits_r.d_min,
+                limits_r.d_max,
+                Some(prophoto_to_srgb),
+            );
+            println!(
+                "[CHECK] {name}: production A vs reference C differ on {:.2}% of pixels; shortcut vs retired R on {:.2}%",
+                mismatch(&render_c, &render_a),
+                mismatch(&check_r, &render_r),
+            );
+
+            for (label, render) in [
+                ("A_production", &render_a),
+                ("R_retired", &render_r),
+                ("C_camera_native", &render_c),
+            ] {
+                let mut clipped = 0usize;
+                let mut blue = 0usize;
+                let mut blue_saturation = 0.0f64;
+                let mut purple = 0usize;
+                for pixel in render.pixels() {
+                    let rgb = pixel.0.map(|v| v as f32 / 65535.0);
+                    if rgb.iter().any(|v| *v <= 0.0 || *v >= 1.0) {
+                        clipped += 1;
+                    }
+                    let max = rgb[0].max(rgb[1]).max(rgb[2]);
+                    let min = rgb[0].min(rgb[1]).min(rgb[2]);
+                    if max <= 0.05 || max - min < 0.08 {
+                        continue;
+                    }
+                    let delta = max - min;
+                    let hue = if max == rgb[0] {
+                        60.0 * (((rgb[1] - rgb[2]) / delta).rem_euclid(6.0))
+                    } else if max == rgb[1] {
+                        60.0 * ((rgb[2] - rgb[0]) / delta + 2.0)
+                    } else {
+                        60.0 * ((rgb[0] - rgb[1]) / delta + 4.0)
+                    };
+                    if (190.0..250.0).contains(&hue) {
+                        blue += 1;
+                        blue_saturation += (delta / max) as f64;
+                    } else if (250.0..300.0).contains(&hue) {
+                        purple += 1;
+                    }
+                }
+                println!(
+                    "[OUT] {name} {label}: clipped {:.1}%  blue-hue {:.1}% (mean sat {:.2})  purple-hue {:.1}%",
+                    100.0 * clipped as f64 / total as f64,
+                    100.0 * blue as f64 / total as f64,
+                    blue_saturation / blue.max(1) as f64,
+                    100.0 * purple as f64 / total as f64,
+                );
+            }
+
+            let tiles = [&render_a, &render_r, &render_c].map(|image| fit_long_edge(image, 700));
+            let width: u32 = tiles.iter().map(|t| t.width()).sum::<u32>() + 8;
+            let height = tiles.iter().map(|t| t.height()).max().unwrap();
+            let mut sheet =
+                ImageBuffer::<Rgb<u16>, Vec<u16>>::from_pixel(width, height, Rgb([65535; 3]));
+            let mut left = 0;
+            for tile in &tiles {
+                image::imageops::replace(&mut sheet, tile, left as i64, 0);
+                left += tile.width() + 4;
+            }
+            let path = output_root.join(format!("{name}_A-R-C.jpg"));
+            ab_save_preview(path.clone(), &sheet);
+            println!("[SHEET] {}", path.display());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -23226,6 +23708,7 @@ mod roll_render_tests {
             Some(&roll),
             &[],
             pipeline_image_kind("frame.tif"),
+            smart_auto_working_basis("frame.tif"),
             None,
         );
         assert_eq!(input.density_anchors.highlight_fraction, Some(0.5));
@@ -23507,5 +23990,239 @@ mod input_domain_round_trip_tests {
         assert_eq!(domain.source, InputDomainSource::EmbeddedIcc);
         assert!(!domain.estimated);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod camera_native_basis_tests {
+    use super::{
+        build_response_buffer_from_proxy_with_state, camera_native_working_buffer,
+        frame_needs_window_reanalysis, positive_to_display_matrix, render_f32_shader_equivalent,
+        smart_auto_working_basis,
+    };
+    use crate::app_state::{
+        BaseColor, DensityAnchorProvenance, FilmMode, GeometryState, PipelineState, RenderMapping,
+        RenderMode, TuningParams, WorkingBasis,
+    };
+    use crate::color_science::{
+        apply_linear_matrix, compress_linear_srgb_for_density, linear_conversion_matrix,
+        ColorSpaceId,
+    };
+    use image::{ImageBuffer, Rgb};
+
+    /// LibRaw `rgb_cam` of a Nikon body: the blue row takes 0.408 of green.
+    const NIKON_CAMERA_TO_SRGB: [f32; 9] = [
+        1.732, -0.656, -0.076, -0.152, 1.502, -0.350, 0.008, -0.408, 1.400,
+    ];
+    const IDENTITY: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    const SWAP_RED_BLUE: [f32; 9] = [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0];
+
+    #[test]
+    fn camera_raws_are_the_only_inputs_on_the_camera_native_basis() {
+        for path in [
+            "frame.NEF",
+            "frame.cr2",
+            "frame.CR3",
+            "frame.arw",
+            "frame.raf",
+        ] {
+            assert_eq!(
+                smart_auto_working_basis(path),
+                WorkingBasis::CameraNative,
+                "{path}"
+            );
+        }
+        for path in [
+            "scan.dng",
+            "scan.tif",
+            "scan.tiff",
+            "frame.jpg",
+            "frame.png",
+        ] {
+            assert_eq!(
+                smart_auto_working_basis(path),
+                WorkingBasis::ProPhotoEstimate,
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
+    fn camera_raw_working_buffer_takes_no_matrix_or_gamut_floor_before_the_log() {
+        // An orange-masked negative: blue transmits a few percent of red.
+        let negative = [[0.62f32, 0.31, 0.021], [0.48, 0.22, 0.012], [0.9, 0.7, 0.4]];
+        let decoded = crate::raw_backend::CameraRgbEstimate {
+            width: 3,
+            height: 1,
+            pixels: negative.iter().flatten().copied().collect(),
+            camera_to_srgb: NIKON_CAMERA_TO_SRGB,
+            label: "test",
+        };
+        let (image, matrix) = camera_native_working_buffer(decoded).unwrap();
+        assert_eq!(matrix, Some(NIKON_CAMERA_TO_SRGB));
+        for (pixel, expected) in image.pixels().zip(negative) {
+            assert_eq!(
+                pixel.0, expected,
+                "the camera RGB reaches the log untouched"
+            );
+        }
+        // The retired route would have rewritten these very samples: the
+        // camera matrix drives blue to (or below) the 10% luma floor.
+        let retired = compress_linear_srgb_for_density(apply_linear_matrix(
+            negative[0],
+            NIKON_CAMERA_TO_SRGB,
+        ));
+        assert!((retired[2] - negative[0][2]).abs() > 1.0e-3);
+    }
+
+    fn render_one_pixel(state: &PipelineState, mode: FilmMode) -> [u16; 3] {
+        let mut params = TuningParams::default();
+        params.film_mode = mode;
+        let base = BaseColor {
+            base_r: u16::MAX,
+            base_g: u16::MAX,
+            base_b: u16::MAX,
+        };
+        // Densities 0.2 / 0.5 / 0.8 over a clear base.
+        let source = ImageBuffer::from_pixel(
+            2,
+            2,
+            Rgb([10f32.powf(-0.2), 10f32.powf(-0.5), 10f32.powf(-0.8)]),
+        );
+        render_f32_shader_equivalent(
+            &source,
+            None,
+            &params,
+            &GeometryState::default(),
+            &base,
+            state,
+            None,
+        )
+        .get_pixel(0, 0)
+        .0
+    }
+
+    fn mapped_state(camera_to_display: Option<[f32; 9]>) -> PipelineState {
+        let mut state = PipelineState::smart_auto();
+        state.render_mapping = RenderMapping {
+            mode: RenderMode::RollAnchored,
+            density_low: [0.0; 3],
+            density_high: [1.0; 3],
+            exposure: 0.0,
+            gamma: 1.0,
+            channel_offsets: [0.0; 3],
+        };
+        state.processing_report.camera_to_display = camera_to_display;
+        state
+    }
+
+    #[test]
+    fn render_core_displays_the_positive_through_the_persisted_camera_matrix() {
+        let prophoto = linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb);
+        assert_eq!(positive_to_display_matrix(&mapped_state(None)), prophoto);
+        assert_eq!(
+            positive_to_display_matrix(&mapped_state(Some(NIKON_CAMERA_TO_SRGB))),
+            NIKON_CAMERA_TO_SRGB
+        );
+        // A non-finite record never reaches the display.
+        assert_eq!(
+            positive_to_display_matrix(&mapped_state(Some([f32::NAN; 9]))),
+            prophoto
+        );
+
+        // `None` is exactly the ProPhoto -> sRGB route every other input takes.
+        assert_eq!(
+            render_one_pixel(&mapped_state(None), FilmMode::Color),
+            render_one_pixel(&mapped_state(Some(prophoto)), FilmMode::Color)
+        );
+        // The persisted matrix is the one applied to the normalized positive.
+        let identity = render_one_pixel(&mapped_state(Some(IDENTITY)), FilmMode::Color);
+        let swapped = render_one_pixel(&mapped_state(Some(SWAP_RED_BLUE)), FilmMode::Color);
+        assert!(identity[0] < identity[1] && identity[1] < identity[2]);
+        assert_eq!(swapped, [identity[2], identity[1], identity[0]]);
+        assert_ne!(
+            identity,
+            render_one_pixel(&mapped_state(None), FilmMode::Color)
+        );
+        // B&W prints luma density and takes no colour matrix at all.
+        assert_eq!(
+            render_one_pixel(&mapped_state(Some(SWAP_RED_BLUE)), FilmMode::BW),
+            render_one_pixel(&mapped_state(None), FilmMode::BW)
+        );
+    }
+
+    #[test]
+    fn proxy_header_carries_the_camera_matrix_only_for_a_camera_native_buffer() {
+        let proxy = ImageBuffer::from_pixel(2, 1, Rgb([1u16, 2, 3]));
+        let base = BaseColor::default();
+        let plain = build_response_buffer_from_proxy_with_state(
+            &proxy,
+            &base,
+            &mapped_state(None),
+            None,
+            true,
+        );
+        let flags = u32::from_le_bytes(plain[24..28].try_into().unwrap());
+        assert_eq!(flags & 8, 0);
+        assert_eq!(plain.len(), 28 + 2 * 8);
+
+        let camera = build_response_buffer_from_proxy_with_state(
+            &proxy,
+            &base,
+            &mapped_state(Some(NIKON_CAMERA_TO_SRGB)),
+            None,
+            true,
+        );
+        let flags = u32::from_le_bytes(camera[24..28].try_into().unwrap());
+        assert_eq!(flags & (2 | 8), 2 | 8);
+        assert_eq!(camera.len(), 64 + 2 * 8);
+        let matrix: Vec<f32> = (0..9)
+            .map(|index| {
+                f32::from_le_bytes(camera[28 + index * 4..32 + index * 4].try_into().unwrap())
+            })
+            .collect();
+        assert_eq!(matrix, NIKON_CAMERA_TO_SRGB);
+        assert_eq!(&camera[64..], &plain[28..]);
+
+        // Legacy frames never decode the ProPhoto/camera transport.
+        let mut legacy = PipelineState::default();
+        legacy.processing_report.camera_to_display = Some(NIKON_CAMERA_TO_SRGB);
+        let legacy =
+            build_response_buffer_from_proxy_with_state(&proxy, &base, &legacy, None, true);
+        assert_eq!(
+            u32::from_le_bytes(legacy[24..28].try_into().unwrap()) & 8,
+            0
+        );
+    }
+
+    #[test]
+    fn state_persisted_before_the_camera_basis_still_deserializes() {
+        let mut value = serde_json::to_value(PipelineState::smart_auto()).unwrap();
+        let report = value["processing_report"].as_object_mut().unwrap();
+        assert!(report.remove("camera_to_display").is_some());
+        report.insert("analysis_window_rule".into(), 3.into());
+        let restored: PipelineState = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.processing_report.camera_to_display, None);
+        // Such a frame was analysed in the retired basis and is re-derived.
+        assert!(frame_needs_window_reanalysis(&restored));
+
+        let mut provenance = serde_json::to_value(DensityAnchorProvenance {
+            legacy: false,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(provenance
+            .as_object_mut()
+            .unwrap()
+            .remove("working_basis")
+            .is_some());
+        let restored: DensityAnchorProvenance = serde_json::from_value(provenance).unwrap();
+        assert_eq!(restored.working_basis, WorkingBasis::ProPhotoEstimate);
+
+        let mut stamped = PipelineState::smart_auto();
+        stamped.processing_report.camera_to_display = Some(NIKON_CAMERA_TO_SRGB);
+        let round_trip: PipelineState =
+            serde_json::from_str(&serde_json::to_string(&stamped).unwrap()).unwrap();
+        assert_eq!(round_trip, stamped);
     }
 }
