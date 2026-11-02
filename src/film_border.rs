@@ -16,6 +16,29 @@ const MAX_DIAGONAL_RATIO: f64 = 3.0;
 const MIN_GRADIENT_PROMINENCE: f64 = 1.22;
 const MAX_ANALYSIS_EDGE: u32 = 320;
 
+/// Gate refinement: how far inward (as a fraction of the edge's own span) a
+/// rebate walk may travel before it is declared a misdetection.
+const REFINE_MAX_INSET_FRACTION: f32 = 0.20;
+/// The zone between the film edge and the gate that the walk may cross before
+/// the base-like run has to start. Dense edge lines sit directly inside a
+/// film-boundary quad and must not stop the walk on their own.
+const REFINE_SKIP_LIMIT_FRACTION: f32 = 0.06;
+/// A rebate run shorter than this fraction of the span is picture content that
+/// happens to be uniform, not film base, so the edge keeps its original line.
+const REFINE_MIN_RUN_FRACTION: f32 = 0.008;
+/// Median per-channel colour distance (0-255) below which a line still reads
+/// as the same base-like material as the boundary band. Rebate-to-picture
+/// transitions are gradual, so this sits below the mid-transition distance;
+/// the render-side clip tolerates a few pixels of residue.
+const REFINE_MATCH_MAX_DISTANCE: f32 = 8.0;
+/// Consecutive mismatching samples that end a matching run. Small enough to
+/// keep the gate's own frame line inside the area, large enough to survive
+/// thin rebate markings such as edge print.
+const REFINE_RUN_BREAK_SAMPLES: u32 = 3;
+/// Sample positions along the edge are kept away from the corners, where the
+/// neighbouring sides' rebate mixes into the measurement.
+const REFINE_EDGE_SPAN_TRIM: f32 = 0.08;
+
 #[derive(Clone, Copy)]
 struct FittedLine {
     /// Dependent coordinate = slope * independent coordinate + intercept.
@@ -69,7 +92,7 @@ pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
     // holes and image texture break or join their edges. Locate the four long
     // gate edges from robust Sobel projections first, then fit each edge.
     if let Some(points) = detect_from_gradient_projections(&blurred) {
-        return detected_result(points, width, height, "detected_gradient");
+        return detected_result(refine_to_gate(thumbnail, points), width, height, "detected_gradient");
     }
 
     let binary = threshold(&blurred, otsu_level(&blurred));
@@ -85,7 +108,347 @@ pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
         return FilmBorderDetection::fallback();
     };
 
-    detected_result(points, width, height, "detected_contour")
+    detected_result(
+        refine_to_gate(thumbnail, points),
+        width,
+        height,
+        "detected_contour",
+    )
+}
+
+/// Walk each detected edge inward from the film boundary to the actual frame
+/// gate.
+///
+/// A gradient detector reliably finds the film-body boundary — the border
+/// between dense film and an open light panel is the strongest line in any
+/// scan — but the gate sits one rebate band further in, and a quad left on the
+/// boundary keeps the rebate inside the area. After inversion the rebate
+/// renders as dark or white bands around the picture and its densities widen
+/// the analysis window until the frame looks flat.
+///
+/// The rebate is uniform film base, so the walk measures the median colour
+/// distance between lines parallel to the edge and the boundary band's own
+/// colour, and stops the edge at the first sustained deviation: the gate.
+/// Everything is sampled from the colour thumbnail; no RAW decode happens.
+fn refine_to_gate(thumbnail: &DynamicImage, points: [Point<i32>; 4]) -> [Point<i32>; 4] {
+    let Some(rgb) = working_rgb(thumbnail) else {
+        return points;
+    };
+
+    let corners: [[f32; 2]; 4] = points.map(|point| [point.x as f32, point.y as f32]);
+    // Per-edge inward insets. A genuine rebate band surrounds the picture on
+    // every side, so a trustworthy refinement trims at least three edges; one
+    // or two trims mean the walk found a uniform picture border and must not
+    // be applied.
+    let edges: [Option<f32>; 4] = std::array::from_fn(|index| {
+        let a = corners[index];
+        let b = corners[(index + 1) % 4];
+        let opposite = corners[(index + 2) % 4];
+        edge_gate_inset(&rgb, a, b, opposite)
+    });
+    if edges.iter().filter(|inset| inset.is_some()).count() < 3 {
+        return points;
+    }
+
+    // Rebuild the corners from the refined edge lines: each new corner is the
+    // intersection of its two adjacent edges, so tilted quads stay consistent.
+    let mut refined_edge_lines: [Option<([f32; 2], [f32; 2])>; 4] = [None; 4];
+    for index in 0..4 {
+        let Some(inset) = edges[index] else { continue };
+        let a = corners[index];
+        let b = corners[(index + 1) % 4];
+        let opposite = corners[(index + 2) % 4];
+        let edge = [b[0] - a[0], b[1] - a[1]];
+        let edge_length = (edge[0] * edge[0] + edge[1] * edge[1]).sqrt();
+        if edge_length < 8.0 {
+            continue;
+        }
+        let along = [edge[0] / edge_length, edge[1] / edge_length];
+        let inward = inward_normal(a, b, opposite);
+        refined_edge_lines[index] =
+            Some(([a[0] + inward[0] * inset, a[1] + inward[1] * inset], along));
+    }
+    let mut result = corners;
+    for index in 0..4 {
+        let previous = refined_edge_lines[(index + 3) % 4];
+        let current = refined_edge_lines[index];
+        let corner = match (previous, current) {
+            (Some((point_a, direction_a)), Some((point_b, direction_b))) => {
+                intersect_lines_f32(point_a, direction_a, point_b, direction_b)
+                    .unwrap_or(corners[index])
+            }
+            (Some((point, direction)), None) | (None, Some((point, direction))) => {
+                project_onto_line(corners[index], point, direction)
+            }
+            (None, None) => corners[index],
+        };
+        result[index] = corner;
+    }
+
+    let (width, height) = rgb.dimensions();
+    let clamped: [[f32; 2]; 4] = result.map(|[x, y]| {
+        [
+            x.clamp(0.0, width.saturating_sub(1) as f32),
+            y.clamp(0.0, height.saturating_sub(1) as f32),
+        ]
+    });
+    let area = polygon_area_f32(&clamped);
+    let image_area = (width as f32) * (height as f32);
+    if area / image_area.max(1.0) < MIN_AREA_RATIO as f32 {
+        // A walk that collapsed the quad found picture structure it cannot
+        // reason about; keep the detected boundary instead.
+        return points;
+    }
+
+    clamped.map(|[x, y]| Point::new(x.round() as i32, y.round() as i32))
+}
+
+/// Inward inset of one edge to its frame gate, or `None` when the walk finds no
+/// rebate band behind the edge.
+fn edge_gate_inset(
+    rgb: &image::RgbImage,
+    a: [f32; 2],
+    b: [f32; 2],
+    opposite: [f32; 2],
+) -> Option<f32> {
+    let edge = [b[0] - a[0], b[1] - a[1]];
+    let edge_length = (edge[0] * edge[0] + edge[1] * edge[1]).sqrt();
+    if edge_length < 8.0 {
+        return None;
+    }
+    let inward = inward_normal(a, b, opposite);
+
+    let max_inset = edge_length * REFINE_MAX_INSET_FRACTION;
+    let skip_limit = edge_length * REFINE_SKIP_LIMIT_FRACTION;
+    let min_run = (edge_length * REFINE_MIN_RUN_FRACTION).max(2.0);
+    let profile = colour_profile(rgb, a, b, inward, edge_length, 0.0, max_inset);
+
+    // The rebate reads as whatever material sits a few pixels inside the
+    // detected boundary: past the dense film-edge line, before the gate.
+    let anchor_start = (max_inset * 0.02).max(2.0);
+    let anchor_end = (max_inset * 0.06).max(6.0);
+    let mut reference = [0.0f32; 3];
+    {
+        let mut count = 0usize;
+        for &(offset, colour, _) in profile.iter() {
+            if offset >= anchor_start && offset <= anchor_end {
+                for channel in 0..3 {
+                    reference[channel] += colour[channel];
+                }
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return None;
+        }
+        reference = reference.map(|value| value / count as f32);
+    }
+    let distance_to_reference = |colour: [f32; 3]| -> f32 {
+        (0..3)
+            .map(|channel| (colour[channel] - reference[channel]).abs())
+            .sum::<f32>()
+            / 3.0
+    };
+
+    // Walk inward from the boundary. Tolerate the initial dense edge line, then
+    // follow the base-like run and end it at the gate.
+    let mut run_start: Option<f32> = None;
+    let mut last_match: Option<f32> = None;
+    let mut mismatch_streak = 0u32;
+    for &(offset, colour, _) in profile.iter() {
+        let matching = distance_to_reference(colour) <= REFINE_MATCH_MAX_DISTANCE;
+        if run_start.is_none() {
+            if matching {
+                run_start = Some(offset);
+                last_match = Some(offset);
+                mismatch_streak = 0;
+            } else if offset > skip_limit {
+                // No rebate band behind this edge: the detection either sits on
+                // the gate already or found content the walk cannot classify.
+                return None;
+            }
+            continue;
+        }
+        if matching {
+            mismatch_streak = 0;
+            last_match = Some(offset);
+        } else {
+            mismatch_streak += 1;
+            if mismatch_streak >= REFINE_RUN_BREAK_SAMPLES {
+                break;
+            }
+        }
+    }
+
+    let (start, end) = (run_start?, last_match?);
+    // A run that reaches the end of the search never found the gate line. That
+    // is the shape of a uniform picture interior (a white polygon, a clear
+    // sky), not of a rebate bounded by a frame gate, so the edge keeps its
+    // detected line.
+    if end >= max_inset - 2.0 {
+        return None;
+    }
+    (end - start >= min_run).then_some(end)
+}
+
+fn inward_normal(a: [f32; 2], b: [f32; 2], opposite: [f32; 2]) -> [f32; 2] {
+    let edge = [b[0] - a[0], b[1] - a[1]];
+    let length = (edge[0] * edge[0] + edge[1] * edge[1]).sqrt().max(1.0);
+    let along = [edge[0] / length, edge[1] / length];
+    let midpoint = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+    let to_opposite = [opposite[0] - midpoint[0], opposite[1] - midpoint[1]];
+    let positive = [-along[1], along[0]];
+    let negative = [along[1], -along[0]];
+    let dot = |normal: [f32; 2]| normal[0] * to_opposite[0] + normal[1] * to_opposite[1];
+    if dot(positive) >= dot(negative) {
+        positive
+    } else {
+        negative
+    }
+}
+
+fn intersect_lines_f32(
+    point_a: [f32; 2],
+    direction_a: [f32; 2],
+    point_b: [f32; 2],
+    direction_b: [f32; 2],
+) -> Option<[f32; 2]> {
+    let denominator = direction_a[0] * direction_b[1] - direction_a[1] * direction_b[0];
+    if denominator.abs() < 1.0e-6 {
+        return None;
+    }
+    let delta = [point_b[0] - point_a[0], point_b[1] - point_a[1]];
+    let t = (delta[0] * direction_b[1] - delta[1] * direction_b[0]) / denominator;
+    Some([point_a[0] + direction_a[0] * t, point_a[1] + direction_a[1] * t])
+}
+
+fn project_onto_line(point: [f32; 2], line_point: [f32; 2], direction: [f32; 2]) -> [f32; 2] {
+    let delta = [point[0] - line_point[0], point[1] - line_point[1]];
+    let t = delta[0] * direction[0] + delta[1] * direction[1];
+    [line_point[0] + direction[0] * t, line_point[1] + direction[1] * t]
+}
+
+/// Sample lines parallel to one edge at increasing inward offsets. For each
+/// offset the median colour and that line's own colour spread are reported;
+/// medians reject sprocket holes and edge print markings.
+fn colour_profile(
+    rgb: &image::RgbImage,
+    a: [f32; 2],
+    b: [f32; 2],
+    inward: [f32; 2],
+    edge_length: f32,
+    start_offset: f32,
+    max_offset: f32,
+) -> Vec<(f32, [f32; 3], f32)> {
+    let (width, height) = rgb.dimensions();
+    let sample_count = ((edge_length * 0.15) as usize).clamp(24, 96);
+    let mut offsets = Vec::new();
+    let mut offset = start_offset;
+    while offset <= max_offset {
+        offsets.push(offset);
+        offset += 1.0;
+    }
+
+    let mut buffers = vec![Vec::with_capacity(sample_count); offsets.len()];
+    for sample in 0..sample_count {
+        let t = REFINE_EDGE_SPAN_TRIM
+            + (1.0 - 2.0 * REFINE_EDGE_SPAN_TRIM) * (sample as f32 / (sample_count - 1) as f32);
+        let base = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+        for (index, &o) in offsets.iter().enumerate() {
+            let point = [base[0] + inward[0] * o, base[1] + inward[1] * o];
+            if point[0] < 0.0
+                || point[1] < 0.0
+                || point[0] >= width as f32
+                || point[1] >= height as f32
+            {
+                continue;
+            }
+            if let Some(colour) = sample_bilinear(rgb, point[0], point[1]) {
+                buffers[index].push(colour);
+            }
+        }
+    }
+
+    let mut profile = Vec::with_capacity(offsets.len());
+    for (index, buffer) in buffers.into_iter().enumerate() {
+        if buffer.len() < sample_count / 3 {
+            continue;
+        }
+        let median = |mut values: Vec<f32>| -> f32 {
+            let middle = values.len() / 2;
+            values.select_nth_unstable_by_key(middle, |value| value.to_bits());
+            values[middle]
+        };
+        let channels = std::array::from_fn(|channel| {
+            median(buffer.iter().map(|colour| colour[channel]).collect())
+        });
+        let spread = median(
+            buffer
+                .iter()
+                .map(|colour| {
+                    (0..3)
+                        .map(|channel| (colour[channel] - channels[channel]).abs())
+                        .sum::<f32>()
+                        / 3.0
+                })
+                .collect(),
+        );
+        profile.push((offsets[index], channels, spread));
+    }
+    profile
+}
+
+fn sample_bilinear(rgb: &image::RgbImage, x: f32, y: f32) -> Option<[f32; 3]> {
+    let (width, height) = rgb.dimensions();
+    if x < 0.0 || y < 0.0 || x >= width as f32 || y >= height as f32 {
+        return None;
+    }
+    let x0 = x.floor() as u32;
+    let y0 = y.floor() as u32;
+    let x1 = (x0 + 1).min(width - 1);
+    let y1 = (y0 + 1).min(height - 1);
+    let fx = x - x0 as f32;
+    let fy = y - y0 as f32;
+    let get = |px: u32, py: u32| -> [f32; 3] {
+        let pixel = rgb.get_pixel(px, py).0;
+        [pixel[0] as f32, pixel[1] as f32, pixel[2] as f32]
+    };
+    let top: [f32; 3] =
+        std::array::from_fn(|channel| get(x0, y0)[channel] * (1.0 - fx) + get(x1, y0)[channel] * fx);
+    let bottom: [f32; 3] =
+        std::array::from_fn(|channel| get(x0, y1)[channel] * (1.0 - fx) + get(x1, y1)[channel] * fx);
+    Some(std::array::from_fn(|channel| {
+        top[channel] * (1.0 - fy) + bottom[channel] * fy
+    }))
+}
+
+fn working_rgb(thumbnail: &DynamicImage) -> Option<image::RgbImage> {
+    let (width, height) = thumbnail.dimensions();
+    let longest = width.max(height);
+    if longest < 16 {
+        return None;
+    }
+    let working = if longest > 1024 {
+        let scale = 1024.0 / longest as f64;
+        thumbnail.resize_exact(
+            ((width as f64 * scale).round() as u32).max(16),
+            ((height as f64 * scale).round() as u32).max(16),
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        thumbnail.clone()
+    };
+    Some(working.to_rgb8())
+}
+
+fn polygon_area_f32(points: &[[f32; 2]; 4]) -> f32 {
+    let mut twice_area = 0.0f32;
+    for index in 0..4 {
+        let left = points[index];
+        let right = points[(index + 1) % 4];
+        twice_area += left[0] * right[1] - right[0] * left[1];
+    }
+    twice_area.abs() / 2.0
 }
 
 fn analysis_grayscale(thumbnail: &DynamicImage) -> GrayImage {
@@ -639,6 +1002,71 @@ mod tests {
         assert!((result.points[0][1] - 38.0 / 209.0).abs() < 0.03);
         assert!((result.points[2][0] - 274.0 / 319.0).abs() < 0.03);
         assert!((result.points[2][1] - 174.0 / 209.0).abs() < 0.03);
+    }
+
+    /// A synthetic scan: open light panel outside the film body, a uniform
+    /// pale rebate band inside the film edge, and textured picture content
+    /// inside the gate. The gradient detector lands on the film-body boundary;
+    /// the gate refinement has to walk each edge in to the rebate's end.
+    fn boundary_scan_thumbnail() -> DynamicImage {
+        let mut image = image::RgbImage::from_pixel(400, 260, image::Rgb([244, 244, 244]));
+        // Film body: rebate from (40, 30) to (360, 230).
+        draw_filled_rect_mut(&mut image, Rect::at(40, 30).of_size(320, 200), image::Rgb([212, 172, 132]));
+        // Picture gate: textured content from (60, 50) to (340, 210).
+        for y in 50..210 {
+            for x in 60..340 {
+                let value = ((x * 5 + y * 9) % 97) as u8;
+                image.put_pixel(x, y, image::Rgb([40 + value, 60 + value / 2, 80 + value / 3]));
+            }
+        }
+        DynamicImage::ImageRgb8(image)
+    }
+
+    #[test]
+    fn refinement_walks_edges_in_to_the_frame_gate() {
+        let thumbnail = boundary_scan_thumbnail();
+        let boundary = [
+            Point::new(40, 30),
+            Point::new(359, 30),
+            Point::new(359, 229),
+            Point::new(40, 229),
+        ];
+
+        let refined = refine_to_gate(&thumbnail, boundary);
+
+        // The gate sits 20 px inside the film boundary on every side.
+        let expected_corners = [
+            Point::new(60, 50),
+            Point::new(339, 50),
+            Point::new(339, 209),
+            Point::new(60, 209),
+        ];
+        for (corner, expected) in refined.iter().zip(expected_corners.iter()) {
+            assert!(
+                (corner.x - expected.x).abs() <= 3 && (corner.y - expected.y).abs() <= 3,
+                "corner {corner:?} vs {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn refinement_keeps_a_quad_that_already_sits_on_a_uniform_picture() {
+        // The gate is flush with the detected quad, and the picture interior is
+        // one uniform colour: there is no rebate band to walk through, so every
+        // edge must keep its detected line.
+        let mut image = image::RgbImage::from_pixel(400, 260, image::Rgb([244, 244, 244]));
+        draw_filled_rect_mut(&mut image, Rect::at(60, 50).of_size(280, 160), image::Rgb([190, 150, 120]));
+        let thumbnail = DynamicImage::ImageRgb8(image);
+        let gate = [
+            Point::new(60, 50),
+            Point::new(339, 50),
+            Point::new(339, 209),
+            Point::new(60, 209),
+        ];
+
+        let refined = refine_to_gate(&thumbnail, gate);
+
+        assert_eq!(refined, gate);
     }
 
     #[test]

@@ -2084,7 +2084,10 @@ let currentBaseDensity = [0, 0, 0];
 let proxyHasAnalyzedBase = false;
 let currentPipelineState = { contract: 'legacy_v1', density_anchors: {} };
 let currentPipelineContract = 'legacy_v1';
-let currentProxyDomain = 'legacy_linear_srgb';
+// Null until a proxy parse commits it together with the texture it describes.
+// Assuming a domain here would let a render run before the first parse and
+// interpret whatever texture is bound with the wrong decoder.
+let currentProxyDomain = null;
 
 function pipelineHasCompleteRollAnchors(state = currentPipelineState) {
     const anchors = state?.density_anchors || {};
@@ -2537,14 +2540,19 @@ function initWebGL() {
             final_rgb = vec3(getLuma(final_rgb));
         }
 
-        if (u_sprocket_uv.x >= 0.0 || u_has_sprocket_target_color != 0) {
-            bool has_visible_border = distance(u_calib_pts[0], vec2(0.0, 0.0)) > 0.001
-                || distance(u_calib_pts[1], vec2(1.0, 0.0)) > 0.001
-                || distance(u_calib_pts[2], vec2(1.0, 1.0)) > 0.001
-                || distance(u_calib_pts[3], vec2(0.0, 1.0)) > 0.001;
+        bool sprocket_configured = u_sprocket_uv.x >= 0.0 || u_has_sprocket_target_color != 0;
+        bool has_visible_border = distance(u_calib_pts[0], vec2(0.0, 0.0)) > 0.001
+            || distance(u_calib_pts[1], vec2(1.0, 0.0)) > 0.001
+            || distance(u_calib_pts[2], vec2(1.0, 1.0)) > 0.001
+            || distance(u_calib_pts[3], vec2(0.0, 1.0)) > 0.001;
+        if (sprocket_configured || has_visible_border) {
+            // A confirmed film area bounds the photograph: pixels outside it
+            // are rebate, sprockets or the light panel. With a sprocket sample
+            // configured they follow the similarity mask; otherwise they are
+            // painted paper white so the rebate cannot invert into bands.
             bool outside_calibration = !insideFilmArea(v_texcoord);
             bool apply_sprocket_mask = outside_calibration;
-            if (!has_visible_border) {
+            if (sprocket_configured && !has_visible_border) {
                 vec2 effective_sprocket_uv = u_sprocket_uv.x >= 0.0 ? u_sprocket_uv : vec2(0.5, 0.05);
                 float horizontal_edge = min(effective_sprocket_uv.x, 1.0 - effective_sprocket_uv.x);
                 float vertical_edge = min(effective_sprocket_uv.y, 1.0 - effective_sprocket_uv.y);
@@ -2557,7 +2565,12 @@ function initWebGL() {
                 apply_sprocket_mask = pixel_edge <= edge_band;
             }
             if (apply_sprocket_mask) {
-                final_rgb = mix(final_rgb, vec3(1.0), mask);
+                if (sprocket_configured) {
+                    final_rgb = mix(final_rgb, vec3(1.0), mask);
+                } else {
+                    final_rgb = vec3(1.0);
+                }
+                mask = 1.0;
             }
         }
 
@@ -4069,6 +4082,10 @@ function renderWebGL() {
     renderRequested = false;
     if (!gl || !activeId) return;
     if (!activeProxyIsFull || !proxyPixels || proxyWidth <= 0 || proxyHeight <= 0) return;
+    // A bound texture without a committed domain cannot be interpreted: show
+    // nothing rather than guessing a decoder for pixels the parse has not
+    // claimed yet.
+    if (!currentProxyDomain) return;
 
     const cropRect = current_geom.crop_rect;
 
@@ -4262,20 +4279,25 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
             if (loadingMask) loadingMask.classList.add('hidden');
             return false;
         }
-        
-        currentBaseDensity[0] = dataView.getFloat32(8, true);
-        currentBaseDensity[1] = dataView.getFloat32(12, true);
-        currentBaseDensity[2] = dataView.getFloat32(16, true);
-        
+
+        // Parse into locals first: nothing global may change until the load is
+        // known current. A discarded load (fast frame switch, background
+        // prewarm) must not leave its domain, base or flags behind for the
+        // next frame's texture to be rendered with.
+        const headerBaseDensity = [
+            dataView.getFloat32(8, true),
+            dataView.getFloat32(12, true),
+            dataView.getFloat32(16, true),
+        ];
         const flags = dataView.byteLength >= 28 ? dataView.getUint32(24, true) : 0;
-        const baseAnalyzed = dataView.byteLength >= 28
-            ? (flags & 1) !== 0
-            : proxyAnalyzedBaseIds.has(requestedId);
-        currentProxyDomain = (flags & 4) !== 0
+        const headerDomain = (flags & 4) !== 0
             ? 'relative_transmission_rgb'
             : (flags & 2) !== 0
                 ? 'prophoto_estimate'
                 : 'legacy_linear_srgb';
+        const baseAnalyzed = dataView.byteLength >= 28
+            ? (flags & 1) !== 0
+            : proxyAnalyzedBaseIds.has(requestedId);
         const pixels = new Uint16Array(arrayBuffer, byteOffset + (dataView.byteLength >= 28 ? 28 : 24), width * height * 4);
         const nextTexture = gl.createTexture();
         if (!nextTexture) throw new Error('Could not allocate the preview texture.');
@@ -4308,6 +4330,13 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         proxyWidth = width;
         proxyHeight = height;
         activeProxyIsFull = true;
+        // The load is current: commit the frame's render metadata together with
+        // its texture so the renderer never pairs one frame's pixels with
+        // another frame's domain, base or flags.
+        currentBaseDensity[0] = headerBaseDensity[0];
+        currentBaseDensity[1] = headerBaseDensity[1];
+        currentBaseDensity[2] = headerBaseDensity[2];
+        currentProxyDomain = headerDomain;
         // A proxy is a clear, linear negative until Auto Invert explicitly
         // computes and persists the film-base estimate. Do not clear the
         // per-image state when the same proxy is reloaded after analysis.

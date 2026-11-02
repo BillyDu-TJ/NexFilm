@@ -2351,10 +2351,11 @@ fn decode_capture_corrected_image_buffer(
     let dark = crate::raw_backend::decode_raw_mosaic(dark_path)?;
     let open = crate::raw_backend::decode_raw_mosaic(open_path)?;
     for mosaic in [&sample, &dark, &open] {
-        if mosaic.metadata.libraw_version != profile.payload.libraw_version {
+        if mosaic.metadata.decoder_id() != profile.payload.libraw_version {
             return Err(format!(
                 "capture_libraw_version_mismatch|expected={}|actual={}",
-                profile.payload.libraw_version, mosaic.metadata.libraw_version
+                profile.payload.libraw_version,
+                mosaic.metadata.decoder_id()
             ));
         }
     }
@@ -4587,8 +4588,14 @@ fn raw_decode_failure_hint(path: &str) -> Option<&'static str> {
 }
 
 fn libraw_decode_error_message(path: &str, error: impl std::fmt::Display) -> String {
+    let message = error.to_string();
+    // The dual-source dispatch answers Nikon High Efficiency failures with a
+    // complete user-facing guidance message; do not decorate it.
+    if message.starts_with("This file uses Nikon") {
+        return message;
+    }
     let mut message = format!(
-        "LibRaw {} cannot decode {path}: {error}",
+        "LibRaw {} cannot decode {path}: {message}",
         crate::raw_backend::RawProcessor::version()
     );
     if let Some(hint) = raw_decode_failure_hint(path) {
@@ -4686,6 +4693,19 @@ fn decode_image_buffer(
         crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
     )
     .map_err(|error| libraw_decode_error_message(path, error))?;
+    if matches!(
+        decoded.camera_to_srgb_source,
+        crate::raw_backend::CameraMatrixSource::Unresolved
+    ) {
+        // Neither backend could characterise this camera: no per-camera colour
+        // matrix and no trusted as-shot metadata. The picture keeps
+        // sensor-native primaries, so every develop and export render of it
+        // carries the same cast until the bundled backends learn the model.
+        eprintln!(
+            "[RAW Pipeline] no camera matrix for {path} ({}); decoded sensor-native (expect a colour cast).",
+            decoded.camera_to_srgb_source.label()
+        );
+    }
 
     let camera_rgb = rgb16_image_from_bytes(
         decoded.width as u32,
@@ -4824,6 +4844,18 @@ fn decode_scanner_profiled_estimate_image_buffer(
         }
         return decode_prophoto_estimate_image_buffer(path, mode);
     }
+    let profile = profile.filter(|_| !is_dng_extension(path));
+    // A profiled TIFF converts straight into the working space, exactly like
+    // the Develop proxy does: routing it through the 16-bit linear-sRGB
+    // transport would clamp each channel independently, and the orange mask of
+    // a colour negative deliberately sits outside the sRGB gamut. A bound
+    // scanner profile expects the transport's linear-sRGB source domain, so
+    // those frames keep the historical path.
+    if profile.is_none() && is_tiff_extension(path) && !is_scanner_fff_tiff(path) {
+        if let Ok(estimate) = decode_profiled_tiff_prophoto_estimate(path, target_long_edge) {
+            return Ok(estimate);
+        }
+    }
     let source = if is_tiff_extension(path) || is_scanner_fff_tiff(path) {
         // Large scans must come from the streaming reader: the generic image
         // decoder refuses anything past its own allocation ceiling, which turned
@@ -4833,7 +4865,6 @@ fn decode_scanner_profiled_estimate_image_buffer(
     } else {
         decode_image_buffer(path, mode)?
     };
-    let profile = profile.filter(|_| !is_dng_extension(path));
     let mut linear = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(source.width(), source.height());
     linear
         .as_mut()
@@ -10287,6 +10318,15 @@ fn render_shader_equivalent_core(
             .clamp(0.1, 8.0),
     };
     let detail_is_neutral = detail_settings.is_neutral();
+    // A confirmed film area bounds the photograph: pixels outside it are
+    // rebate, sprockets or the light panel, so both renderers paint them paper
+    // white instead of letting them invert into bands around the picture.
+    let film_area_confirmed = !points
+        .iter()
+        .zip([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+        .all(|(actual, expected)| {
+            (actual[0] - expected[0]).abs() <= 0.001 && (actual[1] - expected[1]).abs() <= 0.001
+        });
     // The Detail stage keeps its hands off the sprocket white-out, which is an
     // overlay rather than image content. One byte per pixel is enough for a
     // guard that is only ever 0 or 1 in practice.
@@ -10431,6 +10471,9 @@ fn render_shader_equivalent_core(
                         *channel += (1.0 - *channel) * mask;
                     }
                 }
+            } else if film_area_confirmed && !point_in_film_area(crop_uv, &points, 0.0) {
+                mask_slot[0] = 255;
+                rendered = [1.0, 1.0, 1.0];
             }
 
             for channel in 0..3 {
@@ -12346,7 +12389,7 @@ fn build_measurement_set_from_spec(
         ) {
             return Err(format!("fit_{label}_requires_bayer_raw"));
         }
-        if mosaic.metadata.libraw_version != target.metadata.libraw_version {
+        if mosaic.metadata.decoder_id() != target.metadata.decoder_id() {
             return Err("fit_libraw_version_mismatch".into());
         }
     }
@@ -13117,7 +13160,9 @@ fn build_capture_calibration_payload(
         calibration_session_id: Some(session_id),
         hardware_fingerprint,
         raw_decode_version: Some(RAW_DECODE_VERSION),
-        libraw_version: open.metadata.libraw_version.clone(),
+        // The decoder identity covers both dual sources: "libraw X.Y.Z" or
+        // "rawler X.Y.Z" — a set mixing backends must not verify.
+        libraw_version: open.metadata.decoder_id(),
         reference_frames: summaries,
         capture_parameters: Some(CaptureCalibrationParameters {
             correction_algorithm: crate::app_state::CAPTURE_CORRECTION_ALGORITHM_VERSION
@@ -13747,7 +13792,7 @@ mod calibration_profile_contract_tests {
             calibration_session_id: Some("session-a".to_string()),
             hardware_fingerprint: "camera|lens|light".to_string(),
             raw_decode_version: Some(RAW_DECODE_VERSION),
-            libraw_version: "0.22-test".to_string(),
+            libraw_version: "libraw 0.22-test".to_string(),
             reference_frames: view
                 .profile
                 .references
@@ -13817,7 +13862,8 @@ mod calibration_profile_contract_tests {
                 iso: Some(100.0),
                 exposure_seconds: Some(0.01),
                 camera_id: "maker|camera".to_string(),
-                libraw_version: "0.22-test".to_string(),
+                decoder_source: crate::raw_backend::DECODER_SOURCE_LIBRAW.to_string(),
+                decoder_version: "0.22-test".to_string(),
                 capture_conditions: CaptureConditions::default(),
             },
         }
@@ -15574,7 +15620,7 @@ mod import_contract_tests {
         linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff, measure_roll_highlight_frames,
         persist_import_batch, pipeline_base_density, pipeline_has_base, point_in_film_area,
         prepare_content_render_limits, preserve_smart_auto_content_span,
-        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, read_classic_tiff_directory,
+        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint,
         reference_density_extreme, render_f32_shader_equivalent, render_shader_equivalent,
         resolve_input_domain, rgb16_image_from_bytes, roll_density_mapping_with_frame_base,
         roll_physical_density_span, sample_reference_frame_path, sampled_frame_paths_from_anchors,
@@ -18258,7 +18304,7 @@ mod import_contract_tests {
         // input side already uses, so out-of-gamut values lose saturation
         // instead of shifting hue.
         {
-            let mut state = state.clone();
+            let state = state.clone();
             let base = [0.0; 3];
             let mut limits = compute_content_limits_f32_with_bounds(
                 &estimate,
@@ -20372,6 +20418,188 @@ mod import_contract_tests {
         std::fs::remove_dir_all(&directory).ok();
     }
 
+    /// Same shape, but carrying a synthetic Adobe RGB ICC profile so the
+    /// profiled decode routes apply. The right half is a solid negative-mask
+    /// orange that sits outside the sRGB gamut, which is exactly the content
+    /// the u16 transport clamps.
+    fn write_adobe_rgb_rgb16_tiff(path: &std::path::Path, width: u32, height: u32) {
+        fn push_entry(bytes: &mut Vec<u8>, tag: u16, type_code: u16, count: u32, value: u32) {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&type_code.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        const IFD_OFFSET: u32 = 8;
+        const SHORT: u16 = 3;
+        const LONG: u16 = 4;
+        const UNDEFINED: u16 = 7;
+        let entry_count: u16 = 12;
+        let bits_offset = IFD_OFFSET + 2 + u32::from(entry_count) * 12 + 4;
+        let pixel_offset = bits_offset + 12;
+        let icc_offset = pixel_offset + width * height * 6;
+        let icc = crate::color_science::build_linear_icc_profile(ColorSpaceId::AdobeRgb);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"II");
+        bytes.extend_from_slice(&42u16.to_le_bytes());
+        bytes.extend_from_slice(&IFD_OFFSET.to_le_bytes());
+        bytes.extend_from_slice(&entry_count.to_le_bytes());
+        push_entry(&mut bytes, 256, LONG, 1, width);
+        push_entry(&mut bytes, 257, LONG, 1, height);
+        push_entry(&mut bytes, 258, LONG, 3, bits_offset);
+        push_entry(&mut bytes, 259, SHORT, 1, 1);
+        push_entry(&mut bytes, 262, SHORT, 1, 2);
+        push_entry(&mut bytes, 273, LONG, 1, pixel_offset);
+        push_entry(&mut bytes, 274, SHORT, 1, 1);
+        push_entry(&mut bytes, 277, SHORT, 1, 3);
+        push_entry(&mut bytes, 278, LONG, 1, height);
+        push_entry(&mut bytes, 279, LONG, 1, width * height * 6);
+        push_entry(&mut bytes, 284, SHORT, 1, 1);
+        push_entry(&mut bytes, 34675, UNDEFINED, icc.len() as u32, icc_offset);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&16u32.to_le_bytes());
+        }
+        for y in 0..height {
+            for x in 0..width {
+                let pixel = if x * 2 < width {
+                    [
+                        (4_000 + x * 1_000 + y * 137) as u16,
+                        (3_000 + x * 800 + y * 111) as u16,
+                        (2_000 + x * 600 + y * 91) as u16,
+                    ]
+                } else {
+                    [65_000, 45_000, 2_000]
+                };
+                for value in pixel {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        bytes.extend_from_slice(&icc);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn export_estimate_matches_the_canvas_decode_for_profiled_tiffs() {
+        // The Develop proxy converts a profiled TIFF straight into the working
+        // space; the export decoder used to route the same file through the
+        // 16-bit linear-sRGB transport, whose per-channel clamping removed the
+        // negative mask that deliberately sits outside the sRGB gamut. The
+        // export estimate has to stay pixel-identical to the canvas decode.
+        let directory =
+            std::env::temp_dir().join(format!("nexfilm-profiled-tiff-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("adobe-rgb-rgb16.tif");
+        write_adobe_rgb_rgb16_tiff(&path, 8, 6);
+        let path_string = path.to_string_lossy().to_string();
+
+        assert_eq!(
+            embedded_input_profile(&path_string),
+            Some(ColorSpaceId::AdobeRgb)
+        );
+
+        // The fixture really does exercise the divergence: the transport
+        // clamps at least one mask channel, and its ProPhoto estimate therefore
+        // differs from the direct conversion.
+        let transported = decode_reduced_tiff_for_working_space(&path_string, u32::MAX).unwrap();
+        let mask = transported.get_pixel(6, 3).0;
+        assert!(
+            mask[0] == u16::MAX || mask[2] == 0,
+            "the mask must clamp in the u16 transport: {mask:?}"
+        );
+        let legacy_estimate = {
+            let mut linear = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(
+                transported.width(),
+                transported.height(),
+            );
+            linear
+                .as_mut()
+                .par_chunks_exact_mut(3)
+                .zip(transported.as_raw().par_chunks_exact(3))
+                .for_each(|(target, pixel)| {
+                    target.copy_from_slice(&compress_linear_srgb_for_density([
+                        f32::from(pixel[0]) / 65535.0,
+                        f32::from(pixel[1]) / 65535.0,
+                        f32::from(pixel[2]) / 65535.0,
+                    ]));
+                });
+            let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
+            linear.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+                pixel.copy_from_slice(&apply_linear_matrix(
+                    [pixel[0], pixel[1], pixel[2]],
+                    matrix,
+                ));
+            });
+            linear
+        };
+        let canvas = decode_profiled_tiff_prophoto_estimate(&path_string, u32::MAX).unwrap();
+        let mut legacy_divergence = 0.0f32;
+        for (legacy, direct) in legacy_estimate
+            .as_raw()
+            .iter()
+            .zip(canvas.as_raw().iter())
+        {
+            legacy_divergence = legacy_divergence.max((legacy - direct).abs());
+        }
+        assert!(
+            legacy_divergence > 0.01,
+            "the fixture should separate the two input domains: {legacy_divergence}"
+        );
+
+        let export = decode_scanner_profiled_estimate_image_buffer(
+            &path_string,
+            DecodeMode::ExportFull,
+            None,
+            u32::MAX,
+        )
+        .unwrap();
+        assert_eq!(export.dimensions(), canvas.dimensions());
+        for (exported, direct) in export.as_raw().iter().zip(canvas.as_raw().iter()) {
+            assert!(
+                (exported - direct).abs() <= 1.0e-6,
+                "the export decode diverged from the canvas decode: {exported} vs {direct}"
+            );
+        }
+
+        if let Ok(report_frame) = std::env::var("NEXFILM_DIAG_FRAME") {
+            // Real-file check: the report TIFF must decode identically on both
+            // paths now. Run with
+            // NEXFILM_DIAG_FRAME=<tif> cargo test --lib export_estimate_matches
+            let real_canvas =
+                decode_profiled_tiff_prophoto_estimate(&report_frame, 2560).unwrap();
+            let real_export = decode_scanner_profiled_estimate_image_buffer(
+                &report_frame,
+                DecodeMode::ExportFull,
+                None,
+                2560,
+            )
+            .unwrap();
+            assert_eq!(real_export.dimensions(), real_canvas.dimensions());
+            for (exported, direct) in real_export.as_raw().iter().zip(real_canvas.as_raw().iter())
+            {
+                assert!((exported - direct).abs() <= 1.0e-6);
+            }
+            let mut means = [0.0f64; 3];
+            let raw = real_export.as_raw();
+            for chunk in raw.chunks_exact(3).step_by(997) {
+                for channel in 0..3 {
+                    means[channel] += f64::from(chunk[channel]);
+                }
+            }
+            let samples = (raw.len() / 3 / 997).max(1) as f64;
+            means = means.map(|value| value / samples);
+            println!(
+                "[FIX-CHECK] {report_frame} export estimate B/G={:.3}",
+                means[2] / means[1]
+            );
+        }
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
     #[test]
     fn profiled_tiff_conversion_keeps_the_mask_inside_every_channel() {
         // Adobe RGB sample of a colour negative's orange mask, taken from the
@@ -22186,13 +22414,37 @@ mod export_contract_tests {
             None,
         );
         let mut film_area = GeometryState::default();
-        film_area.calibration_points =
-            Some([[0.08, 0.18], [0.94, 0.06], [0.82, 0.91], [0.17, 0.76]]);
+        let points = [[0.08, 0.18], [0.94, 0.06], [0.82, 0.91], [0.17, 0.76]];
+        film_area.calibration_points = Some(points);
 
         let rendered =
             render_shader_equivalent(&source, &neutral_params(), &film_area, &white_base(), None);
 
-        assert_eq!(rendered.as_raw(), expected.as_raw());
+        assert_eq!(rendered.dimensions(), expected.dimensions());
+        for y in 0..rendered.height() {
+            for x in 0..rendered.width() {
+                let crop_uv = [
+                    (x as f32 + 0.5) / rendered.width() as f32,
+                    (y as f32 + 0.5) / rendered.height() as f32,
+                ];
+                if point_in_film_area(crop_uv, &points, 0.0) {
+                    // Inside the area the points never bend the geometry: the
+                    // picture matches a render without any film area.
+                    assert_eq!(
+                        rendered.get_pixel(x, y),
+                        expected.get_pixel(x, y),
+                        "picture pixel ({x},{y}) changed by film area"
+                    );
+                } else {
+                    // Outside the area is rebate/panel, painted paper white.
+                    assert_eq!(
+                        rendered.get_pixel(x, y),
+                        &Rgb([65535, 65535, 65535]),
+                        "rebate pixel ({x},{y}) is not white"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -23507,5 +23759,105 @@ mod input_domain_round_trip_tests {
         assert_eq!(domain.source, InputDomainSource::EmbeddedIcc);
         assert!(!domain.estimated);
         std::fs::remove_dir_all(root).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod repro_unknown_camera_tests {
+    use super::*;
+
+    // Manual A/B harness: half_size (Develop preview proxy) vs full (export)
+    // LibRaw decode of the same file, both processed exactly like
+    // decode_image_buffer's RAW branch. Skipped without NEXFILM_REPRO_PATH.
+    #[test]
+    fn repro_compare_proxy_and_export_decode() {
+        let Some(path) = std::env::var("NEXFILM_REPRO_PATH").ok() else {
+            return;
+        };
+        let decode = |half_size: bool| -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+            let options = crate::raw_backend::DecodeOptions {
+                half_size,
+                demosaic_quality: 3,
+                output_bps: 16,
+                no_auto_bright: true,
+                output_color: 0,
+                linear_gamma: true,
+                use_camera_wb: false,
+            };
+            let decoded = crate::raw_backend::extract_camera_rgb_with_policy(
+                &path,
+                &options,
+                crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
+            )
+            .map_err(|error| error.to_string())?;
+            println!(
+                "half_size={half_size}: {}x{} colors={} bits={} camera_to_srgb={:?}",
+                decoded.width, decoded.height, decoded.colors, decoded.bits, decoded.camera_to_srgb
+            );
+            let camera_rgb = rgb16_image_from_bytes(
+                decoded.width as u32,
+                decoded.height as u32,
+                decoded.colors as usize,
+                decoded.bits,
+                &decoded.data,
+            )?;
+            let matrix = decoded.camera_to_srgb;
+            let mut converted =
+                ImageBuffer::<Rgb<u16>, Vec<u16>>::new(camera_rgb.width(), camera_rgb.height());
+            converted
+                .as_mut()
+                .par_chunks_exact_mut(3)
+                .zip(camera_rgb.as_raw().par_chunks_exact(3))
+                .for_each(|(target, pixel)| {
+                    let rgb = crate::color_science::apply_linear_matrix(
+                        [
+                            pixel[0] as f32 / 65535.0,
+                            pixel[1] as f32 / 65535.0,
+                            pixel[2] as f32 / 65535.0,
+                        ],
+                        matrix,
+                    );
+                    for channel in 0..3 {
+                        target[channel] = (rgb[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+                    }
+                });
+            Ok(converted)
+        };
+
+        let proxy = decode(true).expect("proxy decode");
+        let full = decode(false).expect("export decode");
+
+        // Compare central crops at the same normalized region.
+        let sample = |image: &ImageBuffer<Rgb<u16>, Vec<u16>>| {
+            let (w, h) = image.dimensions();
+            let x0 = w / 4;
+            let x1 = w - x0;
+            let y0 = h / 4;
+            let y1 = h - y0;
+            let mut sum = [0.0f64; 3];
+            let mut count = 0u64;
+            for y in (y0..y1).step_by(16) {
+                for x in (x0..x1).step_by(16) {
+                    let pixel = image.get_pixel(x, y).0;
+                    for channel in 0..3 {
+                        sum[channel] += pixel[channel] as f64;
+                    }
+                    count += 1;
+                }
+            }
+            sum.map(|value| value / count as f64)
+        };
+        let proxy_mean = sample(&proxy);
+        let full_mean = sample(&full);
+        println!("proxy mean rgb: {:?}", proxy_mean);
+        println!("full  mean rgb: {:?}", full_mean);
+        for channel in 0..3 {
+            println!(
+                "channel {channel}: proxy {:.1} full {:.1} delta {:.2}",
+                proxy_mean[channel],
+                full_mean[channel],
+                full_mean[channel] - proxy_mean[channel]
+            );
+        }
     }
 }

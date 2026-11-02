@@ -645,7 +645,8 @@ mod tests {
                 iso: Some(100.0),
                 exposure_seconds: Some(1.0 / 60.0),
                 camera_id: "TestCam|TestModel".to_string(),
-                libraw_version: "0.20.1".to_string(),
+                decoder_source: crate::raw_backend::DECODER_SOURCE_LIBRAW.to_string(),
+                decoder_version: "0.20.1".to_string(),
                 capture_conditions: CaptureConditions::default(),
             },
         }

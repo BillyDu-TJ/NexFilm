@@ -271,7 +271,8 @@ mod tests {
                 iso: Some(100.0),
                 exposure_seconds: Some(0.01),
                 camera_id: "pipeline-test-camera".to_string(),
-                libraw_version: "test".to_string(),
+                decoder_source: crate::raw_backend::DECODER_SOURCE_LIBRAW.to_string(),
+                decoder_version: "test".to_string(),
                 capture_conditions: CaptureConditions::default(),
             },
         }

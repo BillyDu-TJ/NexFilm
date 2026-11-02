@@ -144,12 +144,12 @@ pub(crate) struct CaptureDiagnostics {
 }
 
 #[inline]
-fn bayer_raw_channel(filters: u32, row: i32, col: i32) -> usize {
+pub(crate) fn bayer_raw_channel(filters: u32, row: i32, col: i32) -> usize {
     ((filters >> ((((row << 1) & 14) | (col & 1)) << 1)) & 3) as usize
 }
 
 #[inline]
-fn bayer_rgb_channel(filters: u32, row: i32, col: i32) -> usize {
+pub(crate) fn bayer_rgb_channel(filters: u32, row: i32, col: i32) -> usize {
     match bayer_raw_channel(filters, row, col) {
         0 => 0,
         2 => 2,
@@ -178,9 +178,29 @@ pub(crate) struct RawMetadata {
     pub(crate) iso: Option<f32>,
     pub(crate) exposure_seconds: Option<f32>,
     pub(crate) camera_id: String,
-    pub(crate) libraw_version: String,
+    /// Which implementation unpacked this mosaic: `DECODER_SOURCE_LIBRAW` for
+    /// the primary source, `DECODER_SOURCE_RAWLER` for the auxiliary fallback.
+    #[serde(default)]
+    pub(crate) decoder_source: String,
+    /// Version of the implementation named by `decoder_source` (e.g. LibRaw
+    /// "0.21.3" or the pinned rawler release). Frames inside one calibration
+    /// set must agree on the whole decoder id, not just the version.
+    #[serde(default)]
+    pub(crate) decoder_version: String,
     #[serde(default)]
     pub(crate) capture_conditions: CaptureConditions,
+}
+
+pub(crate) const DECODER_SOURCE_LIBRAW: &str = "libraw";
+pub(crate) const DECODER_SOURCE_RAWLER: &str = "rawler";
+
+impl RawMetadata {
+    /// The decoder identity a calibration payload stores and re-checks. A set
+    /// of dark/open/sample frames only compares when every frame was unpacked
+    /// by the same decoder at the same version.
+    pub(crate) fn decoder_id(&self) -> String {
+        format!("{} {}", self.decoder_source, self.decoder_version)
+    }
 }
 
 impl Default for RawMetadata {
@@ -197,7 +217,8 @@ impl Default for RawMetadata {
             iso: None,
             exposure_seconds: None,
             camera_id: String::new(),
-            libraw_version: String::new(),
+            decoder_source: String::new(),
+            decoder_version: String::new(),
             capture_conditions: CaptureConditions::default(),
         }
     }
@@ -524,7 +545,7 @@ pub(crate) fn correct_cfa_capture(
     Ok(corrected_capture(mosaic, corrected, quality))
 }
 
-fn corrected_capture(
+pub(crate) fn corrected_capture(
     mosaic: &RawMosaic,
     samples: Vec<f32>,
     quality: QualityMask,
@@ -560,7 +581,7 @@ fn corrected_capture(
 /// Phase-1 Measured input. Capture correction and fixed demosaic are real;
 /// Capture Separation remains an explicit identity placeholder and therefore
 /// does not claim physical density calibration.
-fn orient_camera_native(
+pub(crate) fn orient_camera_native(
     source: CameraNativeTransmissionRgbF32,
     orientation: u16,
 ) -> CameraNativeTransmissionRgbF32 {
@@ -599,6 +620,17 @@ fn orient_camera_native(
     }
 }
 
+/// Map a TIFF Orientation (0x0112) value onto LibRaw's `flip` bitmask exactly
+/// the way LibRaw does (`t_flip = "50132467"[orientation & 7] - '0'`,
+/// metadata/tiff.cpp): 1→0, 2→1, 3→3, 4→2, 5→4, 6→6, 7→7, 8→5. The rawler
+/// fallback has to feed `orient_camera_native` the same codes the LibRaw path
+/// would have produced for the same file, or portrait captures would come out
+/// rotated differently depending on which backend decoded them.
+pub(crate) fn libraw_flip_from_tiff_orientation(orientation: u16) -> u16 {
+    const MAP: &[u8; 8] = b"50132467";
+    (MAP[(orientation & 7) as usize] - b'0') as u16
+}
+
 pub(crate) fn decode_capture_corrected_input(
     mosaic: &RawMosaic,
     dark: Option<&RawMosaic>,
@@ -622,7 +654,9 @@ pub(crate) fn decode_capture_corrected_input(
 }
 
 /// Compatibility backend: LibRaw dcraw_process remains responsible for camera
-/// WB and demosaic. Its output is a Camera RGB estimate used only to build the
+/// WB and demosaic (with the dual-source dispatch layered on top: M1 matrix
+/// backfill and, when LibRaw cannot unpack at all, the rawler pixel
+/// fallback). Its output is a Camera RGB estimate used only to build the
 /// Smart Auto ProPhoto Estimate path.
 pub(crate) fn decode_smart_auto_rgb_with_policy<P: AsRef<Path>>(
     path: P,
@@ -700,6 +734,23 @@ pub(crate) struct RawWhiteBalance {
 /// Turn LibRaw's as-shot multipliers into a ratio whose strongest channel is
 /// exactly one. `None` means the metadata is unusable and the caller should fall
 /// back to an identity balance, i.e. a true "no white balance" decode.
+/// True when LibRaw resolved no camera→sRGB colour matrix for a file.
+///
+/// LibRaw initialises `rgb_cam` to the identity and only overwrites it from its
+/// per-camera tables (or an embedded DNG matrix). A camera that the bundled
+/// LibRaw does not know — every model added after its release, e.g. the
+/// Hasselblad X2D or Nikon ZR on the bundled 0.21.3 — therefore decodes with
+/// the identity: the pixels stay sensor-native while every downstream stage
+/// treats them as sRGB, which is exactly what renders as a colour cast once
+/// inverted.
+pub(crate) fn camera_matrix_missing(camera_to_srgb: [f32; 9]) -> bool {
+    let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    camera_to_srgb
+        .iter()
+        .zip(identity)
+        .all(|(value, expected)| (value - expected).abs() <= 1.0e-4)
+}
+
 pub(crate) fn normalized_as_shot_gains(cam_mul: [f32; 4]) -> Option<[f32; 4]> {
     let channels = [cam_mul[0], cam_mul[1], cam_mul[2]];
     if channels
@@ -789,26 +840,173 @@ pub(crate) fn color_matrix_from_cam_xyz(cam_xyz: [[f32; 3]; 4]) -> Option<[[f32;
     usable.then_some(rows)
 }
 
+/// The XYZ(D65) → linear-sRGB primaries LibRaw itself uses
+/// (`LibRaw_constants::xyz_rgb`, tables/colorconst.cpp). The dual-source matrix
+/// conversion has to apply exactly this matrix so a backfilled camera→sRGB is
+/// interchangeable with the one LibRaw would have computed.
+pub(crate) const LIBRAW_XYZ_TO_SRGB: [[f32; 3]; 3] = [
+    [0.4124564, 0.3575761, 0.1804375],
+    [0.2126729, 0.7151522, 0.0721750],
+    [0.0193339, 0.1191920, 0.9503041],
+];
+
+/// Dense 3×3 inverse. `None` marks a singular or non-finite input: a colour
+/// matrix that cannot be inverted cannot back any conversion.
+pub(crate) fn invert_3x3(matrix: &[[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
+    let [a, b, c, d, e, f, g, h, i] = [
+        matrix[0][0], matrix[0][1], matrix[0][2],
+        matrix[1][0], matrix[1][1], matrix[1][2],
+        matrix[2][0], matrix[2][1], matrix[2][2],
+    ];
+    let determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if !determinant.is_finite() || determinant.abs() <= 1.0e-9 {
+        return None;
+    }
+    let scale = 1.0 / determinant;
+    let inverse = [
+        [(e * i - f * h) * scale, (c * h - b * i) * scale, (b * f - c * e) * scale],
+        [(f * g - d * i) * scale, (a * i - c * g) * scale, (c * d - a * f) * scale],
+        [(d * h - e * g) * scale, (b * g - a * h) * scale, (a * e - b * d) * scale],
+    ];
+    inverse
+        .iter()
+        .flatten()
+        .all(|value| value.is_finite())
+        .then_some(inverse)
+}
+
+/// Reproduce LibRaw's `cam_xyz_coeff` (utils/utils_dcraw.cpp): convert a camera
+/// XYZ→RGB matrix into the camera→sRGB matrix LibRaw would have installed.
+///
+/// The three steps are verbatim LibRaw semantics — multiply by its XYZ→sRGB
+/// primaries, normalise every row so the camera neutral maps to sRGB white
+/// (this is where LibRaw's `pre_mul` comes from), then invert the transpose.
+/// `None` marks a matrix that is singular, non-finite, or has a non-positive
+/// row sum, i.e. unusable as a colour characterisation.
+pub(crate) fn camera_to_srgb_from_xyz_to_cam(xyz_to_cam: &[[f32; 3]; 3]) -> Option<[f32; 9]> {
+    let mut cam_rgb = [[0.0f32; 3]; 3];
+    for (row, xyz_row) in cam_rgb.iter_mut().zip(xyz_to_cam) {
+        for (column, cell) in row.iter_mut().enumerate() {
+            *cell = xyz_row
+                .iter()
+                .zip(LIBRAW_XYZ_TO_SRGB.iter())
+                .map(|(xyz, srgb)| xyz * srgb[column])
+                .sum();
+        }
+        let sum: f32 = row.iter().sum();
+        if !sum.is_finite() || sum <= 1.0e-5 {
+            return None;
+        }
+        for cell in row.iter_mut() {
+            *cell /= sum;
+        }
+    }
+    let inverse = invert_3x3(&cam_rgb)?;
+    // LibRaw writes rgb_cam[i][j] = inverse[j][i] — but its `pseudoinverse`
+    // (utils_dcraw.cpp) already returns the transposed inverse
+    // (`out[i][j] = Σ work[j][k+3]·in[i][k]`), so the two transposes cancel
+    // and the installed camera→sRGB is plain inv(cam_rgb): rows indexed by
+    // output colour, each row summing to one, exactly the layout
+    // `apply_linear_matrix` multiplies with. Verified element-for-element
+    // against a real LibRaw decode in the sample-backed tests below.
+    let mut camera_to_srgb = [0.0f32; 9];
+    for row in 0..3 {
+        for column in 0..3 {
+            camera_to_srgb[row * 3 + column] = inverse[row][column];
+        }
+    }
+    Some(camera_to_srgb)
+}
+
+/// Reshape rawler's flat `color_matrix` (row-major, camera channel × XYZ) into
+/// the 3×3 used by the LibRaw-compatible conversion. DNG-style tables carry
+/// nine coefficients; rawler's `xyz_to_cam` form may pad to twelve (four
+/// camera channels), of which the first nine are the RGB planes.
+pub(crate) fn xyz_to_cam_3x3_from_flat(flat: &[f32]) -> Option<[[f32; 3]; 3]> {
+    let usable = matches!(flat.len(), 9 | 12) && flat[..9].iter().all(|value| value.is_finite());
+    if !usable {
+        return None;
+    }
+    let mut matrix = [[0.0f32; 3]; 3];
+    for (index, value) in flat[..9].iter().enumerate() {
+        matrix[index / 3][index % 3] = *value;
+    }
+    // An all-zero table means "no characterisation for this illuminant".
+    let empty = matrix.iter().flatten().all(|value| value.abs() <= 1.0e-6);
+    (!empty).then_some(matrix)
+}
+
+/// Reject a converted matrix that cannot describe a real camera response. A
+/// colour matrix may be large or small, but its rows cannot be degenerate.
+/// This is the runtime half of the cross-validation threshold: a rawler table
+/// that survives it is trusted, anything else keeps the LibRaw identity and
+/// the existing diagnostics.
+pub(crate) fn camera_matrix_plausible(camera_to_srgb: [f32; 9]) -> bool {
+    camera_to_srgb.iter().all(|value| value.is_finite() && value.abs() <= 8.0)
+        && camera_to_srgb
+            .chunks_exact(3)
+            .map(|row| row.iter().sum::<f32>())
+            .all(|sum| sum.abs() > 0.05)
+}
+
+/// Where the camera→sRGB matrix of a decode came from. The dual-source plan
+/// requires every matrix substitution to stay observable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CameraMatrixSource {
+    /// The LibRaw camera table (or a DNG-embedded matrix it resolved).
+    LibRaw,
+    /// Backfilled from the rawler camera database because LibRaw resolved the
+    /// identity. Carries the illuminant the rawler table was indexed by.
+    RawlerFallback(String),
+    /// No characterisation from either backend: the decode stays sensor-native
+    /// behind the identity matrix (the documented colour-cast condition).
+    Unresolved,
+}
+
+impl CameraMatrixSource {
+    pub(crate) fn label(&self) -> String {
+        match self {
+            CameraMatrixSource::LibRaw => format!(
+                "{} {}",
+                DECODER_SOURCE_LIBRAW,
+                RawProcessor::version()
+            ),
+            CameraMatrixSource::RawlerFallback(illuminant) => format!(
+                "{} {} ({})",
+                DECODER_SOURCE_RAWLER, crate::rawler_backend::RAWLER_VERSION, illuminant
+            ),
+            CameraMatrixSource::Unresolved => "none (sensor-native)".to_string(),
+        }
+    }
+}
+
+/// Camera-space RGB produced by LibRaw's WB + demosaic stages (dcraw_process),
+/// with the output-gamut matrix deliberately left out: the caller applies
+/// `camera_to_srgb` in f32 so signed results are not clipped to unsigned
+/// 16-bit. On the rawler pixel-fallback path the same contract is rebuilt by
+/// the shared demosaic chain.
+#[derive(Debug, Clone)]
+pub(crate) struct CameraRgbData {
+    pub(crate) width: u16,
+    pub(crate) height: u16,
+    pub(crate) colors: u16,
+    pub(crate) bits: u16,
+    pub(crate) data: Vec<u8>,
+    /// Matrix used for camera RGB → linear sRGB.
+    pub(crate) camera_to_srgb: [f32; 9],
+    /// Which implementation resolved the matrix above.
+    pub(crate) camera_to_srgb_source: CameraMatrixSource,
+}
+
 #[cfg(not(target_os = "macos"))]
 mod non_macos {
-    use super::{CaptureConditions, CfaPattern, RawMetadata, RawMosaic};
+    use super::{CameraRgbData, CameraMatrixSource, CaptureConditions, CfaPattern, DECODER_SOURCE_LIBRAW, RawMetadata, RawMosaic};
     pub(crate) use rawlib::{DecodeOptions, ImageFormat, RawProcessor};
     use std::ffi::CStr;
     #[cfg(not(windows))]
     use std::ffi::CString;
     use std::os::raw::{c_char, c_int, c_uchar, c_ushort};
     use std::path::Path;
-
-    #[derive(Debug, Clone)]
-    pub(crate) struct CameraRgbData {
-        pub(crate) width: u16,
-        pub(crate) height: u16,
-        pub(crate) colors: u16,
-        pub(crate) bits: u16,
-        pub(crate) data: Vec<u8>,
-        /// Matrix used by LibRaw for camera RGB -> linear sRGB.
-        pub(crate) camera_to_srgb: [f32; 9],
-    }
 
     enum LibRawData {}
 
@@ -992,7 +1190,9 @@ mod non_macos {
 
     /// LibRaw owns recognition and unpacking. The NexFilm shim only copies the
     /// unpacked CFA buffer and metadata; dcraw_process is never called here.
-    pub(crate) fn decode_raw_mosaic<P: AsRef<Path>>(path: P) -> Result<RawMosaic, String> {
+    /// The dual-source dispatch layer wraps this; files LibRaw cannot unpack
+    /// fall through to the rawler auxiliary source.
+    pub(crate) fn libraw_decode_raw_mosaic<P: AsRef<Path>>(path: P) -> Result<RawMosaic, String> {
         let processor = Processor(unsafe { libraw_init(0) });
         if processor.0.is_null() {
             return Err("Failed to initialize LibRaw".to_string());
@@ -1053,7 +1253,8 @@ mod non_macos {
                     && info.exposure_seconds.is_finite())
                 .then_some(info.exposure_seconds),
                 camera_id: fixed_c_string(&info.camera_id),
-                libraw_version: fixed_c_string(&info.libraw_version),
+                decoder_source: DECODER_SOURCE_LIBRAW.to_string(),
+                decoder_version: fixed_c_string(&info.libraw_version),
                 capture_conditions: CaptureConditions::default(),
             },
         })
@@ -1062,7 +1263,7 @@ mod non_macos {
     /// The mosaic plus the camera colour metadata a DNG re-wrap needs. Both come
     /// from one LibRaw session, so exporting raw DNGs never unpacks a scan
     /// twice.
-    pub(crate) fn read_raw_container_source<P: AsRef<Path>>(
+    pub(crate) fn libraw_read_raw_container_source<P: AsRef<Path>>(
         path: P,
     ) -> Result<super::RawContainerSource, String> {
         let processor = Processor(unsafe { libraw_init(0) });
@@ -1160,7 +1361,7 @@ mod non_macos {
     /// Decode after LibRaw's black-level, white-balance and demosaic stages,
     /// but before its output-gamut matrix. The latter is applied by the caller
     /// in f32 so signed matrix results are not clipped to unsigned 16-bit.
-    pub(crate) fn extract_camera_rgb_with_policy<P: AsRef<Path>>(
+    pub(crate) fn libraw_extract_camera_rgb_with_policy<P: AsRef<Path>>(
         path: P,
         options: &DecodeOptions,
         white_balance: super::WhiteBalancePolicy,
@@ -1212,6 +1413,7 @@ mod non_macos {
                     .to_vec()
             },
             camera_to_srgb,
+            camera_to_srgb_source: CameraMatrixSource::LibRaw,
         };
         unsafe { libraw_dcraw_clear_mem(image) };
         Ok(result)
@@ -1221,13 +1423,13 @@ mod non_macos {
 #[cfg(not(target_os = "macos"))]
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use non_macos::{
-    decode_raw_mosaic, extract_camera_rgb_with_policy, read_raw_container_source,
-    read_white_balance, DecodeOptions, ImageFormat, RawProcessor,
+    libraw_decode_raw_mosaic, libraw_extract_camera_rgb_with_policy,
+    libraw_read_raw_container_source, read_white_balance, DecodeOptions, ImageFormat, RawProcessor,
 };
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{CaptureConditions, CfaPattern, RawMetadata, RawMosaic};
+    use super::{CameraRgbData, CameraMatrixSource, CaptureConditions, CfaPattern, DECODER_SOURCE_LIBRAW, RawMetadata, RawMosaic};
     use rsraw_sys as ffi;
     use std::ffi::{CStr, CString};
     use std::fmt;
@@ -1263,16 +1465,6 @@ mod macos {
         pub(crate) colors: u16,
         pub(crate) bits: u16,
         pub(crate) data: Vec<u8>,
-    }
-
-    #[derive(Debug, Clone)]
-    pub(crate) struct CameraRgbData {
-        pub(crate) width: u16,
-        pub(crate) height: u16,
-        pub(crate) colors: u16,
-        pub(crate) bits: u16,
-        pub(crate) data: Vec<u8>,
-        pub(crate) camera_to_srgb: [f32; 9],
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1472,7 +1664,7 @@ mod macos {
     /// The mosaic plus the camera colour metadata a DNG re-wrap needs. Both come
     /// from one LibRaw session, so exporting raw DNGs never unpacks a scan
     /// twice.
-    pub(crate) fn read_raw_container_source<P: AsRef<Path>>(
+    pub(crate) fn libraw_read_raw_container_source<P: AsRef<Path>>(
         path: P,
     ) -> Result<super::RawContainerSource> {
         let mut processor = RawProcessor::new()?;
@@ -1521,7 +1713,7 @@ mod macos {
         Ok(())
     }
 
-    pub(crate) fn extract_camera_rgb_with_policy<P: AsRef<Path>>(
+    pub(crate) fn libraw_extract_camera_rgb_with_policy<P: AsRef<Path>>(
         path: P,
         options: &DecodeOptions,
         white_balance: super::WhiteBalancePolicy,
@@ -1557,6 +1749,7 @@ mod macos {
             bits: decoded.bits,
             data: decoded.data,
             camera_to_srgb,
+            camera_to_srgb_source: CameraMatrixSource::LibRaw,
         })
     }
 
@@ -1576,7 +1769,7 @@ mod macos {
     /// not call `libraw_dcraw_process`, apply camera white balance, or use an
     /// output-color matrix. LibRaw remains responsible for file recognition
     /// and proprietary RAW decompression.
-    pub(crate) fn decode_raw_mosaic<P: AsRef<Path>>(path: P) -> Result<RawMosaic> {
+    pub(crate) fn libraw_decode_raw_mosaic<P: AsRef<Path>>(path: P) -> Result<RawMosaic> {
         let mut processor = RawProcessor::new()?;
         processor.open_file(path)?;
         let status = unsafe { ffi::libraw_unpack(processor.data) };
@@ -1679,7 +1872,8 @@ mod macos {
                 exposure_seconds: (data.other.shutter > 0.0 && data.other.shutter.is_finite())
                     .then_some(data.other.shutter),
                 camera_id: format!("{make}|{model}"),
-                libraw_version: RawProcessor::version(),
+                decoder_source: DECODER_SOURCE_LIBRAW.to_string(),
+                decoder_version: RawProcessor::version(),
                 capture_conditions: CaptureConditions::default(),
             },
         })
@@ -1709,13 +1903,190 @@ mod macos {
 #[cfg(target_os = "macos")]
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use macos::{
-    decode_raw_mosaic, extract_camera_rgb_with_policy, read_raw_container_source,
-    read_white_balance, CameraRgbData, DecodeOptions, ImageFormat, RawProcessor,
+    libraw_decode_raw_mosaic, libraw_extract_camera_rgb_with_policy,
+    libraw_read_raw_container_source, read_white_balance, DecodeOptions, ImageFormat, RawProcessor,
 };
+
+// ---------------------------------------------------------------------------
+// Dual-source dispatch (docs/raw-backend-dual-source-plan.md).
+//
+// LibRaw stays the primary source: every file it can decode keeps the exact
+// same path as before, byte for byte. The rawler auxiliary source only enters
+// on two trigger lines — an identity colour matrix (M1: borrow the matrix,
+// keep LibRaw's pixels) and a LibRaw unpack failure (M2: decode the pixels
+// with the shared fixed demosaic chain). Nikon HE/HE* files are undecodable
+// in every open-source backend (patented intoPIX TicoRAW), so a failed Nikon
+// decode is first checked for that compression and answered with conversion
+// guidance instead of a generic error (M-HE). Every substitution is logged.
+// ---------------------------------------------------------------------------
+
+/// Answer a failed LibRaw decode with HE guidance when the file carries
+/// Nikon's patented High Efficiency compression. `None` keeps the original
+/// error untouched; the check reads only TIFF makernotes and never runs for a
+/// file any backend decoded successfully.
+fn nikon_he_failure(path: &Path, libraw_error: &str) -> Option<String> {
+    crate::rawler_backend::nikon_high_efficiency_label(path).map(|label| {
+        crate::rawler_backend::high_efficiency_error_message(label, libraw_error)
+    })
+}
+
+/// The mosaic entry point: LibRaw first, rawler pixels only when LibRaw
+/// unpack fails outright.
+pub(crate) fn decode_raw_mosaic<P: AsRef<Path>>(path: P) -> Result<RawMosaic, String> {
+    let path = path.as_ref();
+    let libraw_error = match libraw_decode_raw_mosaic(path) {
+        Ok(mosaic) => return Ok(mosaic),
+        Err(error) => error.to_string(),
+    };
+    if let Some(message) = nikon_he_failure(path, &libraw_error) {
+        return Err(message);
+    }
+    match crate::rawler_backend::decode_mosaic(path) {
+        Ok(mosaic) => {
+            eprintln!(
+                "[RAW Pipeline] LibRaw failed to decode {} ({libraw_error}); decoded pixels with {} {}.",
+                path.display(),
+                DECODER_SOURCE_RAWLER,
+                crate::rawler_backend::RAWLER_VERSION
+            );
+            Ok(mosaic)
+        }
+        Err(rawler_error) => Err(format!(
+            "LibRaw cannot decode {} ({libraw_error}) and the rawler fallback failed too: {rawler_error}",
+            path.display()
+        )),
+    }
+}
+
+/// The camera-RGB entry point. M1 backfills an identity LibRaw matrix from the
+/// rawler camera database (pixels untouched); M2 rebuilds the whole decode
+/// from rawler pixels when LibRaw cannot unpack the file at all.
+pub(crate) fn extract_camera_rgb_with_policy<P: AsRef<Path>>(
+    path: P,
+    options: &DecodeOptions,
+    white_balance: WhiteBalancePolicy,
+) -> Result<CameraRgbData, String> {
+    let path = path.as_ref();
+    let libraw_error = match libraw_extract_camera_rgb_with_policy(path, options, white_balance) {
+        Ok(decoded) => {
+            if camera_matrix_missing(decoded.camera_to_srgb) {
+                let backfill = crate::rawler_backend::camera_to_srgb_fallback(path)
+                    .ok()
+                    .flatten()
+                    .filter(|(matrix, _)| camera_matrix_plausible(*matrix));
+                if let Some((matrix, illuminant)) = backfill {
+                    eprintln!(
+                        "[RAW Pipeline] LibRaw {} has no camera matrix for {}; backfilled from {} {} ({}).",
+                        RawProcessor::version(),
+                        path.display(),
+                        DECODER_SOURCE_RAWLER,
+                        crate::rawler_backend::RAWLER_VERSION,
+                        illuminant
+                    );
+                    // The caller owns the replaced matrix from here on; the
+                    // pixels LibRaw produced are not modified by M1.
+                    return Ok(CameraRgbData {
+                        camera_to_srgb: matrix,
+                        camera_to_srgb_source: CameraMatrixSource::RawlerFallback(illuminant),
+                        ..decoded
+                    });
+                }
+                eprintln!(
+                    "[RAW Pipeline] LibRaw {} has no camera matrix for {} and rawler offers no usable one; decoded sensor-native (expect a colour cast). Update the RAW backends to versions that support this camera.",
+                    RawProcessor::version(),
+                    path.display()
+                );
+            }
+            return Ok(decoded);
+        }
+        Err(error) => error.to_string(),
+    };
+    if let Some(message) = nikon_he_failure(path, &libraw_error) {
+        return Err(message);
+    }
+    match crate::rawler_backend::decode_camera_rgb(path, options.half_size) {
+        Ok(decoded) => {
+            eprintln!(
+                "[RAW Pipeline] LibRaw failed to decode {} ({libraw_error}); decoded pixels with {} {}.",
+                path.display(),
+                DECODER_SOURCE_RAWLER,
+                crate::rawler_backend::RAWLER_VERSION
+            );
+            Ok(decoded)
+        }
+        Err(rawler_error) => Err(format!(
+            "LibRaw cannot decode {} ({libraw_error}); rawler fallback failed: {rawler_error}",
+            path.display()
+        )),
+    }
+}
+
+/// The RAW DNG re-wrap source: LibRaw first, rawler when LibRaw fails.
+pub(crate) fn read_raw_container_source<P: AsRef<Path>>(
+    path: P,
+) -> Result<RawContainerSource, String> {
+    let path = path.as_ref();
+    let libraw_error = match libraw_read_raw_container_source(path) {
+        Ok(source) => return Ok(source),
+        Err(error) => error.to_string(),
+    };
+    if let Some(message) = nikon_he_failure(path, &libraw_error) {
+        return Err(message);
+    }
+    match crate::rawler_backend::read_container_source(path) {
+        Ok(source) => {
+            eprintln!(
+                "[RAW Pipeline] LibRaw failed to read {} ({libraw_error}); re-wrapped from {} {}.",
+                path.display(),
+                DECODER_SOURCE_RAWLER,
+                crate::rawler_backend::RAWLER_VERSION
+            );
+            Ok(source)
+        }
+        Err(rawler_error) => Err(format!(
+            "LibRaw cannot decode {} ({libraw_error}) and the rawler fallback failed too: {rawler_error}",
+            path.display()
+        )),
+    }
+}
 
 #[cfg(test)]
 mod contract_tests {
     use super::*;
+
+    /// LibRaw's own TIFF-orientation → flip table ("50132467"[o & 7]). The
+    /// rawler fallback must feed orient_camera_native identical codes.
+    #[test]
+    fn tiff_orientation_maps_onto_libraw_flip_bitmask() {
+        let expected = [(1u16, 0u16), (2, 1), (3, 3), (4, 2), (5, 4), (6, 6), (7, 7), (8, 5)];
+        for (orientation, flip) in expected {
+            assert_eq!(libraw_flip_from_tiff_orientation(orientation), flip);
+            assert_eq!(libraw_flip_from_tiff_orientation(orientation + 8), flip);
+        }
+        assert_eq!(libraw_flip_from_tiff_orientation(0), 5);
+    }
+
+    #[test]
+    fn camera_matrix_missing_detects_only_identity() {
+        let identity = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        assert!(camera_matrix_missing(identity));
+        assert!(camera_matrix_missing([
+            1.0 + 5.0e-5,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0 - 5.0e-5
+        ]));
+        // A real camera matrix (even a fallback one LibRaw resolved) is present.
+        assert!(!camera_matrix_missing([
+            2.01237, -0.90486, -0.10751, -0.11960, 1.56399, -0.44439, 0.04016, -0.46075, 1.42059
+        ]));
+        assert!(!camera_matrix_missing([0.0; 9]));
+    }
 
     #[test]
     fn normalized_as_shot_gains_only_attenuate() {
@@ -1778,7 +2149,8 @@ mod contract_tests {
             iso: Some(100.0),
             exposure_seconds: Some(0.01),
             camera_id: "test|camera".to_string(),
-            libraw_version: "0.22-test".to_string(),
+            decoder_source: DECODER_SOURCE_LIBRAW.to_string(),
+            decoder_version: "0.22-test".to_string(),
             capture_conditions: CaptureConditions {
                 light_source_id: Some("light-a".to_string()),
                 geometry_fingerprint: Some("geometry-a".to_string()),
@@ -1806,7 +2178,126 @@ mod contract_tests {
         assert_eq!(metadata.iso, Some(100.0));
         assert_eq!(metadata.exposure_seconds, Some(0.01));
         assert!(!metadata.camera_id.is_empty());
-        assert!(!metadata.libraw_version.is_empty());
+        assert_eq!(metadata.decoder_id(), "libraw 0.22-test");
+    }
+
+    /// Metadata persisted before the dual-source work carries the old
+    /// `libraw_version` field. It must still deserialize (with empty decoder
+    /// identity); the RAW_DECODE_VERSION bump, not serde, is what forces those
+    /// payloads through re-verification.
+    #[test]
+    fn legacy_libraw_version_metadata_still_deserializes() {
+        let legacy = r#"{
+            "cfa": {"bayer": {"filters": 2492492436}},
+            "active_area": [0, 0, 4, 4],
+            "raw_pitch_bytes": 8,
+            "black_level": [0.0, 0.0, 0.0, 0.0],
+            "white_level": [65535.0, 65535.0, 65535.0, 65535.0],
+            "masked_areas": [],
+            "masked_pixels": [],
+            "orientation": 0,
+            "iso": null,
+            "exposure_seconds": null,
+            "camera_id": "test|camera",
+            "libraw_version": "0.21.3",
+            "capture_conditions": {"light_source_id": null, "geometry_fingerprint": null}
+        }"#;
+        let metadata: RawMetadata = serde_json::from_str(legacy).expect("legacy metadata");
+        assert_eq!(metadata.decoder_source, "");
+        assert_eq!(metadata.decoder_version, "");
+        assert_eq!(metadata.decoder_id(), " ");
+    }
+
+    /// The camera→sRGB conversion must behave exactly like LibRaw's
+    /// `cam_xyz_coeff`: row-normalised cam_rgb (white stays white), inverted
+    /// transpose, and unusable tables rejected instead of guessed.
+    #[test]
+    fn camera_to_srgb_from_xyz_to_cam_matches_libraw_contract() {
+        // A camera whose channels already carry linear sRGB (xyz_to_cam =
+        // S⁻¹) decodes as the identity: camera RGB *is* sRGB here.
+        let srgb_primaries_inverse =
+            invert_3x3(&LIBRAW_XYZ_TO_SRGB).expect("sRGB primaries invertible");
+        let identity = camera_to_srgb_from_xyz_to_cam(&srgb_primaries_inverse).expect("primaries");
+        for (value, expected) in identity
+            .iter()
+            .zip([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+        {
+            assert!((value - expected).abs() < 1.0e-5, "{identity:?}");
+        }
+
+        // White preservation, LibRaw's exact contract: every row of cam_rgb
+        // is normalised to sum one, so the inverse fixes (1,1,1) and the
+        // installed matrix (plain inv(cam_rgb)) therefore sums every *output
+        // row* to one — a camera-neutral renders as equal RGB.
+        let xyz_to_cam = [
+            [0.6862, -0.1302, -0.0544],
+            [-0.5241, 1.3618, 0.1876],
+            [-0.0935, 0.1887, 0.6722],
+        ];
+        let camera_to_srgb =
+            camera_to_srgb_from_xyz_to_cam(&xyz_to_cam).expect("plausible camera matrix");
+        for row in 0..3 {
+            let sum: f32 = camera_to_srgb[row * 3..row * 3 + 3].iter().sum();
+            assert!((sum - 1.0).abs() < 1.0e-4, "row {row} sums to {sum}");
+        }
+        assert!(camera_matrix_plausible(camera_to_srgb));
+
+        // Round trip: inverting the result recovers the row-normalised
+        // cam_rgb — xyz_to_cam · XYZ→sRGB, rows summed to one — LibRaw's
+        // `cam_xyz_coeff` product.
+        let mut cam_rgb = [[0.0f32; 3]; 3];
+        for row in 0..3 {
+            for column in 0..3 {
+                cam_rgb[row][column] = (0..3).map(|k| xyz_to_cam[row][k] * LIBRAW_XYZ_TO_SRGB[k][column]).sum();
+            }
+            let sum: f32 = cam_rgb[row].iter().sum();
+            for cell in cam_rgb[row].iter_mut() {
+                *cell /= sum;
+            }
+        }
+        let recovered = invert_3x3(&[
+            [camera_to_srgb[0], camera_to_srgb[1], camera_to_srgb[2]],
+            [camera_to_srgb[3], camera_to_srgb[4], camera_to_srgb[5]],
+            [camera_to_srgb[6], camera_to_srgb[7], camera_to_srgb[8]],
+        ])
+        .expect("invertible result");
+        for row in 0..3 {
+            for column in 0..3 {
+                assert!(
+                    (recovered[row][column] - cam_rgb[row][column]).abs() < 1.0e-4,
+                    "recovered[{row}][{column}]"
+                );
+            }
+        }
+
+        // Degenerate tables are refused: singular, non-finite, non-positive
+        // row sums, or all-zero (rawler's "no matrix" placeholder).
+        assert!(camera_to_srgb_from_xyz_to_cam(&[[0.0; 3]; 3]).is_none());
+        let mut singular = xyz_to_cam;
+        singular[1] = singular[0];
+        assert!(camera_to_srgb_from_xyz_to_cam(&singular).is_none());
+        let mut nan = xyz_to_cam;
+        nan[2][2] = f32::NAN;
+        assert!(camera_to_srgb_from_xyz_to_cam(&nan).is_none());
+        assert!(!camera_matrix_plausible([f32::NAN; 9]));
+        assert!(!camera_matrix_plausible([100.0; 9]));
+    }
+
+    #[test]
+    fn flat_color_matrix_reshapes_and_rejects_placeholders() {
+        let nine = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9];
+        let matrix = xyz_to_cam_3x3_from_flat(&nine).expect("nine coefficients");
+        assert_eq!(matrix[0], [0.1, 0.2, 0.3]);
+        assert_eq!(matrix[2], [0.7, 0.8, 0.9]);
+        let twelve: Vec<f32> = nine.iter().copied().chain([0.1, 0.1, 0.1]).collect();
+        assert!(xyz_to_cam_3x3_from_flat(&twelve).is_some());
+        // rawler's "no matrix" placeholder and short/long tables are refused.
+        assert!(xyz_to_cam_3x3_from_flat(&[0.0; 9]).is_none());
+        assert!(xyz_to_cam_3x3_from_flat(&[0.1; 8]).is_none());
+        assert!(xyz_to_cam_3x3_from_flat(&[0.1; 10]).is_none());
+        let mut nan = nine;
+        nan[4] = f32::NAN;
+        assert!(xyz_to_cam_3x3_from_flat(&nan).is_none());
     }
 
     #[test]
@@ -1990,3 +2481,4 @@ mod contract_tests {
         assert!(error.contains("Bayer"));
     }
 }
+

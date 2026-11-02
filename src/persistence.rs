@@ -12,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const DATABASE_PATH: &str = "nexfilm_user.db";
 pub const LEGACY_MATH_VERSION: i64 = 3;
 pub const MATH_VERSION: i64 = 5;
-pub const RAW_DECODE_VERSION: i64 = 11;
+pub const RAW_DECODE_VERSION: i64 = 12;
 pub const LAST_USED_CALIBRATION_PROFILE_KEY: &str = "last_used_calibration_profile_id";
 
 /// Development builds intentionally keep the database beside the repository so
@@ -1278,7 +1278,7 @@ mod tests {
             calibration_session_id: Some("session-test".to_string()),
             hardware_fingerprint: "hardware-test".to_string(),
             raw_decode_version: Some(RAW_DECODE_VERSION),
-            libraw_version: "0.22-test".to_string(),
+            libraw_version: "libraw 0.22-test".to_string(),
             reference_frames: vec![
                 crate::app_state::CalibrationReferenceSummary {
                     reference_id: "dark".to_string(),

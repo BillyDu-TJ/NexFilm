@@ -12,6 +12,7 @@ pub mod io_processor;
 pub mod persistence;
 pub mod pipeline;
 pub(crate) mod raw_backend;
+pub(crate) mod rawler_backend;
 pub mod scanner_profile;
 
 #[cfg(test)]
