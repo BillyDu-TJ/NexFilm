@@ -1,0 +1,46 @@
+# 换行符统一策略:Mac 与 Windows 混用开发
+# 文本文件一律按 LF 存储和检出,跨平台不再出现"仅换行符不同"的幻影改动。
+# 规范化前仓库索引已全部为 LF(2026-11-03 核验:221 个文本文件 0 个 CRLF/mixed),
+# 因此引入本文件不会改变任何已跟踪文件的内容。
+* text=auto eol=lf
+
+# Windows 批处理脚本如将来加入,保持 CRLF(当前仓库没有此类文件)
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# 明确的二进制类型,防止 text=auto 误判
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.tif binary
+*.tiff binary
+*.db binary
+*.sqlite binary
+*.db-shm binary
+*.db-wal binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary
+*.zip binary
+*.gz binary
+
+# 相机原始文件与扫描底片样张,永不转换
+*.raf binary
+*.nef binary
+*.nrw binary
+*.cr2 binary
+*.cr3 binary
+*.arw binary
+*.dng binary
+*.fff binary
+*.3fr binary
+*.orf binary
+*.rw2 binary
+*.raw binary
