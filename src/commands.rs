@@ -18886,6 +18886,163 @@ mod import_contract_tests {
         );
     }
 
+    /// Visual A/B for the yellow-export report: renders the reported frame the
+    /// way the Develop canvas would (analysis + render on the proxy decode),
+    /// the way batch export does today (full-resolution decode, same persisted
+    /// state, sRGB encode), and the way the pre-fix export did (u16 linear-sRGB
+    /// transport chain) so the reported yellow is on record next to them.
+    /// Writes the three panels plus cast numbers; compose them side by side
+    /// with `python scripts/compose_export_ab.py`.
+    #[test]
+    #[ignore = "manual visual A/B; reads local fixtures"]
+    fn export_yellowing_visual_ab() {
+        let frame = std::env::var("NEXFILM_DIAG_FRAME").unwrap_or_else(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("test_picture")
+                .join("导出发黄")
+                .join("0218-.tif")
+                .to_string_lossy()
+                .to_string()
+        });
+        let output_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("diag-export-parity");
+        std::fs::create_dir_all(&output_root).unwrap();
+        let stem = std::path::Path::new(&frame)
+            .file_stem()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| "frame".to_string());
+
+        // The app auto-detects the film area on the u16 working image; a High
+        // confidence gate becomes the frame's calibration points, and every
+        // analysis below runs inside it just like Develop would.
+        let legacy_linear_full = decode_reduced_tiff_for_working_space(&frame, u32::MAX)
+            .unwrap_or_else(|error| panic!("working decode failed: {error}"));
+        let border = crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(
+            legacy_linear_full.clone(),
+        ));
+        let mut geom = GeometryState::default();
+        if border.confidence == crate::film_border::DetectionConfidence::High {
+            geom.calibration_points = Some(border.points);
+        }
+        println!(
+            "[AB] film border: confidence={:?} status={} points={:?}",
+            border.confidence, border.status, geom.calibration_points
+        );
+
+        // ---- Panel 1: the canvas. Analysis and render both on the proxy. ----
+        let mut preview_est =
+            decode_profiled_tiff_prophoto_estimate(&frame, PROXY_LONG_EDGE as u32)
+                .unwrap_or_else(|error| panic!("preview decode failed: {error}"));
+        {
+            let (width, height) = preview_est.dimensions();
+            let ratio = (PROXY_LONG_EDGE / width.max(height) as f32).min(1.0);
+            if ratio < 0.999 {
+                preview_est = image::imageops::resize(
+                    &preview_est,
+                    (width as f32 * ratio).max(1.0) as u32,
+                    (height as f32 * ratio).max(1.0) as u32,
+                    image::imageops::FilterType::Lanczos3,
+                );
+            }
+        }
+        // Mirror the production Smart Auto analysis (loose_tiff_render_diagnostic
+        // keeps the same recipe): auto base, content limits, render offsets.
+        let (analyzed_base_density, _) = compute_auto_base_f32(&preview_est, &geom).unwrap();
+        let analyzed_base_color = base_color_from_density(analyzed_base_density);
+        let mut state = default_pipeline_state_for_import(true, "LOOSE_DEFAULT", &[]);
+        state.processing_report.base_source = "content_estimate".to_string();
+        let base = pipeline_base_density(&state, &analyzed_base_color);
+        let mut limits = compute_content_limits_f32_with_bounds(
+            &preview_est,
+            None,
+            &geom,
+            base,
+            roll_physical_density_span(&state.density_anchors, base),
+        )
+        .unwrap();
+        let (offsets, _short_content) =
+            prepare_content_render_limits(&mut limits, &state.density_anchors, base);
+        state.render_mapping.mode = RenderMode::PreserveTone;
+        state.render_mapping.density_low = limits.d_min;
+        state.render_mapping.density_high = limits.d_max;
+        state.render_mapping.channel_offsets = offsets;
+        let mut params = TuningParams::default();
+        params.density.d_min = limits.d_min;
+        params.density.d_max = limits.d_max;
+        let canvas_render = render_f32_shader_equivalent(
+            &preview_est,
+            None,
+            &params,
+            &geom,
+            &analyzed_base_color,
+            &state,
+            None,
+        );
+        ab_save_preview(output_root.join(format!("{stem}-ab-canvas.jpg")), &canvas_render);
+        println!("[AB] canvas panel {}x{}", canvas_render.width(), canvas_render.height());
+        ab_print_rendered_cast("AB canvas", &canvas_render, &geom);
+
+        // ---- Panel 2: the export on current main. Same persisted state,
+        // full-resolution decode, sRGB encode. ----
+        let export_est = decode_profiled_tiff_prophoto_estimate(&frame, u32::MAX)
+            .unwrap_or_else(|error| panic!("export decode failed: {error}"));
+        let export_render = render_f32_shader_equivalent(
+            &export_est,
+            None,
+            &params,
+            &geom,
+            &analyzed_base_color,
+            &state,
+            None,
+        );
+        let export_render = encode_export_buffer(export_render, ColorSpaceId::SRgb)
+            .expect("export encode failed");
+        // Match the canvas panel's size so the composite lines up pixel for
+        // pixel; the app's export stays full size, this is only for viewing.
+        let export_for_ab = image::imageops::resize(
+            &export_render,
+            canvas_render.width(),
+            canvas_render.height(),
+            image::imageops::FilterType::Lanczos3,
+        );
+        ab_save_preview(output_root.join(format!("{stem}-ab-export.jpg")), &export_for_ab);
+        println!("[AB] export panel (full render {}x{} -> {}x{})",
+            export_render.width(), export_render.height(),
+            export_for_ab.width(), export_for_ab.height());
+        ab_print_rendered_cast("AB export", &export_for_ab, &geom);
+
+        // ---- Panel 3: the pre-fix export the user saw (u16 transport chain).
+        // ----
+        let legacy_linear = legacy_linear_full;
+        let legacy_base = compute_auto_base(&legacy_linear);
+        let legacy_limits = compute_auto_color_limits(
+            &legacy_linear,
+            &geom,
+            &legacy_base,
+            FilmMode::Color,
+            false,
+        )
+        .unwrap();
+        let mut legacy_params = TuningParams::default();
+        legacy_params.density.d_min = legacy_limits.d_min;
+        legacy_params.density.d_max = legacy_limits.d_max;
+        let legacy_render =
+            render_shader_equivalent(&legacy_linear, &legacy_params, &geom, &legacy_base, None);
+        let legacy_for_ab = image::imageops::resize(
+            &legacy_render,
+            canvas_render.width(),
+            canvas_render.height(),
+            image::imageops::FilterType::Lanczos3,
+        );
+        ab_save_preview(output_root.join(format!("{stem}-ab-legacy.jpg")), &legacy_for_ab);
+        ab_print_rendered_cast("AB legacy (pre-fix export)", &legacy_for_ab, &geom);
+        println!(
+            "[AB] panels written to {}",
+            output_root.display()
+        );
+    }
+
     #[test]
     fn loose_smart_auto_analysis_still_follows_the_film_area() {
         // A loose frame has no film base or leader sample, so the declared Film
