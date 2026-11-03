@@ -15611,7 +15611,7 @@ mod import_contract_tests {
         decode_reduced_tiff_for_working_space, decode_scanner_profiled_estimate_image_buffer,
         decode_tiff_for_smart_auto, decode_uncompressed_tiff_reduced,
         default_pipeline_state_for_import, density_luma, detect_frame_base_density,
-        detect_frame_highlight_fraction, embedded_input_profile,
+        detect_frame_highlight_fraction, embedded_input_profile, encode_export_buffer,
         encoded_pixel_to_prophoto_estimate, estimate_film_base_f32, film_block_luma_profile,
         fixed_roll_density_mapping, frame_needs_window_reanalysis, highlight_block_index,
         is_better_preview_edge, is_dng_extension, is_lightweight_direct_preview,
@@ -15620,14 +15620,14 @@ mod import_contract_tests {
         linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff, measure_roll_highlight_frames,
         persist_import_batch, pipeline_base_density, pipeline_has_base, point_in_film_area,
         prepare_content_render_limits, preserve_smart_auto_content_span,
-        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint,
-        reference_density_extreme, render_f32_shader_equivalent, render_shader_equivalent,
-        resolve_input_domain, rgb16_image_from_bytes, roll_density_mapping_with_frame_base,
-        roll_physical_density_span, sample_reference_frame_path, sampled_frame_paths_from_anchors,
+        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
+        render_f32_shader_equivalent, render_shader_equivalent, resolve_input_domain,
+        rgb16_image_from_bytes, roll_density_mapping_with_frame_base, roll_physical_density_span,
+        sample_reference_frame_path, sampled_frame_paths_from_anchors,
         share_smart_auto_density_scale, srgb_proxy_u16_to_prophoto_f32,
         tiff_smart_auto_input_is_estimated, trim_density_endpoints, AutoColorLimits, DecodeMode,
-        IMPORT_PREVIEW_LONG_EDGE, MINIMUM_USABLE_CONTENT_SPAN, PROPHOTO_TRANSPORT_MAX,
-        PROPHOTO_TRANSPORT_MIN,
+        CHANNEL_CONTROL_SCALE, IMPORT_PREVIEW_LONG_EDGE, MINIMUM_USABLE_CONTENT_SPAN,
+        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN, PROXY_LONG_EDGE,
     };
     use crate::app_state::{
         BaseColor, DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorProvenance,
@@ -18384,6 +18384,506 @@ mod import_contract_tests {
             ab_probe_u16("  legacy render", &legacy_render, uv);
             ab_probe_u16("  smart-auto render", &smart_auto_render, uv);
         }
+    }
+
+    /// Mean log-density chroma (R/G, B/G) of a linear ProPhoto estimate.
+    /// Both preview and export measurement chains see the negative in this
+    /// domain, so this is the common yardstick for decode-level divergence.
+    fn parity_density_chroma(
+        image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    ) -> ([f64; 3], Option<(f64, f64)>) {
+        let mut means = [0.0f64; 3];
+        let mut total = 0.0f64;
+        for pixel in image.as_raw().chunks_exact(3) {
+            let density = [
+                -pixel[0].max(1.0e-6).log10(),
+                -pixel[1].max(1.0e-6).log10(),
+                -pixel[2].max(1.0e-6).log10(),
+            ];
+            if density.iter().all(|value| value.is_finite()) {
+                for channel in 0..3 {
+                    means[channel] += f64::from(density[channel]);
+                }
+                total += 1.0;
+            }
+        }
+        if total < 1.0 {
+            return (means, None);
+        }
+        let means = means.map(|value| value / total);
+        let chroma = Some((
+            means[0] / means[1].max(1.0e-9),
+            means[2] / means[1].max(1.0e-9),
+        ));
+        (means, chroma)
+    }
+
+    /// Mean display RGB over the whole rendered frame, the quantity the old
+    /// yellow-export investigation compared between canvas and export JPGs.
+    fn parity_mean_display_rgb(image: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> [f64; 3] {
+        let mut means = [0.0f64; 3];
+        let total = f64::from(image.width() * image.height()).max(1.0);
+        for pixel in image.as_raw().chunks_exact(3) {
+            for channel in 0..3 {
+                means[channel] += f64::from(pixel[channel]);
+            }
+        }
+        means.map(|value| value / total)
+    }
+
+    fn parity_print_cast_line(label: &str, rgb: [f64; 3]) {
+        let green = rgb[1].max(1.0);
+        println!(
+            "[PARITY]   {label}: rgb=({:6.1},{:6.1},{:6.1}) R/G={:.3} B/G={:.3}",
+            rgb[0],
+            rgb[1],
+            rgb[2],
+            rgb[0] / green,
+            rgb[2] / green
+        );
+    }
+
+    /// Manual five-level parity diagnostic between the Develop preview path
+    /// and the batch export path for one frame: decode, colour-matrix source,
+    /// film base, inversion window, render, encode. The preview measures the
+    /// film on its proxy decode while `batch_export_images` re-measures on the
+    /// full-resolution decode and rebuilds the render mapping, so the numbers
+    /// here show which level a canvas/export colour gap is born at. Override
+    /// the input with `NEXFILM_DIAG_FRAME` (defaults to the reported
+    /// yellow-export sample).
+    #[test]
+    #[ignore = "manual export/preview parity diagnostic; reads local fixtures"]
+    fn export_preview_parity_diagnostic() {
+        let frame = std::env::var("NEXFILM_DIAG_FRAME").unwrap_or_else(|_| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("test_picture")
+                .join("导出发黄")
+                .join("0218-.tif")
+                .to_string_lossy()
+                .to_string()
+        });
+        let output_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("diag-export-parity");
+        std::fs::create_dir_all(&output_root).unwrap();
+        let stem = std::path::Path::new(&frame)
+            .file_stem()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| "frame".to_string());
+        let geom = GeometryState::default();
+
+        // ---- Level 1: decode ------------------------------------------------
+        // The preview decodes at the proxy long edge (prepare_proxy); the
+        // export decodes unrestricted (batch_export_images, ExportFull).
+        let mut preview_est =
+            decode_profiled_tiff_prophoto_estimate(&frame, PROXY_LONG_EDGE as u32)
+                .unwrap_or_else(|error| panic!("preview decode failed: {error}"));
+        {
+            let (width, height) = preview_est.dimensions();
+            let ratio = (PROXY_LONG_EDGE / width.max(height) as f32).min(1.0);
+            if ratio < 0.999 {
+                preview_est = image::imageops::resize(
+                    &preview_est,
+                    (width as f32 * ratio).max(1.0) as u32,
+                    (height as f32 * ratio).max(1.0) as u32,
+                    image::imageops::FilterType::Lanczos3,
+                );
+            }
+        }
+        let export_est = decode_profiled_tiff_prophoto_estimate(&frame, u32::MAX)
+            .unwrap_or_else(|error| panic!("export decode failed: {error}"));
+        println!(
+            "[PARITY] L1 decode: preview={}x{} export={}x{}",
+            preview_est.width(),
+            preview_est.height(),
+            export_est.width(),
+            export_est.height()
+        );
+        let (_, chroma_preview) = parity_density_chroma(&preview_est);
+        let (_, chroma_export) = parity_density_chroma(&export_est);
+        // Same-content check: the export decode resampled to the preview size
+        // should sit next to the preview decode, isolating resolution effects.
+        let export_at_preview = image::imageops::resize(
+            &export_est,
+            preview_est.width(),
+            preview_est.height(),
+            image::imageops::FilterType::Lanczos3,
+        );
+        let (_, chroma_export_resampled) = parity_density_chroma(&export_at_preview);
+        for (label, chroma) in [
+            ("preview (proxy decode)", chroma_preview),
+            ("export (full decode)", chroma_export),
+            ("export resampled to proxy", chroma_export_resampled),
+        ] {
+            if let Some((rg, bg)) = chroma {
+                println!("[PARITY]   {label}: density R/G={:.4} B/G={:.4}", rg, bg);
+            }
+        }
+
+        // ---- Level 2: colour matrix source ----------------------------------
+        println!(
+            "[PARITY] L2 colour matrix: embedded profile = {:?}; both paths call decode_profiled_tiff_prophoto_estimate (one matrix, applied per pixel)",
+            embedded_input_profile(&frame)
+        );
+
+        // ---- Level 3: film base measurement ---------------------------------
+        // estimate_film_base_f32 is what the inherited-base re-measure runs
+        // (preview: on the proxy, export: on the full decode).
+        let base_preview = estimate_film_base_f32(&preview_est, &geom);
+        let base_export = estimate_film_base_f32(&export_est, &geom);
+        println!(
+            "[PARITY] L3 film base: preview usable={} source={} density=({:.3},{:.3},{:.3})",
+            base_preview.usable,
+            base_preview.source,
+            base_preview.density[0],
+            base_preview.density[1],
+            base_preview.density[2]
+        );
+        println!(
+            "[PARITY]   export  usable={} source={} density=({:.3},{:.3},{:.3})",
+            base_export.usable,
+            base_export.source,
+            base_export.density[0],
+            base_export.density[1],
+            base_export.density[2]
+        );
+        let frame_base_preview = detect_frame_base_density(&preview_est, base_preview.density)
+            .or(Some(base_preview.density));
+        let frame_base_export = detect_frame_base_density(&export_est, base_preview.density)
+            .or(Some(base_export.density));
+        if let (Some(fp), Some(fe)) = (frame_base_preview, frame_base_export) {
+            println!(
+                "[PARITY]   detect_frame_base_density: preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3}) delta=({:+.3},{:+.3},{:+.3})",
+                fp[0],
+                fp[1],
+                fp[2],
+                fe[0],
+                fe[1],
+                fe[2],
+                fe[0] - fp[0],
+                fe[1] - fp[1],
+                fe[2] - fp[2]
+            );
+        } else {
+            println!("[PARITY]   detect_frame_base_density: preview={frame_base_preview:?} export={frame_base_export:?}");
+        }
+
+        // ---- Level 4: inversion window --------------------------------------
+        // Synthetic Roll anchors keep both sides on the same span, so the
+        // comparison isolates the measured (frame base, highlight) pair.
+        let anchor_base = base_preview.density;
+        let anchor_full = [
+            base_preview.density[0] + 2.10,
+            base_preview.density[1] + 2.02,
+            base_preview.density[2] + 1.94,
+        ];
+        let span = [
+            anchor_full[0] - anchor_base[0],
+            anchor_full[1] - anchor_base[1],
+            anchor_full[2] - anchor_base[2],
+        ];
+        let valid_provenance = || crate::app_state::DensityAnchorProvenance {
+            input_domain: ProcessingContract::RollAnchoredProPhotoV11.input_domain(),
+            algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+            legacy: false,
+            ..crate::app_state::DensityAnchorProvenance::default()
+        };
+        let anchors = DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: anchor_base,
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: valid_provenance(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: anchor_full,
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: None,
+                provenance: valid_provenance(),
+            }),
+            ..DensityAnchors::default()
+        };
+        let mut roll_state = PipelineState::default();
+        roll_state.contract = ProcessingContract::RollAnchoredProPhotoV11;
+        roll_state.density_anchors = anchors.clone();
+        let highlight_preview = frame_base_preview
+            .and_then(|base| detect_frame_highlight_fraction(&preview_est, base, span));
+        let highlight_export = frame_base_export
+            .and_then(|base| detect_frame_highlight_fraction(&export_est, base, span));
+        println!(
+            "[PARITY] L4 window: highlight fraction preview={highlight_preview:?} export={highlight_export:?}"
+        );
+        let mapping_preview = roll_density_mapping_with_frame_base(
+            &roll_state,
+            frame_base_preview,
+            highlight_preview,
+        );
+        let mapping_export =
+            roll_density_mapping_with_frame_base(&roll_state, frame_base_export, highlight_export);
+        if let (Some(mp), Some(me)) = (mapping_preview.as_ref(), mapping_export.as_ref()) {
+            println!(
+                "[PARITY]   mapping density_low  preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
+                mp.density_low[0], mp.density_low[1], mp.density_low[2],
+                me.density_low[0], me.density_low[1], me.density_low[2]
+            );
+            println!(
+                "[PARITY]   mapping density_high preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
+                mp.density_high[0], mp.density_high[1], mp.density_high[2],
+                me.density_high[0], me.density_high[1], me.density_high[2]
+            );
+        } else {
+            println!(
+                "[PARITY]   mapping preview={:?} export={:?}",
+                mapping_preview.is_some(),
+                mapping_export.is_some()
+            );
+        }
+        // The Smart Auto route persists content limits from the proxy
+        // analysis; the export renders with those stored params, so both
+        // renders below share them and only the decode scale differs.
+        let limits_preview =
+            compute_content_limits_f32(&preview_est, None, &geom, anchor_base).ok();
+        let limits_export = compute_content_limits_f32(&export_est, None, &geom, anchor_base).ok();
+        if let (Some(lp), Some(le)) = (limits_preview.as_ref(), limits_export.as_ref()) {
+            println!(
+                "[PARITY]   smart-auto content d_min preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
+                lp.d_min[0], lp.d_min[1], lp.d_min[2],
+                le.d_min[0], le.d_min[1], le.d_min[2]
+            );
+            println!(
+                "[PARITY]   smart-auto content d_max preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
+                lp.d_max[0], lp.d_max[1], lp.d_max[2],
+                le.d_max[0], le.d_max[1], le.d_max[2]
+            );
+        }
+
+        // ---- Level 5: render -------------------------------------------------
+        let mut smart_state = default_pipeline_state_for_import(true, "LOOSE_DEFAULT", &[]);
+        smart_state.processing_report.base_source = "content_estimate".to_string();
+        let base_color_preview = base_color_from_density(base_preview.density);
+        let mut neutral = TuningParams::default();
+        if let Some(limits) = limits_preview.as_ref() {
+            neutral.density.d_min = limits.d_min;
+            neutral.density.d_max = limits.d_max;
+        }
+        let mut roll_state_preview_mapping = roll_state.clone();
+        roll_state_preview_mapping.render_mapping = mapping_preview.clone().unwrap_or_default();
+        let mut roll_state_export_mapping = roll_state.clone();
+        roll_state_export_mapping.render_mapping = mapping_export.clone().unwrap_or_default();
+        let render_pair = |params: &TuningParams, label: &str| {
+            // (a) Smart Auto route: the frame's persisted params and base
+            //     rendered on the proxy decode vs the full decode.
+            let smart_proxy = render_f32_shader_equivalent(
+                &preview_est,
+                None,
+                params,
+                &geom,
+                &base_color_preview,
+                &smart_state,
+                None,
+            );
+            let smart_full = render_f32_shader_equivalent(
+                &export_est,
+                None,
+                params,
+                &geom,
+                &base_color_preview,
+                &smart_state,
+                None,
+            );
+            // (b) Roll-anchored route: the mapping measured on the proxy (what
+            //     Develop would show) vs re-measured on the full decode (what
+            //     batch export actually uses), plus the scale-only control.
+            let roll_proxy = render_f32_shader_equivalent(
+                &preview_est,
+                None,
+                params,
+                &geom,
+                &base_color_preview,
+                &roll_state_preview_mapping,
+                None,
+            );
+            let roll_full_same_mapping = render_f32_shader_equivalent(
+                &export_est,
+                None,
+                params,
+                &geom,
+                &base_color_preview,
+                &roll_state_preview_mapping,
+                None,
+            );
+            let roll_full_own_mapping = render_f32_shader_equivalent(
+                &export_est,
+                None,
+                params,
+                &geom,
+                &base_color_preview,
+                &roll_state_export_mapping,
+                None,
+            );
+            println!("[PARITY] L5 render ({label}):");
+            parity_print_cast_line(
+                "(a) smart-auto, proxy input",
+                parity_mean_display_rgb(&smart_proxy),
+            );
+            parity_print_cast_line(
+                "(a) smart-auto, full input — same state (scale only)",
+                parity_mean_display_rgb(&smart_full),
+            );
+            parity_print_cast_line(
+                "(b) roll-anchored, proxy input, proxy mapping (the canvas)",
+                parity_mean_display_rgb(&roll_proxy),
+            );
+            parity_print_cast_line(
+                "(b) roll-anchored, full input, proxy mapping (scale only)",
+                parity_mean_display_rgb(&roll_full_same_mapping),
+            );
+            parity_print_cast_line(
+                "(b) roll-anchored, full input, re-measured mapping (the export)",
+                parity_mean_display_rgb(&roll_full_own_mapping),
+            );
+            ab_save_preview(
+                output_root.join(format!("{stem}-{label}-roll-canvas.jpg")),
+                &roll_proxy,
+            );
+            ab_save_preview(
+                output_root.join(format!("{stem}-{label}-roll-export.jpg")),
+                &roll_full_own_mapping,
+            );
+            roll_full_own_mapping
+        };
+        let neutral_own = render_pair(&neutral, "neutral");
+        let mut graded = neutral.clone();
+        graded.tone.temperature = -0.30;
+        graded.tone.shadows = 0.20;
+        graded.tone.highlights = -0.15;
+        let _ = render_pair(&graded, "graded");
+
+        // ---- Level 6: encode -------------------------------------------------
+        let before = parity_mean_display_rgb(&neutral_own);
+        let encoded =
+            encode_export_buffer(neutral_own.clone(), ColorSpaceId::SRgb).expect("encode failed");
+        let after = parity_mean_display_rgb(&encoded);
+        println!("[PARITY] L6 encode (sRGB round trip):");
+        parity_print_cast_line("before encode", before);
+        parity_print_cast_line("after encode", after);
+    }
+
+    /// Dumps a fixed synthetic frame plus its CPU render so the browser
+    /// harness (`scripts/diagnose-cpu-webgl-parity.cjs`) can push the same
+    /// transport texture, uniforms and curve LUT through the real WebGL
+    /// develop shader and compare the two renderers numerically.
+    #[test]
+    #[ignore = "fixture producer for the CPU/WebGL parity harness"]
+    fn cpu_render_fixture_for_webgl_parity() {
+        const WIDTH: u32 = 96;
+        const HEIGHT: u32 = 64;
+        let base_density: [f32; 3] = [0.50, 0.70, 1.10];
+        let base_transmission = base_density.map(|value| 10.0_f32.powf(-value));
+        let mut estimate = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(WIDTH, HEIGHT);
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                // Column density wedge (0..1.6 D) plus a mild texture term so
+                // every stage of the chain has real structure to disagree on.
+                let column_density = (x as f32 / (WIDTH as f32 - 1.0)) * 1.6;
+                let texture = ((x as f32 * 0.7 + y as f32 * 1.3).sin() * 0.5 + 0.5) * 0.05;
+                let delta = column_density + texture;
+                let pixel = base_transmission.map(|value| value * 10.0_f32.powf(-delta));
+                estimate.put_pixel(x, y, Rgb(pixel));
+            }
+        }
+        let transport = prophoto_estimate_to_transport_proxy(&estimate);
+
+        let mut state = default_pipeline_state_for_import(true, "LOOSE_DEFAULT", &[]);
+        state.processing_report.base_source = "content_estimate".to_string();
+        let base_color = base_color_from_density(base_density);
+        let mut params = TuningParams::default();
+        params.density.d_min = [0.05, 0.06, 0.08];
+        params.density.d_max = [1.70, 1.62, 1.55];
+        params.density.gamma = 2.2;
+        params.exposure.exposure = 0.3;
+        params.exposure.exp_r = 0.05;
+        params.exposure.exp_g = -0.02;
+        params.exposure.exp_b = 0.04;
+        params.tone.contrast = 0.10;
+        params.tone.saturation = 0.15;
+        params.tone.temperature = -0.25;
+        params.tone.tint = 0.10;
+        params.tone.highlights = -0.10;
+        params.tone.shadows = 0.15;
+        params.curve.curve_rgb = vec![[0.0, 0.0], [0.25, 0.22], [0.75, 0.78], [1.0, 1.0]];
+        params.curve.curve_red = vec![[0.0, 0.0], [0.5, 0.55], [1.0, 1.0]];
+        params.curve.curve_green = vec![[0.0, 0.0], [0.5, 0.52], [1.0, 1.0]];
+        params.curve.curve_blue = vec![[0.0, 0.0], [0.3, 0.28], [0.7, 0.72], [1.0, 1.0]];
+
+        let rendered = render_f32_shader_equivalent(
+            &estimate,
+            None,
+            &params,
+            &GeometryState::default(),
+            &base_color,
+            &state,
+            None,
+        );
+
+        // The shader receives the base as density; hand it the exact value
+        // FilmPipeline will derive from the quantised BaseColor so both sides
+        // agree to the last bit of the persisted reference.
+        let uniform_base = [
+            -(base_color.base_r as f32 / 65535.0).log10(),
+            -(base_color.base_g as f32 / 65535.0).log10(),
+            -(base_color.base_b as f32 / 65535.0).log10(),
+        ];
+        let uniforms = serde_json::json!({
+            "base_density": uniform_base,
+            "dmin": params.density.d_min,
+            "dmax": params.density.d_max,
+            "gamma": params.density.gamma,
+            "master_exposure": params.exposure.exposure,
+            "exposure": [
+                params.exposure.exp_r * CHANNEL_CONTROL_SCALE,
+                params.exposure.exp_g * CHANNEL_CONTROL_SCALE,
+                params.exposure.exp_b * CHANNEL_CONTROL_SCALE,
+            ],
+            "contrast": params.tone.contrast,
+            "saturation": params.tone.saturation,
+            "temperature": params.tone.temperature,
+            "tint": params.tone.tint,
+            "highlights": params.tone.highlights,
+            "shadows": params.tone.shadows,
+        });
+        let fixture = serde_json::json!({
+            "width": WIDTH,
+            "height": HEIGHT,
+            "transport": transport.as_raw(),
+            "uniforms": uniforms,
+            "curve": {
+                "rgb": params.curve.curve_rgb,
+                "red": params.curve.curve_red,
+                "green": params.curve.curve_green,
+                "blue": params.curve.curve_blue,
+            },
+            "rendered": rendered.as_raw(),
+        });
+        let output_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("diag-webgl-parity");
+        std::fs::create_dir_all(&output_root).unwrap();
+        std::fs::write(
+            output_root.join("cpu.json"),
+            serde_json::to_string(&fixture).unwrap(),
+        )
+        .unwrap();
+        println!(
+            "[PARITY] fixture written to {} ({}x{})",
+            output_root.join("cpu.json").display(),
+            WIDTH,
+            HEIGHT
+        );
     }
 
     #[test]
