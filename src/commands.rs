@@ -10318,15 +10318,8 @@ fn render_shader_equivalent_core(
             .clamp(0.1, 8.0),
     };
     let detail_is_neutral = detail_settings.is_neutral();
-    // A confirmed film area bounds the photograph: pixels outside it are
-    // rebate, sprockets or the light panel, so both renderers paint them paper
-    // white instead of letting them invert into bands around the picture.
-    let film_area_confirmed = !points
-        .iter()
-        .zip([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
-        .all(|(actual, expected)| {
-            (actual[0] - expected[0]).abs() <= 0.001 && (actual[1] - expected[1]).abs() <= 0.001
-        });
+    // The Film Area selection changes analysis only: pixels inside and outside
+    // it render identically. Whitening the rebate is the sprocket tool's job.
     // The Detail stage keeps its hands off the sprocket white-out, which is an
     // overlay rather than image content. One byte per pixel is enough for a
     // guard that is only ever 0 or 1 in practice.
@@ -10471,9 +10464,6 @@ fn render_shader_equivalent_core(
                         *channel += (1.0 - *channel) * mask;
                     }
                 }
-            } else if film_area_confirmed && !point_in_film_area(crop_uv, &points, 0.0) {
-                mask_slot[0] = 255;
-                rendered = [1.0, 1.0, 1.0];
             }
 
             for channel in 0..3 {
@@ -11921,9 +11911,9 @@ pub async fn batch_export_images(
             match decoded {
                 Ok(original) => {
                     let params = &params_owned;
-                    // The stored base is replaced below when it still names
-                    // another frame instead of this one's own clear film.
-                    let mut base_color = base_color_owned.clone();
+                    // Export renders the persisted base exactly as Develop
+                    // shows it; it never re-measures or writes back.
+                    let base_color = base_color_owned.clone();
                     if snapshot.pipeline_state.contract != ProcessingContract::LegacyV1
                         && !is_smart_auto_compatibility(&snapshot.pipeline_state)
                     {
@@ -11978,57 +11968,14 @@ pub async fn batch_export_images(
                                 return;
                             }
                         };
-                        // A base inherited from another frame is a place-holder:
-                        // this decode is the first chance to measure the film on
-                        // its own pixels, and the export must not print another
-                        // frame's mask.
-                        if let Some(estimate) =
-                            inherited_film_base_measurement(&render_pipeline_state, &geom_owned, &input)
-                        {
-                            base_color = base_color_from_density(estimate.density);
-                            let mut persisted = snapshot.pipeline_state.clone();
-                            persisted.processing_report.base_source = estimate.source.to_string();
-                            persisted.processing_report.base_confidence =
-                                format!("{:.3}", estimate.confidence);
-                            if let Err(error) = persist_base_and_pipeline(
-                                &snapshot.roll_id,
-                                &snapshot.file_path,
-                                &base_color,
-                                &persisted,
-                            ) {
-                                lock_mutex(&warnings).push(format!(
-                                    "export_film_base_persist_failed|{}|{error}",
-                                    file_path
-                                ));
-                            }
-                        }
-                        // Match the Develop preview: mask removal uses this
-                        // frame's own film base, and the white point uses the
-                        // fraction of the film span its scene actually reaches.
-                        if matches!(
-                            render_pipeline_state.contract,
-                            ProcessingContract::RollAnchoredProPhotoV11
-                                | ProcessingContract::CaptureCorrectedV11
-                        ) {
-                            let anchor_base =
-                                pipeline_base_density(&render_pipeline_state, &base_color);
-                            let frame_base =
-                                detect_frame_base_density(&input, anchor_base).unwrap_or(anchor_base);
-                            if let Some(span) = roll_physical_density_span(
-                                &render_pipeline_state.density_anchors,
-                                anchor_base,
-                            ) {
-                                let highlight =
-                                    detect_frame_highlight_fraction(&input, frame_base, span);
-                                if let Some(mapping) = roll_density_mapping_with_frame_base(
-                                    &render_pipeline_state,
-                                    Some(frame_base),
-                                    highlight,
-                                ) {
-                                    render_pipeline_state.render_mapping = mapping;
-                                }
-                            }
-                        }
+                        // Export is read-only and renders exactly what Develop
+                        // shows: the persisted base and render mapping from the
+                        // snapshot. Re-measuring the film on this full-resolution
+                        // decode used to drift the window away from the canvas
+                        // (proxy-measured) state and even wrote the new base back
+                        // to the database; measurement now only ever happens on
+                        // the canvas side (prepare_proxy / analysis), and an
+                        // inherited base stays until the frame is opened there.
                         let rendered_display = render_f32_shader_equivalent(
                             &input,
                             quality_mask.as_ref(),
@@ -18830,6 +18777,28 @@ mod import_contract_tests {
             None,
         );
 
+        // The Film Area selection changes analysis only. Rendering the same
+        // frame with a deliberately small quad must be byte-identical, which
+        // is the regression pin for "selecting an area must not whiten or
+        // alter anything outside it".
+        let mut quad_geom = GeometryState::default();
+        quad_geom.calibration_points =
+            Some([[0.18, 0.12], [0.86, 0.08], [0.88, 0.92], [0.22, 0.88]]);
+        let quad_rendered = render_f32_shader_equivalent(
+            &estimate,
+            None,
+            &params,
+            &quad_geom,
+            &base_color,
+            &state,
+            None,
+        );
+        assert_eq!(
+            rendered.as_raw(),
+            quad_rendered.as_raw(),
+            "a film area selection changed the render"
+        );
+
         // The shader receives the base as density; hand it the exact value
         // FilmPipeline will derive from the quantised BaseColor so both sides
         // agree to the last bit of the persisted reference.
@@ -18979,8 +18948,15 @@ mod import_contract_tests {
             &state,
             None,
         );
-        ab_save_preview(output_root.join(format!("{stem}-ab-canvas.jpg")), &canvas_render);
-        println!("[AB] canvas panel {}x{}", canvas_render.width(), canvas_render.height());
+        ab_save_preview(
+            output_root.join(format!("{stem}-ab-canvas.jpg")),
+            &canvas_render,
+        );
+        println!(
+            "[AB] canvas panel {}x{}",
+            canvas_render.width(),
+            canvas_render.height()
+        );
         ab_print_rendered_cast("AB canvas", &canvas_render, &geom);
 
         // ---- Panel 2: the export on current main. Same persisted state,
@@ -18996,8 +18972,8 @@ mod import_contract_tests {
             &state,
             None,
         );
-        let export_render = encode_export_buffer(export_render, ColorSpaceId::SRgb)
-            .expect("export encode failed");
+        let export_render =
+            encode_export_buffer(export_render, ColorSpaceId::SRgb).expect("export encode failed");
         // Match the canvas panel's size so the composite lines up pixel for
         // pixel; the app's export stays full size, this is only for viewing.
         let export_for_ab = image::imageops::resize(
@@ -19006,24 +18982,26 @@ mod import_contract_tests {
             canvas_render.height(),
             image::imageops::FilterType::Lanczos3,
         );
-        ab_save_preview(output_root.join(format!("{stem}-ab-export.jpg")), &export_for_ab);
-        println!("[AB] export panel (full render {}x{} -> {}x{})",
-            export_render.width(), export_render.height(),
-            export_for_ab.width(), export_for_ab.height());
+        ab_save_preview(
+            output_root.join(format!("{stem}-ab-export.jpg")),
+            &export_for_ab,
+        );
+        println!(
+            "[AB] export panel (full render {}x{} -> {}x{})",
+            export_render.width(),
+            export_render.height(),
+            export_for_ab.width(),
+            export_for_ab.height()
+        );
         ab_print_rendered_cast("AB export", &export_for_ab, &geom);
 
         // ---- Panel 3: the pre-fix export the user saw (u16 transport chain).
         // ----
         let legacy_linear = legacy_linear_full;
         let legacy_base = compute_auto_base(&legacy_linear);
-        let legacy_limits = compute_auto_color_limits(
-            &legacy_linear,
-            &geom,
-            &legacy_base,
-            FilmMode::Color,
-            false,
-        )
-        .unwrap();
+        let legacy_limits =
+            compute_auto_color_limits(&legacy_linear, &geom, &legacy_base, FilmMode::Color, false)
+                .unwrap();
         let mut legacy_params = TuningParams::default();
         legacy_params.density.d_min = legacy_limits.d_min;
         legacy_params.density.d_max = legacy_limits.d_max;
@@ -19035,12 +19013,12 @@ mod import_contract_tests {
             canvas_render.height(),
             image::imageops::FilterType::Lanczos3,
         );
-        ab_save_preview(output_root.join(format!("{stem}-ab-legacy.jpg")), &legacy_for_ab);
-        ab_print_rendered_cast("AB legacy (pre-fix export)", &legacy_for_ab, &geom);
-        println!(
-            "[AB] panels written to {}",
-            output_root.display()
+        ab_save_preview(
+            output_root.join(format!("{stem}-ab-legacy.jpg")),
+            &legacy_for_ab,
         );
+        ab_print_rendered_cast("AB legacy (pre-fix export)", &legacy_for_ab, &geom);
+        println!("[AB] panels written to {}", output_root.display());
     }
 
     #[test]
@@ -23078,28 +23056,18 @@ mod export_contract_tests {
             render_shader_equivalent(&source, &neutral_params(), &film_area, &white_base(), None);
 
         assert_eq!(rendered.dimensions(), expected.dimensions());
+        // The Film Area selection changes analysis only: pixels inside and
+        // outside the quad render identically to a frame without any film
+        // area. Whitening the unselected rebate was removed on purpose —
+        // "select the whole frame and the picture disappears" is exactly the
+        // regression this pins out.
         for y in 0..rendered.height() {
             for x in 0..rendered.width() {
-                let crop_uv = [
-                    (x as f32 + 0.5) / rendered.width() as f32,
-                    (y as f32 + 0.5) / rendered.height() as f32,
-                ];
-                if point_in_film_area(crop_uv, &points, 0.0) {
-                    // Inside the area the points never bend the geometry: the
-                    // picture matches a render without any film area.
-                    assert_eq!(
-                        rendered.get_pixel(x, y),
-                        expected.get_pixel(x, y),
-                        "picture pixel ({x},{y}) changed by film area"
-                    );
-                } else {
-                    // Outside the area is rebate/panel, painted paper white.
-                    assert_eq!(
-                        rendered.get_pixel(x, y),
-                        &Rgb([65535, 65535, 65535]),
-                        "rebate pixel ({x},{y}) is not white"
-                    );
-                }
+                assert_eq!(
+                    rendered.get_pixel(x, y),
+                    expected.get_pixel(x, y),
+                    "pixel ({x},{y}) changed by the film area selection"
+                );
             }
         }
     }

@@ -142,3 +142,17 @@ node scripts/diagnose-cpu-webgl-parity.cjs
 - `src/commands.rs`(import_contract_tests 测试模块):`export_preview_parity_diagnostic`(五级对比)、`cpu_render_fixture_for_webgl_parity`(渲染对齐 fixture)及三个打印辅助——纯测试代码,生产路径零改动
 - `scripts/diagnose-cpu-webgl-parity.cjs`:真实 WebGL shader 与 CPU 渲染器数值对比 harness
 - 本报告
+
+## 5. 修复记录(2026-11-03,用户实测确认后实施)
+
+用户在应用内实测确认:导出发黄已消除(解码域修复生效)。同时报告新问题并下达修复指令,两件修复同日落地:
+
+**修复一:L3/L4 导出重测分叉(方案 A"导出即所见")。** `batch_export_images` 删除了继承片基重测(+数据库回写)与全分辨率反相窗口重建两块代码;导出现在严格只读,渲染数据库快照里持久化的 `base_color` 与 `render_mapping`——与画布所见完全一致。继承片基的换测只发生在画布侧(prepare_proxy 缓存命中/全新解码、批量应用三处,均已有)。验收:静态契约(scripts/verify-density-contract.cjs 断言 batch export 体内不得出现任何重测/回写调用)+ 更新了钉住旧行为的断言。
+
+**修复二:胶片范围选区导致选区外白化(用户澄清产品语义后的整功能移除)。** 用户明确定义:选区只改变校色(分析)输入,选区内外受同一渲染,不能因未选中而变白。据此整体移除 c8480b5 引入的"片门外纸白"(rebate whitening):
+
+- WebGL shader:白化仅在 sprocket 工具配置时经其颜色相似度遮罩生效;仅有片门选区时不再有任何白化路径。
+- CPU `render_shader_equivalent_core`:删除 `film_area_confirmed` 硬白分支。
+- sprocket 工具(齿孔白化)行为不变。
+
+验收:`film_area_points_do_not_apply_perspective_correction` 改为断言"带选区渲染与无选区渲染逐位一致";CPU/WebGL 数值 harness 各加"小选区重渲染必须逐位不变"不变式;真实样张 AB 面板四角从纯白 (255,255,255) 恢复为图像内容,画布/导出仍一致(B/G 1.147 vs 1.144)。全量回归:cargo 287 / node 19 / verify 脚本全过(含新静态护栏),rustfmt 无新增差异。

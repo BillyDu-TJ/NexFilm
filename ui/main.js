@@ -2540,19 +2540,19 @@ function initWebGL() {
             final_rgb = vec3(getLuma(final_rgb));
         }
 
+        // The Film Area selection changes analysis only: pixels inside and
+        // outside it render identically. Whitening the rebate is the sprocket
+        // tool's job and always follows its colour-similarity mask.
         bool sprocket_configured = u_sprocket_uv.x >= 0.0 || u_has_sprocket_target_color != 0;
-        bool has_visible_border = distance(u_calib_pts[0], vec2(0.0, 0.0)) > 0.001
-            || distance(u_calib_pts[1], vec2(1.0, 0.0)) > 0.001
-            || distance(u_calib_pts[2], vec2(1.0, 1.0)) > 0.001
-            || distance(u_calib_pts[3], vec2(0.0, 1.0)) > 0.001;
-        if (sprocket_configured || has_visible_border) {
-            // A confirmed film area bounds the photograph: pixels outside it
-            // are rebate, sprockets or the light panel. With a sprocket sample
-            // configured they follow the similarity mask; otherwise they are
-            // painted paper white so the rebate cannot invert into bands.
-            bool outside_calibration = !insideFilmArea(v_texcoord);
-            bool apply_sprocket_mask = outside_calibration;
-            if (sprocket_configured && !has_visible_border) {
+        if (sprocket_configured) {
+            bool has_visible_border = distance(u_calib_pts[0], vec2(0.0, 0.0)) > 0.001
+                || distance(u_calib_pts[1], vec2(1.0, 0.0)) > 0.001
+                || distance(u_calib_pts[2], vec2(1.0, 1.0)) > 0.001
+                || distance(u_calib_pts[3], vec2(0.0, 1.0)) > 0.001;
+            bool apply_sprocket_mask = false;
+            if (has_visible_border) {
+                apply_sprocket_mask = !insideFilmArea(v_texcoord);
+            } else {
                 vec2 effective_sprocket_uv = u_sprocket_uv.x >= 0.0 ? u_sprocket_uv : vec2(0.5, 0.05);
                 float horizontal_edge = min(effective_sprocket_uv.x, 1.0 - effective_sprocket_uv.x);
                 float vertical_edge = min(effective_sprocket_uv.y, 1.0 - effective_sprocket_uv.y);
@@ -2565,11 +2565,7 @@ function initWebGL() {
                 apply_sprocket_mask = pixel_edge <= edge_band;
             }
             if (apply_sprocket_mask) {
-                if (sprocket_configured) {
-                    final_rgb = mix(final_rgb, vec3(1.0), mask);
-                } else {
-                    final_rgb = vec3(1.0);
-                }
+                final_rgb = mix(final_rgb, vec3(1.0), mask);
                 mask = 1.0;
             }
         }

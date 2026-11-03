@@ -123,11 +123,11 @@ assert.match(
     /item\.runtime_pipeline_key = Some\(final_resolution_key\);[\s\S]{0,400}?remeasure_inherited_film_base\(&mut item\)/,
     'A freshly decoded frame must re-measure an inherited base',
 );
-assert.match(
-    commandSource,
-    /inherited_film_base_measurement\(&render_pipeline_state, &geom_owned, &input\)/,
-    'Exporting a frame must not print another frame\'s film base',
-);
+// Exporting a frame must not print another frame's film base either — but the
+// measurement happens where the frame gets its pixels (import/prepare above),
+// never in the export itself: batch export is read-only and renders exactly
+// the persisted base and render mapping the canvas shows. The guard lives
+// further down with the batch export body assertions.
 // Opening a frame must never de-mask it: stored analysis state is not a user
 // action, so only Auto Invert or a Paste Settings commit may show a positive.
 assert.doesNotMatch(
@@ -310,6 +310,33 @@ const shiftedRoll = [0, 1, 2].map(channel => {
 assert.ok(
     Math.max(...shiftedRoll) - Math.min(...shiftedRoll) > 1e-3,
     'a uniform raw density shift must split the channels',
+);
+
+// The Film Area selection changes analysis only: inside and outside the quad
+// render identically. The rebate whitening that made "select the whole frame
+// and the picture disappears" was removed on purpose, and only the sprocket
+// tool may whiten pixels (by its own colour-similarity mask).
+assert.doesNotMatch(
+    commandSource,
+    /film_area_confirmed/,
+    'the export renderer must not whiten pixels outside the Film Area quad',
+);
+assert.doesNotMatch(
+    mainSource,
+    /if \(sprocket_configured \|\| has_visible_border\)/,
+    'the WebGL shader must not whiten outside the Film Area without a sprocket sample',
+);
+// Batch export is read-only and renders the persisted base and render mapping
+// exactly as the canvas shows them. Re-measuring the film on the full
+// resolution decode drifted the window away from the preview and wrote the
+// new base back to the database.
+const batchExportBody =
+    commandSource.match(/pub async fn batch_export_images\([\s\S]*?\n\}\n/)?.[0] || '';
+assert.ok(batchExportBody.length > 200, 'batch_export_images body was not found');
+assert.doesNotMatch(
+    batchExportBody,
+    /inherited_film_base_measurement|detect_frame_base_density|detect_frame_highlight_fraction|roll_density_mapping_with_frame_base|persist_base_and_pipeline/,
+    'batch export must render the persisted state, not re-measure the film',
 );
 
 console.log('Density-domain white balance contract verified.');

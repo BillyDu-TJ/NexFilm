@@ -205,6 +205,25 @@ if (!gl) {
         const pixels = new Uint8Array(spec.width * spec.height * 4);
         gl.readPixels(0, 0, spec.width, spec.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
 
+        // The Film Area selection changes analysis only: re-render with a
+        // small quad and require the same picture. This is the WebGL side of
+        // the "a selection must not whiten anything" regression pin.
+        const cornerPts = new Float32Array([0, 0, 1, 0, 1, 1, 0, 1]);
+        gl.uniform2fv(loc('u_calib_pts[0]'), new Float32Array([
+            0.18, 0.12, 0.86, 0.08, 0.88, 0.92, 0.22, 0.88,
+        ]));
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        const quadPixels = new Uint8Array(spec.width * spec.height * 4);
+        gl.readPixels(0, 0, spec.width, spec.height, gl.RGBA, gl.UNSIGNED_BYTE, quadPixels);
+        let quadDelta = 0;
+        for (let i = 0; i < quadPixels.length; i += 4) {
+            for (let channel = 0; channel < 3; channel += 1) {
+                quadDelta = Math.max(quadDelta, Math.abs(quadPixels[i + channel] - pixels[i + channel]));
+            }
+        }
+        if (quadDelta !== 0) throw new Error('film area selection changed the WebGL render by ' + quadDelta + '/255');
+        gl.uniform2fv(loc('u_calib_pts[0]'), cornerPts);
+
         // Compare against the CPU render: readPixels is bottom-up.
         const totals = [0, 0, 0];
         const maxima = [0, 0, 0];
