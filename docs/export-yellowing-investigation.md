@@ -156,3 +156,36 @@ node scripts/diagnose-cpu-webgl-parity.cjs
 - sprocket 工具(齿孔白化)行为不变。
 
 验收:`film_area_points_do_not_apply_perspective_correction` 改为断言"带选区渲染与无选区渲染逐位一致";CPU/WebGL 数值 harness 各加"小选区重渲染必须逐位不变"不变式;真实样张 AB 面板四角从纯白 (255,255,255) 恢复为图像内容,画布/导出仍一致(B/G 1.147 vs 1.144)。全量回归:cargo 287 / node 19 / verify 脚本全过(含新静态护栏),rustfmt 无新增差异。
+
+## 6. 后续报告:重开后画面发白/消失(2026-11-04,同日修复)
+
+用户复现序列:开图先橙(暂存负片)→ 1-2 秒后变白;保存范围后图片消失;自动反相恢复正常;重置再次消失;再反相又正常。导出已确认正常。
+
+**诊断方法**:直接读应用数据库 `nexfilm_user.db` 中该帧的持久化状态(参数/基色/管线状态/几何),用真实管线代码重建代理缓冲(`washed_open_state_diagnostic`,#[ignore]),再以真实 shader 在无头浏览器按应用的 uniform 规则渲染(`scripts/diagnose-washed-open-state.cjs`),与截图数值对拍。
+
+**变体定位**(真实 shader,同一缓冲):
+
+| 渲染变体 | mean 8-bit RGB | 对应现象 |
+|---|---|---|
+| 持久化状态(真实基色+真实窗口) | (115, 115, 130) | 重开后的"发灰" |
+| 占位窗口 [0.1,2.0] | (35, 46, 77) | 深蓝暗 |
+| **零基色 + 反相开** | **(200, 242, 253)** | **"跳成白色"** |
+| 暂存分支(反相关) | (127, 80, 27) | 正常的橙色负片 |
+
+**根因(所见≠所存的状态解耦)**:
+
+1. `doAutoColor` 反相后设置了新窗口,但**从不更新画布的 `currentBaseDensity`**——画布继续用上一次代理头里的旧基色渲染,而数据库已被 `analyze_proxy_base_color` 写入新基色(改过片门后两者差异显著)。反相后的"正常"其实是旧基色的偶然效果;任何后来的代理重载(重开/分辨率升级/切帧回来)提交新基色后就是另一种观感。
+2. 反相流程先打开 `proxyHasAnalyzedBase` 旗标(8795),基色要等代理重载(8802)才随头提交——旗标与基色解耦的窗口内,反转分支可能以零/旧基色渲染,即零基色变体的"白色"。
+3. `selectImage` 不复位 `proxyHasAnalyzedBase`/`currentBaseDensity`,跨帧残留扩大上述窗口。
+4. 保存范围/重置后没有主动重显代理,重准备期间画布可能停留在空帧(工作区灰 #dadada,即截图的"图片消失")。
+
+**修复**(47d790a 之后同日落地):
+
+- Rust:`AutoColorLimits` 新增 `base_density` 字段,`analyze_proxy_density_limits` 返回分析实际使用的基色(与持久化状态、下一个代理头一致)。
+- JS:`doAutoColor` 立即 `currentBaseDensity = limits.base_density`——反相完成瞬间画布即等于持久化状态,结构性消灭"反相后 ≠ 重开"。
+- JS:`selectImage` 复位 `proxyHasAnalyzedBase` 与 `currentBaseDensity`(由新代理头重新提交,杜绝跨帧泄漏)。
+- JS:保存范围与重置完成后主动 `ensureProxyDisplayed`(非阻塞,prepare 优先),画布在过渡期保持有图。
+
+**护栏**:verify-density-contract 新增四条静态断言(AutoColorLimits 必须带 base_density、doAutoColor 必须立即提交、selectImage 必须复位旗标与基色)。全量回归 cargo 287 / node 19 / verify 全过。
+
+**待用户复测**:①重开已反相帧应与反相完成时观感一致;②保存范围/重置后画布不应消失;③若仍有短暂异常,运行 `cargo test --lib washed_open_state_diagnostic -- --ignored && node scripts/diagnose-washed-open-state.cjs`,用最新数据库状态对拍变体表即可定位残余输入。注意:反相后的观感本身(=持久化状态渲染)如仍不满意,那是分析(片门下基色/窗口)的调校问题,不再是显示一致性缺陷。

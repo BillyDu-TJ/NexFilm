@@ -339,4 +339,37 @@ assert.doesNotMatch(
     'batch export must render the persisted state, not re-measure the film',
 );
 
+// The Auto Invert analysis returns the base it persisted so the canvas can
+// commit it immediately. Without this the canvas keeps the previous proxy
+// header's base while the stored state moves on, and the post-invert look
+// silently differs from any later reopen (the washed-reopen report).
+assert.match(
+    commandSource,
+    /pub struct AutoColorLimits[\s\S]{0,400}?pub base_density: \[f32; 3\]/,
+    'AutoColorLimits must report the base the analysis used',
+);
+const doAutoColorBody =
+    mainSource.match(/async function doAutoColor\([\s\S]*?\n\}\n/)?.[0] || '';
+assert.ok(doAutoColorBody.length > 200, 'doAutoColor body was not found');
+assert.match(
+    doAutoColorBody,
+    /currentBaseDensity = limits\.base_density\.slice\(0, 3\)/,
+    'Auto Invert must commit the analysed base to the canvas immediately',
+);
+// Frame-scoped render state may not leak across frames: switching images
+// resets the invert flag and the base until the new proxy header commits.
+const selectImageReset =
+    mainSource.match(/proxyPixels = null;[\s\S]{0,300}?readyProxyIds\.delete\(id\);[\s\S]{0,800}?updateUIFromParams/)?.[0] || '';
+assert.ok(selectImageReset.length > 100, 'the selectImage reset block was not found');
+assert.match(
+    selectImageReset,
+    /proxyHasAnalyzedBase = false;/,
+    'switching frames must reset the invert flag',
+);
+assert.match(
+    selectImageReset,
+    /currentBaseDensity = \[0, 0, 0\];/,
+    'switching frames must reset the render base',
+);
+
 console.log('Density-domain white balance contract verified.');

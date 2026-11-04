@@ -2584,6 +2584,7 @@ fn compute_content_limits_f32_with_bounds(
     Ok(AutoColorLimits {
         d_min: low,
         d_max: high,
+        base_density,
         pipeline_state: None,
     })
 }
@@ -2996,6 +2997,7 @@ fn prepare_content_render_limits(
         let mut relative = AutoColorLimits {
             d_min: [0.0; 3],
             d_max: [0.0; 3],
+            base_density: limits.base_density,
             pipeline_state: None,
         };
         for channel in 0..3 {
@@ -3563,6 +3565,11 @@ fn compute_pristine_proxy(
 pub struct AutoColorLimits {
     pub d_min: [f32; 3],
     pub d_max: [f32; 3],
+    /// The film base this analysis ran on — the same value the persisted state
+    /// and the next proxy header carry. The Develop canvas must commit it
+    /// immediately instead of waiting for a proxy reload, or the post-invert
+    /// render and a later reopen disagree.
+    pub base_density: [f32; 3],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pipeline_state: Option<PipelineState>,
 }
@@ -3867,6 +3874,7 @@ fn compute_auto_color_limits(
     Ok(AutoColorLimits {
         d_min,
         d_max,
+        base_density: [0.0; 3],
         pipeline_state: None,
     })
 }
@@ -8156,6 +8164,7 @@ pub async fn analyze_proxy_density_limits(
             AutoColorLimits {
                 d_min: mapping.density_low,
                 d_max: mapping.density_high,
+                base_density: [0.0; 3],
                 pipeline_state: None,
             }
         } else if pipeline_state.contract == ProcessingContract::LegacyV1
@@ -8205,6 +8214,11 @@ pub async fn analyze_proxy_density_limits(
             }
             estimated
         };
+        // The response carries the base this frame's state actually uses, the
+        // same figure the persisted state and the next proxy header hold. The
+        // canvas commits it straight away so the post-invert render cannot
+        // differ from a later reopen that loads the persisted base.
+        limits.base_density = pipeline_base_density(&pipeline_state, &base_color);
         if pipeline_state.contract != ProcessingContract::LegacyV1 {
             if let Some(mapping) = fixed_roll_mapping {
                 // A complete roll has no per-frame ContentRange. Keeping it
@@ -15549,7 +15563,8 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 #[cfg(test)]
 mod import_contract_tests {
     use super::{
-        aggregate_roll_density_references, base_color_from_density, clear_retired_legacy_domain,
+        aggregate_roll_density_references, base_color_from_density,
+        build_response_buffer_from_proxy_with_state, clear_retired_legacy_domain,
         compute_auto_base, compute_auto_base_f32, compute_auto_color_limits,
         compute_content_limits_f32, compute_content_limits_f32_with_bounds,
         compute_frame_base_density_f32, decode_image_buffer, decode_import_preview_base64,
@@ -17106,6 +17121,7 @@ mod import_contract_tests {
         let mut limits = AutoColorLimits {
             d_min: [0.20, 0.35, 0.48],
             d_max: [0.95, 1.25, 1.50],
+            base_density: [0.0; 3],
             pipeline_state: None,
         };
         let original = limits.clone();
@@ -17159,6 +17175,7 @@ mod import_contract_tests {
         let mut limits = AutoColorLimits {
             d_min: [0.20, 0.24, 0.32],
             d_max: [0.80, 0.96, 1.28],
+            base_density: [0.0; 3],
             pipeline_state: None,
         };
         prepare_content_render_limits(&mut limits, &anchors, base_density);
@@ -17447,6 +17464,7 @@ mod import_contract_tests {
         let mut limits = AutoColorLimits {
             d_min: [0.12, 0.18, 0.24],
             d_max: [0.92, 1.08, 1.24],
+            base_density: [0.0; 3],
             pipeline_state: None,
         };
         let measured = limits.clone();
@@ -19019,6 +19037,110 @@ mod import_contract_tests {
         );
         ab_print_rendered_cast("AB legacy (pre-fix export)", &legacy_for_ab, &geom);
         println!("[AB] panels written to {}", output_root.display());
+    }
+
+    /// In-vitro reproduction of the washed-canvas state the user reported:
+    /// rebuilds the proxy response buffer `get_proxy_response_buffer` would
+    /// serve for the frame's persisted state (read straight from the app's own
+    /// `nexfilm_user.db`) so the browser harness can render it through the
+    /// real shader with the exact uniforms the app would set.
+    #[test]
+    #[ignore = "manual washed-state reproduction; reads the app database"]
+    fn washed_open_state_diagnostic() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let connection = rusqlite::Connection::open(manifest.join("nexfilm_user.db")).unwrap();
+        let (params_json, state_json, base_json): (String, String, String) = connection
+            .query_row(
+                "SELECT params, pipeline_state, base_color FROM image_states \
+                 WHERE file_path LIKE '%0218-%' ORDER BY updated_at DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        let params: TuningParams = serde_json::from_str(&params_json).unwrap();
+        let pipeline_state: PipelineState = serde_json::from_str(&state_json).unwrap();
+        let base_color: BaseColor = serde_json::from_str(&base_json).unwrap();
+        println!(
+            "[WASH] persisted: contract={:?} base=({},{},{}) d_min={:?} d_max={:?}",
+            pipeline_state.contract,
+            base_color.base_r,
+            base_color.base_g,
+            base_color.base_b,
+            params.density.d_min,
+            params.density.d_max,
+        );
+
+        let frame = manifest
+            .join("test_picture")
+            .join("导出发黄")
+            .join("0218-.tif");
+        let mut estimate =
+            decode_profiled_tiff_prophoto_estimate(frame.to_str().unwrap(), PROXY_LONG_EDGE as u32)
+                .unwrap();
+        {
+            let (width, height) = estimate.dimensions();
+            let ratio = (PROXY_LONG_EDGE / width.max(height) as f32).min(1.0);
+            if ratio < 0.999 {
+                estimate = image::imageops::resize(
+                    &estimate,
+                    (width as f32 * ratio).max(1.0) as u32,
+                    (height as f32 * ratio).max(1.0) as u32,
+                    image::imageops::FilterType::Lanczos3,
+                );
+            }
+        }
+        let transport = prophoto_estimate_to_transport_proxy(&estimate);
+        let response = build_response_buffer_from_proxy_with_state(
+            &transport,
+            &base_color,
+            &pipeline_state,
+            None,
+            true,
+        );
+        let output_root = manifest.join("target").join("diag-washed");
+        std::fs::create_dir_all(&output_root).unwrap();
+        std::fs::write(output_root.join("proxy.bin"), &response).unwrap();
+        let flags = u32::from_le_bytes(response[24..28].try_into().unwrap());
+        println!(
+            "[WASH] proxy header: {}x{} flags={flags} (bit0 base={} bit1 prophoto={} bit2 capture={}) -> {}",
+            u32::from_le_bytes(response[0..4].try_into().unwrap()),
+            u32::from_le_bytes(response[4..8].try_into().unwrap()),
+            flags & 1,
+            (flags >> 1) & 1,
+            (flags >> 2) & 1,
+            output_root.join("proxy.bin").display()
+        );
+        let uniforms = serde_json::json!({
+            "base_density": [
+                f32::from_le_bytes(response[8..12].try_into().unwrap()),
+                f32::from_le_bytes(response[12..16].try_into().unwrap()),
+                f32::from_le_bytes(response[16..20].try_into().unwrap()),
+            ],
+            "dmin": params.density.d_min,
+            "dmax": params.density.d_max,
+            "gamma": params.density.gamma,
+            "exposure": params.exposure.exposure,
+            "exp_r": params.exposure.exp_r,
+            "exp_g": params.exposure.exp_g,
+            "exp_b": params.exposure.exp_b,
+            "contrast": params.tone.contrast,
+            "saturation": params.tone.saturation,
+            "temperature": params.tone.temperature,
+            "tint": params.tone.tint,
+            "highlights": params.tone.highlights,
+            "shadows": params.tone.shadows,
+            "legacy": pipeline_state.contract == ProcessingContract::LegacyV1
+                || is_smart_auto_compatibility(&pipeline_state),
+        });
+        std::fs::write(
+            output_root.join("uniforms.json"),
+            serde_json::to_string(&uniforms).unwrap(),
+        )
+        .unwrap();
+        println!(
+            "[WASH] uniforms: {}",
+            serde_json::to_string(&uniforms).unwrap()
+        );
     }
 
     #[test]
@@ -21289,6 +21411,7 @@ mod import_contract_tests {
         let mut limits = AutoColorLimits {
             d_min: [0.10, 0.20, 0.30],
             d_max: [0.80, 1.00, 1.20],
+            base_density: [0.0; 3],
             pipeline_state: None,
         };
         let offsets = share_smart_auto_density_scale(&mut limits);
@@ -21312,6 +21435,7 @@ mod import_contract_tests {
         let mut limits = AutoColorLimits {
             d_min: [0.20, 0.30, 0.40],
             d_max: [0.40, 0.50, 0.60],
+            base_density: [0.0; 3],
             pipeline_state: None,
         };
         preserve_smart_auto_content_span(&mut limits);

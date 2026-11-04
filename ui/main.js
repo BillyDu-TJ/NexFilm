@@ -6914,6 +6914,11 @@ async function selectImage(id, { force = false } = {}) {
         proxyWidth = 0;
         proxyHeight = 0;
         readyProxyIds.delete(id);
+        // Frame-scoped render state must not leak across frames: the proxy
+        // commit recomputes both from the incoming header, and until then the
+        // staging branch (not a stale invert flag) owns the canvas.
+        proxyHasAnalyzedBase = false;
+        currentBaseDensity = [0, 0, 0];
         current_geom = NexFilmGeometry.normalizeGeometryState(state.geom);
         const needsFilmAreaConfirmation = NexFilmGeometry.needsFilmAreaConfirmation(current_geom);
         if (needsFilmAreaConfirmation) {
@@ -8253,6 +8258,13 @@ async function doAutoColor(targetId = activeId, generation = developOperationRev
 
     currentDMin = batchState.dmin;
     currentDMax = batchState.dmax;
+    // The analysis response carries the base it actually persisted. Commit it
+    // here instead of waiting for the proxy reload: otherwise the canvas keeps
+    // the previous header's base while the stored state moves on, and the
+    // post-invert look silently differs from any later reopen.
+    if (Array.isArray(limits.base_density) && limits.base_density.length >= 3) {
+        currentBaseDensity = limits.base_density.slice(0, 3).map(value => Number(value) || 0);
+    }
     updateDMinMaxDisplay();
 
     const hasCustomPrinterLights =
@@ -9200,6 +9212,9 @@ btnResetColor.addEventListener('click', async () => {
             pipeline_state: JSON.parse(JSON.stringify(currentPipelineState)),
         });
         requestRender();
+        // The reset may retire backend proxy state; re-display eagerly so the
+        // canvas lands on the staging negative instead of an empty frame.
+        void ensureProxyDisplayed(targetId, { prepare: true, persistThumbnail: false }).catch(() => {});
         showToast("Color adjustments and inversion reset.", "success");
     } catch (error) {
         if (!String(error).includes('STALE_DEVELOPMENT_OPERATION')) {
@@ -10209,6 +10224,10 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
     try {
         await persistGeometryQueued(activeId, current_geom);
         exitCalibrationMode();
+        // The new film area invalidates the cached proxy; re-prepare and
+        // re-display without blocking so the canvas keeps showing the frame
+        // through the transition instead of waiting for the next interaction.
+        void ensureProxyDisplayed(activeId, { prepare: true, persistThumbnail: false }).catch(() => {});
         btnAutoColor.disabled = false;
         setBatchApplyDisabled(false);
         showToast("Film area saved. Run Auto Invert when ready.", "success");
