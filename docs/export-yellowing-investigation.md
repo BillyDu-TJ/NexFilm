@@ -189,3 +189,30 @@ node scripts/diagnose-cpu-webgl-parity.cjs
 **护栏**:verify-density-contract 新增四条静态断言(AutoColorLimits 必须带 base_density、doAutoColor 必须立即提交、selectImage 必须复位旗标与基色)。全量回归 cargo 287 / node 19 / verify 全过。
 
 **待用户复测**:①重开已反相帧应与反相完成时观感一致;②保存范围/重置后画布不应消失;③若仍有短暂异常,运行 `cargo test --lib washed_open_state_diagnostic -- --ignored && node scripts/diagnose-washed-open-state.cjs`,用最新数据库状态对拍变体表即可定位残余输入。注意:反相后的观感本身(=持久化状态渲染)如仍不满意,那是分析(片门下基色/窗口)的调校问题,不再是显示一致性缺陷。
+
+## 7. 复发定位:暂存帧透明导致"渲染消失"(2026-11-04 晚,当日修复)
+
+用户在 b893717 构建上复测,症状原样复发:开图先橙,无操作 1-2 秒后全白;保存范围后画面直接消失;反相后恢复。数据库证据(18:00 与 18:08 两个新导入 roll)表明:发白/消失都发生在**未反相阶段**,反相路径完好。
+
+**定位过程的关键纠偏**:此前按"uniform 数值组合错了"的方向追查(基色/窗口矩阵对拍),全部变体都无法同时解释"无操作必然变白"与"一点反相就恢复"。用户点破视角——这不是颜色算错,是 **WebGL 渲染本身从画布上消失了**。沿此定位到 shader 的暂存分支:
+
+```glsl
+// 修复前
+outColor = vec4(linearSrgbToDisplay(pow(staged, ...)), 0.0);   // ← alpha = 0
+```
+
+暂存帧(未反相负片的过渡显示)的 alpha 被写成 0——它的本意是把 alpha 通道留给 Detail 通道当 sprocket/clipping guard 用,但 Detail 通道闲置时这帧**直接合成上屏**:画布整体变透明,图像"消失",露出页面底色(观感即"全白/空白")。时间线与症状逐条对上:
+
+- 开图先橙 = 缩略图占位层(embedded 负片);
+- 1-2 秒后"变白" = proxy 解码完成,占位层隐藏,alpha=0 的暂存帧上屏 → 画布透明;
+- 保存范围后"消失" = 重载/重渲染仍走暂存分支 → 依旧透明;
+- 反相后"恢复" = 反相分支输出 `alpha = mix(1.0, mask, guard) = 1`(无 sprocket 时),不透明,图像回来。
+
+§6 修复的基色提交时序解决的是"反相后与重开观感不一致",并未触及这个 alpha——所以复发。§6 变体表里 (200,242,253) 的"零基色"匹配是**零基色渲染与透明帧在同一帧截图上无法区分**造成的误判;本例的真凶是 alpha。
+
+**修复**(当日落地):
+
+- `ui/main.js` shader:暂存分支 `alpha 0.0 → 1.0`。同时说明语义:不透明暂存帧会把 Detail 合成的 guard 置零,即"暂存负片不做锐化"——暂存是过渡视图,这是正确行为。
+- `ui/main.js` `initWebGL`:给 `preview-canvas` 显式钉上 `#050506` 深色底。WebGL 上下文默认 alpha 可用,任何未来的透明帧从此只能露出近黑底,不可能再读成"白屏"。
+- 试管验证:`scripts/diagnose-wash-matrix.cjs`(变体矩阵,含 staging)确认修复后 staging 帧 RGB 不变(126.5, 80.3, 26.7,橙色负片)、alpha 0→255,其余 8 个变体逐位不变。
+- 护栏:verify-density-contract 新增两条静态断言(暂存帧必须不透明、canvas 必须钉深色底)。全量回归:cargo 287 通过、13 个 verify 脚本全过、WebGL shader 编译链接验证通过。

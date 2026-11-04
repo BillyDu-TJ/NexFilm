@@ -372,4 +372,25 @@ assert.match(
     'switching frames must reset the render base',
 );
 
+// The staging negative is composited straight onto the page whenever the
+// Detail stage is idle. Its alpha must therefore be 1: an alpha-0 staging
+// frame turns the whole canvas transparent and the loaded proxy visually
+// disappears behind the page background ("open a frame, 1-2 s later the
+// picture is gone; Auto Invert brings it back").
+const stagingBranch =
+    mainSource.match(/if \(u_invert_enabled == 0\) \{[\s\S]*?return;\n        \}/)?.[0] || '';
+assert.ok(stagingBranch.length > 200, 'the shader staging branch was not found');
+assert.match(
+    stagingBranch,
+    /outColor = vec4\(linearSrgbToDisplay\(pow\(staged[\s\S]{0,80}?1\.0\);/,
+    'the staging frame must render opaque: a transparent staging frame blanks the canvas',
+);
+// Defensive depth: the canvas element itself carries a dark background so no
+// future transparent frame can ever read as a blank white page.
+assert.match(
+    mainSource,
+    /previewCanvas\.style\.backgroundColor = '#050506';/,
+    'the preview canvas must pin a dark background behind the alpha-capable context',
+);
+
 console.log('Density-domain white balance contract verified.');

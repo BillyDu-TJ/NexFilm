@@ -2180,6 +2180,11 @@ function initWebGL() {
         showToast("WebGL2 is not supported by your browser.", "error");
         return;
     }
+    // The WebGL context is alpha-capable (the default), so any frame a shader
+    // accidentally leaves transparent would show whatever sits behind the
+    // canvas. Pin the element to the same near-black the staging placeholder
+    // uses so a transparent frame can never read as a blank white page.
+    previewCanvas.style.backgroundColor = '#050506';
 
     const vsSource = `#version 300 es
     in vec4 a_position;
@@ -2451,7 +2456,13 @@ function initWebGL() {
                 staged = PROPHOTO_TO_LINEAR_SRGB * staged;
             }
             float safe_gamma = max(u_gamma, 1e-6);
-            outColor = vec4(linearSrgbToDisplay(pow(staged, vec3(1.0 / safe_gamma))), 0.0);
+            // This frame is composited straight onto the page when the Detail
+            // stage is idle: alpha 0 would make the whole canvas transparent
+            // and the frame would visually disappear behind the page
+            // background. An opaque staging frame also zeroes the Detail
+            // combine guard, which is right — the staging negative is a
+            // transient view, not something to sharpen.
+            outColor = vec4(linearSrgbToDisplay(pow(staged, vec3(1.0 / safe_gamma))), 1.0);
             return;
         }
         
