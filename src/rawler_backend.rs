@@ -19,12 +19,11 @@
 //!   generic error.
 
 use crate::raw_backend::{
-    bayer_raw_channel, camera_matrix_plausible, camera_to_srgb_from_xyz_to_cam,
-    corrected_capture, demosaic_bayer_fixed, libraw_flip_from_tiff_orientation,
-    normalized_as_shot_gains, normalized_as_shot_neutral, orient_camera_native,
-    xyz_to_cam_3x3_from_flat, CameraMatrixSource, CameraRgbData, CfaPattern, CorrectedCfaF32,
-    DECODER_SOURCE_RAWLER, DENSITY_EPSILON, QualityFlag, QualityMask, RawContainerSource,
-    RawMetadata, RawMosaic,
+    bayer_raw_channel, camera_matrix_plausible, camera_to_srgb_from_xyz_to_cam, corrected_capture,
+    demosaic_bayer_fixed, libraw_flip_from_tiff_orientation, normalized_as_shot_gains,
+    normalized_as_shot_neutral, orient_camera_native, xyz_to_cam_3x3_from_flat, CameraMatrixSource,
+    CameraRgbData, CfaPattern, CorrectedCfaF32, QualityFlag, QualityMask, RawContainerSource,
+    RawMetadata, RawMosaic, DECODER_SOURCE_RAWLER, DENSITY_EPSILON,
 };
 use rawler::imgop::xyz::Illuminant;
 use rawler::rawimage::RawPhotometricInterpretation;
@@ -73,8 +72,7 @@ fn decode_metadata_only<P: AsRef<Path>>(path: P) -> Result<rawler::RawImage, Str
         .map_err(|error| format!("rawler could not open {}: {error}", path.as_ref().display()))?;
     // `decode_dummy` is the documented fuzzing entry point and the only
     // public skip-decompression switch in rawler 0.8.
-    rawler::decode_dummy(&source)
-        .map_err(|error| format!("rawler metadata probe failed: {error}"))
+    rawler::decode_dummy(&source).map_err(|error| format!("rawler metadata probe failed: {error}"))
 }
 
 /// Convert a decoded rawler image's colour table into the camera→sRGB matrix
@@ -95,12 +93,17 @@ fn rawler_camera_to_srgb(image: &rawler::RawImage) -> Option<([f32; 9], String)>
         .color_matrix_find_first(preferred)
         // Unstable HashMap order, but a non-standard illuminant recorded in
         // the label beats no characterisation at all.
-        .or_else(|| image.color_matrix.iter().next().map(|(key, value)| (*key, value.clone())))?;
+        .or_else(|| {
+            image
+                .color_matrix
+                .iter()
+                .next()
+                .map(|(key, value)| (*key, value.clone()))
+        })?;
     let flat: Vec<f32> = matrix;
     let xyz_to_cam = xyz_to_cam_3x3_from_flat(&flat)?;
     let camera_to_srgb = camera_to_srgb_from_xyz_to_cam(&xyz_to_cam)?;
-    camera_matrix_plausible(camera_to_srgb)
-        .then_some((camera_to_srgb, format!("{illuminant:?}")))
+    camera_matrix_plausible(camera_to_srgb).then_some((camera_to_srgb, format!("{illuminant:?}")))
 }
 
 // ---------------------------------------------------------------------------
@@ -111,7 +114,8 @@ fn rawler_camera_to_srgb(image: &rawler::RawImage) -> Option<([f32; 9], String)>
 /// shared `demosaic_bayer_fixed` contract.
 pub(crate) fn decode_mosaic<P: AsRef<Path>>(path: P) -> Result<RawMosaic, String> {
     let path = path.as_ref();
-    let image = rawler::decode_file(path).map_err(|error| format!("rawler decode failed: {error}"))?;
+    let image =
+        rawler::decode_file(path).map_err(|error| format!("rawler decode failed: {error}"))?;
     build_mosaic(path, &image)
 }
 
@@ -149,7 +153,9 @@ pub(crate) fn decode_camera_rgb<P: AsRef<Path>>(
         )
     };
     if width > u16::MAX as u32 || height > u16::MAX as u32 {
-        return Err(format!("rawler mosaic {width}x{height} exceeds the 16-bit transport"));
+        return Err(format!(
+            "rawler mosaic {width}x{height} exceeds the 16-bit transport"
+        ));
     }
     let mut data = Vec::with_capacity(pixels.len() * 2);
     for value in &pixels {
@@ -177,15 +183,15 @@ pub(crate) fn decode_camera_rgb<P: AsRef<Path>>(
 /// pixels. rawler's per-illuminant table is already in DNG `ColorMatrix1`
 /// orientation (XYZ→camera), and its white-balance multipliers follow the same
 /// cam_mul convention as LibRaw's, so both tags reuse the existing converters.
-pub(crate) fn read_container_source<P: AsRef<Path>>(
-    path: P,
-) -> Result<RawContainerSource, String> {
+pub(crate) fn read_container_source<P: AsRef<Path>>(path: P) -> Result<RawContainerSource, String> {
     let path = path.as_ref();
     let image =
         rawler::decode_file(path).map_err(|error| format!("rawler decode failed: {error}"))?;
     let mosaic = build_mosaic(path, &image)?;
-    let (make, model) =
-        (image.clean_make.trim().to_string(), image.clean_model.trim().to_string());
+    let (make, model) = (
+        image.clean_make.trim().to_string(),
+        image.clean_model.trim().to_string(),
+    );
     Ok(RawContainerSource {
         xyz_to_camera: rawler_color_matrix_xyz_to_cam(&image),
         as_shot_neutral: normalized_as_shot_neutral(image.wb_coeffs),
@@ -197,13 +203,12 @@ pub(crate) fn read_container_source<P: AsRef<Path>>(
 
 /// rawler's colour table in DNG ColorMatrix1 form (XYZ→camera rows).
 fn rawler_color_matrix_xyz_to_cam(image: &rawler::RawImage) -> Option<[[f32; 3]; 3]> {
-    let (illuminant, matrix) = image
-        .color_matrix_find_first([
-            Illuminant::D65,
-            Illuminant::D50,
-            Illuminant::Daylight,
-            Illuminant::A,
-        ])?;
+    let (illuminant, matrix) = image.color_matrix_find_first([
+        Illuminant::D65,
+        Illuminant::D50,
+        Illuminant::Daylight,
+        Illuminant::A,
+    ])?;
     let _ = illuminant;
     xyz_to_cam_3x3_from_flat(&matrix)
 }
@@ -219,7 +224,9 @@ fn build_mosaic(path: &Path, image: &rawler::RawImage) -> Result<RawMosaic, Stri
     let samples = match &image.data {
         rawler::RawImageData::Integer(samples) => samples.clone(),
         rawler::RawImageData::Float(_) => {
-            return Err("rawler produced floating-point pixels instead of a u16 CFA mosaic".to_string())
+            return Err(
+                "rawler produced floating-point pixels instead of a u16 CFA mosaic".to_string(),
+            )
         }
     };
     let (width, height) = (image.width as u32, image.height as u32);
@@ -268,7 +275,13 @@ fn build_mosaic(path: &Path, image: &rawler::RawImage) -> Result<RawMosaic, Stri
             .as_slice(),
     );
     let white_level = per_channel_levels(
-        image.whitelevel.0.iter().map(|level| *level as f32).collect::<Vec<f32>>().as_slice(),
+        image
+            .whitelevel
+            .0
+            .iter()
+            .map(|level| *level as f32)
+            .collect::<Vec<f32>>()
+            .as_slice(),
     );
 
     // rawler records optical-black rectangles as sensor-area rects, matching
@@ -312,11 +325,7 @@ fn build_mosaic(path: &Path, image: &rawler::RawImage) -> Result<RawMosaic, Stri
         // rawler's decoded RawImage does not expose EXIF exposure metadata.
         iso: None,
         exposure_seconds: None,
-        camera_id: format!(
-            "{}|{}",
-            image.clean_make.trim(),
-            image.clean_model.trim()
-        ),
+        camera_id: format!("{}|{}", image.clean_make.trim(), image.clean_model.trim()),
         decoder_source: DECODER_SOURCE_RAWLER.to_string(),
         decoder_version: RAWLER_VERSION.to_string(),
         capture_conditions: Default::default(),
@@ -378,7 +387,9 @@ fn normalize_camera_native(mosaic: &RawMosaic, gains: [f32; 4]) -> CorrectedCfaF
 
 /// Even-numbered 2×2 box reduction for the Develop proxy. A target sample is
 /// valid only when all four sources are.
-fn downsample_half(source: &crate::raw_backend::CameraNativeTransmissionRgbF32) -> (u32, u32, Vec<f32>) {
+fn downsample_half(
+    source: &crate::raw_backend::CameraNativeTransmissionRgbF32,
+) -> (u32, u32, Vec<f32>) {
     let width = source.width / 2;
     let height = source.height / 2;
     let mut pixels = vec![f32::NAN; (width as usize) * (height as usize) * 3];
@@ -389,7 +400,8 @@ fn downsample_half(source: &crate::raw_backend::CameraNativeTransmissionRgbF32) 
             let mut count = 0usize;
             for dy in 0..2 {
                 for dx in 0..2 {
-                    let source_index = (target_y * 2 + dy) * source.width as usize + target_x * 2 + dx;
+                    let source_index =
+                        (target_y * 2 + dy) * source.width as usize + target_x * 2 + dx;
                     if !source.quality.valid[source_index] {
                         continue;
                     }
@@ -566,9 +578,10 @@ impl TiffEntry {
         let offset = if self.inline() {
             self.value_offset
         } else {
-            base.checked_add(self.pointer(file, little_endian)?).ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, "TIFF pointer overflow")
-            })?
+            base.checked_add(self.pointer(file, little_endian)?)
+                .ok_or_else(|| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, "TIFF pointer overflow")
+                })?
         };
         read_exact_at(file, offset as u64, total as usize)
     }
@@ -681,7 +694,10 @@ fn tiff_ifd0_u16<P: AsRef<Path>>(path: P, tag: u16) -> Option<u16> {
 }
 
 fn ascii_string(bytes: &[u8]) -> String {
-    let end = bytes.iter().position(|byte| *byte == 0).unwrap_or(bytes.len());
+    let end = bytes
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).trim().to_string()
 }
 
@@ -723,14 +739,22 @@ mod tests {
         // The real header is 10 bytes ("Nikon\0\x02\x10\0" + one pad byte)
         // before the embedded TIFF header starts, matching rawler's skip of 10.
         let mut makernote = b"Nikon\0\x02\x10\0\0".to_vec();
-        push_u16(&mut makernote, if little_endian { 0x4949 } else { 0x4D4D }, true);
+        push_u16(
+            &mut makernote,
+            if little_endian { 0x4949 } else { 0x4D4D },
+            true,
+        );
         push_u16(&mut makernote, 42, little_endian);
         push_u32(&mut makernote, 8, little_endian); // mini IFD follows the header
         let mini_ifd_offset = makernote.len() as u32;
         match compression {
             Some(value) if !use_new_tag => {
                 push_u16(&mut makernote, 1, little_endian); // entry count
-                push_u16(&mut makernote, NIKON_MAKERNOTE_NEF_COMPRESSION, little_endian);
+                push_u16(
+                    &mut makernote,
+                    NIKON_MAKERNOTE_NEF_COMPRESSION,
+                    little_endian,
+                );
                 push_u16(&mut makernote, 3, little_endian); // SHORT
                 push_u32(&mut makernote, 1, little_endian); // count
                 push_u16(&mut makernote, value, little_endian); // inline value
@@ -739,16 +763,20 @@ mod tests {
             }
             Some(value) => {
                 push_u16(&mut makernote, 1, little_endian);
-                push_u16(&mut makernote, NIKON_MAKERNOTE_NEF_COMPRESSION_NEW, little_endian);
+                push_u16(
+                    &mut makernote,
+                    NIKON_MAKERNOTE_NEF_COMPRESSION_NEW,
+                    little_endian,
+                );
                 push_u16(&mut makernote, 7, little_endian); // UNDEFINED
                 push_u32(&mut makernote, 12, little_endian); // count
-                // Absolute within the makernote; stored relative to the
-                // embedded TIFF header (which starts 10 bytes in).
+                                                             // Absolute within the makernote; stored relative to the
+                                                             // embedded TIFF header (which starts 10 bytes in).
                 let data_offset = (mini_ifd_offset + 2 + 12 + 4 - 10) as u32;
                 push_u32(&mut makernote, data_offset, little_endian); // pointer
                 push_u32(&mut makernote, 0, little_endian); // next IFD
-                // The 0x0051 blob carries the compression u16 at byte 10.
-                // The pointer above is relative to the mini header (base 10).
+                                                            // The 0x0051 blob carries the compression u16 at byte 10.
+                                                            // The pointer above is relative to the mini header (base 10).
                 let mut blob = vec![0u8; 12];
                 let raw = if little_endian {
                     value.to_le_bytes()
@@ -822,9 +850,21 @@ mod tests {
 
     #[test]
     fn classic_makernote_labels_high_efficiency() {
-        for (value, expected) in [(13u16, Some("HE")), (14, Some("HE*")), (3, None), (10, None)] {
-            let path = temp_file("classic", &nikon_tiff(true, "NIKON CORPORATION", Some(value), false, None));
-            assert_eq!(nikon_high_efficiency_label(&path), expected, "compression {value}");
+        for (value, expected) in [
+            (13u16, Some("HE")),
+            (14, Some("HE*")),
+            (3, None),
+            (10, None),
+        ] {
+            let path = temp_file(
+                "classic",
+                &nikon_tiff(true, "NIKON CORPORATION", Some(value), false, None),
+            );
+            assert_eq!(
+                nikon_high_efficiency_label(&path),
+                expected,
+                "compression {value}"
+            );
             let _ = std::fs::remove_file(&path);
         }
     }
@@ -856,10 +896,7 @@ mod tests {
 
     #[test]
     fn non_nikon_files_are_never_labelled() {
-        let path = temp_file(
-            "canon",
-            &nikon_tiff(true, "Canon", Some(13), false, None),
-        );
+        let path = temp_file("canon", &nikon_tiff(true, "Canon", Some(13), false, None));
         assert_eq!(nikon_high_efficiency_label(&path), None);
         let _ = std::fs::remove_file(&path);
     }
@@ -893,7 +930,8 @@ mod tests {
 
     #[test]
     fn high_efficiency_error_message_names_the_routes_forward() {
-        let message = high_efficiency_error_message("HE*", "LibRaw error 3: Unsupported file format");
+        let message =
+            high_efficiency_error_message("HE*", "LibRaw error 3: Unsupported file format");
         assert!(message.contains("HE*"));
         assert!(message.contains("TicoRAW"));
         assert!(message.contains("Lossless compression"));
@@ -921,7 +959,10 @@ mod tests {
     fn per_channel_levels_broadcast_a_single_entry() {
         assert_eq!(per_channel_levels(&[512.0]), [512.0; 4]);
         assert_eq!(per_channel_levels(&[1.0, 2.0]), [1.0, 2.0, 1.0, 2.0]);
-        assert_eq!(per_channel_levels(&[1.0, 2.0, 3.0, 4.0]), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(
+            per_channel_levels(&[1.0, 2.0, 3.0, 4.0]),
+            [1.0, 2.0, 3.0, 4.0]
+        );
         assert_eq!(per_channel_levels(&[]), [0.0; 4]);
     }
 
@@ -931,7 +972,9 @@ mod tests {
             height: 2,
             samples,
             metadata: RawMetadata {
-                cfa: CfaPattern::Bayer { filters: 0x94949494 },
+                cfa: CfaPattern::Bayer {
+                    filters: 0x94949494,
+                },
                 active_area: [0, 0, 2, 2],
                 black_level: [black; 4],
                 white_level: [white; 4],
@@ -963,7 +1006,8 @@ mod tests {
         assert!((corrected.samples[0] - 0.25).abs() < 1.0e-6);
 
         // A flat black==white table cannot normalise anything.
-        let corrected = normalize_camera_native(&bayer_mosaic(vec![550; 4], 100.0, 100.0), [1.0; 4]);
+        let corrected =
+            normalize_camera_native(&bayer_mosaic(vec![550; 4], 100.0, 100.0), [1.0; 4]);
         assert!(corrected
             .quality
             .flags
@@ -987,7 +1031,10 @@ mod sample_tests {
     use super::*;
 
     fn sample_path(var: &str) -> Option<std::path::PathBuf> {
-        std::env::var(var).ok().filter(|value| !value.is_empty()).map(std::path::PathBuf::from)
+        std::env::var(var)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
     }
 
     #[test]
@@ -996,7 +1043,8 @@ mod sample_tests {
             eprintln!("skipping: set NEXFILM_RAW_SAMPLE_ARW to run the matrix cross-check");
             return;
         };
-        let Some((matrix, illuminant)) = camera_to_srgb_fallback(&path).expect("rawler probe") else {
+        let Some((matrix, illuminant)) = camera_to_srgb_fallback(&path).expect("rawler probe")
+        else {
             panic!("rawler offers no colour matrix for {path:?}");
         };
         eprintln!("rawler matrix ({illuminant}): {matrix:?}");
@@ -1070,7 +1118,9 @@ mod sample_tests {
         )
         .expect("libraw must decode X2D pixels");
         eprintln!("libraw camera matrix: {:?}", libraw.camera_to_srgb);
-        assert!(crate::raw_backend::camera_matrix_missing(libraw.camera_to_srgb));
+        assert!(crate::raw_backend::camera_matrix_missing(
+            libraw.camera_to_srgb
+        ));
 
         // The backfill: rawler's per-camera D65 table, converted to the exact
         // LibRaw convention.
@@ -1105,9 +1155,7 @@ mod sample_tests {
         // matrix tolerance.
         let identity_delta: f32 = matrix
             .iter()
-            .zip([
-                1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0,
-            ])
+            .zip([1.0f32, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
             .map(|(a, b)| (a - b).abs())
             .fold(0.0, f32::max);
         assert!(identity_delta > 0.05, "backfilled matrix is near-identity");
@@ -1125,8 +1173,7 @@ mod sample_tests {
 
         assert_eq!((libraw.width, libraw.height), (rawler.width, rawler.height));
         assert_eq!(
-            libraw.metadata.active_area,
-            rawler.metadata.active_area,
+            libraw.metadata.active_area, rawler.metadata.active_area,
             "active area"
         );
         // CFA phase must match per-site as RGB. The packed words may differ:
@@ -1231,4 +1278,3 @@ mod sample_tests {
         );
     }
 }
-

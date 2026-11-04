@@ -21267,10 +21267,8 @@ mod import_contract_tests {
             "the mask must clamp in the u16 transport: {mask:?}"
         );
         let legacy_estimate = {
-            let mut linear = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(
-                transported.width(),
-                transported.height(),
-            );
+            let mut linear =
+                ImageBuffer::<Rgb<f32>, Vec<f32>>::new(transported.width(), transported.height());
             linear
                 .as_mut()
                 .par_chunks_exact_mut(3)
@@ -21284,20 +21282,13 @@ mod import_contract_tests {
                 });
             let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
             linear.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
-                pixel.copy_from_slice(&apply_linear_matrix(
-                    [pixel[0], pixel[1], pixel[2]],
-                    matrix,
-                ));
+                pixel.copy_from_slice(&apply_linear_matrix([pixel[0], pixel[1], pixel[2]], matrix));
             });
             linear
         };
         let canvas = decode_profiled_tiff_prophoto_estimate(&path_string, u32::MAX).unwrap();
         let mut legacy_divergence = 0.0f32;
-        for (legacy, direct) in legacy_estimate
-            .as_raw()
-            .iter()
-            .zip(canvas.as_raw().iter())
-        {
+        for (legacy, direct) in legacy_estimate.as_raw().iter().zip(canvas.as_raw().iter()) {
             legacy_divergence = legacy_divergence.max((legacy - direct).abs());
         }
         assert!(
@@ -21324,8 +21315,7 @@ mod import_contract_tests {
             // Real-file check: the report TIFF must decode identically on both
             // paths now. Run with
             // NEXFILM_DIAG_FRAME=<tif> cargo test --lib export_estimate_matches
-            let real_canvas =
-                decode_profiled_tiff_prophoto_estimate(&report_frame, 2560).unwrap();
+            let real_canvas = decode_profiled_tiff_prophoto_estimate(&report_frame, 2560).unwrap();
             let real_export = decode_scanner_profiled_estimate_image_buffer(
                 &report_frame,
                 DecodeMode::ExportFull,
@@ -21334,8 +21324,7 @@ mod import_contract_tests {
             )
             .unwrap();
             assert_eq!(real_export.dimensions(), real_canvas.dimensions());
-            for (exported, direct) in real_export.as_raw().iter().zip(real_canvas.as_raw().iter())
-            {
+            for (exported, direct) in real_export.as_raw().iter().zip(real_canvas.as_raw().iter()) {
                 assert!((exported - direct).abs() <= 1.0e-6);
             }
             let mut means = [0.0f64; 3];

@@ -92,7 +92,12 @@ pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
     // holes and image texture break or join their edges. Locate the four long
     // gate edges from robust Sobel projections first, then fit each edge.
     if let Some(points) = detect_from_gradient_projections(&blurred) {
-        return detected_result(refine_to_gate(thumbnail, points), width, height, "detected_gradient");
+        return detected_result(
+            refine_to_gate(thumbnail, points),
+            width,
+            height,
+            "detected_gradient",
+        );
     }
 
     let binary = threshold(&blurred, otsu_level(&blurred));
@@ -319,13 +324,19 @@ fn intersect_lines_f32(
     }
     let delta = [point_b[0] - point_a[0], point_b[1] - point_a[1]];
     let t = (delta[0] * direction_b[1] - delta[1] * direction_b[0]) / denominator;
-    Some([point_a[0] + direction_a[0] * t, point_a[1] + direction_a[1] * t])
+    Some([
+        point_a[0] + direction_a[0] * t,
+        point_a[1] + direction_a[1] * t,
+    ])
 }
 
 fn project_onto_line(point: [f32; 2], line_point: [f32; 2], direction: [f32; 2]) -> [f32; 2] {
     let delta = [point[0] - line_point[0], point[1] - line_point[1]];
     let t = delta[0] * direction[0] + delta[1] * direction[1];
-    [line_point[0] + direction[0] * t, line_point[1] + direction[1] * t]
+    [
+        line_point[0] + direction[0] * t,
+        line_point[1] + direction[1] * t,
+    ]
 }
 
 /// Sample lines parallel to one edge at increasing inward offsets. For each
@@ -413,10 +424,12 @@ fn sample_bilinear(rgb: &image::RgbImage, x: f32, y: f32) -> Option<[f32; 3]> {
         let pixel = rgb.get_pixel(px, py).0;
         [pixel[0] as f32, pixel[1] as f32, pixel[2] as f32]
     };
-    let top: [f32; 3] =
-        std::array::from_fn(|channel| get(x0, y0)[channel] * (1.0 - fx) + get(x1, y0)[channel] * fx);
-    let bottom: [f32; 3] =
-        std::array::from_fn(|channel| get(x0, y1)[channel] * (1.0 - fx) + get(x1, y1)[channel] * fx);
+    let top: [f32; 3] = std::array::from_fn(|channel| {
+        get(x0, y0)[channel] * (1.0 - fx) + get(x1, y0)[channel] * fx
+    });
+    let bottom: [f32; 3] = std::array::from_fn(|channel| {
+        get(x0, y1)[channel] * (1.0 - fx) + get(x1, y1)[channel] * fx
+    });
     Some(std::array::from_fn(|channel| {
         top[channel] * (1.0 - fy) + bottom[channel] * fy
     }))
@@ -1011,12 +1024,20 @@ mod tests {
     fn boundary_scan_thumbnail() -> DynamicImage {
         let mut image = image::RgbImage::from_pixel(400, 260, image::Rgb([244, 244, 244]));
         // Film body: rebate from (40, 30) to (360, 230).
-        draw_filled_rect_mut(&mut image, Rect::at(40, 30).of_size(320, 200), image::Rgb([212, 172, 132]));
+        draw_filled_rect_mut(
+            &mut image,
+            Rect::at(40, 30).of_size(320, 200),
+            image::Rgb([212, 172, 132]),
+        );
         // Picture gate: textured content from (60, 50) to (340, 210).
         for y in 50..210 {
             for x in 60..340 {
                 let value = ((x * 5 + y * 9) % 97) as u8;
-                image.put_pixel(x, y, image::Rgb([40 + value, 60 + value / 2, 80 + value / 3]));
+                image.put_pixel(
+                    x,
+                    y,
+                    image::Rgb([40 + value, 60 + value / 2, 80 + value / 3]),
+                );
             }
         }
         DynamicImage::ImageRgb8(image)
@@ -1055,7 +1076,11 @@ mod tests {
         // one uniform colour: there is no rebate band to walk through, so every
         // edge must keep its detected line.
         let mut image = image::RgbImage::from_pixel(400, 260, image::Rgb([244, 244, 244]));
-        draw_filled_rect_mut(&mut image, Rect::at(60, 50).of_size(280, 160), image::Rgb([190, 150, 120]));
+        draw_filled_rect_mut(
+            &mut image,
+            Rect::at(60, 50).of_size(280, 160),
+            image::Rgb([190, 150, 120]),
+        );
         let thumbnail = DynamicImage::ImageRgb8(image);
         let gate = [
             Point::new(60, 50),

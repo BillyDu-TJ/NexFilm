@@ -854,9 +854,15 @@ pub(crate) const LIBRAW_XYZ_TO_SRGB: [[f32; 3]; 3] = [
 /// matrix that cannot be inverted cannot back any conversion.
 pub(crate) fn invert_3x3(matrix: &[[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
     let [a, b, c, d, e, f, g, h, i] = [
-        matrix[0][0], matrix[0][1], matrix[0][2],
-        matrix[1][0], matrix[1][1], matrix[1][2],
-        matrix[2][0], matrix[2][1], matrix[2][2],
+        matrix[0][0],
+        matrix[0][1],
+        matrix[0][2],
+        matrix[1][0],
+        matrix[1][1],
+        matrix[1][2],
+        matrix[2][0],
+        matrix[2][1],
+        matrix[2][2],
     ];
     let determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
     if !determinant.is_finite() || determinant.abs() <= 1.0e-9 {
@@ -864,9 +870,21 @@ pub(crate) fn invert_3x3(matrix: &[[f32; 3]; 3]) -> Option<[[f32; 3]; 3]> {
     }
     let scale = 1.0 / determinant;
     let inverse = [
-        [(e * i - f * h) * scale, (c * h - b * i) * scale, (b * f - c * e) * scale],
-        [(f * g - d * i) * scale, (a * i - c * g) * scale, (c * d - a * f) * scale],
-        [(d * h - e * g) * scale, (b * g - a * h) * scale, (a * e - b * d) * scale],
+        [
+            (e * i - f * h) * scale,
+            (c * h - b * i) * scale,
+            (b * f - c * e) * scale,
+        ],
+        [
+            (f * g - d * i) * scale,
+            (a * i - c * g) * scale,
+            (c * d - a * f) * scale,
+        ],
+        [
+            (d * h - e * g) * scale,
+            (b * g - a * h) * scale,
+            (a * e - b * d) * scale,
+        ],
     ];
     inverse
         .iter()
@@ -942,7 +960,9 @@ pub(crate) fn xyz_to_cam_3x3_from_flat(flat: &[f32]) -> Option<[[f32; 3]; 3]> {
 /// that survives it is trusted, anything else keeps the LibRaw identity and
 /// the existing diagnostics.
 pub(crate) fn camera_matrix_plausible(camera_to_srgb: [f32; 9]) -> bool {
-    camera_to_srgb.iter().all(|value| value.is_finite() && value.abs() <= 8.0)
+    camera_to_srgb
+        .iter()
+        .all(|value| value.is_finite() && value.abs() <= 8.0)
         && camera_to_srgb
             .chunks_exact(3)
             .map(|row| row.iter().sum::<f32>())
@@ -966,14 +986,14 @@ pub(crate) enum CameraMatrixSource {
 impl CameraMatrixSource {
     pub(crate) fn label(&self) -> String {
         match self {
-            CameraMatrixSource::LibRaw => format!(
-                "{} {}",
-                DECODER_SOURCE_LIBRAW,
-                RawProcessor::version()
-            ),
+            CameraMatrixSource::LibRaw => {
+                format!("{} {}", DECODER_SOURCE_LIBRAW, RawProcessor::version())
+            }
             CameraMatrixSource::RawlerFallback(illuminant) => format!(
                 "{} {} ({})",
-                DECODER_SOURCE_RAWLER, crate::rawler_backend::RAWLER_VERSION, illuminant
+                DECODER_SOURCE_RAWLER,
+                crate::rawler_backend::RAWLER_VERSION,
+                illuminant
             ),
             CameraMatrixSource::Unresolved => "none (sensor-native)".to_string(),
         }
@@ -1000,7 +1020,10 @@ pub(crate) struct CameraRgbData {
 
 #[cfg(not(target_os = "macos"))]
 mod non_macos {
-    use super::{CameraRgbData, CameraMatrixSource, CaptureConditions, CfaPattern, DECODER_SOURCE_LIBRAW, RawMetadata, RawMosaic};
+    use super::{
+        CameraMatrixSource, CameraRgbData, CaptureConditions, CfaPattern, RawMetadata, RawMosaic,
+        DECODER_SOURCE_LIBRAW,
+    };
     pub(crate) use rawlib::{DecodeOptions, ImageFormat, RawProcessor};
     use std::ffi::CStr;
     #[cfg(not(windows))]
@@ -1429,7 +1452,10 @@ pub(crate) use non_macos::{
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{CameraRgbData, CameraMatrixSource, CaptureConditions, CfaPattern, DECODER_SOURCE_LIBRAW, RawMetadata, RawMosaic};
+    use super::{
+        CameraMatrixSource, CameraRgbData, CaptureConditions, CfaPattern, RawMetadata, RawMosaic,
+        DECODER_SOURCE_LIBRAW,
+    };
     use rsraw_sys as ffi;
     use std::ffi::{CStr, CString};
     use std::fmt;
@@ -1925,9 +1951,8 @@ pub(crate) use macos::{
 /// error untouched; the check reads only TIFF makernotes and never runs for a
 /// file any backend decoded successfully.
 fn nikon_he_failure(path: &Path, libraw_error: &str) -> Option<String> {
-    crate::rawler_backend::nikon_high_efficiency_label(path).map(|label| {
-        crate::rawler_backend::high_efficiency_error_message(label, libraw_error)
-    })
+    crate::rawler_backend::nikon_high_efficiency_label(path)
+        .map(|label| crate::rawler_backend::high_efficiency_error_message(label, libraw_error))
 }
 
 /// The mosaic entry point: LibRaw first, rawler pixels only when LibRaw
@@ -2058,7 +2083,16 @@ mod contract_tests {
     /// rawler fallback must feed orient_camera_native identical codes.
     #[test]
     fn tiff_orientation_maps_onto_libraw_flip_bitmask() {
-        let expected = [(1u16, 0u16), (2, 1), (3, 3), (4, 2), (5, 4), (6, 6), (7, 7), (8, 5)];
+        let expected = [
+            (1u16, 0u16),
+            (2, 1),
+            (3, 3),
+            (4, 2),
+            (5, 4),
+            (6, 6),
+            (7, 7),
+            (8, 5),
+        ];
         for (orientation, flip) in expected {
             assert_eq!(libraw_flip_from_tiff_orientation(orientation), flip);
             assert_eq!(libraw_flip_from_tiff_orientation(orientation + 8), flip);
@@ -2248,7 +2282,9 @@ mod contract_tests {
         let mut cam_rgb = [[0.0f32; 3]; 3];
         for row in 0..3 {
             for column in 0..3 {
-                cam_rgb[row][column] = (0..3).map(|k| xyz_to_cam[row][k] * LIBRAW_XYZ_TO_SRGB[k][column]).sum();
+                cam_rgb[row][column] = (0..3)
+                    .map(|k| xyz_to_cam[row][k] * LIBRAW_XYZ_TO_SRGB[k][column])
+                    .sum();
             }
             let sum: f32 = cam_rgb[row].iter().sum();
             for cell in cam_rgb[row].iter_mut() {
@@ -2481,4 +2517,3 @@ mod contract_tests {
         assert!(error.contains("Bayer"));
     }
 }
-
