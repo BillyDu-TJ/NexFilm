@@ -2516,4 +2516,348 @@ mod contract_tests {
             .expect_err("X-Trans must not use the temporary Bayer demosaic");
         assert!(error.contains("Bayer"));
     }
+
+    // ------------------------------------------------------------------
+    // v1.2 decode matrix (docs/v1.2-decode-matrix.md). The harness runs each
+    // sample through both dual-source entry points and records objective
+    // numbers only — the curated table and the waiting-for-sample rows live
+    // in the document.
+    // ------------------------------------------------------------------
+
+    struct MatrixSample {
+        label: &'static str,
+        relative_path: &'static str,
+        provenance: &'static str,
+    }
+
+    /// The on-disk sample set. Rows whose files have not been provided yet
+    /// (Nikon Z f HE/HE* from issue #6, Nikon Z f lossless, Hasselblad X2D
+    /// 3FR) are NOT measured here — they stay waiting-for-sample entries in
+    /// the document, and real files can be appended at run time through
+    /// `NEXFILM_DECODE_MATRIX_EXTRA` (semicolon-separated paths). Never
+    /// synthesize a stand-in for a missing model.
+    const DECODE_MATRIX_SAMPLES: &[MatrixSample] = &[
+        MatrixSample {
+            label: "nikon-d810-lossless",
+            relative_path: r"test_picture\尼康nef_raw\_DSC7333.NEF",
+            provenance: "owner sample set (M2 cross-check camera)",
+        },
+        MatrixSample {
+            label: "fuji-gfx50s-raf",
+            relative_path: r"test_picture\富士raf\Capture One Catalog1942.raf",
+            provenance: "owner sample set (C1 catalogue)",
+        },
+        MatrixSample {
+            label: "fuji-raf-dscf0895",
+            relative_path: r"test_picture\DSCF0895.RAF",
+            provenance: "owner sample set",
+        },
+        MatrixSample {
+            label: "fuji-raf-pfcs001",
+            relative_path: r"test_picture\PFCS001.raf",
+            provenance: "owner sample set",
+        },
+        MatrixSample {
+            label: "hasselblad-cfv100c-fff",
+            relative_path: r"test_picture\哈苏fff\任务 _0866.fff",
+            provenance: "owner sample set (CFV 100C, same 100MP sensor family as X2D)",
+        },
+        MatrixSample {
+            label: "hasselblad-fff-invertible",
+            relative_path: r"test_picture\哈苏fff\1 001-可以反相.fff",
+            provenance: "owner sample set (working counterpart of the not-invertible file)",
+        },
+        MatrixSample {
+            label: "hasselblad-fff-not-invertible",
+            relative_path: r"test_picture\哈苏fff\无法反相.fff",
+            provenance: "owner-labelled failure sample 2026-06 (cannot invert)",
+        },
+        MatrixSample {
+            label: "hasselblad-fff-image001",
+            relative_path: r"test_picture\图像 001.fff",
+            provenance: "owner sample set",
+        },
+        MatrixSample {
+            label: "epson-v700-dng",
+            relative_path: r"test_picture\爱普森dng\6400DPI\260714_PORTRA 400_V700_6400_raw0005.dng",
+            provenance: "owner sample set (scanner DNG)",
+        },
+        MatrixSample {
+            label: "plustek-8200i-dng",
+            relative_path: r"test_picture\raw0029.dng",
+            provenance: "owner sample set (scanner DNG)",
+        },
+    ];
+
+    /// Models named by the matrix but not on disk yet; printed so every run
+    /// shows the gap instead of silently omitting the rows.
+    const DECODE_MATRIX_WAITING: &[(&str, &str)] = &[
+        (
+            "nikon-zf-he",
+            "GitHub issue #6 (Z f HE* colour bars); sample not provided",
+        ),
+        (
+            "nikon-zf-lossless",
+            "roadmap §0.2 mandatory sample; not on disk",
+        ),
+        (
+            "hasselblad-x2d-3fr",
+            "roadmap §0.2 mandatory matrix-backfill case; not on disk",
+        ),
+    ];
+
+    /// Objective banding detector over the decoded camera-RGB buffer. Issue
+    /// #6's artefact is *colour* bars, so the detector works on the
+    /// channel-differential step between adjacent row (or column) means: a
+    /// luminance edge (horizon, frame gap on a photographed contact sheet)
+    /// moves R, G and B together and cancels, while decode bars leave a large
+    /// differential. A step is chromatic when it exceeds 20 × the profile's
+    /// own p95 roughness plus a fixed floor of 2% of full scale; `banded`
+    /// needs at least four such chromatic steps (a single step can be real
+    /// scene content, a bar field has many). The numbers land in the JSON so
+    /// the document can show the evidence, not just the flag.
+    fn banding_report(width: usize, height: usize, samples: &[u16]) -> serde_json::Value {
+        let mut row_sums = vec![[0f64; 3]; height];
+        let mut col_sums = vec![[0f64; 3]; width];
+        for (index, sample) in samples.chunks_exact(3).enumerate() {
+            let row = &mut row_sums[index / width];
+            let col = &mut col_sums[index % width];
+            for channel in 0..3 {
+                row[channel] += f64::from(sample[channel]);
+                col[channel] += f64::from(sample[channel]);
+            }
+        }
+        let row_means: Vec<[f64; 3]> = row_sums
+            .iter()
+            .map(|sums| sums.map(|value| value / width as f64))
+            .collect();
+        let col_means: Vec<[f64; 3]> = col_sums
+            .iter()
+            .map(|sums| sums.map(|value| value / height as f64))
+            .collect();
+        let chroma_step = |pair: &[[f64; 3]]| {
+            let delta = [
+                pair[1][0] - pair[0][0],
+                pair[1][1] - pair[0][1],
+                pair[1][2] - pair[0][2],
+            ];
+            (delta[0] - delta[1])
+                .abs()
+                .max((delta[1] - delta[2]).abs())
+                .max((delta[0] - delta[2]).abs())
+        };
+        let axis = |means: &[[f64; 3]]| {
+            let mut steps: Vec<f64> = means.windows(2).map(chroma_step).collect();
+            let max = steps.iter().copied().fold(0.0f64, f64::max);
+            steps.sort_by(f64::total_cmp);
+            let p95 = steps
+                .get((steps.len() as f64 * 0.95) as usize)
+                .copied()
+                .unwrap_or(0.0);
+            let floor = 0.02 * f64::from(u16::MAX);
+            let threshold = 20.0 * p95 + floor;
+            let hits = steps.iter().filter(|step| **step > threshold).count();
+            serde_json::json!({
+                "max_chroma_step": max,
+                "p95_chroma_step": p95,
+                "threshold": threshold,
+                "chromatic_steps": hits,
+                "banded": hits >= 4,
+            })
+        };
+        let halves = |means: &[[f64; 3]]| {
+            let mean_of = |slice: &[[f64; 3]]| {
+                let total = slice.iter().fold([0f64; 3], |acc, value| {
+                    [acc[0] + value[0], acc[1] + value[1], acc[2] + value[2]]
+                });
+                total.map(|value| value / slice.len().max(1) as f64)
+            };
+            let (top, bottom) = means.split_at(means.len() / 2);
+            let green_dominance = |means: [f64; 3]| means[1] / (means[0] + means[2]).max(1.0e-9);
+            let top_mean = mean_of(top);
+            let bottom_mean = mean_of(bottom);
+            serde_json::json!({
+                "top": top_mean,
+                "bottom": bottom_mean,
+                "top_green_over_red_blue": green_dominance(top_mean),
+                "bottom_green_over_red_blue": green_dominance(bottom_mean),
+            })
+        };
+        serde_json::json!({
+            "rows": axis(&row_means),
+            "cols": axis(&col_means),
+            "row_halves": halves(&row_means),
+        })
+    }
+
+    /// Manual decode-matrix diagnostic: every sample goes through the two
+    /// dual-source entry points (`decode_raw_mosaic` for the mosaic
+    /// metadata, `extract_camera_rgb_with_policy` for the developed camera
+    /// RGB) and the raw numbers land in
+    /// `target/diag-decode-matrix/matrix-<tag>.json`. `NEXFILM_DECODE_MATRIX_TAG`
+    /// names the run (`before`/`after` around the LibRaw unification);
+    /// `NEXFILM_DECODE_MATRIX_EXTRA` appends real files (semicolon-separated)
+    /// when waiting-for-sample models are provided. The decode uses the
+    /// production options at half size purely to bound memory — matrix
+    /// values, black levels and success/failure do not depend on it.
+    #[test]
+    #[ignore = "manual decode matrix diagnostic; reads local samples"]
+    fn decode_matrix_diagnostic() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let tag = std::env::var("NEXFILM_DECODE_MATRIX_TAG").unwrap_or_default();
+        let tag = if tag.is_empty() {
+            "run".to_string()
+        } else {
+            tag
+        };
+        let out_dir = root.join("target").join("diag-decode-matrix");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let options = DecodeOptions {
+            half_size: true,
+            demosaic_quality: 3,
+            output_bps: 16,
+            no_auto_bright: true,
+            output_color: 0,
+            linear_gamma: true,
+            use_camera_wb: false,
+        };
+
+        let mut samples: Vec<(String, std::path::PathBuf, String)> = DECODE_MATRIX_SAMPLES
+            .iter()
+            .map(|sample| {
+                (
+                    sample.label.to_string(),
+                    root.join(sample.relative_path),
+                    sample.provenance.to_string(),
+                )
+            })
+            .collect();
+        if let Ok(extra) = std::env::var("NEXFILM_DECODE_MATRIX_EXTRA") {
+            for path in extra.split(';').filter(|value| !value.is_empty()) {
+                let label = std::path::Path::new(path)
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "extra".to_string());
+                samples.push((
+                    format!("extra:{label}"),
+                    std::path::PathBuf::from(path),
+                    "NEXFILM_DECODE_MATRIX_EXTRA".to_string(),
+                ));
+            }
+        }
+
+        let mut rows = Vec::new();
+        for (label, path, provenance) in &samples {
+            if !path.is_file() {
+                println!("[MATRIX] {label}: sample file missing, skipped");
+                continue;
+            }
+            let mosaic = decode_raw_mosaic(path);
+            let camera = extract_camera_rgb_with_policy(
+                path,
+                &options,
+                WhiteBalancePolicy::NormalizedAsShot,
+            );
+            let mosaic_json = match &mosaic {
+                Ok(mosaic) => serde_json::json!({
+                    "ok": true,
+                    "camera_id": mosaic.metadata.camera_id,
+                    "decoder": mosaic.metadata.decoder_id(),
+                    "black_level": mosaic.metadata.black_level,
+                    "white_level": mosaic.metadata.white_level,
+                    "active_area": mosaic.metadata.active_area,
+                }),
+                Err(error) => serde_json::json!({ "ok": false, "error": error }),
+            };
+            // The pixel decoder identity: the mosaic and camera-RGB entry
+            // points share the same LibRaw-unpack trigger, so a rawler mosaic
+            // means the pixels came from the M2 fallback.
+            let pixels_decoder = mosaic
+                .as_ref()
+                .map(|value| value.metadata.decoder_source.clone())
+                .ok();
+            let camera_json = match &camera {
+                Ok(decoded) => {
+                    let matrix_kind = match &decoded.camera_to_srgb_source {
+                        CameraMatrixSource::LibRaw => "libraw".to_string(),
+                        CameraMatrixSource::RawlerFallback(illuminant) => {
+                            format!("rawler-fallback:{illuminant}")
+                        }
+                        CameraMatrixSource::Unresolved => "unresolved".to_string(),
+                    };
+                    serde_json::json!({
+                        "ok": true,
+                        "width": decoded.width,
+                        "height": decoded.height,
+                        "bits": decoded.bits,
+                        "colors": decoded.colors,
+                        "matrix": decoded.camera_to_srgb,
+                        "matrix_source": matrix_kind,
+                        "pixels_decoder": pixels_decoder,
+                    })
+                }
+                Err(error) => serde_json::json!({ "ok": false, "error": error }),
+            };
+            let banding_json = camera.as_ref().ok().map(|decoded| {
+                if decoded.colors == 3 && decoded.bits == 16 {
+                    let samples: Vec<u16> = decoded
+                        .data
+                        .chunks_exact(2)
+                        .map(|bytes| u16::from_le_bytes([bytes[0], bytes[1]]))
+                        .collect();
+                    banding_report(decoded.width as usize, decoded.height as usize, &samples)
+                } else {
+                    serde_json::json!({
+                        "skipped": format!("unexpected output: {} channels at {} bits", decoded.colors, decoded.bits),
+                    })
+                }
+            });
+            let banded = banding_json
+                .as_ref()
+                .and_then(|value| value.get("rows"))
+                .and_then(|value| value.get("banded"))
+                .and_then(|value| value.as_bool())
+                .or_else(|| {
+                    banding_json
+                        .as_ref()
+                        .and_then(|value| value.get("cols"))
+                        .and_then(|value| value.get("banded"))
+                        .and_then(|value| value.as_bool())
+                });
+            println!(
+                "[MATRIX] {label}: mosaic={} camera={} matrix={:?} banding={:?}",
+                mosaic.is_ok(),
+                camera.is_ok(),
+                camera
+                    .as_ref()
+                    .map(|decoded| decoded.camera_to_srgb_source.label()),
+                banded,
+            );
+            rows.push(serde_json::json!({
+                "label": label,
+                "path": path.to_string_lossy(),
+                "provenance": provenance,
+                "mosaic": mosaic_json,
+                "camera": camera_json,
+                "banding": banding_json,
+            }));
+        }
+        for (label, reason) in DECODE_MATRIX_WAITING {
+            println!("[MATRIX] {label}: waiting for sample ({reason})");
+            rows.push(serde_json::json!({
+                "label": label,
+                "waiting_for_sample": reason,
+            }));
+        }
+        let report = serde_json::json!({
+            "tag": tag,
+            "platform": std::env::consts::OS,
+            "libraw_version": RawProcessor::version(),
+            "rawler_version": crate::rawler_backend::RAWLER_VERSION,
+            "rows": rows,
+        });
+        let out_path = out_dir.join(format!("matrix-{tag}.json"));
+        std::fs::write(&out_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+        println!("[MATRIX] wrote {}", out_path.display());
+    }
 }
