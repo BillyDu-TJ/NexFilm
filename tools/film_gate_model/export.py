@@ -2,7 +2,8 @@
 
   python export.py <verifier.pt> ../../src/film_border_verifier_weights.rs
 
-The box scorer ensemble is read from box_scorer_<fold>.pt next to verifier_<fold>.pt.
+The box scorer ensemble and the strip side network are read from box_scorer_<fold>.pt
+and strip_<fold>.pt next to verifier_<fold>.pt.
 """
 import os
 import sys
@@ -56,6 +57,15 @@ def main():
         rust_array("BOX_SCORER_FC2_W", stack("o.weight")),
         rust_array("BOX_SCORER_FC2_B", stack("o.bias")),
     ]
+    strip = torch.load(os.path.join(folder, name.replace("verifier_", "strip_", 1)), map_location="cpu")
+    for net in ("along",):
+        layers = sorted({int(key.split(".")[2]) for key in strip if key.startswith(net + ".")})
+        weights = torch.cat([strip["%s.layers.%d.weight" % (net, i)].reshape(-1) for i in layers])
+        biases = torch.cat([strip["%s.layers.%d.bias" % (net, i)].reshape(-1) for i in layers])
+        parts += [
+            rust_array("STRIP_%s_W" % net.upper(), weights),
+            rust_array("STRIP_%s_B" % net.upper(), biases),
+        ]
     open(sys.argv[2], "w").write("\n".join(parts))
 
 

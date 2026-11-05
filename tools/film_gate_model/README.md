@@ -1,6 +1,6 @@
 # film_gate_model
 
-Training for the two small networks in the film-area detector. No images,
+Training for the small networks in the film-area detector. No images,
 labels or checkpoints live in this repository: you bring your own labelled
 captures.
 
@@ -13,7 +13,12 @@ captures.
   scale with a box marked on it. When no box passes the verifier it picks the box
   returned with Low confidence. It never changes a High result.
 
-Both forward passes are hand-written Rust in `src/film_border.rs`. `export.py`
+* **Strip side network** (8,594 parameters): used only when two sprocket rows are
+  found. It reads a 1-D profile along the strip and scores every position as a
+  short side of the picture. The long sides come from the hole-row geometry.
+  Frames without sprocket rows, such as 120, never reach it.
+
+All forward passes are hand-written Rust in `src/film_border.rs`. `export.py`
 writes the weights to `src/film_border_verifier_weights.rs`.
 
 ## Data layout
@@ -39,8 +44,10 @@ cd tools/film_gate_eval && cargo build --release
 cd ../film_gate_model
 python train.py --work $W verifier --pool $W/runs/pool.jsonl --norm base --slabs 2
 python train.py --work $W box_scorer --pool $W/runs/box_pool.jsonl
+cd ../film_gate_eval && ./target/release/strip_dump <labelled_135_manifest.json> $W/runs/strip.jsonl && cd ../film_gate_model
+python strip.py --work $W $W/runs/strip.jsonl --seed 0
 python export.py $W/models/verifier_ALL.pt ../../src/film_border_verifier_weights.rs
 ```
 
-`export.py` reads `box_scorer_<fold>.pt` from next to `verifier_<fold>.pt`.
+`export.py` reads `box_scorer_<fold>.pt` and `strip_<fold>.pt` from next to `verifier_<fold>.pt`.
 Python needs torch, numpy and Pillow.

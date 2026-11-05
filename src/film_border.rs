@@ -90,6 +90,14 @@ pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
     // inside the picture. A box neither of them can vouch for is still a far
     // better starting point than the gradient result, so it is handed back
     // with Low confidence.
+    // A 135 strip's picture comes from its hole rows. Unless the verifier
+    // vouches for it, a High from the searches below still goes first.
+    let strip = detect_strip_picture(thumbnail);
+    if let Some(detection) = &strip {
+        if detection.confidence == DetectionConfidence::High {
+            return detection.clone();
+        }
+    }
     let gate = detect_gate_box(thumbnail);
     if let Some((gate, true)) = &gate {
         return gate_detection(gate, DetectionConfidence::High);
@@ -100,6 +108,9 @@ pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
             || surround_is_uniform(thumbnail, &gradient))
     {
         return gradient;
+    }
+    if let Some(detection) = strip {
+        return detection;
     }
     match &gate {
         Some((gate, _)) => gate_detection(gate, DetectionConfidence::Low),
@@ -1239,6 +1250,93 @@ mod tests {
         let best = ranked_gate_quads(&image)[0];
         assert!((best[0][0] - 120.0).abs() <= 3.0 && (best[0][1] - 72.0).abs() <= 3.0, "{best:?}");
         assert!((best[2][0] - 545.0).abs() <= 3.0 && (best[2][1] - 355.0).abs() <= 3.0, "{best:?}");
+    }
+
+    #[test]
+    fn strip_view_turns_the_strip_along_x() {
+        let image = sprocket_strip();
+        let view = strip_view(&image).expect("a 135 strip");
+        assert!(!view.transposed && view.along == 640 && view.across == 424);
+        assert!((view.near - 46.0).abs() <= 2.0 && (view.far - 378.0).abs() <= 2.0);
+        assert_eq!(view.quad(10.0, 20.0, 30.0, 40.0), [[10.0, 30.0], [20.0, 30.0], [20.0, 40.0], [10.0, 40.0]]);
+
+        // A strip running down the image: its start is the image's top, and
+        // the quad comes back in image order.
+        let upright = image::imageops::rotate90(&image);
+        let view = strip_view(&upright).expect("a 135 strip");
+        assert!(view.transposed && view.along == 640 && view.across == 424);
+        assert_eq!(view.quad(10.0, 20.0, 30.0, 40.0), [[30.0, 10.0], [40.0, 10.0], [40.0, 20.0], [30.0, 20.0]]);
+
+        // No hole rows (120), or rows too close together to frame a picture.
+        let mut strip = image::RgbImage::from_pixel(640, 424, image::Rgb([200, 140, 90]));
+        draw_filled_rect_mut(&mut strip, Rect::at(130, 20).of_size(380, 384), image::Rgb([70, 50, 40]));
+        assert!(strip_view(&strip).is_none());
+        let rows = [
+            SprocketRow { along_x: true, centre: 100.0 },
+            SprocketRow { along_x: true, centre: 200.0 },
+        ];
+        assert!(StripView::new(&image, &rows).is_none());
+    }
+
+    #[test]
+    fn conv1d_pads_like_pytorch() {
+        let input = [1.0, 2.0, 3.0, 4.0, 5.0];
+        // The first tap reads `dilation * 2` samples back, zero before the start.
+        assert_eq!(conv1d(&input, 1, 5, 1, &[1.0, 0.0, 0.0, 0.0, 0.0], &[0.5], false), vec![0.5, 0.5, 1.5, 2.5, 3.5]);
+        assert_eq!(conv1d(&input, 1, 5, 2, &[0.0, 0.0, 0.0, 0.0, 1.0], &[0.0], false), vec![5.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(conv1d(&input, 1, 5, 1, &[0.0, 0.0, -1.0, 0.0, 0.0], &[2.5], true), vec![1.5, 0.5, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn side_pair_keeps_to_the_format_width() {
+        let mut logits = vec![0.0f32; 40];
+        logits[3] = 5.0;
+        // The end side: a peak at the right distance, a stronger one too far.
+        logits[20 + 11] = 4.0;
+        logits[20 + 18] = 9.0;
+        let (start, end, _) = best_side_pair(&logits, 7.0, 9.0).unwrap();
+        assert_eq!((start, end), (3.0, 11.0));
+        // A peak leaning to one neighbour moves the side by a fraction of a pixel.
+        logits[20 + 12] = 3.0;
+        let (_, end, _) = best_side_pair(&logits, 7.0, 9.0).unwrap();
+        assert!(end > 11.0 && end < 11.5, "{end}");
+        assert!(best_side_pair(&logits, 30.0, 35.0).is_none());
+    }
+
+    #[test]
+    fn long_sides_snap_past_the_holes_onto_the_picture() {
+        // A 1:1 picture run up into the upper hole row: the holes are cut
+        // through it and stay bright, but the film between them is picture.
+        let mut image = sprocket_strip();
+        draw_filled_rect_mut(&mut image, Rect::at(150, 40).of_size(330, 330), image::Rgb([70, 50, 40]));
+        for x in (60..580).step_by(56) {
+            draw_filled_rect_mut(&mut image, Rect::at(x, 30).of_size(22, 32), image::Rgb([245, 245, 245]));
+        }
+        let view = strip_view(&image).expect("a 135 strip");
+        let luma = view.across_luma(150.0, 480.0);
+        assert_eq!(snap_to_step(&luma, 50.0, 12.0, true).0, 40.0);
+        assert_eq!(snap_to_step(&luma, 365.0, 12.0, false).0, 370.0);
+        // The 24 mm format's sides find no step in the picture: the 1:1 format wins.
+        let middle = (view.near + view.far) / 2.0;
+        let radius = STRIP_SNAP_RADIUS * view.row_gap();
+        let step_at = |share: f64| snap_to_step(&luma, middle - share * view.row_gap() / 2.0, radius, true).1;
+        assert!(step_at(1.0) > step_at(0.86) + 50.0);
+    }
+
+    #[test]
+    fn strips_take_the_strip_search_and_others_do_not() {
+        let image = DynamicImage::ImageRgb8(sprocket_strip());
+        let detection = detect_film_border(&image);
+        assert_eq!(detection.status, "detected_strip");
+        let expected = [[120.0, 72.0], [545.0, 72.0], [545.0, 355.0], [120.0, 355.0]];
+        for (point, expected) in detection.points.iter().zip(expected) {
+            assert!((point[0] * 640.0 - expected[0]).abs() <= 6.0, "{:?}", detection.points);
+            assert!((point[1] * 424.0 - expected[1]).abs() <= 6.0, "{:?}", detection.points);
+        }
+
+        let mut strip = image::RgbImage::from_pixel(640, 424, image::Rgb([200, 140, 90]));
+        draw_filled_rect_mut(&mut strip, Rect::at(130, 20).of_size(380, 384), image::Rgb([70, 50, 40]));
+        assert_ne!(detect_film_border(&DynamicImage::ImageRgb8(strip)).status, "detected_strip");
     }
 
     #[test]
@@ -2695,4 +2793,380 @@ fn max_pool2_channels_last(input: &[f32], channels: usize, rows: usize, cols: us
         }
     }
     pooled
+}
+
+// ---------------------------------------------------------------------------
+// 135 strips: the sprocket rows fix the strip's direction and the band the
+// picture lies in, so every side of the picture is a position along one of two
+// 1-D profiles of the strip. A small 1-D network (trained with
+// tools/film_gate_model/strip.py) scores every position along the strip as
+// the start or end of the picture, the hard sides: a frame gap may be faint and
+// the picture may hold stronger lines. The long sides follow from the hole rows.
+
+/// Feature channels of a strip profile.
+pub const STRIP_CHANNELS: usize = 8;
+/// Hidden channels, kernel and dilations of the side network.
+const STRIP_WIDTH: usize = 16;
+const STRIP_KERNEL: usize = 5;
+const STRIP_DILATIONS: [usize; 8] = [1, 2, 4, 8, 16, 32, 64, 1];
+/// Hole rows closer than this share of the image's cross size are one edge.
+const STRIP_MIN_ROW_GAP: f64 = 0.4;
+/// Share of the hole-row distance left out at each side of the along profile's band.
+const STRIP_BAND_INSET: f64 = 0.25;
+/// Share of the picture length left out at each end of a line across the strip.
+const STRIP_SPAN_TRIM: f64 = 0.15;
+/// Picture height as a share of the hole-row distance, and width over height,
+/// of the 135 formats: 24 x 36 mm between the rows, and 1:1 run over them.
+const STRIP_FORMATS: [(f64, f64); 2] = [(0.86, 1.5), (1.0, 1.0)];
+/// Quantile of a line across the strip that misses the holes: they take up
+/// under half of a hole row.
+const STRIP_HOLE_QUANTILE: f64 = 0.3;
+/// Samples on each side of a step when a long side is snapped onto it.
+const STRIP_SNAP_WINDOW: usize = 3;
+/// How far a long side may lie from its format's place, in hole-row distances.
+const STRIP_SNAP_RADIUS: f64 = 0.04;
+/// Relative play of a picture's width around its format's.
+const STRIP_WIDTH_TOLERANCE: f64 = 0.012;
+
+/// A 135 strip turned so that it runs along x: `rgb` is `along` x `across`
+/// pixels, row-major, and `near` / `far` are the hole-row centres across it.
+#[doc(hidden)]
+pub struct StripView {
+    pub transposed: bool,
+    pub along: usize,
+    pub across: usize,
+    pub near: f64,
+    pub far: f64,
+    rgb: Vec<[f32; 3]>,
+}
+
+impl StripView {
+    /// The strip of a working image with two hole rows far enough apart.
+    fn new(working: &image::RgbImage, rows: &[SprocketRow]) -> Option<Self> {
+        let (width, height) = (working.width() as usize, working.height() as usize);
+        let along_x = [true, false]
+            .into_iter()
+            .find(|axis| rows.iter().filter(|row| row.along_x == *axis).count() >= 2)?;
+        let centres: Vec<f64> = rows.iter().filter(|row| row.along_x == along_x).map(|row| row.centre).collect();
+        let near = centres.iter().copied().fold(f64::MAX, f64::min);
+        let far = centres.iter().copied().fold(f64::MIN, f64::max);
+        let (along, across) = if along_x { (width, height) } else { (height, width) };
+        if far - near < STRIP_MIN_ROW_GAP * across as f64 {
+            return None;
+        }
+        let mut rgb = vec![[0.0f32; 3]; along * across];
+        for (x, y, pixel) in working.enumerate_pixels() {
+            let (a, c) = if along_x { (x as usize, y as usize) } else { (y as usize, x as usize) };
+            rgb[c * along + a] = [pixel[0] as f32, pixel[1] as f32, pixel[2] as f32];
+        }
+        Some(Self {
+            transposed: !along_x,
+            along,
+            across,
+            near,
+            far,
+            rgb,
+        })
+    }
+
+    fn row_gap(&self) -> f64 {
+        self.far - self.near
+    }
+
+    /// The profile along the strip over the band between the hole rows.
+    #[doc(hidden)]
+    pub fn along_profile(&self) -> Vec<f32> {
+        let inset = STRIP_BAND_INSET * self.row_gap();
+        let (low, high) = ((self.near + inset).round() as usize, (self.far - inset).round() as usize);
+        let centre = self.along as f64 / 2.0;
+        self.profile(true, low, high, centre)
+    }
+
+    /// Luma per position across the strip over `[start, end)` along it, less
+    /// trimmed ends: a low quantile, which in a hole row
+    /// reads the film between the holes rather than the light through them.
+    fn across_luma(&self, start: f64, end: f64) -> Vec<f64> {
+        let trim = STRIP_SPAN_TRIM * (end - start);
+        let low = ((start + trim).round().max(0.0) as usize).min(self.along - 1);
+        let high = ((end - trim).round().max(0.0) as usize).clamp(low + 1, self.along);
+        let mut row = Vec::with_capacity(high - low);
+        (0..self.across)
+            .map(|position| {
+                row.clear();
+                row.extend(
+                    self.rgb[position * self.along + low..position * self.along + high]
+                        .iter()
+                        .map(|pixel| (pixel[0] + pixel[1] + pixel[2]) / 3.0),
+                );
+                let at = (STRIP_HOLE_QUANTILE * row.len() as f64) as usize;
+                *row.select_nth_unstable_by(at, f32::total_cmp).1 as f64
+            })
+            .collect()
+    }
+
+    /// Per position along `along_axis` (or across it), averaged over `[low,
+    /// high)` of the other axis, in (channel, position) layout: the log colour
+    /// and the log luma of each half of the range against the profile's median
+    /// log luma, the luma's spread over the range, the position from `centre`
+    /// in hole-row distances, and the hole-row distance as a share of the length.
+    fn profile(&self, along_axis: bool, low: usize, high: usize, centre: f64) -> Vec<f32> {
+        let length = if along_axis { self.along } else { self.across };
+        let middle = (low + high) / 2;
+        let mut sums = vec![[0.0f64; 6]; length];
+        for other in low..high {
+            for (position, sum) in sums.iter_mut().enumerate() {
+                let pixel = if along_axis {
+                    self.rgb[other * self.along + position]
+                } else {
+                    self.rgb[position * self.along + other]
+                };
+                let luma = (pixel[0] + pixel[1] + pixel[2]) as f64 / 3.0;
+                sum[0] += pixel[0] as f64;
+                sum[1] += pixel[1] as f64;
+                sum[2] += pixel[2] as f64;
+                sum[if other < middle { 3 } else { 4 }] += luma;
+                sum[5] += luma * luma;
+            }
+        }
+        let count = (high - low) as f64;
+        let (first, second) = ((middle - low).max(1) as f64, (high - middle).max(1) as f64);
+        let mut log_luma: Vec<f64> = sums.iter().map(|sum| (1.0 + (sum[3] + sum[4]) / count).ln()).collect();
+        let reference = median_f64(&mut log_luma);
+        let gap = self.row_gap();
+        let mut features = vec![0.0f32; STRIP_CHANNELS * length];
+        for (position, sum) in sums.iter().enumerate() {
+            let mean = (sum[3] + sum[4]) / count;
+            let spread = (sum[5] / count - mean * mean).max(0.0).sqrt() / (mean + 8.0);
+            let values = [
+                (1.0 + sum[0] / count).ln() - reference,
+                (1.0 + sum[1] / count).ln() - reference,
+                (1.0 + sum[2] / count).ln() - reference,
+                (1.0 + sum[3] / first).ln() - reference,
+                (1.0 + sum[4] / second).ln() - reference,
+                spread,
+                (position as f64 - centre) / gap,
+                gap / length as f64,
+            ];
+            for (channel, value) in values.iter().enumerate() {
+                features[channel * length + position] = *value as f32;
+            }
+        }
+        features
+    }
+
+    /// A rectangle `[start, end] x [top, bottom]` of the strip in working pixels.
+    fn quad(&self, start: f64, end: f64, top: f64, bottom: f64) -> [[f64; 2]; 4] {
+        let corners = [[start, top], [end, top], [end, bottom], [start, bottom]];
+        if self.transposed {
+            // Along runs down the image: the strip's top side is the image's left.
+            [corners[0], corners[3], corners[2], corners[1]].map(|[a, c]| [c, a])
+        } else {
+            corners
+        }
+    }
+}
+
+/// The working image's strip view, if the image shows a 135 strip.
+fn strip_view(working: &image::RgbImage) -> Option<StripView> {
+    let luma = LumaPlane {
+        width: working.width() as usize,
+        height: working.height() as usize,
+        data: working
+            .pixels()
+            .map(|pixel| (pixel[0] as f32 + pixel[1] as f32 + pixel[2] as f32) / 3.0)
+            .collect(),
+    };
+    StripView::new(working, &sprocket_rows(&luma))
+}
+
+/// The picture of a 135 strip, when the image shows one: High when the corner
+/// verifier accepts all four corners.
+fn detect_strip_picture(thumbnail: &DynamicImage) -> Option<FilmBorderDetection> {
+    let working = gate_working_rgb(thumbnail)?;
+    let view = strip_view(&working)?;
+    let quad = strip_picture(&view)?;
+    let (width, height) = working.dimensions();
+    if !gate_quad_is_sane(&quad, width as f64, height as f64) {
+        return None;
+    }
+    let accepted = verify_corners(&working, &quad).iter().all(|probability| *probability >= VERIFIER_THRESHOLD);
+    let gate = GateBox {
+        quad,
+        working_width: width,
+        working_height: height,
+    };
+    let confidence = if accepted {
+        DetectionConfidence::High
+    } else {
+        DetectionConfidence::Low
+    };
+    Some(FilmBorderDetection {
+        status: "detected_strip",
+        ..gate_detection(&gate, confidence)
+    })
+}
+
+#[doc(hidden)]
+pub fn film_border_strip_view(thumbnail: &DynamicImage) -> Option<StripView> {
+    strip_view(&gate_working_rgb(thumbnail)?)
+}
+
+/// Per-position logits of the two sides, (side, position), from the side network.
+#[doc(hidden)]
+pub fn strip_side_logits(features: &[f32], weights: &[f32], biases: &[f32]) -> Vec<f32> {
+    let length = features.len() / STRIP_CHANNELS;
+    let mut input = features.to_vec();
+    let mut channels = STRIP_CHANNELS;
+    let (mut weight_at, mut bias_at) = (0, 0);
+    for (layer, dilation) in STRIP_DILATIONS.iter().enumerate() {
+        let last = layer + 1 == STRIP_DILATIONS.len();
+        let outputs = if last { 2 } else { STRIP_WIDTH };
+        let layer_weights = &weights[weight_at..weight_at + outputs * channels * STRIP_KERNEL];
+        input = conv1d(&input, channels, length, *dilation, layer_weights, &biases[bias_at..bias_at + outputs], !last);
+        weight_at += outputs * channels * STRIP_KERNEL;
+        bias_at += outputs;
+        channels = outputs;
+    }
+    input
+}
+
+/// Zero-padded "same" 1-D convolution of a (channel, position) map, as PyTorch's
+/// `Conv1d(padding=dilation * (kernel - 1) / 2)`, optionally followed by ReLU.
+fn conv1d(
+    input: &[f32],
+    channels: usize,
+    length: usize,
+    dilation: usize,
+    weights: &[f32],
+    bias: &[f32],
+    relu: bool,
+) -> Vec<f32> {
+    let half = (STRIP_KERNEL / 2 * dilation) as isize;
+    let mut output = vec![0.0f32; bias.len() * length];
+    for (out, row) in output.chunks_exact_mut(length).enumerate() {
+        row.fill(bias[out]);
+        for channel in 0..channels {
+            let source = &input[channel * length..(channel + 1) * length];
+            for tap in 0..STRIP_KERNEL {
+                let weight = weights[(out * channels + channel) * STRIP_KERNEL + tap];
+                let shift = tap as isize * dilation as isize - half;
+                let start = (-shift).max(0) as usize;
+                let end = (length as isize - shift).clamp(0, length as isize) as usize;
+                for position in start..end {
+                    row[position] += weight * source[(position as isize + shift) as usize];
+                }
+            }
+        }
+        if relu {
+            row.iter_mut().for_each(|value| *value = value.max(0.0));
+        }
+    }
+    output
+}
+
+/// The best pair of positions for the two sides, first before second, at
+/// least `min` and at most `max` apart, from (side, position) logits; each
+/// refined to a fraction of a pixel on the parabola through its peak.
+fn best_side_pair(logits: &[f32], min: f64, max: f64) -> Option<(f64, f64, f32)> {
+    let length = logits.len() / 2;
+    let log_softmax = |row: &[f32]| {
+        let peak = row.iter().fold(f32::MIN, |a, b| a.max(*b));
+        let total = peak + row.iter().map(|value| (value - peak).exp()).sum::<f32>().ln();
+        row.iter().map(|value| value - total).collect::<Vec<f32>>()
+    };
+    let (first, second) = (log_softmax(&logits[..length]), log_softmax(&logits[length..]));
+    let (min, max) = (min.ceil().max(1.0) as usize, max.floor() as usize);
+    let mut best: Option<(usize, usize, f32)> = None;
+    for start in 0..length {
+        for end in start + min..(start + max + 1).min(length) {
+            let score = first[start] + second[end];
+            if best.map_or(true, |current| score > current.2) {
+                best = Some((start, end, score));
+            }
+        }
+    }
+    let (start, end, score) = best?;
+    let refine = |row: &[f32], at: usize| {
+        if at == 0 || at + 1 >= row.len() {
+            return at as f64;
+        }
+        let (a, b, c) = (row[at - 1] as f64, row[at] as f64, row[at + 1] as f64);
+        let curvature = a - 2.0 * b + c;
+        if curvature >= 0.0 {
+            return at as f64;
+        }
+        at as f64 + (0.5 * (a - c) / curvature).clamp(-0.5, 0.5)
+    };
+    Some((refine(&first, start), refine(&second, end), score))
+}
+
+/// The picture of a 135 strip as a quad in working pixels. The long sides
+/// follow from the hole rows: the picture of each format is centred between
+/// them at a fixed share of their distance, give or take a camera's gate, so
+/// each format's long sides are snapped onto the nearby step across the strip,
+/// and the format whose weaker long side has the stronger step wins. Its width
+/// then ties together the two short sides the side network scores.
+fn strip_picture(view: &StripView) -> Option<[[f64; 2]; 4]> {
+    let gap = view.row_gap();
+    let middle = (view.near + view.far) / 2.0;
+    let logits = strip_side_logits(&view.along_profile(), &STRIP_ALONG_W, &STRIP_ALONG_B);
+    // The format is not known before the short sides are: measure the long
+    // sides over the middle of the strip, which every format's picture covers.
+    let span = (view.along as f64 / 2.0 - gap / 2.0, view.along as f64 / 2.0 + gap / 2.0);
+    let luma = view.across_luma(span.0, span.1);
+    let (format, top, bottom) = STRIP_FORMATS
+        .iter()
+        .map(|(height_share, _)| {
+            let height = height_share * gap;
+            let radius = STRIP_SNAP_RADIUS * gap;
+            let top = snap_to_step(&luma, middle - height / 2.0, radius, true);
+            let bottom = snap_to_step(&luma, middle + height / 2.0, radius, false);
+            (top, bottom, top.1.min(bottom.1))
+        })
+        .zip(STRIP_FORMATS)
+        .max_by(|a, b| a.0 .2.total_cmp(&b.0 .2))
+        .filter(|((_, _, step), _)| *step >= GATE_SNAP_MIN_STEP as f64)
+        .map(|((top, bottom, _), format)| (format, top.0, bottom.0))?;
+    let (height_share, aspect) = format;
+    let width = aspect * height_share * gap;
+    let (start, end, _) =
+        best_side_pair(&logits, width * (1.0 - STRIP_WIDTH_TOLERANCE), width * (1.0 + STRIP_WIDTH_TOLERANCE))?;
+    // The 24 mm height is standard and the step search only adds noise to it;
+    // a picture run over the hole rows has no standard height.
+    let (top, bottom) = if height_share < 1.0 {
+        (middle - height_share * gap / 2.0, middle + height_share * gap / 2.0)
+    } else {
+        let luma = view.across_luma(start, end);
+        let radius = STRIP_SNAP_RADIUS * gap;
+        (
+            snap_to_step(&luma, top, radius, true).0,
+            snap_to_step(&luma, bottom, radius, false).0,
+        )
+    };
+    Some(view.quad(start, end, top, bottom))
+}
+
+/// The strongest step from bright outside to dark inside within `radius` of
+/// `position` in a profile, the outside lying before the position when
+/// `outside_first`, as the boundary between two samples, with its height.
+fn snap_to_step(profile: &[f64], position: f64, radius: f64, outside_first: bool) -> (f64, f64) {
+    let window = STRIP_SNAP_WINDOW;
+    let low = ((position - radius).round().max(window as f64)) as usize;
+    let high = ((position + radius).round().max(0.0) as usize).min(profile.len().saturating_sub(window));
+    let mean = |from: usize, to: usize| profile[from..to].iter().sum::<f64>() / (to - from) as f64;
+    let mut best = (position, f64::MIN);
+    for at in low..=high {
+        let (before, after) = (mean(at - window, at), mean(at, at + window));
+        let step = if outside_first { before - after } else { after - before };
+        if step > best.1 {
+            best = (at as f64, step);
+        }
+    }
+    best
+}
+
+/// The along-strip network's logits, for the training tools' equivalence check.
+#[doc(hidden)]
+pub fn strip_side_logits_along(features: &[f32]) -> Vec<f32> {
+    strip_side_logits(features, &STRIP_ALONG_W, &STRIP_ALONG_B)
 }
