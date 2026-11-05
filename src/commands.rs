@@ -9314,6 +9314,59 @@ mod geometry_thumbnail_invalidation_tests {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn get_source_orientation(file_path: String) -> Result<u16, String> {
+    tokio::task::spawn_blocking(move || read_raw_tiff_orientation(&file_path))
+        .await
+        .map_err(|error| format!("Orientation worker failed: {error}"))
+}
+
+/// The EXIF orientation of a TIFF-based RAW file, read from IFD0. Anything
+/// else counts as upright. The placeholder needs this before the decoded proxy
+/// exists; the decoder applies the same tag to the proxy itself.
+fn read_raw_tiff_orientation(path: &str) -> u16 {
+    use std::io::{Read, Seek, SeekFrom};
+    if !is_raw_extension(path) {
+        return 1;
+    }
+    let read = || -> std::io::Result<Option<u16>> {
+        let mut file = std::fs::File::open(path)?;
+        let mut header = [0u8; 8];
+        file.read_exact(&mut header)?;
+        let little_endian = match &header[..4] {
+            [b'I', b'I', 42, 0] => true,
+            [b'M', b'M', 0, 42] => false,
+            _ => return Ok(None),
+        };
+        let u16_at = |bytes: &[u8]| {
+            let pair = [bytes[0], bytes[1]];
+            if little_endian {
+                u16::from_le_bytes(pair)
+            } else {
+                u16::from_be_bytes(pair)
+            }
+        };
+        let offset = [header[4], header[5], header[6], header[7]];
+        let offset = if little_endian {
+            u32::from_le_bytes(offset)
+        } else {
+            u32::from_be_bytes(offset)
+        };
+        file.seek(SeekFrom::Start(offset as u64))?;
+        let mut count = [0u8; 2];
+        file.read_exact(&mut count)?;
+        for _ in 0..u16_at(&count) {
+            let mut entry = [0u8; 12];
+            file.read_exact(&mut entry)?;
+            if u16_at(&entry[..2]) == 274 {
+                return Ok(Some(u16_at(&entry[8..10])));
+            }
+        }
+        Ok(None)
+    };
+    read().ok().flatten().unwrap_or(1)
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn auto_detect_film_border(
     roll_id: String,
     file_path: String,

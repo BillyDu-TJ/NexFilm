@@ -6686,6 +6686,52 @@ function updateThumbnailPlaceholderLayout(placeholder) {
     if (isCalibrationMode) requestAnimationFrame(updateCalibrationPolygon);
 }
 
+// An embedded RAW preview lies the way the sensor did, while the decoded proxy
+// is turned upright by the EXIF orientation. Without the same turn here, the
+// picture jumps by 90 degrees when the proxy replaces its placeholder.
+const UPRIGHT_ORIENTATION_TIMEOUT_MS = 800;
+const sourceOrientationCache = new Map();
+async function uprightThumbnailSrc(src, item) {
+    if (!src || !item?.file_path) return src;
+    try {
+        let orientation = sourceOrientationCache.get(item.file_path);
+        if (orientation === undefined) {
+            const request = invoke('get_source_orientation', { file_path: item.file_path }).then(value => {
+                sourceOrientationCache.set(item.file_path, value);
+                return value;
+            });
+            orientation = await Promise.race([
+                request,
+                new Promise(resolve => setTimeout(() => resolve(1), UPRIGHT_ORIENTATION_TIMEOUT_MS)),
+            ]);
+        }
+        if (![3, 6, 8].includes(orientation)) return src;
+        const image = new Image();
+        image.src = src;
+        await image.decode();
+        const swap = orientation !== 3;
+        const canvas = document.createElement('canvas');
+        canvas.width = swap ? image.naturalHeight : image.naturalWidth;
+        canvas.height = swap ? image.naturalWidth : image.naturalHeight;
+        const context = canvas.getContext('2d');
+        if (orientation === 3) {
+            context.translate(canvas.width, canvas.height);
+            context.rotate(Math.PI);
+        } else if (orientation === 6) {
+            context.translate(canvas.width, 0);
+            context.rotate(Math.PI / 2);
+        } else {
+            context.translate(0, canvas.height);
+            context.rotate(-Math.PI / 2);
+        }
+        context.drawImage(image, 0, 0);
+        return canvas.toDataURL('image/jpeg', 0.9);
+    } catch (error) {
+        console.warn('Could not turn the placeholder upright', error);
+        return src;
+    }
+}
+
 function showThumbnailPlaceholder(thumbBase64, options = {}) {
     if (!thumbBase64) {
         hideThumbnailPlaceholder();
@@ -6857,7 +6903,9 @@ async function selectImage(id, { force = false } = {}) {
 
     // Phase 1: show the best cached preview immediately.
     const thumbSrc = getThumbnailSrc(id);
-    showThumbnailPlaceholder(thumbSrc, { rendered: hasRenderedPreview });
+    const placeholderSrc = hasRenderedPreview ? thumbSrc : await uprightThumbnailSrc(thumbSrc, selectedItem);
+    if (myToken !== currentImageRequestToken) return;
+    showThumbnailPlaceholder(placeholderSrc, { rendered: hasRenderedPreview });
     const loadingUI = document.getElementById('loading-proxy-ui');
     if (loadingUI) {
         loadingUI.classList.add('hidden');
