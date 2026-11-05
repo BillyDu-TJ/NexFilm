@@ -2073,6 +2073,7 @@ let u_baseline_pass_loc;
 let u_curve_lut_loc;
 let u_has_curve_loc;
 let u_alpha_guard_loc;
+let u_positive_to_display_loc;
 // 1x1 textures that keep every sampler of the base program bound to a texture
 // of the right type. WebGL raises INVALID_OPERATION on a draw when a sampler3D
 // finds a 2D texture on its unit (or the reverse), even if the branch that
@@ -2081,6 +2082,16 @@ let emptyTexture2d = null;
 let emptyTexture3d = null;
 
 let currentBaseDensity = [0, 0, 0];
+// Standard ROMM RGB (D50) to linear sRGB (D65), including Bradford chromatic
+// adaptation, column-major as uniformMatrix3fv expects. It is the display
+// matrix of every ProPhoto-estimate proxy.
+const PROPHOTO_TO_LINEAR_SRGB = new Float32Array([
+    2.034367530, -0.228826765, -0.008558454,
+    -0.727634698, 1.231753528, -0.153268253,
+    -0.306732842, -0.002926716, 1.161826647
+]);
+// The loaded proxy's positive -> linear sRGB matrix (column-major).
+let currentPositiveToDisplay = PROPHOTO_TO_LINEAR_SRGB;
 let proxyHasAnalyzedBase = false;
 let currentPipelineState = { contract: 'legacy_v1', density_anchors: {} };
 let currentPipelineContract = 'legacy_v1';
@@ -2254,6 +2265,10 @@ function initWebGL() {
     // The Detail chain reads the sprocket/clipping guard from alpha; every
     // other pass has to stay opaque or the canvas would show the page through.
     uniform int u_alpha_guard;
+    // Normalized positive -> linear sRGB. ProPhoto -> sRGB for every ProPhoto
+    // estimate; a camera RAW whose density ran in camera-native RGB sends its
+    // own camera -> sRGB matrix with the proxy instead.
+    uniform mat3 u_positive_to_display;
 
     const mat3 STATUS_M = mat3(
         1.0197, -0.0052, 0.0131,
@@ -2261,13 +2276,6 @@ function initWebGL() {
         0.0091, 0.0521, 0.9712
     );
 
-    // Standard ROMM RGB (D50) to linear sRGB (D65), including Bradford
-    // chromatic adaptation. GLSL mat3 constructors are column-major.
-    const mat3 PROPHOTO_TO_LINEAR_SRGB = mat3(
-        2.034367530, -0.228826765, -0.008558454,
-       -0.727634698,  1.231753528, -0.153268253,
-       -0.306732842, -0.002926716,  1.161826647
-    );
     const float PROPHOTO_TRANSPORT_MIN = -1.0;
     const float PROPHOTO_TRANSPORT_MAX = 3.0;
 
@@ -2453,7 +2461,7 @@ function initWebGL() {
             if (u_mode != 0) {
                 staged = vec3(getLuma(staged));
             } else if (u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0) {
-                staged = PROPHOTO_TO_LINEAR_SRGB * staged;
+                staged = u_positive_to_display * staged;
             }
             float safe_gamma = max(u_gamma, 1e-6);
             // This frame is composited straight onto the page when the Detail
@@ -2518,7 +2526,7 @@ function initWebGL() {
         
         vec3 positive_linear = clamp(norm, 0.0, 1.0);
         if (u_mode == 0 && u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0) {
-            positive_linear = PROPHOTO_TO_LINEAR_SRGB * positive_linear;
+            positive_linear = u_positive_to_display * positive_linear;
         }
         if (u_legacy_pipeline == 0) {
             positive_linear *= exp2(u_master_exposure);
@@ -2678,6 +2686,7 @@ function initWebGL() {
     u_curve_lut_loc = gl.getUniformLocation(shaderProgram, "u_curve_lut");
     u_has_curve_loc = gl.getUniformLocation(shaderProgram, "u_has_curve");
     u_alpha_guard_loc = gl.getUniformLocation(shaderProgram, "u_alpha_guard");
+    u_positive_to_display_loc = gl.getUniformLocation(shaderProgram, "u_positive_to_display");
     
     gl.getExtension("OES_texture_float_linear");
 
@@ -3970,6 +3979,7 @@ function applyDevelopUniforms({ cropRect, scopeWarning, alphaGuard }) {
     baseUniform1f(u_shadow_threshold_loc, scopeShadowLimit);
     baseUniform1f(u_highlight_threshold_loc, scopeHighlightLimit);
     baseUniform1i(u_alpha_guard_loc, alphaGuard ? 1 : 0);
+    baseUniformMatrix3fv(u_positive_to_display_loc, false, currentPositiveToDisplay);
     baseUniform4f(u_crop_loc, cropRect.x, cropRect.y, cropRect.width, cropRect.height);
     
     const geometryUv = NexFilmGeometry.createInverseGeometryMatrix(
@@ -4305,7 +4315,23 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         const baseAnalyzed = dataView.byteLength >= 28
             ? (flags & 1) !== 0
             : proxyAnalyzedBaseIds.has(requestedId);
-        const pixels = new Uint16Array(arrayBuffer, byteOffset + (dataView.byteLength >= 28 ? 28 : 24), width * height * 4);
+        // Flag 8: a camera-native working buffer, followed by its row-major
+        // camera -> sRGB matrix. Transposed here into the column-major order
+        // of the shader's mat3.
+        let headerLength = dataView.byteLength >= 28 ? 28 : 24;
+        let positiveToDisplay = PROPHOTO_TO_LINEAR_SRGB;
+        if ((flags & 8) !== 0 && dataView.byteLength >= 64) {
+            const rowMajor = Array.from({ length: 9 }, (_, index) => dataView.getFloat32(28 + index * 4, true));
+            if (rowMajor.every(Number.isFinite)) {
+                positiveToDisplay = new Float32Array([
+                    rowMajor[0], rowMajor[3], rowMajor[6],
+                    rowMajor[1], rowMajor[4], rowMajor[7],
+                    rowMajor[2], rowMajor[5], rowMajor[8]
+                ]);
+            }
+            headerLength = 64;
+        }
+        const pixels = new Uint16Array(arrayBuffer, byteOffset + headerLength, width * height * 4);
         const nextTexture = gl.createTexture();
         if (!nextTexture) throw new Error('Could not allocate the preview texture.');
         try {
@@ -4332,6 +4358,7 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
 
         const previousTexture = tex;
         tex = nextTexture;
+        currentPositiveToDisplay = positiveToDisplay;
         proxyTextureRevision += 1;
         proxyPixels = pixels;
         proxyWidth = width;
