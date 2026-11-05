@@ -8989,7 +8989,12 @@ function setAutoAreaBusy(id, busy) {
 }
 
 function applyFilmAreaDetection(result) {
-    calibrationPoints = validateFilmAreaDetection(result);
+    calibrationPoints = NexFilmGeometry.mapDetectedQuadToOriented(
+        validateFilmAreaDetection(result),
+        currentImageWidth,
+        currentImageHeight,
+        current_geom
+    );
     setBatchApplyDisabled(false);
     updateCalibrationPolygon();
 }

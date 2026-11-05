@@ -177,3 +177,24 @@ const fullFrameRect = geometry.orientedRectToDisplay(
 });
 
 console.log('Calibration edge geometry tests passed.');
+
+// A detected quad lands on the same picture in every orientation, in top-left,
+// clockwise order.
+for (const rotate_90_count of [0, 1, 2, 3, -1, -2]) {
+    for (const flip_h of [false, true]) {
+        for (const flip_v of [false, true]) {
+            const geom = { rotate_90_count, flip_h, flip_v, angle: 0 };
+            const detected = [[0.2, 0.05], [0.8, 0.05], [0.8, 0.95], [0.2, 0.95]];
+            const oriented = geometry.mapDetectedQuadToOriented(detected, 1024, 682, geom);
+            assert.equal(geometry.isValidCalibrationQuad(oriented), true);
+            assert.ok(oriented[0][0] < oriented[1][0] && oriented[3][0] < oriented[2][0]);
+            assert.ok(oriented[0][1] < oriented[3][1] && oriented[1][1] < oriented[2][1]);
+            const back = oriented.map(point => geometry.mapOrientedPointToSource(point, 1024, 682, geom));
+            for (const corner of detected) {
+                const nearest = Math.min(...back.map(point =>
+                    Math.hypot(point[0] - corner[0], point[1] - corner[1])));
+                assert.ok(nearest < 1e-9);
+            }
+        }
+    }
+}
