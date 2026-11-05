@@ -9263,6 +9263,7 @@ pub async fn auto_detect_film_border(
             .then(|| item.embedded_thumbnail_base64.clone())
     });
 
+    let normalized_source = file_path.clone();
     let result = tokio::task::spawn_blocking(move || {
         let encoded = match in_memory_thumbnail {
             Some(encoded) => encoded,
@@ -9282,13 +9283,72 @@ pub async fn auto_detect_film_border(
                     .ok_or_else(|| "CACHED_THUMBNAIL_NOT_FOUND".to_string())?
             }
         };
-        detect_film_border_from_encoded(&encoded)
+        let detection = detect_film_border_from_encoded(&encoded)?;
+        Ok::<_, String>(detection_in_decoded_frame(
+            detection,
+            read_raw_tiff_orientation(&normalized_source),
+        ))
     })
     .await
     .map_err(|error| format!("Film-border worker failed: {error}"))??;
 
     state.film_border_cache.insert(cache_key, result.clone());
     Ok(result)
+}
+
+/// The EXIF orientation of a TIFF-based RAW file (NEF, CR2, ARW, DNG, ...), read
+/// from the first directory of its header. Anything else counts as upright.
+fn read_raw_tiff_orientation(path: &str) -> u16 {
+    use std::io::{Read, Seek, SeekFrom};
+    if !is_raw_extension(path) {
+        return 1;
+    }
+    let read = || -> std::io::Result<Option<u16>> {
+        let mut file = std::fs::File::open(path)?;
+        let mut header = [0u8; 8];
+        file.read_exact(&mut header)?;
+        let little_endian = match &header[..4] {
+            [b'I', b'I', 42, 0] => true,
+            [b'M', b'M', 0, 42] => false,
+            _ => return Ok(None),
+        };
+        let u16_at = |bytes: &[u8]| {
+            let pair = [bytes[0], bytes[1]];
+            if little_endian { u16::from_le_bytes(pair) } else { u16::from_be_bytes(pair) }
+        };
+        let offset = [header[4], header[5], header[6], header[7]];
+        let offset = if little_endian { u32::from_le_bytes(offset) } else { u32::from_be_bytes(offset) };
+        file.seek(SeekFrom::Start(offset as u64))?;
+        let mut count = [0u8; 2];
+        file.read_exact(&mut count)?;
+        for _ in 0..u16_at(&count) {
+            let mut entry = [0u8; 12];
+            file.read_exact(&mut entry)?;
+            if u16_at(&entry[..2]) == 274 {
+                return Ok(Some(u16_at(&entry[8..10])));
+            }
+        }
+        Ok(None)
+    };
+    read().ok().flatten().unwrap_or(1)
+}
+
+/// The detector sees the embedded preview, which is stored the way the sensor
+/// lies, while the RAW decoder turns the picture upright by the EXIF orientation.
+/// The point order is left to the caller, which orders the quad after mapping it
+/// into the oriented frame.
+fn detection_in_decoded_frame(
+    mut detection: crate::film_border::FilmBorderDetection,
+    orientation: u16,
+) -> crate::film_border::FilmBorderDetection {
+    let turn: fn([f32; 2]) -> [f32; 2] = match orientation {
+        3 => |[x, y]| [1.0 - x, 1.0 - y],
+        6 => |[x, y]| [1.0 - y, x],
+        8 => |[x, y]| [y, 1.0 - x],
+        _ => return detection,
+    };
+    detection.points = detection.points.map(turn);
+    detection
 }
 
 fn detect_film_border_from_encoded(
@@ -25325,5 +25385,49 @@ mod camera_native_basis_tests {
         let round_trip: PipelineState =
             serde_json::from_str(&serde_json::to_string(&stamped).unwrap()).unwrap();
         assert_eq!(round_trip, stamped);
+    }
+}
+
+#[cfg(test)]
+mod film_border_orientation_tests {
+    use super::*;
+
+    fn detection(points: [[f32; 2]; 4]) -> crate::film_border::FilmBorderDetection {
+        crate::film_border::FilmBorderDetection {
+            points,
+            ..crate::film_border::FilmBorderDetection::fallback()
+        }
+    }
+
+    #[test]
+    fn detected_points_follow_the_decoder_turn() {
+        let point = [[0.2, 0.1]; 4];
+        // The same turns as raw_backend::orient_camera_native: EXIF 8 is LibRaw
+        // flip 5, EXIF 6 is LibRaw flip 6.
+        assert_eq!(detection_in_decoded_frame(detection(point), 8).points[0], [0.1, 0.8]);
+        assert_eq!(detection_in_decoded_frame(detection(point), 6).points[0], [0.9, 0.2]);
+        assert_eq!(detection_in_decoded_frame(detection(point), 3).points[0], [0.8, 0.9]);
+        assert_eq!(detection_in_decoded_frame(detection(point), 1).points[0], [0.2, 0.1]);
+    }
+
+    #[test]
+    fn reads_the_orientation_of_both_byte_orders() {
+        let dir = std::env::temp_dir();
+        let little: Vec<u8> = [
+            &b"II*\0"[..], &[8, 0, 0, 0], &[2, 0],
+            &[0, 1, 3, 0, 1, 0, 0, 0, 16, 0, 0, 0],
+            &[18, 1, 3, 0, 1, 0, 0, 0, 8, 0, 0, 0],
+        ].concat();
+        let big: Vec<u8> = [
+            &b"MM\0*"[..], &[0, 0, 0, 8], &[0, 1],
+            &[1, 18, 0, 3, 0, 0, 0, 1, 0, 6, 0, 0],
+        ].concat();
+        for (name, bytes, expected) in [("le", little, 8u16), ("be", big, 6u16)] {
+            let path = dir.join(format!("nexfilm-orientation-{name}-{}.nef", std::process::id()));
+            std::fs::write(&path, bytes).unwrap();
+            assert_eq!(read_raw_tiff_orientation(path.to_str().unwrap()), expected);
+            std::fs::remove_file(&path).unwrap();
+        }
+        assert_eq!(read_raw_tiff_orientation("/nonexistent/frame.nef"), 1);
     }
 }
