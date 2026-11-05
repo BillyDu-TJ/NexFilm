@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::app_state::{
     DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorScope, DensityAnchorSource,
     DensityAnchors, PipelineProcessingReport, PipelineStageRecord, PipelineStageStatus,
-    ProcessingContract, DENSITY_ANCHOR_ALGORITHM_VERSION,
+    ProcessingContract, WorkingBasis, DENSITY_ANCHOR_ALGORITHM_VERSION,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -40,6 +40,11 @@ pub struct PipelineResolverInput {
     pub image_kind: PipelineImageKind,
     pub density_anchors: DensityAnchors,
     pub raw_decode_version: i64,
+    /// Basis of this frame's Smart Auto working buffer. A ProPhoto-domain
+    /// anchor sampled in another basis measures different channels and is
+    /// rejected instead of being subtracted from this frame's densities.
+    #[serde(default)]
+    pub working_basis: WorkingBasis,
     /// Ephemeral failure from this invocation only. It is reported and causes
     /// one fallback, but is never written back as the next request.
     pub runtime_failure: Option<String>,
@@ -81,6 +86,7 @@ fn anchor_mismatch(
     expected_domain: DataDomain,
     profile: Option<&ResolverProfile>,
     raw_decode_version: i64,
+    working_basis: WorkingBasis,
 ) -> Option<&'static str> {
     let provenance = &anchor.provenance;
     if anchor.source != expected_source {
@@ -103,6 +109,10 @@ fn anchor_mismatch(
     }
     if provenance.input_domain != expected_domain {
         return Some("anchor_input_domain_mismatch");
+    }
+    if expected_domain == DataDomain::ProPhotoEstimate && provenance.working_basis != working_basis
+    {
+        return Some("anchor_working_basis_mismatch");
     }
     if expected_domain == DataDomain::RelativeTransmissionRgb {
         let Some(profile) = profile else {
@@ -127,6 +137,7 @@ fn filter_anchors(
     expected_domain: DataDomain,
     profile: Option<&ResolverProfile>,
     raw_decode_version: i64,
+    working_basis: WorkingBasis,
 ) -> (DensityAnchors, Vec<String>) {
     let mut usable = DensityAnchors::default();
     let mut rejected = Vec::new();
@@ -151,6 +162,7 @@ fn filter_anchors(
                 expected_domain,
                 profile,
                 raw_decode_version,
+                working_basis,
             ) {
                 rejected.push(format!("density_anchor_rejected|{name}|{reason}"));
             } else {
@@ -193,6 +205,7 @@ fn fallback_resolution(
         DataDomain::ProPhotoEstimate,
         None,
         input.raw_decode_version,
+        input.working_basis,
     );
     let resolved_path = anchors.prophoto_contract();
     let mut report = PipelineProcessingReport::smart_auto_fallback(reason.clone());
@@ -262,6 +275,7 @@ pub fn resolve_pipeline(input: &PipelineResolverInput) -> PipelineResolution {
             DataDomain::ProPhotoEstimate,
             None,
             input.raw_decode_version,
+            input.working_basis,
         );
         let resolved_path = anchors.prophoto_contract();
         let mut report = PipelineProcessingReport::smart_auto();
@@ -349,6 +363,7 @@ pub fn resolve_pipeline(input: &PipelineResolverInput) -> PipelineResolution {
         DataDomain::RelativeTransmissionRgb,
         Some(profile),
         input.raw_decode_version,
+        input.working_basis,
     );
     let mut report = PipelineProcessingReport::capture_corrected(profile.has_flat);
     if profile.capture_separation_fitted {
@@ -430,6 +445,7 @@ mod tests {
                 raw_decode_version: Some(9),
                 algorithm_version: DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
                 legacy: false,
+                working_basis: WorkingBasis::ProPhotoEstimate,
             },
         }
     }
@@ -456,8 +472,49 @@ mod tests {
             image_kind: PipelineImageKind::RawBayer,
             density_anchors: DensityAnchors::default(),
             raw_decode_version: 9,
+            working_basis: WorkingBasis::ProPhotoEstimate,
             runtime_failure: None,
         }
+    }
+
+    #[test]
+    fn anchor_sampled_in_another_working_basis_is_rejected() {
+        // A camera RAW anchor sampled before the density stage moved to camera
+        // RGB carries ProPhoto densities; it must not anchor a camera-native
+        // frame, and an anchor sampled in camera RGB must not anchor a scan.
+        let mut input = input(None);
+        input.density_anchors.d_min_base = Some(anchor(DataDomain::ProPhotoEstimate, None));
+        input.working_basis = WorkingBasis::CameraNative;
+        let result = resolve_pipeline(&input);
+        assert!(result.usable_density_anchors.d_min_base.is_none());
+        assert_eq!(
+            result.resolved_path,
+            ProcessingContract::SmartAutoProPhotoV11
+        );
+        assert!(result
+            .rejected_anchor_reasons
+            .iter()
+            .any(|reason| reason
+                == "density_anchor_rejected|d_min_base|anchor_working_basis_mismatch"));
+
+        let mut camera_anchor = anchor(DataDomain::ProPhotoEstimate, None);
+        camera_anchor.provenance.working_basis = WorkingBasis::CameraNative;
+        input.density_anchors.d_min_base = Some(camera_anchor.clone());
+        let result = resolve_pipeline(&input);
+        assert_eq!(
+            result.usable_density_anchors.d_min_base,
+            Some(camera_anchor)
+        );
+        assert_eq!(
+            result.resolved_path,
+            ProcessingContract::RollBaseProPhotoV11
+        );
+
+        input.working_basis = WorkingBasis::ProPhotoEstimate;
+        assert!(resolve_pipeline(&input)
+            .usable_density_anchors
+            .d_min_base
+            .is_none());
     }
 
     #[test]
