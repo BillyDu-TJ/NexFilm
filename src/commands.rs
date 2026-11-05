@@ -9246,6 +9246,13 @@ mod geometry_thumbnail_invalidation_tests {
 }
 
 #[tauri::command(rename_all = "snake_case")]
+pub async fn get_source_orientation(file_path: String) -> Result<u16, String> {
+    tokio::task::spawn_blocking(move || read_raw_tiff_orientation(&file_path))
+        .await
+        .map_err(|error| format!("Orientation worker failed: {error}"))
+}
+
+#[tauri::command(rename_all = "snake_case")]
 pub async fn auto_detect_film_border(
     roll_id: String,
     file_path: String,
