@@ -12,7 +12,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const DATABASE_PATH: &str = "nexfilm_user.db";
 pub const LEGACY_MATH_VERSION: i64 = 3;
 pub const MATH_VERSION: i64 = 5;
-pub const RAW_DECODE_VERSION: i64 = 12;
+// M3 (LibRaw unification, macOS 0.21.3 -> 0.22.2): the macOS decode output
+// (camera tables, black levels) changes with the unified LibRaw, so existing
+// proxies/anchors must re-decode. Windows decodes byte-identically, but the
+// version is a global schema constant — no platform fork, so Windows pays the
+// same one-time re-decode.
+pub const RAW_DECODE_VERSION: i64 = 13;
 pub const LAST_USED_CALIBRATION_PROFILE_KEY: &str = "last_used_calibration_profile_id";
 
 /// Development builds intentionally keep the database beside the repository so
@@ -2076,5 +2081,50 @@ mod tests {
 
         assert!(row_exists(&connection, "roll-a", "old.dng").unwrap());
         assert_eq!(load_rolls(&connection).unwrap()[0], original);
+    }
+
+    /// Manual RAW_DECODE_VERSION bump verification against a real library.
+    /// Points `NEXFILM_DIAG_DB` at a **copy** of an existing database, runs the
+    /// same `init_schema` migration the app runs at startup, and asserts every
+    /// pre-bump row (raw_decode_version 12 at the M3 bump) was invalidated:
+    /// rendered proxy dropped, re-anchor forced, version stamped to the new
+    /// constant — no row survives on the old decode generation.
+    #[test]
+    #[ignore = "manual real-library migration check; set NEXFILM_DIAG_DB to a database copy"]
+    fn raw_decode_version_bump_invalidates_a_real_library() {
+        let path = std::env::var("NEXFILM_DIAG_DB").unwrap_or_else(|_| {
+            panic!("set NEXFILM_DIAG_DB to a copy of an existing nexfilm_user.db")
+        });
+        let connection = Connection::open(&path).unwrap();
+        let before: Vec<(i64, i64)> = connection
+            .prepare("SELECT raw_decode_version, COUNT(*) FROM image_states GROUP BY 1")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        println!("[DB-MIGRATE] before: {before:?}");
+
+        init_schema(&connection).unwrap();
+
+        let after: Vec<(i64, i64)> = connection
+            .prepare("SELECT raw_decode_version, COUNT(*) FROM image_states GROUP BY 1")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        println!("[DB-MIGRATE] after: {after:?}");
+        assert!(
+            !after
+                .iter()
+                .any(|(version, _)| *version < RAW_DECODE_VERSION),
+            "rows survived on an older decode generation: {after:?}"
+        );
+        assert_eq!(
+            before.iter().map(|(_, count)| count).sum::<i64>(),
+            after.iter().map(|(_, count)| count).sum::<i64>(),
+            "the migration must not drop rows"
+        );
     }
 }

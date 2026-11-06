@@ -32,7 +32,9 @@ rawler = { version = "=0.8.0", default-features = false }
 rawlib = "0.7.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-rsraw-sys = "0.1.1"
+# M3: vendored rsraw-sys build carrying LibRaw 0.22.2 so both platforms decode
+# with the same LibRaw (Windows keeps rawlib 0.7.1's 0.22.2 prebuilt).
+rsraw-sys = { path = "vendor/rsraw-sys" }
 
 [build-dependencies]
 tauri-build = { version = "2.0", features = [] }

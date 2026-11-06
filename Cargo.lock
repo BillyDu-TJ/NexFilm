@@ -4203,9 +4203,7 @@ dependencies = [
 
 [[package]]
 name = "rsraw-sys"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e94485be17b6f6eab181abfcc378d7ccc1efc070c4e87cae3a0e75f110e8b754"
+version = "0.2.0"
 dependencies = [
  "bindgen",
  "cc",

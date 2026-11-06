@@ -1,0 +1,21 @@
+[package]
+name = "rsraw-sys"
+version = "0.2.0"
+build = "build.rs"
+edition = "2021"
+description = "Vendored LibRaw 0.22.2 FFI bindings for NexFilm (build system forked from rsraw-sys 0.1.1)"
+license = "MIT"
+publish = false
+
+[dependencies]
+libc = "0.2"
+
+[features]
+default = []
+
+[lib]
+name = "rsraw_sys"
+
+[build-dependencies]
+cc = { version = "1.2", features = ["parallel"] }
+bindgen = { version = "0.71", default-features = false, features = ["runtime"] }
