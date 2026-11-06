@@ -710,4 +710,47 @@ mod tests {
         let state: PipelineState = serde_json::from_str(&pipeline).unwrap();
         assert_eq!(state.processing_report.base_source, "film_edge_band");
     }
+
+    /// Phase 3.1 (F6) pin: the batch settings copy (paste film base / batch
+    /// apply) is the only producer of the `inherited_film_base` marker —
+    /// import never marks it. The marker survives persistence unchanged and
+    /// never reads as a frame measurement, so export can never mistake the
+    /// placeholder for the frame's own base; the frame's first open clears it
+    /// by re-measuring on its own pixels (pinned from the measurement side by
+    /// commands::inherited_film_base_is_re_measured_on_the_frames_own_pixels).
+    /// The owner's real library carried 0 such frames on 2026-11-06 (406
+    /// frames audited), so this contract is the whole story — export needs no
+    /// re-measurement fallback of its own.
+    #[test]
+    fn inherited_film_base_marker_round_trips_and_is_not_a_frame_measurement() {
+        let mut state = PipelineState::default();
+        state.processing_report.base_source = "film_edge_band".to_string();
+        let marked = mark_inherited_film_base(&serde_json::to_string(&state).unwrap()).unwrap();
+        let round: PipelineState = serde_json::from_str(&marked).unwrap();
+        assert_eq!(
+            round.processing_report.base_source,
+            crate::pipeline::INHERITED_FILM_BASE_SOURCE
+        );
+        assert_eq!(round.processing_report.base_confidence, "1.000");
+
+        let placeholder = BaseColor {
+            base_r: 12345,
+            base_g: 23456,
+            base_b: 34567,
+        };
+        assert!(!crate::pipeline::base_is_frame_measurement(
+            &round.processing_report.base_source,
+            &placeholder,
+        ));
+        // A frame's own measurement is unaffected by the marker path.
+        assert!(crate::pipeline::base_is_frame_measurement(
+            "film_edge_band",
+            &placeholder
+        ));
+        // The default half-white colour is not a measurement of anything.
+        assert!(!crate::pipeline::base_is_frame_measurement(
+            "film_edge_band",
+            &BaseColor::default()
+        ));
+    }
 }
