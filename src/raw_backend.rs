@@ -2769,15 +2769,13 @@ mod contract_tests {
             // extensions → image decode, everything else → RAW), so each row
             // also records that route, and non-RAW-routed samples are run
             // through the routed production entry for success/failure.
-            let app_route = crate::commands::decode_route_for_diagnostic(
-                path.to_string_lossy().as_ref(),
-            );
+            let app_route =
+                crate::commands::decode_route_for_diagnostic(path.to_string_lossy().as_ref());
             let routed_json = if app_route == "raw" {
                 serde_json::json!({ "route": app_route, "measured_by": "raw-backend columns" })
             } else {
-                let routed = crate::commands::decode_routed_for_diagnostic(
-                    path.to_string_lossy().as_ref(),
-                );
+                let routed =
+                    crate::commands::decode_routed_for_diagnostic(path.to_string_lossy().as_ref());
                 match routed {
                     Ok((width, height)) => serde_json::json!({
                         "route": app_route,

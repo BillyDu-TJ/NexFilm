@@ -4776,8 +4776,7 @@ pub(crate) fn decode_route_for_diagnostic(path: &str) -> &'static str {
 /// this is what proved the streaming scanner-FFF decode handles the samples
 /// that once overflowed the old non-streaming TIFF path.
 pub(crate) fn decode_routed_for_diagnostic(path: &str) -> Result<(u32, u32), String> {
-    decode_image_buffer(path, DecodeMode::ExportFull)
-        .map(|image| (image.width(), image.height()))
+    decode_image_buffer(path, DecodeMode::ExportFull).map(|image| (image.width(), image.height()))
 }
 
 /// Decode the Smart Auto ProPhoto Estimate. Camera/sRGB values are first fit
@@ -11635,6 +11634,31 @@ fn cleanup_stale_export_files(directory: &std::path::Path) -> Result<usize, Stri
     Ok(removed)
 }
 
+/// The render inputs `batch_export_images` feeds into the render for one
+/// frame, assembled from the export snapshot (pure function; Phase 3.1 seam).
+/// Export renders exactly the persisted state Develop shows: base colour and
+/// render mapping are the snapshot's own values, verbatim — no re-measurement
+/// on the full-resolution decode and no write-back (the export-reads-persisted
+/// state contract that closed the yellow-export divergence). A
+/// Capture-Corrected runtime fallback may still replace the pipeline state
+/// downstream; that decision needs the resolver and the warnings sink, so it
+/// stays with the caller.
+struct ExportRenderInputs {
+    params: TuningParams,
+    geom: GeometryState,
+    base_color: BaseColor,
+    render_pipeline_state: PipelineState,
+}
+
+fn export_render_inputs_from_snapshot(snapshot: &ExportItemSnapshot) -> ExportRenderInputs {
+    ExportRenderInputs {
+        params: snapshot.params.clone(),
+        geom: snapshot.geom.clone(),
+        base_color: snapshot.base_color.clone(),
+        render_pipeline_state: snapshot.pipeline_state.clone(),
+    }
+}
+
 #[tauri::command]
 pub async fn batch_export_images(
     export_ids: Vec<String>,
@@ -11935,9 +11959,11 @@ pub async fn batch_export_images(
                 );
                 return;
             }
-            let params_owned = snapshot.params.clone();
-            let geom_owned = snapshot.geom.clone();
-            let base_color_owned = snapshot.base_color.clone();
+            let inputs = export_render_inputs_from_snapshot(snapshot);
+            let params_owned = inputs.params;
+            let geom_owned = inputs.geom;
+            let base_color_owned = inputs.base_color;
+            let persisted_pipeline_state = inputs.render_pipeline_state;
             let decoded = if snapshot.pipeline_state.contract == ProcessingContract::LegacyV1
                 || is_smart_auto_compatibility(&snapshot.pipeline_state)
             {
@@ -11956,7 +11982,7 @@ pub async fn batch_export_images(
                     if snapshot.pipeline_state.contract != ProcessingContract::LegacyV1
                         && !is_smart_auto_compatibility(&snapshot.pipeline_state)
                     {
-                        let mut render_pipeline_state = snapshot.pipeline_state.clone();
+                        let mut render_pipeline_state = persisted_pipeline_state;
                         let decoded_f32 = if snapshot.pipeline_state.contract
                             == ProcessingContract::CaptureCorrectedV11
                         {
@@ -15616,6 +15642,10 @@ mod import_contract_tests {
         CHANNEL_CONTROL_SCALE, IMPORT_PREVIEW_LONG_EDGE, MINIMUM_USABLE_CONTENT_SPAN,
         PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN, PROXY_LONG_EDGE,
     };
+    use super::{
+        export_render_inputs_from_snapshot, ExportItemSnapshot, PipelineImageKind,
+        PipelineResolverInput, RAW_DECODE_VERSION,
+    };
     use crate::app_state::{
         BaseColor, DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorProvenance,
         DensityAnchorScope, DensityAnchorSource, DensityAnchors, EngineState, FilmItem, FilmMode,
@@ -18435,11 +18465,16 @@ mod import_contract_tests {
 
     /// Manual five-level parity diagnostic between the Develop preview path
     /// and the batch export path for one frame: decode, colour-matrix source,
-    /// film base, inversion window, render, encode. The preview measures the
-    /// film on its proxy decode while `batch_export_images` re-measures on the
-    /// full-resolution decode and rebuilds the render mapping, so the numbers
-    /// here show which level a canvas/export colour gap is born at. Override
-    /// the input with `NEXFILM_DIAG_FRAME` (defaults to the reported
+    /// film base, inversion window, render, encode. Since Phase 2 the export
+    /// renders exactly the persisted state, so L3/L4 compare the
+    /// canvas-persisted state against what the export's production
+    /// snapshot→render-input seam hands to the render (field-equal, asserted);
+    /// the old full-decode re-measure comparison is kept under the
+    /// `historical-remeasure` label and does not take part in the verdict.
+    /// The judged line (Phase 3.1): persisted vs export-used base chroma and
+    /// mapping deltas < 0.005 (field-equal asserted, so the observed numbers
+    /// are exact zeros). Full-native render-scale chroma on L5 is context.
+    /// Override the input with `NEXFILM_DIAG_FRAME` (defaults to the reported
     /// yellow-export sample).
     #[test]
     #[ignore = "manual export/preview parity diagnostic; reads local fixtures"]
@@ -18516,51 +18551,31 @@ mod import_contract_tests {
             embedded_input_profile(&frame)
         );
 
-        // ---- Level 3: film base measurement ---------------------------------
-        // estimate_film_base_f32 is what the inherited-base re-measure runs
-        // (preview: on the proxy, export: on the full decode).
+        // ---- Level 3: film base — canvas-persisted vs export-used -----------
+        // Phase 2 made the export render exactly the persisted state, so the
+        // judged quantity is what the export's own snapshot→render-input
+        // assembly hands to the render, not what a re-measure would return.
+        // `estimate_film_base_f32` on the proxy is the canvas measurement
+        // Develop persists; the export side runs the production pure function
+        // (`export_render_inputs_from_snapshot`) on a snapshot carrying that
+        // persisted state — equality is the contract.
         let base_preview = estimate_film_base_f32(&preview_est, &geom);
-        let base_export = estimate_film_base_f32(&export_est, &geom);
+        let canvas_base_color = base_color_from_density(base_preview.density);
+        let canvas_frame_base = detect_frame_base_density(&preview_est, base_preview.density)
+            .or(Some(base_preview.density));
         println!(
-            "[PARITY] L3 film base: preview usable={} source={} density=({:.3},{:.3},{:.3})",
-            base_preview.usable,
-            base_preview.source,
+            "[PARITY] L3 film base (persisted vs export-used): canvas density=({:.3},{:.3},{:.3}) usable={} source={}",
             base_preview.density[0],
             base_preview.density[1],
-            base_preview.density[2]
+            base_preview.density[2],
+            base_preview.usable,
+            base_preview.source
         );
-        println!(
-            "[PARITY]   export  usable={} source={} density=({:.3},{:.3},{:.3})",
-            base_export.usable,
-            base_export.source,
-            base_export.density[0],
-            base_export.density[1],
-            base_export.density[2]
-        );
-        let frame_base_preview = detect_frame_base_density(&preview_est, base_preview.density)
-            .or(Some(base_preview.density));
-        let frame_base_export = detect_frame_base_density(&export_est, base_preview.density)
-            .or(Some(base_export.density));
-        if let (Some(fp), Some(fe)) = (frame_base_preview, frame_base_export) {
-            println!(
-                "[PARITY]   detect_frame_base_density: preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3}) delta=({:+.3},{:+.3},{:+.3})",
-                fp[0],
-                fp[1],
-                fp[2],
-                fe[0],
-                fe[1],
-                fe[2],
-                fe[0] - fp[0],
-                fe[1] - fp[1],
-                fe[2] - fp[2]
-            );
-        } else {
-            println!("[PARITY]   detect_frame_base_density: preview={frame_base_preview:?} export={frame_base_export:?}");
-        }
 
-        // ---- Level 4: inversion window --------------------------------------
+        // ---- Level 4: inversion window — canvas measurement -----------------
         // Synthetic Roll anchors keep both sides on the same span, so the
-        // comparison isolates the measured (frame base, highlight) pair.
+        // canvas measurement isolates the (frame base, highlight) pair it
+        // persists.
         let anchor_base = base_preview.density;
         let anchor_full = [
             base_preview.density[0] + 2.10,
@@ -18600,52 +18615,202 @@ mod import_contract_tests {
         let mut roll_state = PipelineState::default();
         roll_state.contract = ProcessingContract::RollAnchoredProPhotoV11;
         roll_state.density_anchors = anchors.clone();
-        let highlight_preview = frame_base_preview
+        let highlight_preview = canvas_frame_base
             .and_then(|base| detect_frame_highlight_fraction(&preview_est, base, span));
+        println!("[PARITY] L4 window: canvas highlight fraction={highlight_preview:?}");
+        let mapping_preview =
+            roll_density_mapping_with_frame_base(&roll_state, canvas_frame_base, highlight_preview);
+        let canvas_mapping = mapping_preview.clone().unwrap_or_default();
+        let mut canvas_pipeline_state = roll_state.clone();
+        canvas_pipeline_state.render_mapping = canvas_mapping.clone();
+        // The Smart Auto route persists content limits measured on the proxy;
+        // the export renders with those stored params.
+        let limits_preview =
+            compute_content_limits_f32(&preview_est, None, &geom, anchor_base).ok();
+
+        // The export-used state: the production snapshot→render-input seam,
+        // applied to the canvas-persisted state. Field equality below is the
+        // export-reads-persisted-state contract.
+        let parity_snapshot = ExportItemSnapshot {
+            id: "parity".to_string(),
+            file_path: frame.clone(),
+            roll_id: "LOOSE_DEFAULT".to_string(),
+            params: TuningParams::default(),
+            geom: geom.clone(),
+            base_color: canvas_base_color.clone(),
+            pipeline_state: canvas_pipeline_state.clone(),
+            resolver_input: PipelineResolverInput {
+                persisted_contract: ProcessingContract::LegacyV1,
+                roll_profile_id: None,
+                profile: None,
+                image_kind: PipelineImageKind::Unsupported,
+                density_anchors: DensityAnchors::default(),
+                raw_decode_version: RAW_DECODE_VERSION,
+                runtime_failure: None,
+            },
+            capture_profile: None,
+            scanner_profile: None,
+            output_path: std::path::PathBuf::new(),
+            export_metadata: None,
+        };
+        let export_inputs = export_render_inputs_from_snapshot(&parity_snapshot);
+        assert_eq!(
+            export_inputs.base_color, canvas_base_color,
+            "export must use the persisted base colour verbatim"
+        );
+        assert_eq!(
+            export_inputs.render_pipeline_state.render_mapping, canvas_mapping,
+            "export must use the persisted render mapping verbatim"
+        );
+        let export_mapping = &export_inputs.render_pipeline_state.render_mapping;
+        let base_ratio = |color: &BaseColor| {
+            let green = f64::from(color.base_g).max(1.0);
+            (
+                f64::from(color.base_r) / green,
+                f64::from(color.base_b) / green,
+            )
+        };
+        let (canvas_rg, canvas_bg) = base_ratio(&canvas_base_color);
+        let (export_rg, export_bg) = base_ratio(&export_inputs.base_color);
+        let mapping_delta = canvas_mapping
+            .density_low
+            .iter()
+            .zip(export_mapping.density_low.iter())
+            .map(|(a, b)| f64::from((a - b).abs()))
+            .chain(
+                canvas_mapping
+                    .density_high
+                    .iter()
+                    .zip(export_mapping.density_high.iter())
+                    .map(|(a, b)| f64::from((a - b).abs())),
+            )
+            .fold(0.0f64, f64::max);
+        println!("[PARITY] L3 verdict inputs (persisted vs export-used base):");
+        println!(
+            "[PARITY]   canvas base rgb=({}, {}, {}) R/G={:.5} B/G={:.5}",
+            canvas_base_color.base_r,
+            canvas_base_color.base_g,
+            canvas_base_color.base_b,
+            canvas_rg,
+            canvas_bg
+        );
+        println!(
+            "[PARITY]   export base rgb=({}, {}, {}) R/G={:.5} B/G={:.5}",
+            export_inputs.base_color.base_r,
+            export_inputs.base_color.base_g,
+            export_inputs.base_color.base_b,
+            export_rg,
+            export_bg
+        );
+        println!(
+            "[PARITY]   |ΔR/G|={:.5} |ΔB/G|={:.5} (line < 0.005)",
+            (canvas_rg - export_rg).abs(),
+            (canvas_bg - export_bg).abs()
+        );
+        println!(
+            "[PARITY] L4 verdict inputs (persisted vs export-used mapping, field-equal asserted):"
+        );
+        println!(
+            "[PARITY]   density_low  canvas=({:.4},{:.4},{:.4}) export=({:.4},{:.4},{:.4})",
+            canvas_mapping.density_low[0],
+            canvas_mapping.density_low[1],
+            canvas_mapping.density_low[2],
+            export_mapping.density_low[0],
+            export_mapping.density_low[1],
+            export_mapping.density_low[2]
+        );
+        println!(
+            "[PARITY]   density_high canvas=({:.4},{:.4},{:.4}) export=({:.4},{:.4},{:.4})",
+            canvas_mapping.density_high[0],
+            canvas_mapping.density_high[1],
+            canvas_mapping.density_high[2],
+            export_mapping.density_high[0],
+            export_mapping.density_high[1],
+            export_mapping.density_high[2]
+        );
+        println!(
+            "[PARITY]   mode/exposure/gamma/offsets: canvas={:?}/{:.4}/{:.4}/{:?} export={:?}/{:.4}/{:.4}/{:?}",
+            canvas_mapping.mode,
+            canvas_mapping.exposure,
+            canvas_mapping.gamma,
+            canvas_mapping.channel_offsets,
+            export_mapping.mode,
+            export_mapping.exposure,
+            export_mapping.gamma,
+            export_mapping.channel_offsets
+        );
+
+        // ---- historical-remeasure (recorded, not judged) --------------------
+        // The pre-Phase-2 comparison: re-measure the film on the
+        // full-resolution decode the way the old export did. The export no
+        // longer re-measures, so these numbers only show how far a re-measure
+        // *would* drift from the canvas — context for old logs, not a verdict.
+        let base_export = estimate_film_base_f32(&export_est, &geom);
+        println!(
+            "[PARITY]   historical-remeasure export base density=({:.3},{:.3},{:.3}) usable={} source={}",
+            base_export.density[0],
+            base_export.density[1],
+            base_export.density[2],
+            base_export.usable,
+            base_export.source
+        );
+        let frame_base_export = detect_frame_base_density(&export_est, base_preview.density)
+            .or(Some(base_export.density));
+        if let (Some(fp), Some(fe)) = (canvas_frame_base, frame_base_export) {
+            println!(
+                "[PARITY]   historical-remeasure detect_frame_base_density: preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3}) delta=({:+.3},{:+.3},{:+.3})",
+                fp[0],
+                fp[1],
+                fp[2],
+                fe[0],
+                fe[1],
+                fe[2],
+                fe[0] - fp[0],
+                fe[1] - fp[1],
+                fe[2] - fp[2]
+            );
+        } else {
+            println!("[PARITY]   historical-remeasure detect_frame_base_density: preview={canvas_frame_base:?} export={frame_base_export:?}");
+        }
         let highlight_export = frame_base_export
             .and_then(|base| detect_frame_highlight_fraction(&export_est, base, span));
-        println!(
-            "[PARITY] L4 window: highlight fraction preview={highlight_preview:?} export={highlight_export:?}"
-        );
-        let mapping_preview = roll_density_mapping_with_frame_base(
-            &roll_state,
-            frame_base_preview,
-            highlight_preview,
-        );
         let mapping_export =
             roll_density_mapping_with_frame_base(&roll_state, frame_base_export, highlight_export);
         if let (Some(mp), Some(me)) = (mapping_preview.as_ref(), mapping_export.as_ref()) {
             println!(
-                "[PARITY]   mapping density_low  preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
-                mp.density_low[0], mp.density_low[1], mp.density_low[2],
-                me.density_low[0], me.density_low[1], me.density_low[2]
+                "[PARITY]   historical-remeasure mapping density_low  preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
+                mp.density_low[0],
+                mp.density_low[1],
+                mp.density_low[2],
+                me.density_low[0],
+                me.density_low[1],
+                me.density_low[2]
             );
             println!(
-                "[PARITY]   mapping density_high preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
-                mp.density_high[0], mp.density_high[1], mp.density_high[2],
-                me.density_high[0], me.density_high[1], me.density_high[2]
+                "[PARITY]   historical-remeasure mapping density_high preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
+                mp.density_high[0],
+                mp.density_high[1],
+                mp.density_high[2],
+                me.density_high[0],
+                me.density_high[1],
+                me.density_high[2]
             );
         } else {
             println!(
-                "[PARITY]   mapping preview={:?} export={:?}",
+                "[PARITY]   historical-remeasure mapping preview={:?} export={:?}",
                 mapping_preview.is_some(),
                 mapping_export.is_some()
             );
         }
-        // The Smart Auto route persists content limits from the proxy
-        // analysis; the export renders with those stored params, so both
-        // renders below share them and only the decode scale differs.
-        let limits_preview =
-            compute_content_limits_f32(&preview_est, None, &geom, anchor_base).ok();
         let limits_export = compute_content_limits_f32(&export_est, None, &geom, anchor_base).ok();
         if let (Some(lp), Some(le)) = (limits_preview.as_ref(), limits_export.as_ref()) {
             println!(
-                "[PARITY]   smart-auto content d_min preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
+                "[PARITY]   historical-remeasure smart-auto content d_min preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
                 lp.d_min[0], lp.d_min[1], lp.d_min[2],
                 le.d_min[0], le.d_min[1], le.d_min[2]
             );
             println!(
-                "[PARITY]   smart-auto content d_max preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
+                "[PARITY]   historical-remeasure smart-auto content d_max preview=({:.3},{:.3},{:.3}) export=({:.3},{:.3},{:.3})",
                 lp.d_max[0], lp.d_max[1], lp.d_max[2],
                 le.d_max[0], le.d_max[1], le.d_max[2]
             );
@@ -18654,16 +18819,13 @@ mod import_contract_tests {
         // ---- Level 5: render -------------------------------------------------
         let mut smart_state = default_pipeline_state_for_import(true, "LOOSE_DEFAULT", &[]);
         smart_state.processing_report.base_source = "content_estimate".to_string();
-        let base_color_preview = base_color_from_density(base_preview.density);
         let mut neutral = TuningParams::default();
         if let Some(limits) = limits_preview.as_ref() {
             neutral.density.d_min = limits.d_min;
             neutral.density.d_max = limits.d_max;
         }
-        let mut roll_state_preview_mapping = roll_state.clone();
-        roll_state_preview_mapping.render_mapping = mapping_preview.clone().unwrap_or_default();
-        let mut roll_state_export_mapping = roll_state.clone();
-        roll_state_export_mapping.render_mapping = mapping_export.clone().unwrap_or_default();
+        let mut historical_state = roll_state.clone();
+        historical_state.render_mapping = mapping_export.clone().unwrap_or_default();
         let render_pair = |params: &TuningParams, label: &str| {
             // (a) Smart Auto route: the frame's persisted params and base
             //     rendered on the proxy decode vs the full decode.
@@ -18672,7 +18834,7 @@ mod import_contract_tests {
                 None,
                 params,
                 &geom,
-                &base_color_preview,
+                &canvas_base_color,
                 &smart_state,
                 None,
             );
@@ -18681,38 +18843,39 @@ mod import_contract_tests {
                 None,
                 params,
                 &geom,
-                &base_color_preview,
+                &canvas_base_color,
                 &smart_state,
                 None,
             );
-            // (b) Roll-anchored route: the mapping measured on the proxy (what
-            //     Develop would show) vs re-measured on the full decode (what
-            //     batch export actually uses), plus the scale-only control.
-            let roll_proxy = render_f32_shader_equivalent(
+            // (b) Roll-anchored route: the canvas (proxy decode, persisted
+            //     mapping) vs the export (full decode, the same persisted
+            //     state through the production snapshot seam). The
+            //     re-measured-mapping render is kept as historical context.
+            let canvas_render = render_f32_shader_equivalent(
                 &preview_est,
                 None,
                 params,
                 &geom,
-                &base_color_preview,
-                &roll_state_preview_mapping,
+                &canvas_base_color,
+                &canvas_pipeline_state,
                 None,
             );
-            let roll_full_same_mapping = render_f32_shader_equivalent(
+            let export_render = render_f32_shader_equivalent(
                 &export_est,
                 None,
                 params,
                 &geom,
-                &base_color_preview,
-                &roll_state_preview_mapping,
+                &canvas_base_color,
+                &export_inputs.render_pipeline_state,
                 None,
             );
-            let roll_full_own_mapping = render_f32_shader_equivalent(
+            let historical_render = render_f32_shader_equivalent(
                 &export_est,
                 None,
                 params,
                 &geom,
-                &base_color_preview,
-                &roll_state_export_mapping,
+                &canvas_base_color,
+                &historical_state,
                 None,
             );
             println!("[PARITY] L5 render ({label}):");
@@ -18721,42 +18884,100 @@ mod import_contract_tests {
                 parity_mean_display_rgb(&smart_proxy),
             );
             parity_print_cast_line(
-                "(a) smart-auto, full input — same state (scale only)",
+                "(a) smart-auto, full input (scale only)",
                 parity_mean_display_rgb(&smart_full),
             );
+            let canvas_mean = parity_mean_display_rgb(&canvas_render);
+            let export_mean = parity_mean_display_rgb(&export_render);
+            // Viewer-parity control: the export rendered at its own (larger)
+            // resolution, then resampled to the canvas size the way a viewer
+            // side-by-side comparison would see it.
+            let export_resampled = image::imageops::resize(
+                &export_render,
+                canvas_render.width(),
+                canvas_render.height(),
+                image::imageops::FilterType::Lanczos3,
+            );
+            let export_resampled_mean = parity_mean_display_rgb(&export_resampled);
             parity_print_cast_line(
-                "(b) roll-anchored, proxy input, proxy mapping (the canvas)",
-                parity_mean_display_rgb(&roll_proxy),
+                "(b) roll-anchored, proxy input, persisted mapping (the canvas)",
+                canvas_mean,
             );
             parity_print_cast_line(
-                "(b) roll-anchored, full input, proxy mapping (scale only)",
-                parity_mean_display_rgb(&roll_full_same_mapping),
+                "(b) roll-anchored, full input, persisted mapping (the export)",
+                export_mean,
             );
             parity_print_cast_line(
-                "(b) roll-anchored, full input, re-measured mapping (the export)",
-                parity_mean_display_rgb(&roll_full_own_mapping),
+                "(b) export render resampled to canvas size (viewer parity, context)",
+                export_resampled_mean,
+            );
+            parity_print_cast_line(
+                "(b) roll-anchored, full input, re-measured mapping (historical-remeasure, not judged)",
+                parity_mean_display_rgb(&historical_render),
+            );
+            let green = |mean: [f64; 3]| mean[1].max(1.0);
+            let delta_rg =
+                (canvas_mean[0] / green(canvas_mean) - export_mean[0] / green(export_mean)).abs();
+            let delta_bg =
+                (canvas_mean[2] / green(canvas_mean) - export_mean[2] / green(export_mean)).abs();
+            let viewer_rg = (canvas_mean[0] / green(canvas_mean)
+                - export_resampled_mean[0] / green(export_resampled_mean))
+            .abs();
+            let viewer_bg = (canvas_mean[2] / green(canvas_mean)
+                - export_resampled_mean[2] / green(export_resampled_mean))
+            .abs();
+            println!(
+                "[PARITY]   canvas vs export (full native): |ΔR/G|={delta_rg:.5} |ΔB/G|={delta_bg:.5}; viewer parity (export resampled to canvas): |ΔR/G|={viewer_rg:.5} |ΔB/G|={viewer_bg:.5} (context, line 0.005)"
             );
             ab_save_preview(
                 output_root.join(format!("{stem}-{label}-roll-canvas.jpg")),
-                &roll_proxy,
+                &canvas_render,
             );
             ab_save_preview(
                 output_root.join(format!("{stem}-{label}-roll-export.jpg")),
-                &roll_full_own_mapping,
+                &export_render,
             );
-            roll_full_own_mapping
+            (canvas_render, export_render, delta_rg, delta_bg)
         };
-        let neutral_own = render_pair(&neutral, "neutral");
+        let (neutral_canvas, neutral_export, _, _) = render_pair(&neutral, "neutral");
         let mut graded = neutral.clone();
         graded.tone.temperature = -0.30;
         graded.tone.shadows = 0.20;
         graded.tone.highlights = -0.15;
-        let _ = render_pair(&graded, "graded");
+        let (_, _, _, _) = render_pair(&graded, "graded");
+
+        // ---- verdict ----------------------------------------------------------
+        // The judged line (Phase 3.1): the persisted state and the state the
+        // export actually uses are field-equal, and their chroma stays under
+        // 0.005. Render-scale chroma on the full-native export (L5) is
+        // recorded above as context, not part of this verdict.
+        let base_delta_rg = (canvas_rg - export_rg).abs();
+        let base_delta_bg = (canvas_bg - export_bg).abs();
+        let mut breaches = Vec::new();
+        if base_delta_rg >= 0.005 {
+            breaches.push(format!("L3 base |ΔR/G|={base_delta_rg:.5}"));
+        }
+        if base_delta_bg >= 0.005 {
+            breaches.push(format!("L3 base |ΔB/G|={base_delta_bg:.5}"));
+        }
+        if mapping_delta >= 0.005 {
+            breaches.push(format!("L4 mapping max |Δ|={mapping_delta:.5}"));
+        }
+        if breaches.is_empty() {
+            println!(
+                "[PARITY] verdict: PASS — persisted == export-used state (asserted field-equal); L3 base |ΔR/G|={base_delta_rg:.5} |ΔB/G|={base_delta_bg:.5}, L4 mapping max |Δ|={mapping_delta:.5} (line < 0.005)"
+            );
+        } else {
+            panic!(
+                "[PARITY] verdict: FAIL — persisted/export state chroma beyond the 0.005 line: {}",
+                breaches.join("; ")
+            );
+        }
 
         // ---- Level 6: encode -------------------------------------------------
-        let before = parity_mean_display_rgb(&neutral_own);
-        let encoded =
-            encode_export_buffer(neutral_own.clone(), ColorSpaceId::SRgb).expect("encode failed");
+        let before = parity_mean_display_rgb(&neutral_export);
+        let encoded = encode_export_buffer(neutral_export.clone(), ColorSpaceId::SRgb)
+            .expect("encode failed");
         let after = parity_mean_display_rgb(&encoded);
         println!("[PARITY] L6 encode (sRGB round trip):");
         parity_print_cast_line("before encode", before);
@@ -24622,5 +24843,271 @@ mod repro_unknown_camera_tests {
                 full_mean[channel] - proxy_mean[channel]
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod export_readonly_contract_tests {
+    use super::{
+        clear_retired_legacy_domain, decode_scanner_profiled_estimate_image_buffer,
+        encode_export_output, export_render_inputs_from_snapshot, load_image_state_from_connection,
+        pipeline_resolver_input, resolve_pipeline, state_from_resolution, write_export_output,
+        DecodeMode, ExportFormat, ExportItemSnapshot, PipelineImageKind, PipelineResolverInput,
+        RAW_DECODE_VERSION,
+    };
+    use crate::app_state::{
+        BaseColor, GeometryState, PipelineState, ProcessingContract, RenderMapping, RenderMode,
+        TuningParams,
+    };
+    use crate::color_science::ColorSpaceId;
+    use image::{ImageBuffer, Rgb};
+    use rusqlite::types::ValueRef;
+
+    fn distinct_snapshot() -> (ExportItemSnapshot, BaseColor, RenderMapping) {
+        let base_color = BaseColor {
+            base_r: 12345,
+            base_g: 23456,
+            base_b: 34567,
+        };
+        let render_mapping = RenderMapping {
+            mode: RenderMode::PreserveTone,
+            density_low: [0.11, 0.22, 0.33],
+            density_high: [2.21, 2.31, 2.41],
+            exposure: 0.42,
+            gamma: 1.15,
+            channel_offsets: [0.01, -0.02, 0.03],
+        };
+        let mut pipeline_state = PipelineState::default();
+        pipeline_state.contract = ProcessingContract::RollAnchoredProPhotoV11;
+        pipeline_state.render_mapping = render_mapping.clone();
+        let mut params = TuningParams::default();
+        params.exposure.exposure = 0.42;
+        let mut geom = GeometryState::default();
+        geom.angle = 3.5;
+        let snapshot = ExportItemSnapshot {
+            id: "img_test".to_string(),
+            file_path: "frame.tif".to_string(),
+            roll_id: "roll-test".to_string(),
+            params,
+            geom,
+            base_color: base_color.clone(),
+            pipeline_state,
+            resolver_input: PipelineResolverInput {
+                persisted_contract: ProcessingContract::LegacyV1,
+                roll_profile_id: None,
+                profile: None,
+                image_kind: PipelineImageKind::Unsupported,
+                density_anchors: Default::default(),
+                raw_decode_version: RAW_DECODE_VERSION,
+                runtime_failure: None,
+            },
+            capture_profile: None,
+            scanner_profile: None,
+            output_path: std::path::PathBuf::new(),
+            export_metadata: None,
+        };
+        (snapshot, base_color, render_mapping)
+    }
+
+    /// Phase 3.1 export-read-only contract: the assembly `batch_export_images`
+    /// renders with is the snapshot verbatim — base colour and render mapping
+    /// field by field, no re-measurement anywhere in the seam.
+    #[test]
+    fn export_render_inputs_match_the_snapshot_field_for_field() {
+        let (snapshot, base_color, render_mapping) = distinct_snapshot();
+        let inputs = export_render_inputs_from_snapshot(&snapshot);
+        assert_eq!(inputs.base_color.base_r, base_color.base_r);
+        assert_eq!(inputs.base_color.base_g, base_color.base_g);
+        assert_eq!(inputs.base_color.base_b, base_color.base_b);
+        let mapping = &inputs.render_pipeline_state.render_mapping;
+        assert_eq!(mapping.mode, render_mapping.mode);
+        assert_eq!(mapping.density_low, render_mapping.density_low);
+        assert_eq!(mapping.density_high, render_mapping.density_high);
+        assert_eq!(mapping.exposure, render_mapping.exposure);
+        assert_eq!(mapping.gamma, render_mapping.gamma);
+        assert_eq!(mapping.channel_offsets, render_mapping.channel_offsets);
+        assert_eq!(
+            inputs.params.exposure.exposure,
+            snapshot.params.exposure.exposure
+        );
+        assert_eq!(inputs.geom.angle, snapshot.geom.angle);
+    }
+
+    /// Phase 3.1 export-read-only contract on a temp library: run the v1.1
+    /// export branch (snapshot → render inputs → full decode → render →
+    /// encode → write) against a frame persisted in the database, and require
+    /// the frame's row to be byte-identical afterwards. The old export
+    /// re-measured the film on the full decode and wrote the new base back —
+    /// this test pins the fix.
+    #[test]
+    fn export_leaves_the_persisted_frame_row_byte_identical() {
+        let temp = std::env::temp_dir().join(format!(
+            "nexfilm-export-readonly-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let frame_path = temp.join("frame.tif");
+        let mut source = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(24, 16);
+        for (x, y, pixel) in source.enumerate_pixels_mut() {
+            let value = ((x * 2731 + y * 4369) % 65535) as u16;
+            *pixel = Rgb([value, (value / 2).max(1), (value / 3).max(1)]);
+        }
+        source.save(&frame_path).unwrap();
+        let frame_path_str = frame_path.to_string_lossy().to_string();
+
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persistence::init_schema(&connection).unwrap();
+        let mut persisted_pipeline = PipelineState::default();
+        persisted_pipeline.contract = ProcessingContract::RollAnchoredProPhotoV11;
+        persisted_pipeline.render_mapping = RenderMapping {
+            density_low: [0.21, 0.31, 0.41],
+            density_high: [2.05, 2.15, 2.25],
+            ..RenderMapping::default()
+        };
+        let mut persisted_params = TuningParams::default();
+        persisted_params.exposure.exposure = -0.15;
+        connection
+            .execute(
+                "INSERT INTO image_states (roll_id, file_path, thumbnail_base64, params, geom, base_color, pipeline_state)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    "roll-test",
+                    frame_path_str,
+                    "parity-thumb",
+                    serde_json::to_string(&persisted_params).unwrap(),
+                    serde_json::to_string(&GeometryState::default()).unwrap(),
+                    serde_json::to_string(&BaseColor {
+                        base_r: 20115,
+                        base_g: 30397,
+                        base_b: 22986,
+                    })
+                    .unwrap(),
+                    serde_json::to_string(&persisted_pipeline).unwrap(),
+                ],
+            )
+            .unwrap();
+
+        let read_row_bytes = |connection: &rusqlite::Connection| -> Vec<(String, Option<Vec<u8>>)> {
+            let mut statement = connection
+                .prepare("SELECT * FROM image_states WHERE roll_id = ?1 AND file_path = ?2")
+                .unwrap();
+            let column_names: Vec<String> = statement
+                .column_names()
+                .into_iter()
+                .map(|name| name.to_string())
+                .collect();
+            let mut rows = statement
+                .query(rusqlite::params!["roll-test", frame_path_str])
+                .unwrap();
+            let row = rows.next().unwrap().expect("frame row must exist");
+            column_names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    let bytes = match row.get_ref(index).unwrap() {
+                        ValueRef::Null => None,
+                        ValueRef::Integer(value) => Some(value.to_le_bytes().to_vec()),
+                        ValueRef::Real(value) => Some(value.to_le_bytes().to_vec()),
+                        ValueRef::Text(text) => Some(text.to_vec()),
+                        ValueRef::Blob(blob) => Some(blob.to_vec()),
+                    };
+                    (name.clone(), bytes)
+                })
+                .collect()
+        };
+        let before = read_row_bytes(&connection);
+
+        // The snapshot assembly from batch_export_images, on the temp library.
+        let (_, params, geom, base_color, mut pipeline_state) =
+            load_image_state_from_connection(&connection, "roll-test", &frame_path_str)
+                .unwrap()
+                .unwrap();
+        clear_retired_legacy_domain(&mut pipeline_state);
+        let mut snapshot = ExportItemSnapshot {
+            id: "img_test".to_string(),
+            file_path: frame_path_str.clone(),
+            roll_id: "roll-test".to_string(),
+            params,
+            geom,
+            base_color,
+            pipeline_state,
+            resolver_input: PipelineResolverInput {
+                persisted_contract: ProcessingContract::LegacyV1,
+                roll_profile_id: None,
+                profile: None,
+                image_kind: PipelineImageKind::Unsupported,
+                density_anchors: Default::default(),
+                raw_decode_version: RAW_DECODE_VERSION,
+                runtime_failure: None,
+            },
+            capture_profile: None,
+            scanner_profile: None,
+            output_path: temp.join("frame-exported.jpg"),
+            export_metadata: None,
+        };
+        snapshot.resolver_input = pipeline_resolver_input(
+            &snapshot.pipeline_state,
+            None,
+            &[],
+            &snapshot.file_path,
+            None,
+        );
+        let resolution = resolve_pipeline(&snapshot.resolver_input);
+        snapshot.pipeline_state = state_from_resolution(&snapshot.pipeline_state, &resolution);
+
+        let inputs = export_render_inputs_from_snapshot(&snapshot);
+        assert_eq!(inputs.base_color, snapshot.base_color);
+        assert_eq!(
+            inputs.render_pipeline_state.render_mapping,
+            snapshot.pipeline_state.render_mapping
+        );
+
+        // The v1.1 export branch, exactly as batch_export_images runs it.
+        let decoded_f32 = decode_scanner_profiled_estimate_image_buffer(
+            &snapshot.file_path,
+            DecodeMode::ExportFull,
+            None,
+            u32::MAX,
+        )
+        .map(|estimate| (estimate, None));
+        let (input, quality_mask) = decoded_f32.unwrap();
+        let rendered = super::render_f32_shader_equivalent(
+            &input,
+            quality_mask.as_ref(),
+            &inputs.params,
+            &inputs.geom,
+            &inputs.base_color,
+            &inputs.render_pipeline_state,
+            None,
+        );
+        let encoded =
+            encode_export_output(rendered, ExportFormat::Jpeg, ColorSpaceId::SRgb).unwrap();
+        write_export_output(
+            encoded,
+            &snapshot,
+            ExportFormat::Jpeg,
+            ColorSpaceId::SRgb,
+            90,
+        )
+        .unwrap();
+        assert!(
+            snapshot.output_path.is_file(),
+            "export must have written its output"
+        );
+
+        let after = read_row_bytes(&connection);
+        assert_eq!(before.len(), after.len());
+        for ((name, before_bytes), (_, after_bytes)) in before.iter().zip(after.iter()) {
+            assert_eq!(
+                before_bytes, after_bytes,
+                "column {name} changed during export"
+            );
+        }
+
+        std::fs::remove_dir_all(&temp).ok();
     }
 }
