@@ -20,8 +20,10 @@ rawlib 0.7.1（LibRaw 0.22.2 预编译库），两平台解码基线不一致。
 - 仅 macOS 目标使用（根 `Cargo.toml` 的 `cfg(target_os = "macos")` 依赖指向本目录）；
   不引入 jpeg/lcms/zlib 外部依赖，与 rsraw-sys 0.1.1 的构建口径一致。
 - bindgen 在 HOST==TARGET 时**现场**从 `LibRaw/libraw/libraw.h` 生成绑定，因此结构体
-  布局永远与本目录源码树一致；`src/bindings.rs` 是上游 0.1.1 预生成的 0.21.3 时代
-  绑定，**仅作交叉编译（HOST≠TARGET）的回退**，本仓库无交叉构建场景。
+  布局永远与本目录源码树一致。上游 0.1.1 预生成的 0.21.3 时代 `src/bindings.rs`
+  **已删除**（Phase 3.1）：它与 0.22.2 头文件的结构体布局错位，曾经作为交叉编译
+  （HOST≠TARGET）的回退被 build.rs 复制，现已改为直接 `panic!`（提示只支持原生构建；
+  交叉编译请先用本树 0.22.2 头文件重新生成绑定）。
 - 升级 LibRaw：替换 `LibRaw/` 树 → 比对 `src/**.cpp` 清单并同步 build.rs →
   bump `RAW_DECODE_VERSION` → 跑解码矩阵 A/B（`docs/raw-backend-camera-support.md`
   §升级机制）。

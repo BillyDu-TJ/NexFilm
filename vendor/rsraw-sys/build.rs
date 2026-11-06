@@ -1,4 +1,4 @@
-use std::{env, fs, path::Path};
+use std::{env, path::Path};
 
 fn main() {
     let dir = env::var_os("OUT_DIR").unwrap();
@@ -124,11 +124,15 @@ fn bindings(out_dir: impl AsRef<Path>) {
     let host = env::var("HOST").expect("HOST is not set");
     let target = env::var("TARGET").expect("TARGET is not set");
 
-    // Cross builds (e.g. Android in CI) may not have a usable target sysroot
-    // for clang/bindgen. Reuse the checked-in bindings in that case.
+    // Only native builds are supported. The old fallback reused the upstream
+    // 0.1.1 pregenerated bindings (LibRaw 0.21.3); paired with the vendored
+    // 0.22.2 tree they describe the wrong struct layouts.
     if host != target {
-        fs::copy("src/bindings.rs", &path).expect("Couldn't copy pregenerated bindings");
-        return;
+        panic!(
+            "rsraw-sys: only native builds (HOST == TARGET) are supported; \
+             for cross compilation regenerate bindings from this tree's \
+             LibRaw 0.22.2 headers first"
+        );
     }
 
     let bindings = bindgen::Builder::default()
