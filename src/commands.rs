@@ -4755,6 +4755,31 @@ fn estimate_target_long_edge(mode: DecodeMode) -> u32 {
     }
 }
 
+/// Decode-matrix diagnostic hook (Phase 3.1): the route the *application*
+/// takes for this file at decode time, decided by the same predicates the
+/// production decode entry uses. The harness in `raw_backend.rs` records it
+/// alongside the direct RAW-backend verdicts so the matrix cannot describe a
+/// bypassed path as the app's behaviour.
+pub(crate) fn decode_route_for_diagnostic(path: &str) -> &'static str {
+    if is_scanner_fff_tiff(path) {
+        "scanner-fff-stream"
+    } else if is_direct_image_extension(path) {
+        "direct-image"
+    } else {
+        "raw"
+    }
+}
+
+/// Production decode entry for the routes that bypass the RAW backend
+/// (success/failure and dimensions only; RAW-routed samples are measured by
+/// the raw-backend harness itself). `ExportFull` exercises the whole file —
+/// this is what proved the streaming scanner-FFF decode handles the samples
+/// that once overflowed the old non-streaming TIFF path.
+pub(crate) fn decode_routed_for_diagnostic(path: &str) -> Result<(u32, u32), String> {
+    decode_image_buffer(path, DecodeMode::ExportFull)
+        .map(|image| (image.width(), image.height()))
+}
+
 /// Decode the Smart Auto ProPhoto Estimate. Camera/sRGB values are first fit
 /// into a finite positive transmission domain while preserving luminance;
 /// the resulting ProPhoto values remain a relative display estimate, never a

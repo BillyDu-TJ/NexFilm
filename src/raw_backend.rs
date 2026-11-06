@@ -2700,6 +2700,10 @@ mod contract_tests {
     /// when waiting-for-sample models are provided. The decode uses the
     /// production options at half size purely to bound memory — matrix
     /// values, black levels and success/failure do not depend on it.
+    /// Since Phase 3.1 every row also carries the application route
+    /// (`app_route`, from the production predicates) and, for non-RAW routes,
+    /// the routed production decode verdict — the Flextight FFF rows succeed
+    /// there even though the RAW backend cannot read them.
     #[test]
     #[ignore = "manual decode matrix diagnostic; reads local samples"]
     fn decode_matrix_diagnostic() {
@@ -2758,6 +2762,36 @@ mod contract_tests {
                 &options,
                 WhiteBalancePolicy::NormalizedAsShot,
             );
+            // Phase 3.1 correction: the RAW-backend verdicts above are the
+            // dual-source measurement only. What the *application* does with
+            // the file is decided by the production routing predicates
+            // (`is_scanner_fff_tiff` → streaming TIFF decode, direct-image
+            // extensions → image decode, everything else → RAW), so each row
+            // also records that route, and non-RAW-routed samples are run
+            // through the routed production entry for success/failure.
+            let app_route = crate::commands::decode_route_for_diagnostic(
+                path.to_string_lossy().as_ref(),
+            );
+            let routed_json = if app_route == "raw" {
+                serde_json::json!({ "route": app_route, "measured_by": "raw-backend columns" })
+            } else {
+                let routed = crate::commands::decode_routed_for_diagnostic(
+                    path.to_string_lossy().as_ref(),
+                );
+                match routed {
+                    Ok((width, height)) => serde_json::json!({
+                        "route": app_route,
+                        "ok": true,
+                        "width": width,
+                        "height": height,
+                    }),
+                    Err(error) => serde_json::json!({
+                        "route": app_route,
+                        "ok": false,
+                        "error": error,
+                    }),
+                }
+            };
             let mosaic_json = match &mosaic {
                 Ok(mosaic) => serde_json::json!({
                     "ok": true,
@@ -2825,7 +2859,7 @@ mod contract_tests {
                         .and_then(|value| value.as_bool())
                 });
             println!(
-                "[MATRIX] {label}: mosaic={} camera={} matrix={:?} banding={:?}",
+                "[MATRIX] {label}: route={app_route} mosaic={} camera={} matrix={:?} banding={:?}",
                 mosaic.is_ok(),
                 camera.is_ok(),
                 camera
@@ -2837,6 +2871,7 @@ mod contract_tests {
                 "label": label,
                 "path": path.to_string_lossy(),
                 "provenance": provenance,
+                "app_route": routed_json,
                 "mosaic": mosaic_json,
                 "camera": camera_json,
                 "banding": banding_json,
