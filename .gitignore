@@ -36,3 +36,6 @@ test_picture/
 
 reference_v777.md
 website
+
+# Python bytecode from diagnostic scripts
+__pycache__/
