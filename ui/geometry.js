@@ -280,6 +280,24 @@
         return [x / oriented.width, y / oriented.height];
     }
 
+    // The film-area detector works on the unrotated thumbnail, while the quad is
+    // stored in the oriented frame. Rotation and flips also change which corner
+    // is which, so the result is put back in top-left, clockwise order.
+    function mapDetectedQuadToOriented(points, width, height, geom) {
+        const mapped = points.map(point => {
+            const oriented = mapSourcePointToOriented(point, width, height, geom);
+            return [Math.min(1, Math.max(0, oriented[0])), Math.min(1, Math.max(0, oriented[1]))];
+        });
+        const centreX = mapped.reduce((sum, point) => sum + point[0], 0) / 4;
+        const centreY = mapped.reduce((sum, point) => sum + point[1], 0) / 4;
+        const clockwise = mapped
+            .slice()
+            .sort((a, b) => Math.atan2(a[1] - centreY, a[0] - centreX) - Math.atan2(b[1] - centreY, b[0] - centreX));
+        const first = clockwise.reduce((best, point, index) =>
+            point[0] + point[1] < clockwise[best][0] + clockwise[best][1] ? index : best, 0);
+        return clockwise.map((_, index) => clockwise[(first + index) % 4]);
+    }
+
     // The oriented frame is normalised by the rotated bounding box, which grows
     // with the fine angle. A fixed crop rect or film-area quad would therefore
     // cover a different part of the picture after a rotation. These helpers keep
@@ -590,6 +608,7 @@
         getOrientedDimensions,
         mapOrientedPointToSource,
         mapSourcePointToOriented,
+        mapDetectedQuadToOriented,
         anchorPointForAngleChange,
         anchorQuadForAngleChange,
         anchorRectForAngleChange,

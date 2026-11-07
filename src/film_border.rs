@@ -84,6 +84,120 @@ pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
         return FilmBorderDetection::fallback();
     }
 
+    // The format-prior search is trusted only when the corner verifier
+    // accepts the box. Otherwise the gradient search gets its turn, held to a
+    // much stricter verifier bar: on film strips it often locks onto a line
+    // inside the picture. A box neither of them can vouch for is still a far
+    // better starting point than the gradient result, so it is handed back
+    // with Low confidence.
+    // A 135 strip's picture comes from its hole rows. Unless the verifier
+    // vouches for it, a High from the searches below still goes first.
+    let strip = detect_strip_picture(thumbnail);
+    if let Some(detection) = &strip {
+        if detection.confidence == DetectionConfidence::High {
+            return detection.clone();
+        }
+    }
+    let gate = detect_gate_box(thumbnail);
+    if let Some((gate, true)) = &gate {
+        return gate_detection(gate, DetectionConfidence::High);
+    }
+    let gradient = detect_gradient_border(thumbnail);
+    if gradient.confidence == DetectionConfidence::High
+        && (gradient_is_verified(thumbnail, &gradient)
+            || surround_is_uniform(thumbnail, &gradient))
+    {
+        return gradient;
+    }
+    if let Some(detection) = strip {
+        return detection;
+    }
+    match &gate {
+        Some((gate, _)) => gate_detection(gate, DetectionConfidence::Low),
+        None => FilmBorderDetection {
+            confidence: DetectionConfidence::Low,
+            ..gradient
+        },
+    }
+}
+
+fn gradient_is_verified(thumbnail: &DynamicImage, detection: &FilmBorderDetection) -> bool {
+    let Some(working) = gate_working_rgb(thumbnail) else {
+        return false;
+    };
+    let (width, height) = working.dimensions();
+    let quad = detection
+        .points
+        .map(|point| [point[0] as f64 * width as f64, point[1] as f64 * height as f64]);
+    // The gradient search also serves positive scans, where the picture is the
+    // brighter side, so the verifier sees both polarities.
+    gate_quad_is_sane(&quad, width as f64, height as f64)
+        && [false, true].iter().any(|&inverted| {
+            verify_corners_with_polarity(&working, &quad, inverted)
+                .iter()
+                .all(|probability| *probability >= GRADIENT_VERIFIER_THRESHOLD)
+        })
+}
+
+/// A quad with one plain tone in a ring just outside it needs no verifier: a
+/// masked scan, a mounted frame or a strip whose rebate runs all the way round.
+/// A quad on a line inside the picture has picture in its ring.
+fn surround_is_uniform(thumbnail: &DynamicImage, detection: &FilmBorderDetection) -> bool {
+    let gray = analysis_grayscale(thumbnail);
+    let (width, height) = gray.dimensions();
+    let short = width.min(height) as f32;
+    let (inner, outer) = (SURROUND_MARGIN * short, SURROUND_RING * short);
+    let bound = |axis: usize, size: u32, pick_max: bool| {
+        let values = detection.points.map(|point| point[axis] * size as f32);
+        if pick_max {
+            values.iter().fold(f32::MIN, |a, b| a.max(*b))
+        } else {
+            values.iter().fold(f32::MAX, |a, b| a.min(*b))
+        }
+    };
+    let (left, right) = (bound(0, width, false), bound(0, width, true));
+    let (top, bottom) = (bound(1, height, false), bound(1, height, true));
+
+    let mut surround: Vec<u8> = gray
+        .enumerate_pixels()
+        .filter(|(x, y, _)| {
+            let (x, y) = (*x as f32, *y as f32);
+            let outside_inner =
+                x < left - inner || x > right + inner || y < top - inner || y > bottom + inner;
+            let inside_outer =
+                x >= left - outer && x <= right + outer && y >= top - outer && y <= bottom + outer;
+            outside_inner && inside_outer
+        })
+        .map(|(_, _, pixel)| pixel[0])
+        .collect();
+    if (surround.len() as f32) < SURROUND_MIN_AREA * (width * height) as f32 {
+        return false;
+    }
+    surround.sort_unstable();
+    let median = surround[surround.len() / 2] as i32;
+    let matching = surround
+        .iter()
+        .filter(|value| (**value as i32 - median).abs() <= SURROUND_MAX_DEVIATION)
+        .count();
+    matching as f32 >= SURROUND_MIN_MATCH * surround.len() as f32
+}
+
+/// The candidates behind a detection, for the evaluation harness: the
+/// format-prior box with its corner probabilities, and the gradient search.
+#[allow(dead_code)]
+#[doc(hidden)]
+pub fn film_border_candidates(
+    thumbnail: &DynamicImage,
+) -> (Option<([[f32; 2]; 4], [f32; 4])>, FilmBorderDetection) {
+    let gate = gate_working_rgb(thumbnail).and_then(|working| {
+        let (gate, _) = detect_gate_box(thumbnail)?;
+        let probabilities = verify_corners(&working, &gate.quad);
+        Some((gate_detection(&gate, DetectionConfidence::Low).points, probabilities))
+    });
+    (gate, detect_gradient_border(thumbnail))
+}
+
+fn detect_gradient_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
     let gray = analysis_grayscale(thumbnail);
     let (width, height) = gray.dimensions();
     let blurred = gaussian_blur_f32(&gray, 1.4);
@@ -1094,6 +1208,241 @@ mod tests {
         assert_eq!(refined, gate);
     }
 
+    /// A 135 strip at the gate's working size: light panel past the strip
+    /// ends, orange rebate, a row of holes at a 56 px pitch along each edge,
+    /// and a textured 425 x 283 picture (36 x 24 mm) between the rows.
+    fn sprocket_strip() -> image::RgbImage {
+        let mut image = image::RgbImage::from_pixel(640, 424, image::Rgb([245, 245, 245]));
+        draw_filled_rect_mut(&mut image, Rect::at(40, 0).of_size(560, 424), image::Rgb([200, 140, 90]));
+        for x in (60..580).step_by(56) {
+            draw_filled_rect_mut(&mut image, Rect::at(x, 30).of_size(22, 32), image::Rgb([245, 245, 245]));
+            draw_filled_rect_mut(&mut image, Rect::at(x, 362).of_size(22, 32), image::Rgb([245, 245, 245]));
+        }
+        for y in 72..355 {
+            for x in 120..545 {
+                let value = ((x * 7 + y * 3) % 61) as u8;
+                image.put_pixel(x, y, image::Rgb([60 + value, 40 + value / 2, 30 + value / 3]));
+            }
+        }
+        image
+    }
+
+    fn luma_of(image: &image::RgbImage) -> LumaPlane {
+        LumaPlane {
+            width: image.width() as usize,
+            height: image.height() as usize,
+            data: image
+                .pixels()
+                .map(|pixel| (pixel[0] as f32 + pixel[1] as f32 + pixel[2] as f32) / 3.0)
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn finds_the_sprocket_rows_of_a_135_strip() {
+        let rows = sprocket_rows(&luma_of(&sprocket_strip()));
+
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|row| row.along_x));
+        assert!((rows[0].centre - 46.0).abs() <= 2.0, "{}", rows[0].centre);
+        assert!((rows[1].centre - 378.0).abs() <= 2.0, "{}", rows[1].centre);
+
+        // The 120 strip has a picture and frame gaps but no holes.
+        let mut strip = image::RgbImage::from_pixel(640, 424, image::Rgb([200, 140, 90]));
+        draw_filled_rect_mut(&mut strip, Rect::at(130, 20).of_size(380, 384), image::Rgb([70, 50, 40]));
+        assert!(sprocket_rows(&luma_of(&strip)).is_empty());
+    }
+
+    #[test]
+    fn picture_boxes_stay_between_the_sprocket_rows() {
+        let image = sprocket_strip();
+        let rows = sprocket_rows(&luma_of(&image));
+        let box_of = |x, y, width, height| GateCandidate {
+            score: 0.0,
+            x,
+            y,
+            width,
+            height,
+        };
+        // Coarse (4 px) boxes: the picture, and the picture run down to the film edge.
+        assert!(clear_of_sprockets(&box_of(30, 18, 106, 71), &rows, 4.0));
+        assert!(!clear_of_sprockets(&box_of(30, 18, 106, 88), &rows, 4.0));
+
+        for quad in ranked_gate_quads(&image) {
+            let (top, bottom) = (quad[0][1].min(quad[1][1]), quad[2][1].max(quad[3][1]));
+            assert!(top >= 46.0 && bottom <= 378.0, "{quad:?}");
+        }
+        let best = ranked_gate_quads(&image)[0];
+        assert!((best[0][0] - 120.0).abs() <= 3.0 && (best[0][1] - 72.0).abs() <= 3.0, "{best:?}");
+        assert!((best[2][0] - 545.0).abs() <= 3.0 && (best[2][1] - 355.0).abs() <= 3.0, "{best:?}");
+    }
+
+    #[test]
+    fn strip_view_turns_the_strip_along_x() {
+        let image = sprocket_strip();
+        let view = strip_view(&image).expect("a 135 strip");
+        assert!(!view.transposed && view.along == 640 && view.across == 424);
+        assert!((view.near - 46.0).abs() <= 2.0 && (view.far - 378.0).abs() <= 2.0);
+        assert_eq!(view.quad(10.0, 20.0, 30.0, 40.0), [[10.0, 30.0], [20.0, 30.0], [20.0, 40.0], [10.0, 40.0]]);
+
+        // A strip running down the image: its start is the image's top, and
+        // the quad comes back in image order.
+        let upright = image::imageops::rotate90(&image);
+        let view = strip_view(&upright).expect("a 135 strip");
+        assert!(view.transposed && view.along == 640 && view.across == 424);
+        assert_eq!(view.quad(10.0, 20.0, 30.0, 40.0), [[30.0, 10.0], [40.0, 10.0], [40.0, 20.0], [30.0, 20.0]]);
+
+        // No hole rows (120), or rows too close together to frame a picture.
+        let mut strip = image::RgbImage::from_pixel(640, 424, image::Rgb([200, 140, 90]));
+        draw_filled_rect_mut(&mut strip, Rect::at(130, 20).of_size(380, 384), image::Rgb([70, 50, 40]));
+        assert!(strip_view(&strip).is_none());
+        let rows = [
+            SprocketRow { along_x: true, centre: 100.0 },
+            SprocketRow { along_x: true, centre: 200.0 },
+        ];
+        assert!(StripView::new(&image, &rows).is_none());
+    }
+
+    #[test]
+    fn conv1d_pads_like_pytorch() {
+        let input = [1.0, 2.0, 3.0, 4.0, 5.0];
+        // The first tap reads `dilation * 2` samples back, zero before the start.
+        assert_eq!(conv1d(&input, 1, 5, 1, &[1.0, 0.0, 0.0, 0.0, 0.0], &[0.5], false), vec![0.5, 0.5, 1.5, 2.5, 3.5]);
+        assert_eq!(conv1d(&input, 1, 5, 2, &[0.0, 0.0, 0.0, 0.0, 1.0], &[0.0], false), vec![5.0, 0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(conv1d(&input, 1, 5, 1, &[0.0, 0.0, -1.0, 0.0, 0.0], &[2.5], true), vec![1.5, 0.5, 0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn side_pair_keeps_to_the_format_width() {
+        let mut logits = vec![0.0f32; 40];
+        logits[3] = 5.0;
+        // The end side: a peak at the right distance, a stronger one too far.
+        logits[20 + 11] = 4.0;
+        logits[20 + 18] = 9.0;
+        let (start, end, _) = best_side_pair(&logits, 7.0, 9.0).unwrap();
+        assert_eq!((start, end), (3.0, 11.0));
+        // A peak leaning to one neighbour moves the side by a fraction of a pixel.
+        logits[20 + 12] = 3.0;
+        let (_, end, _) = best_side_pair(&logits, 7.0, 9.0).unwrap();
+        assert!(end > 11.0 && end < 11.5, "{end}");
+        assert!(best_side_pair(&logits, 30.0, 35.0).is_none());
+    }
+
+    #[test]
+    fn long_sides_snap_past_the_holes_onto_the_picture() {
+        // A 1:1 picture run up into the upper hole row: the holes are cut
+        // through it and stay bright, but the film between them is picture.
+        let mut image = sprocket_strip();
+        draw_filled_rect_mut(&mut image, Rect::at(150, 40).of_size(330, 330), image::Rgb([70, 50, 40]));
+        for x in (60..580).step_by(56) {
+            draw_filled_rect_mut(&mut image, Rect::at(x, 30).of_size(22, 32), image::Rgb([245, 245, 245]));
+        }
+        let view = strip_view(&image).expect("a 135 strip");
+        let luma = view.across_luma(150.0, 480.0);
+        assert_eq!(snap_to_step(&luma, 50.0, 12.0, true).0, 40.0);
+        assert_eq!(snap_to_step(&luma, 365.0, 12.0, false).0, 370.0);
+        // The 24 mm format's sides find no step in the picture: the 1:1 format wins.
+        let middle = (view.near + view.far) / 2.0;
+        let radius = STRIP_SNAP_RADIUS * view.row_gap();
+        let step_at = |share: f64| snap_to_step(&luma, middle - share * view.row_gap() / 2.0, radius, true).1;
+        assert!(step_at(1.0) > step_at(0.86) + 50.0);
+    }
+
+    #[test]
+    fn strips_take_the_strip_search_and_others_do_not() {
+        let image = DynamicImage::ImageRgb8(sprocket_strip());
+        let detection = detect_film_border(&image);
+        assert_eq!(detection.status, "detected_strip");
+        let expected = [[120.0, 72.0], [545.0, 72.0], [545.0, 355.0], [120.0, 355.0]];
+        for (point, expected) in detection.points.iter().zip(expected) {
+            assert!((point[0] * 640.0 - expected[0]).abs() <= 6.0, "{:?}", detection.points);
+            assert!((point[1] * 424.0 - expected[1]).abs() <= 6.0, "{:?}", detection.points);
+        }
+
+        let mut strip = image::RgbImage::from_pixel(640, 424, image::Rgb([200, 140, 90]));
+        draw_filled_rect_mut(&mut strip, Rect::at(130, 20).of_size(380, 384), image::Rgb([70, 50, 40]));
+        assert_ne!(detect_film_border(&DynamicImage::ImageRgb8(strip)).status, "detected_strip");
+    }
+
+    #[test]
+    fn verifier_patch_ignores_the_film_base_tint() {
+        // The same frame on an orange and on a lavender base: the network
+        // input differs only by rounding.
+        let frame = |tint: [f32; 3]| {
+            let mut image = image::RgbImage::from_pixel(200, 140, image::Rgb([0, 0, 0]));
+            for (x, y, pixel) in image.enumerate_pixels_mut() {
+                let value = if (40..160).contains(&x) && (30..110).contains(&y) {
+                    60.0 + ((x * 7 + y * 3) % 50) as f32
+                } else {
+                    200.0
+                };
+                *pixel = image::Rgb(tint.map(|gain| (value * gain).round() as u8));
+            }
+            image
+        };
+        let quad = [[40.0, 30.0], [160.0, 30.0], [160.0, 110.0], [40.0, 110.0]];
+        let orange = frame([1.0, 0.75, 0.55]);
+        let lavender = frame([0.85, 0.75, 1.0]);
+        for corner in 0..4 {
+            let a = verifier_patch(&orange, &quad, corner);
+            let b = verifier_patch(&lavender, &quad, corner);
+            let worst = a.iter().zip(&b).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+            assert!(worst < 0.05, "corner {corner}: {worst}");
+        }
+    }
+
+    #[test]
+    fn only_the_best_ranked_boxes_can_be_verified() {
+        let quads: Vec<[[f64; 2]; 4]> = (0..4)
+            .map(|rank| {
+                let inset = rank as f64;
+                [[inset, inset], [90.0, inset], [90.0, 60.0], [inset, 60.0]]
+            })
+            .collect();
+        let rank_of = |quad: &[[f64; 2]; 4]| quad[0][0] as usize;
+        let runner_up = first_verified(&quads, |quad| rank_of(quad) >= 1);
+        assert_eq!(runner_up.map(rank_of), Some(1));
+        assert!(first_verified(&quads, |quad| rank_of(quad) >= 2).is_none());
+    }
+
+    #[test]
+    fn box_coverage_counts_partly_covered_cells() {
+        // A box from 16 to 80 px across and 0 to 48 px down, on 32 px cells.
+        let mask = box_coverage(&[16.0, 0.0, 80.0, 48.0], 32.0, 2, 3);
+        assert_eq!(mask, vec![0.5, 1.0, 0.5, 0.25, 0.5, 0.25]);
+    }
+
+    #[test]
+    fn max_pool_drops_an_odd_last_row_and_column() {
+        let input: Vec<f32> = (0..15).map(|value| value as f32).collect();
+        assert_eq!(max_pool2(&input, 1, 3, 5), vec![6.0, 8.0]);
+    }
+
+    #[test]
+    fn box_scorer_charges_each_place_down_the_step_ranking() {
+        // Two identical boxes get the same network score, so the later one
+        // loses exactly the rank cost.
+        let working = boundary_scan_thumbnail().resize_exact(640, 416, FilterType::Triangle).to_rgb8();
+        let region = [80.0, 40.0, 560.0, 380.0];
+        let geometry = [0.35, 0.6, 0.5];
+        let preference = box_scorer_preference(&working, &[region, region], &[geometry, geometry]);
+        assert!(preference.iter().all(|value| value.is_finite()));
+        assert!((preference[0] - preference[1] - BOX_SCORER_RANK_COST).abs() < 1e-5);
+        assert!((preference[0] + 2.0f32.ln()).abs() < 1e-5);
+    }
+
+    #[test]
+    fn scored_choice_follows_the_scorer_beyond_its_resolution_only() {
+        let quad = |left: f64, right: f64| Some([[left, 20.0], [right, 20.0], [right, 400.0], [left, 400.0]]);
+        // Step order: an insane box, a box on a line inside the picture, the
+        // full picture 120 px wider, and a near copy of the full picture.
+        let quads = [None, quad(130.0, 390.0), quad(130.0, 510.0), quad(130.0, 498.0)];
+        assert_eq!(scored_choice(&[5.0, -1.0, 0.0, -3.0], &quads), quads[2]);
+        // The scorer prefers the near copy, which it cannot tell from the
+        // higher-ranked full picture: the step search's box stays.
+        assert_eq!(scored_choice(&[5.0, -1.0, -3.0, 0.0], &quads), quads[2]);
+    }
+
     #[test]
     fn rejects_extreme_perspective() {
         let points = [
@@ -1104,4 +1453,1745 @@ mod tests {
         ];
         assert!(!validate_quad(&points, 400, 260, polygon_area(&points)));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Picture-area search with a film-format prior.
+//
+// A frame scanned from a strip has no light-panel border to lean on: on 120
+// film the strip runs across the whole thumbnail and the picture is flanked by
+// the clear base of the frame gaps and by slices of the neighbouring frames.
+// The picture itself is a rectangle of a known film format, though, and each of
+// its four edges is a step from bright base outside to denser picture inside.
+// Searching boxes of the film formats' aspect ratios for the strongest four
+// such steps finds the frame even when the picture holds straighter, stronger
+// lines than its own frame. A small learned check then looks at the four
+// corners of the result, and only a box that passes it is reported as High.
+
+/// Long edge of the image the picture-area search works on.
+const GATE_WORKING_EDGE: u32 = 640;
+/// Block size of the coarse search image (640 -> 160 px).
+const GATE_BLOCK: usize = 4;
+/// Width in coarse pixels of the two means compared by the step filter.
+const GATE_STEP_WIDTH: usize = 2;
+/// Cap on a single step, so one very strong line cannot carry a whole side.
+const GATE_STEP_CAP: f32 = 24.0;
+/// Picture width range as a share of the coarse image width.
+const GATE_MIN_WIDTH: f64 = 0.40;
+const GATE_MAX_WIDTH: f64 = 0.95;
+/// Long/short side ratios of 6x6, 6x7, 6x4.5 and 6x9 / 24x36.
+const GATE_ASPECTS: [f64; 4] = [1.0, 1.25, 1.35, 1.5];
+const GATE_ASPECT_TOLERANCES: [f64; 3] = [-0.04, 0.0, 0.04];
+const GATE_SQUARE_TOLERANCES: [f64; 5] = [-0.03, -0.015, 0.0, 0.015, 0.03];
+/// Placements kept per box size for the base-colour check, and how far apart.
+const GATE_CANDIDATES_PER_SIZE: usize = 3;
+const GATE_CANDIDATE_SPACING: usize = 6;
+/// Boxes offered to the verifier (and to the box scorer when it accepts none),
+/// best first, and how close two boxes may be in coarse pixels before the
+/// weaker one is a duplicate.
+const GATE_RANKED_BOXES: usize = 12;
+const GATE_DUPLICATE_DISTANCE: usize = 4;
+/// Bonus for the share of the image a box covers. A line inside the picture
+/// gives a box smaller than the frame, sharing the frame's other sides.
+const GATE_AREA_WEIGHT: f32 = 0.8;
+/// Share of each side left out at both ends, where the corners blur the step.
+const GATE_EDGE_TRIM: f64 = 0.1;
+/// Samples along a side when it is snapped onto the step at full resolution.
+const GATE_SNAP_SAMPLES: usize = 28;
+const GATE_SNAP_BOX: i32 = 3;
+const GATE_SNAP_MIN_STEP: f32 = 4.0;
+/// Only the best ranked boxes may pass the verifier. The frame is the strongest
+/// box, or the runner-up when a line in the picture outscores a faint edge;
+/// every box further down that passed on the dev rolls was a coincidence on
+/// picture-internal lines, and each extra box is one more chance for one.
+const GATE_VERIFIED_BOXES: usize = 2;
+/// Side of the square patch the corner verifier looks at.
+const VERIFIER_PATCH: usize = 48;
+/// A corner whose verifier probability is below this does not get High.
+const VERIFIER_THRESHOLD: f32 = 0.3;
+/// The bar for a gradient-search quad, which fails far more often on strips.
+const GRADIENT_VERIFIER_THRESHOLD: f32 = 0.99;
+/// A box whose combined side step is below this has found no picture at all.
+const GATE_MIN_SCORE: f32 = 1.0;
+/// Clearance kept from the quad when sampling its surround, as a fraction of the short side.
+const SURROUND_MARGIN: f32 = 0.01;
+const SURROUND_RING: f32 = 0.035;
+/// The surround must cover this fraction of the image to say anything.
+const SURROUND_MIN_AREA: f32 = 0.02;
+/// Luma distance from the surround's median that still counts as plain background.
+const SURROUND_MAX_DEVIATION: i32 = 10;
+/// Fraction of the surround that has to read as plain background.
+const SURROUND_MIN_MATCH: f32 = 0.97;
+/// 135 film: the 24 mm picture height spans this many 4.75 mm sprocket pitches.
+const SPROCKET_PITCHES_PER_PICTURE: f64 = 24.0 / 4.75;
+/// A line through a hole row crosses at least this many holes at a regular pitch.
+const SPROCKET_MIN_HOLES: usize = 5;
+const SPROCKET_PITCH_TOLERANCE: f32 = 0.15;
+/// Luma between the rebate and the light seen through a hole.
+const SPROCKET_MIN_CONTRAST: f32 = 25.0;
+/// A hole row is at least this many pitches deep across the strip (a hole is ~0.6).
+const SPROCKET_MIN_ROW_DEPTH: f32 = 0.4;
+
+struct LumaPlane {
+    width: usize,
+    height: usize,
+    data: Vec<f32>,
+}
+
+impl LumaPlane {
+    fn at(&self, x: usize, y: usize) -> f32 {
+        self.data[y * self.width + x]
+    }
+
+    fn bilinear(&self, x: f64, y: f64) -> f64 {
+        let x = x.clamp(0.0, self.width as f64 - 1.001);
+        let y = y.clamp(0.0, self.height as f64 - 1.001);
+        let x0 = x.floor() as usize;
+        let y0 = y.floor() as usize;
+        let fx = x - x0 as f64;
+        let fy = y - y0 as f64;
+        self.at(x0, y0) as f64 * (1.0 - fx) * (1.0 - fy)
+            + self.at(x0 + 1, y0) as f64 * fx * (1.0 - fy)
+            + self.at(x0, y0 + 1) as f64 * (1.0 - fx) * fy
+            + self.at(x0 + 1, y0 + 1) as f64 * fx * fy
+    }
+}
+
+/// Result of the picture-area search, in working-image pixels.
+struct GateBox {
+    quad: [[f64; 2]; 4],
+    working_width: u32,
+    working_height: u32,
+}
+
+/// Search the picture area: the first ranked box whose corners all pass the
+/// verifier, or, with `false` when none does, the ranked box the box scorer
+/// prefers.
+fn detect_gate_box(thumbnail: &DynamicImage) -> Option<(GateBox, bool)> {
+    let working = gate_working_rgb(thumbnail)?;
+    let (width, height) = working.dimensions();
+    let search = GateSearch::new(&working, GATE_RANKED_BOXES)?;
+    let snapped: Vec<_> = search.offered().iter().map(|candidate| search.snapped(candidate)).collect();
+    let quads: Vec<_> = snapped.iter().flatten().copied().collect();
+    let verified = first_verified(&quads, |quad| {
+        (0..4).all(|corner| {
+            verifier_forward(&verifier_patch(&working, quad, corner)) >= VERIFIER_THRESHOLD
+        })
+    });
+    let accepted = verified.is_some();
+    let quad = match verified {
+        Some(quad) => *quad,
+        None => scored_choice(&search.preferences(&working), &snapped)?,
+    };
+    Some((
+        GateBox {
+            quad,
+            working_width: width,
+            working_height: height,
+        },
+        accepted,
+    ))
+}
+
+/// The first of the best `GATE_VERIFIED_BOXES` ranked quads that `accepts`.
+fn first_verified(
+    quads: &[[[f64; 2]; 4]],
+    accepts: impl Fn(&[[f64; 2]; 4]) -> bool,
+) -> Option<&[[f64; 2]; 4]> {
+    quads.iter().take(GATE_VERIFIED_BOXES).find(|quad| accepts(quad))
+}
+
+/// The format boxes of one working image, best step score first.
+struct GateSearch {
+    luma: LumaPlane,
+    coarse_width: usize,
+    coarse_height: usize,
+    ranked: Vec<GateCandidate>,
+}
+
+impl GateSearch {
+    /// Search and keep the best `count` distinct boxes.
+    fn new(working: &image::RgbImage, count: usize) -> Option<Self> {
+        let (width, height) = working.dimensions();
+        let luma = LumaPlane {
+            width: width as usize,
+            height: height as usize,
+            data: working
+                .pixels()
+                .map(|pixel| (pixel[0] as f32 + pixel[1] as f32 + pixel[2] as f32) / 3.0)
+                .collect(),
+        };
+        let coarse = block_mean(&luma, GATE_BLOCK);
+        if coarse.width < 32 || coarse.height < 24 {
+            return None;
+        }
+        let mut candidates = format_box_candidates(&coarse);
+        let sprockets = sprocket_rows(&luma);
+        if !sprockets.is_empty() {
+            let clear: Vec<GateCandidate> = candidates
+                .iter()
+                .copied()
+                .filter(|candidate| clear_of_sprockets(candidate, &sprockets, GATE_BLOCK as f64))
+                .collect();
+            if !clear.is_empty() {
+                candidates = clear;
+            }
+        }
+        let ranked = rank_candidates(coarse.width, coarse.height, candidates, count);
+        Some(Self {
+            luma,
+            coarse_width: coarse.width,
+            coarse_height: coarse.height,
+            ranked,
+        })
+    }
+
+    /// A candidate snapped onto the steps at working resolution, if sane.
+    fn snapped(&self, candidate: &GateCandidate) -> Option<[[f64; 2]; 4]> {
+        let scale = GATE_BLOCK as f64;
+        let (left, top) = (candidate.x as f64 * scale, candidate.y as f64 * scale);
+        let (right, bottom) = (
+            (candidate.x + candidate.width) as f64 * scale,
+            (candidate.y + candidate.height) as f64 * scale,
+        );
+        snap_quad_to_steps(
+            &self.luma,
+            [[left, top], [right, top], [right, bottom], [left, bottom]],
+            scale + 3.0,
+        )
+        .filter(|quad| gate_quad_is_sane(quad, self.luma.width as f64, self.luma.height as f64))
+    }
+
+    /// The boxes offered to the verifier.
+    fn offered(&self) -> &[GateCandidate] {
+        &self.ranked[..self.ranked.len().min(GATE_RANKED_BOXES)]
+    }
+
+    /// The box scorer's preference for each box offered to the verifier.
+    fn preferences(&self, working: &image::RgbImage) -> Vec<f32> {
+        let boxes = self.offered();
+        let geometry: Vec<[f32; 3]> = boxes
+            .iter()
+            .map(|candidate| {
+                [
+                    (candidate.width as f32 / candidate.height as f32).ln().abs(),
+                    (candidate.width * candidate.height) as f32
+                        / (self.coarse_width * self.coarse_height) as f32,
+                    candidate.score / (1.5 * GATE_STEP_CAP),
+                ]
+            })
+            .collect();
+        let regions: Vec<[f32; 4]> = boxes
+            .iter()
+            .map(|candidate| {
+                let scale = GATE_BLOCK as f32;
+                [
+                    candidate.x as f32 * scale,
+                    candidate.y as f32 * scale,
+                    (candidate.x + candidate.width) as f32 * scale,
+                    (candidate.y + candidate.height) as f32 * scale,
+                ]
+            })
+            .collect();
+        box_scorer_preference(working, &regions, &geometry)
+    }
+}
+
+/// The first sane box in order of preference. A box ranked higher by the step
+/// search that lies within one scorer cell of it is kept instead: the scorer
+/// cannot tell such boxes apart, the steps can.
+fn scored_choice(preference: &[f32], quads: &[Option<[[f64; 2]; 4]>]) -> Option<[[f64; 2]; 4]> {
+    let mut order: Vec<usize> = (0..preference.len()).collect();
+    order.sort_by(|a, b| preference[*b].total_cmp(&preference[*a]));
+    let chosen = order.into_iter().find_map(|index| quads[index])?;
+    let near = |quad: &[[f64; 2]; 4]| {
+        (0..4).all(|corner| {
+            let (a, b) = (quad[corner], chosen[corner]);
+            (a[0] - b[0]).hypot(a[1] - b[1]) <= BOX_SCORER_CELL as f64
+        })
+    };
+    quads.iter().flatten().copied().find(near)
+}
+
+/// The snapped, sane quads of the ranked format boxes, best first.
+fn ranked_gate_quads(working: &image::RgbImage) -> Vec<[[f64; 2]; 4]> {
+    GateSearch::new(working, GATE_RANKED_BOXES).map_or_else(Vec::new, |search| {
+        search.offered().iter().filter_map(|candidate| search.snapped(candidate)).collect()
+    })
+}
+
+/// A row of sprocket holes: its centre line across the strip, in working
+/// pixels, and whether the strip runs along x.
+struct SprocketRow {
+    along_x: bool,
+    centre: f64,
+}
+
+/// The sprocket-hole rows of a 135 strip. A line through a hole row crosses a
+/// regular train of bright holes; enough consecutive such lines at one pitch
+/// make a row. Picture content does not repeat that evenly over that depth.
+fn sprocket_rows(luma: &LumaPlane) -> Vec<SprocketRow> {
+    // The smallest picture the box search allows still spans 5 pitches.
+    let min_pitch = 0.25 * luma.width.min(luma.height) as f64 / SPROCKET_PITCHES_PER_PICTURE;
+    let mut rows = Vec::new();
+    for along_x in [true, false] {
+        let (lines, length) = if along_x {
+            (luma.height, luma.width)
+        } else {
+            (luma.width, luma.height)
+        };
+        let pitches: Vec<Option<f32>> = (0..lines)
+            .map(|line| {
+                let profile: Vec<f32> = (0..length)
+                    .map(|i| if along_x { luma.at(i, line) } else { luma.at(line, i) })
+                    .collect();
+                hole_pitch(&profile).filter(|pitch| *pitch as f64 >= min_pitch)
+            })
+            .collect();
+        let mut line = 0;
+        while line < lines {
+            let Some(pitch) = pitches[line] else {
+                line += 1;
+                continue;
+            };
+            let start = line;
+            while line < lines
+                && pitches[line].map_or(false, |other| (other - pitch).abs() <= 0.05 * pitch)
+            {
+                line += 1;
+            }
+            if (line - start) as f32 >= SPROCKET_MIN_ROW_DEPTH * pitch {
+                rows.push(SprocketRow {
+                    along_x,
+                    centre: (start + line) as f64 / 2.0,
+                });
+            }
+        }
+    }
+    rows
+}
+
+/// The pitch of the holes along one line, if it crosses a regular train of
+/// bright holes on a darker rebate.
+fn hole_pitch(profile: &[f32]) -> Option<f32> {
+    let mut values = profile.to_vec();
+    let low = *values.select_nth_unstable_by(profile.len() / 4, f32::total_cmp).1;
+    let high = *values.select_nth_unstable_by(profile.len() * 9 / 10, f32::total_cmp).1;
+    if high - low < SPROCKET_MIN_CONTRAST {
+        return None;
+    }
+    let threshold = (low + high) / 2.0;
+    // Bright runs that do not touch either end: a hole cut off by the image
+    // edge, or open light panel, has no reliable width.
+    let mut runs: Vec<(f32, f32)> = Vec::new();
+    let mut start = None;
+    for (index, value) in profile.iter().enumerate() {
+        match (start, *value > threshold) {
+            (None, true) => start = Some(index),
+            (Some(first), false) => {
+                if first > 0 {
+                    runs.push(((first + index) as f32 / 2.0, (index - first) as f32));
+                }
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    if runs.len() < SPROCKET_MIN_HOLES {
+        return None;
+    }
+    let mut gaps: Vec<f32> = runs.windows(2).map(|pair| pair[1].0 - pair[0].0).collect();
+    let mut widths: Vec<f32> = runs.iter().map(|run| run.1).collect();
+    gaps.sort_unstable_by(f32::total_cmp);
+    widths.sort_unstable_by(f32::total_cmp);
+    let pitch = gaps[gaps.len() / 2];
+    let regular = gaps
+        .iter()
+        .filter(|gap| (**gap - pitch).abs() <= SPROCKET_PITCH_TOLERANCE * pitch)
+        .count();
+    let duty = widths[widths.len() / 2] / pitch;
+    (regular + 1 >= SPROCKET_MIN_HOLES
+        && pitch <= 0.2 * profile.len() as f32
+        && (0.2..=0.7).contains(&duty))
+        .then_some(pitch)
+}
+
+/// A picture lies between the hole rows: a box whose side reaches past the
+/// middle of a row has holes or rebate inside it.
+fn clear_of_sprockets(candidate: &GateCandidate, rows: &[SprocketRow], scale: f64) -> bool {
+    rows.iter().all(|row| {
+        let (start, size) = if row.along_x {
+            (candidate.y, candidate.height)
+        } else {
+            (candidate.x, candidate.width)
+        };
+        let (near, far) = (start as f64 * scale, (start + size) as f64 * scale);
+        row.centre <= near || row.centre >= far
+    })
+}
+
+/// Every ranked box as normalised points, for building training negatives.
+pub fn film_border_ranked_quads(thumbnail: &DynamicImage) -> Vec<[[f32; 2]; 4]> {
+    let Some(working) = gate_working_rgb(thumbnail) else {
+        return Vec::new();
+    };
+    let (width, height) = working.dimensions();
+    ranked_gate_quads(&working)
+        .iter()
+        .map(|quad| {
+            quad.map(|point| [(point[0] / width as f64) as f32, (point[1] / height as f64) as f32])
+        })
+        .collect()
+}
+
+/// The first `count` ranked boxes before snapping, as coarse `[x, y, width,
+/// height]` with their step score, each with its snapped quad in normalised
+/// points when it is sane; and the box scorer's preference for the boxes
+/// offered to the verifier.
+#[doc(hidden)]
+pub fn film_border_box_pool(
+    thumbnail: &DynamicImage,
+    count: usize,
+) -> (Vec<([usize; 4], f32, Option<[[f32; 2]; 4]>)>, Vec<f32>) {
+    let Some(working) = gate_working_rgb(thumbnail) else {
+        return (Vec::new(), Vec::new());
+    };
+    let (width, height) = working.dimensions();
+    let Some(search) = GateSearch::new(&working, count.max(GATE_RANKED_BOXES)) else {
+        return (Vec::new(), Vec::new());
+    };
+    let boxes = search.ranked[..search.ranked.len().min(count)]
+        .iter()
+        .map(|candidate| {
+            let quad = search.snapped(candidate).map(|quad| {
+                quad.map(|point| [(point[0] / width as f64) as f32, (point[1] / height as f64) as f32])
+            });
+            ([candidate.x, candidate.y, candidate.width, candidate.height], candidate.score, quad)
+        })
+        .collect();
+    (boxes, search.preferences(&working))
+}
+
+fn gate_working_rgb(thumbnail: &DynamicImage) -> Option<image::RgbImage> {
+    let (width, height) = thumbnail.dimensions();
+    let longest = width.max(height);
+    if longest < 64 {
+        return None;
+    }
+    if longest == GATE_WORKING_EDGE {
+        return Some(thumbnail.to_rgb8());
+    }
+    let scale = GATE_WORKING_EDGE as f64 / longest as f64;
+    Some(
+        thumbnail
+            .resize_exact(
+                ((width as f64 * scale).round() as u32).max(1),
+                ((height as f64 * scale).round() as u32).max(1),
+                image::imageops::FilterType::Triangle,
+            )
+            .to_rgb8(),
+    )
+}
+
+fn block_mean(plane: &LumaPlane, block: usize) -> LumaPlane {
+    let width = plane.width / block;
+    let height = plane.height / block;
+    let mut data = vec![0.0f32; width * height];
+    for y in 0..height {
+        for x in 0..width {
+            let mut sum = 0.0f32;
+            for dy in 0..block {
+                for dx in 0..block {
+                    sum += plane.at(x * block + dx, y * block + dy);
+                }
+            }
+            data[y * width + x] = sum / (block * block) as f32;
+        }
+    }
+    LumaPlane {
+        width,
+        height,
+        data,
+    }
+}
+
+/// Bright-outside / dark-inside step maps for the four sides of a box,
+/// accumulated along the side so that any side segment is two lookups.
+struct StepSums {
+    width: usize,
+    /// (height + 1) x width, cumulative down each column.
+    left: Vec<f32>,
+    right: Vec<f32>,
+    /// height x (width + 1), cumulative along each row.
+    top: Vec<f32>,
+    bottom: Vec<f32>,
+}
+
+fn step_sums(plane: &LumaPlane) -> StepSums {
+    let (width, height) = (plane.width, plane.height);
+    let k = GATE_STEP_WIDTH;
+    let mut left = vec![0.0f32; (height + 1) * width];
+    let mut right = vec![0.0f32; (height + 1) * width];
+    let mut top = vec![0.0f32; height * (width + 1)];
+    let mut bottom = vec![0.0f32; height * (width + 1)];
+
+    let mut row_steps = vec![(0.0f32, 0.0f32); width * height];
+    for y in 0..height {
+        let mut prefix = vec![0.0f32; width + 1];
+        for x in 0..width {
+            prefix[x + 1] = prefix[x] + plane.at(x, y);
+        }
+        for x in k..=width - k {
+            let outside = (prefix[x] - prefix[x - k]) / k as f32;
+            let inside = (prefix[x + k] - prefix[x]) / k as f32;
+            if x < width {
+                row_steps[y * width + x] = (
+                    (outside - inside).clamp(0.0, GATE_STEP_CAP),
+                    (inside - outside).clamp(0.0, GATE_STEP_CAP),
+                );
+            }
+        }
+    }
+    for y in 0..height {
+        for x in 0..width {
+            let (l, r) = row_steps[y * width + x];
+            left[(y + 1) * width + x] = left[y * width + x] + l;
+            right[(y + 1) * width + x] = right[y * width + x] + r;
+        }
+    }
+
+    let mut column_steps = vec![(0.0f32, 0.0f32); width * height];
+    for x in 0..width {
+        let mut prefix = vec![0.0f32; height + 1];
+        for y in 0..height {
+            prefix[y + 1] = prefix[y] + plane.at(x, y);
+        }
+        for y in k..=height - k {
+            let outside = (prefix[y] - prefix[y - k]) / k as f32;
+            let inside = (prefix[y + k] - prefix[y]) / k as f32;
+            if y < height {
+                column_steps[y * width + x] = (
+                    (outside - inside).clamp(0.0, GATE_STEP_CAP),
+                    (inside - outside).clamp(0.0, GATE_STEP_CAP),
+                );
+            }
+        }
+    }
+    for y in 0..height {
+        for x in 0..width {
+            let (t, b) = column_steps[y * width + x];
+            top[y * (width + 1) + x + 1] = top[y * (width + 1) + x] + t;
+            bottom[y * (width + 1) + x + 1] = bottom[y * (width + 1) + x] + b;
+        }
+    }
+
+    StepSums {
+        width,
+        left,
+        right,
+        top,
+        bottom,
+    }
+}
+
+/// Every box size the film formats allow inside an image of this size.
+fn format_box_sizes(width: usize, height: usize) -> Vec<(usize, usize)> {
+    let mut sizes = std::collections::BTreeSet::new();
+    let min_width = (GATE_MIN_WIDTH * width as f64) as usize;
+    let max_width = (GATE_MAX_WIDTH * width as f64) as usize;
+    for aspect in GATE_ASPECTS {
+        for landscape in [true, false] {
+            let square = aspect == 1.0;
+            if square && !landscape {
+                continue;
+            }
+            let tolerances: &[f64] = if square {
+                &GATE_SQUARE_TOLERANCES
+            } else {
+                &GATE_ASPECT_TOLERANCES
+            };
+            for box_width in min_width..=max_width {
+                for tolerance in tolerances {
+                    let ratio = aspect * (1.0 + tolerance);
+                    let box_height = if landscape {
+                        box_width as f64 / ratio
+                    } else {
+                        box_width as f64 * ratio
+                    }
+                    .round() as usize;
+                    if box_height as f64 >= 0.25 * height as f64
+                        && box_height + 2 <= height
+                        && box_width + 2 <= width
+                    {
+                        sizes.insert((box_width, box_height));
+                    }
+                }
+            }
+        }
+    }
+    sizes.into_iter().collect()
+}
+
+/// A box found by the step search, with its step score.
+#[derive(Clone, Copy)]
+struct GateCandidate {
+    score: f32,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+}
+
+/// The best few placements of every film-format size, scored by the
+/// bright-outside steps of their sides: the weakest side counts in full, the
+/// others a quarter, so a box cannot win on three good sides alone.
+fn format_box_candidates(plane: &LumaPlane) -> Vec<GateCandidate> {
+    let sums = step_sums(plane);
+    let (width, height) = (plane.width, plane.height);
+    let column = |values: &Vec<f32>, row: usize, x: usize| values[row * width + x];
+    let row_sum = |values: &Vec<f32>, y: usize, x: usize| values[y * (sums.width + 1) + x];
+
+    let mut candidates = Vec::new();
+    for (box_width, box_height) in format_box_sizes(width, height) {
+        let trim_y = (GATE_EDGE_TRIM * box_height as f64) as usize;
+        let trim_x = (GATE_EDGE_TRIM * box_width as f64) as usize;
+        let span_y = (box_height - 2 * trim_y) as f32;
+        let span_x = (box_width - 2 * trim_x) as f32;
+        let mut best_of_size: Vec<GateCandidate> = Vec::with_capacity(GATE_CANDIDATES_PER_SIZE + 1);
+        for y in 1..height - box_height {
+            for x in 1..width - box_width {
+                let left = (column(&sums.left, y + box_height - trim_y, x)
+                    - column(&sums.left, y + trim_y, x))
+                    / span_y;
+                let right = (column(&sums.right, y + box_height - trim_y, x + box_width)
+                    - column(&sums.right, y + trim_y, x + box_width))
+                    / span_y;
+                let top = (row_sum(&sums.top, y, x + box_width - trim_x)
+                    - row_sum(&sums.top, y, x + trim_x))
+                    / span_x;
+                let bottom = (row_sum(&sums.bottom, y + box_height, x + box_width - trim_x)
+                    - row_sum(&sums.bottom, y + box_height, x + trim_x))
+                    / span_x;
+                let score = left.min(right).min(top.min(bottom))
+                    + 0.25 * (left + right + top + bottom);
+                if score < GATE_MIN_SCORE {
+                    continue;
+                }
+                let candidate = GateCandidate {
+                    score,
+                    x,
+                    y,
+                    width: box_width,
+                    height: box_height,
+                };
+                keep_best_placements(&mut best_of_size, candidate);
+            }
+        }
+        candidates.extend(best_of_size);
+    }
+    candidates
+}
+
+/// Keep the highest-scoring placements of one size, at most one per
+/// neighbourhood, so a single strong box does not fill all the places.
+fn keep_best_placements(best: &mut Vec<GateCandidate>, candidate: GateCandidate) {
+    if let Some(near) = best.iter_mut().find(|other| {
+        other.x.abs_diff(candidate.x) + other.y.abs_diff(candidate.y) <= GATE_CANDIDATE_SPACING
+    }) {
+        if candidate.score > near.score {
+            *near = candidate;
+        }
+        return;
+    }
+    best.push(candidate);
+    if best.len() > GATE_CANDIDATES_PER_SIZE {
+        let weakest = best
+            .iter()
+            .enumerate()
+            .min_by(|a, b| a.1.score.total_cmp(&b.1.score))
+            .map_or(0, |(index, _)| index);
+        best.swap_remove(weakest);
+    }
+}
+
+/// The candidates in order of preference: step score plus a bonus for the
+/// larger box, since a picture-internal line gives a box smaller than the
+/// frame. Near-duplicates of a better box are dropped.
+fn rank_candidates(
+    image_width: usize,
+    image_height: usize,
+    candidates: Vec<GateCandidate>,
+    count: usize,
+) -> Vec<GateCandidate> {
+    let image_area = (image_width * image_height) as f32;
+    let mut scored: Vec<(f32, GateCandidate)> = candidates
+        .into_iter()
+        .map(|candidate| {
+            let area = (candidate.width * candidate.height) as f32 / image_area;
+            (candidate.score / (1.5 * GATE_STEP_CAP) + GATE_AREA_WEIGHT * area, candidate)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let mut ranked: Vec<GateCandidate> = Vec::new();
+    for (_, candidate) in scored {
+        let duplicate = ranked.iter().any(|other| {
+            other.x.abs_diff(candidate.x) <= GATE_DUPLICATE_DISTANCE
+                && other.y.abs_diff(candidate.y) <= GATE_DUPLICATE_DISTANCE
+                && (other.x + other.width).abs_diff(candidate.x + candidate.width)
+                    <= GATE_DUPLICATE_DISTANCE
+                && (other.y + other.height).abs_diff(candidate.y + candidate.height)
+                    <= GATE_DUPLICATE_DISTANCE
+        });
+        if !duplicate {
+            ranked.push(candidate);
+            if ranked.len() >= count {
+                break;
+            }
+        }
+    }
+    ranked
+}
+
+/// Move each side of `quad` onto the strongest bright-outside / dark-inside
+/// step within `radius` pixels, fitting a line through the steps found along
+/// the side and ignoring the ones that disagree with it.
+fn snap_quad_to_steps(
+    plane: &LumaPlane,
+    quad: [[f64; 2]; 4],
+    radius: f64,
+) -> Option<[[f64; 2]; 4]> {
+    let radius = radius as i32;
+    let centre = [
+        quad.iter().map(|point| point[0]).sum::<f64>() / 4.0,
+        quad.iter().map(|point| point[1]).sum::<f64>() / 4.0,
+    ];
+    let mut lines = [([0.0f64; 2], [0.0f64; 2]); 4];
+    for side in 0..4 {
+        let start = quad[side];
+        let end = quad[(side + 1) % 4];
+        let direction = [end[0] - start[0], end[1] - start[1]];
+        let length = direction[0].hypot(direction[1]);
+        if length < 4.0 {
+            return None;
+        }
+        let unit = [direction[0] / length, direction[1] / length];
+        let mut normal = [-unit[1], unit[0]];
+        let middle = [start[0] + direction[0] / 2.0, start[1] + direction[1] / 2.0];
+        if (centre[0] - middle[0]) * normal[0] + (centre[1] - middle[1]) * normal[1] < 0.0 {
+            normal = [-normal[0], -normal[1]];
+        }
+
+        let offsets: Vec<i32> = (-radius - GATE_SNAP_BOX..=radius + GATE_SNAP_BOX).collect();
+        let mut found: Vec<(f64, f64)> = Vec::new();
+        for sample in 0..GATE_SNAP_SAMPLES {
+            let t = 0.1 + 0.8 * sample as f64 / (GATE_SNAP_SAMPLES - 1) as f64;
+            let base = [start[0] + t * direction[0], start[1] + t * direction[1]];
+            let profile: Vec<f64> = offsets
+                .iter()
+                .map(|&offset| {
+                    [-3.0, -1.5, 0.0, 1.5, 3.0]
+                        .iter()
+                        .map(|tangent| {
+                            plane.bilinear(
+                                base[0] + tangent * unit[0] + offset as f64 * normal[0],
+                                base[1] + tangent * unit[1] + offset as f64 * normal[1],
+                            )
+                        })
+                        .sum::<f64>()
+                        / 5.0
+                })
+                .collect();
+            let window = GATE_SNAP_BOX as usize;
+            let mut best: Option<(f64, i32)> = None;
+            for index in window..offsets.len() - window {
+                if offsets[index].abs() > radius {
+                    continue;
+                }
+                let outside = profile[index - window..index].iter().sum::<f64>() / window as f64;
+                let inside =
+                    profile[index + 1..index + 1 + window].iter().sum::<f64>() / window as f64;
+                let step = outside - inside;
+                if best.map_or(true, |current| step > current.0) {
+                    best = Some((step, offsets[index]));
+                }
+            }
+            if let Some((step, offset)) = best {
+                if step >= GATE_SNAP_MIN_STEP as f64 {
+                    found.push((t * length, offset as f64));
+                }
+            }
+        }
+
+        let (slope, intercept) = if found.len() < 4 {
+            (0.0, -0.5)
+        } else {
+            robust_line(&found)
+        };
+        let near = intercept + 0.5;
+        let far = slope * length + intercept + 0.5;
+        let a = [start[0] + near * normal[0], start[1] + near * normal[1]];
+        let b = [
+            end[0] + far * normal[0],
+            end[1] + far * normal[1],
+        ];
+        lines[side] = (a, [b[0] - a[0], b[1] - a[1]]);
+    }
+
+    let mut corners = [[0.0f64; 2]; 4];
+    for corner in 0..4 {
+        let (p1, d1) = lines[(corner + 3) % 4];
+        let (p2, d2) = lines[corner];
+        let det = d1[0] * -d2[1] - -d2[0] * d1[1];
+        if det.abs() < 1e-9 {
+            return None;
+        }
+        let rx = p2[0] - p1[0];
+        let ry = p2[1] - p1[1];
+        let t = (rx * -d2[1] - -d2[0] * ry) / det;
+        corners[corner] = [p1[0] + t * d1[0], p1[1] + t * d1[1]];
+    }
+    Some(corners)
+}
+
+/// Least-squares line through (position, offset) samples, refitted three times
+/// without the samples that lie further than 2.5 median deviations off it.
+fn robust_line(samples: &[(f64, f64)]) -> (f64, f64) {
+    let fit = |keep: &[bool]| -> (f64, f64) {
+        let chosen: Vec<&(f64, f64)> = samples
+            .iter()
+            .zip(keep)
+            .filter(|(_, keep)| **keep)
+            .map(|(sample, _)| sample)
+            .collect();
+        let count = chosen.len() as f64;
+        let mean_x = chosen.iter().map(|sample| sample.0).sum::<f64>() / count;
+        let mean_y = chosen.iter().map(|sample| sample.1).sum::<f64>() / count;
+        let sxx = chosen
+            .iter()
+            .map(|sample| (sample.0 - mean_x).powi(2))
+            .sum::<f64>();
+        let sxy = chosen
+            .iter()
+            .map(|sample| (sample.0 - mean_x) * (sample.1 - mean_y))
+            .sum::<f64>();
+        let slope = if sxx > 0.0 { sxy / sxx } else { 0.0 };
+        (slope, mean_y - slope * mean_x)
+    };
+
+    let mut keep = vec![true; samples.len()];
+    for _ in 0..3 {
+        let (slope, intercept) = fit(&keep);
+        let residuals: Vec<f64> = samples
+            .iter()
+            .map(|sample| sample.1 - (slope * sample.0 + intercept))
+            .collect();
+        let mut kept: Vec<f64> = residuals
+            .iter()
+            .zip(&keep)
+            .filter(|(_, keep)| **keep)
+            .map(|(residual, _)| residual.abs())
+            .collect();
+        let deviation = median_f64(&mut kept) + 0.5;
+        let limit = (2.5 * deviation).max(1.5);
+        let next: Vec<bool> = residuals.iter().map(|residual| residual.abs() <= limit).collect();
+        if next.iter().filter(|keep| **keep).count() < 4 {
+            keep = vec![true; samples.len()];
+            break;
+        }
+        keep = next;
+    }
+    fit(&keep)
+}
+
+/// A picture area must be a convex quad inside the image.
+fn gate_quad_is_sane(quad: &[[f64; 2]; 4], width: f64, height: f64) -> bool {
+    if quad
+        .iter()
+        .any(|point| point[0] < -1.0 || point[1] < -1.0 || point[0] > width + 1.0 || point[1] > height + 1.0)
+    {
+        return false;
+    }
+    (0..4).all(|corner| {
+        let a = quad[corner];
+        let b = quad[(corner + 1) % 4];
+        let c = quad[(corner + 2) % 4];
+        (b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) > 0.0
+    })
+}
+
+fn gate_detection(gate: &GateBox, confidence: DetectionConfidence) -> FilmBorderDetection {
+    let width = gate.working_width as f64;
+    let height = gate.working_height as f64;
+    FilmBorderDetection {
+        points: gate.quad.map(|point| {
+            [
+                ((point[0] / width) as f32).clamp(0.0, 1.0),
+                ((point[1] / height) as f32).clamp(0.0, 1.0),
+            ]
+        }),
+        confidence,
+        status: "detected_gate",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Corner verifier: a three-layer convolutional network that looks at a 48 px
+// patch around each corner of a candidate picture area and says whether the
+// corner sits on the picture/base boundary. Trained with
+// tools/film_gate_model/train.py; the weights are generated by its export step.
+
+include!("film_border_verifier_weights.rs");
+
+/// Probability per corner [TL, TR, BR, BL] that it sits on the picture corner.
+fn verify_corners(image: &image::RgbImage, quad: &[[f64; 2]; 4]) -> [f32; 4] {
+    verify_corners_with_polarity(image, quad, false)
+}
+
+fn verify_corners_with_polarity(
+    image: &image::RgbImage,
+    quad: &[[f64; 2]; 4],
+    inverted: bool,
+) -> [f32; 4] {
+    let mut out = [0.0f32; 4];
+    for corner in 0..4 {
+        let mut patch = verifier_patch(image, quad, corner);
+        if inverted {
+            let colour = 3 * VERIFIER_PATCH * VERIFIER_PATCH;
+            patch[..colour].iter_mut().for_each(|value| *value = -*value);
+        }
+        out[corner] = verifier_forward(&patch);
+    }
+    out
+}
+
+/// The 4 x 48 x 48 network input for one corner: the RGB patch white-balanced
+/// on the base outside the quad and normalised by its own mean and spread, and
+/// a mask of the quad interior, mirrored so the interior always lies to the
+/// bottom right.
+fn verifier_patch(image: &image::RgbImage, quad: &[[f64; 2]; 4], corner: usize) -> Vec<f32> {
+    let size = VERIFIER_PATCH;
+    let (width, height) = image.dimensions();
+    let half = (size / 2) as i64;
+    let origin_x = quad[corner][0].floor() as i64 - half;
+    let origin_y = quad[corner][1].floor() as i64 - half;
+
+    let mut rgb = vec![0.0f32; 3 * size * size];
+    let mut inside = vec![false; size * size];
+    for row in 0..size {
+        let y = (origin_y + row as i64).clamp(0, height as i64 - 1) as u32;
+        for col in 0..size {
+            let x = (origin_x + col as i64).clamp(0, width as i64 - 1) as u32;
+            let pixel = image.get_pixel(x, y);
+            for channel in 0..3 {
+                rgb[channel * size * size + row * size + col] = pixel[channel] as f32;
+            }
+            let gx = (origin_x + col as i64) as f64 + 0.5;
+            let gy = (origin_y + row as i64) as f64 + 0.5;
+            inside[row * size + col] = (0..4).all(|side| {
+                let p = quad[side];
+                let q = quad[(side + 1) % 4];
+                (q[0] - p[0]) * (gy - p[1]) - (q[1] - p[1]) * (gx - p[0]) >= 0.0
+            });
+        }
+    }
+    // White-balance on the base: scale the channels so the mean colour outside
+    // the quad turns grey. The film stock's tint (orange, lavender, clear)
+    // then drops out while colour differences inside the patch remain.
+    let outside = inside.iter().filter(|inside| !**inside).count();
+    if outside > 0 {
+        let base: Vec<f64> = (0..3)
+            .map(|channel| {
+                let plane = &rgb[channel * size * size..(channel + 1) * size * size];
+                let sum = plane
+                    .iter()
+                    .zip(&inside)
+                    .filter(|(_, inside)| !**inside)
+                    .map(|(value, _)| *value as f64)
+                    .sum::<f64>();
+                (sum / outside as f64).max(1.0)
+            })
+            .collect();
+        let grey = base.iter().sum::<f64>() / 3.0;
+        for channel in 0..3 {
+            let gain = (grey / base[channel]) as f32;
+            rgb[channel * size * size..(channel + 1) * size * size]
+                .iter_mut()
+                .for_each(|value| *value *= gain);
+        }
+    }
+    let count = rgb.len() as f64;
+    let mean = rgb.iter().map(|value| *value as f64).sum::<f64>() / count;
+    let variance = rgb
+        .iter()
+        .map(|value| (*value as f64 - mean).powi(2))
+        .sum::<f64>()
+        / count;
+    let spread = (variance.sqrt() + 8.0) as f32;
+    let mean = mean as f32;
+
+    let mut input = vec![0.0f32; 4 * size * size];
+    for row in 0..size {
+        for col in 0..size {
+            let source_row = if corner >= 2 { size - 1 - row } else { row };
+            let source_col = if corner == 1 || corner == 2 {
+                size - 1 - col
+            } else {
+                col
+            };
+            for channel in 0..3 {
+                input[channel * size * size + row * size + col] =
+                    (rgb[channel * size * size + source_row * size + source_col] - mean) / spread;
+            }
+            input[3 * size * size + row * size + col] = if inside[source_row * size + source_col] {
+                1.0
+            } else {
+                0.0
+            };
+        }
+    }
+    input
+}
+
+fn verifier_forward(input: &[f32]) -> f32 {
+    let size = VERIFIER_PATCH;
+    let layer1 = conv3x3_relu_pool(input, 4, size, &VERIFIER_C1_W, &VERIFIER_C1_B);
+    let layer2 = conv3x3_relu_pool(&layer1, 8, size / 2, &VERIFIER_C2_W, &VERIFIER_C2_B);
+    let layer3 = conv3x3_relu_pool(&layer2, 16, size / 4, &VERIFIER_C3_W, &VERIFIER_C3_B);
+    let logit = layer3
+        .iter()
+        .zip(VERIFIER_FC_W.iter())
+        .map(|(value, weight)| value * weight)
+        .sum::<f32>()
+        + VERIFIER_FC_B;
+    1.0 / (1.0 + (-logit).exp())
+}
+
+/// 3x3 convolution with zero padding, ReLU and 2x2 max pooling, in the memory
+/// layout PyTorch uses (channel, row, column).
+fn conv3x3_relu_pool(
+    input: &[f32],
+    channels: usize,
+    size: usize,
+    weights: &[f32],
+    bias: &[f32],
+) -> Vec<f32> {
+    let outputs = bias.len();
+    let mut convolved = vec![0.0f32; outputs * size * size];
+    for (output, plane) in convolved.chunks_exact_mut(size * size).enumerate() {
+        plane.fill(bias[output]);
+        for channel in 0..channels {
+            let source = &input[channel * size * size..(channel + 1) * size * size];
+            for ky in 0..3usize {
+                for kx in 0..3usize {
+                    let weight = weights[((output * channels + channel) * 3 + ky) * 3 + kx];
+                    let row_start = 1usize.saturating_sub(ky);
+                    let row_end = (size + 1 - ky).min(size);
+                    let col_start = 1usize.saturating_sub(kx);
+                    let col_end = (size + 1 - kx).min(size);
+                    for row in row_start..row_end {
+                        let y = row + ky - 1;
+                        let target = &mut plane[row * size + col_start..row * size + col_end];
+                        let from = &source[y * size + col_start + kx - 1..];
+                        for (value, sample) in target.iter_mut().zip(from) {
+                            *value += weight * sample;
+                        }
+                    }
+                }
+            }
+        }
+        plane.iter_mut().for_each(|value| *value = value.max(0.0));
+    }
+    let pooled_size = size / 2;
+    let mut pooled = vec![0.0f32; outputs * pooled_size * pooled_size];
+    for output in 0..outputs {
+        for row in 0..pooled_size {
+            for col in 0..pooled_size {
+                let at = |y: usize, x: usize| convolved[output * size * size + y * size + x];
+                pooled[output * pooled_size * pooled_size + row * pooled_size + col] = at(2 * row, 2 * col)
+                    .max(at(2 * row, 2 * col + 1))
+                    .max(at(2 * row + 1, 2 * col))
+                    .max(at(2 * row + 1, 2 * col + 1));
+            }
+        }
+    }
+    pooled
+}
+
+// ---------------------------------------------------------------------------
+// Box scorer: when the verifier vouches for none of the ranked boxes, the box
+// returned with Low confidence is the one a small ensemble of networks prefers.
+// They see the whole frame at 1/16 scale, with the box's coverage joined after
+// the first layer, so they can weigh where the gaps and rebates run against a
+// strong line inside a pale picture, which the step search alone prefers.
+// Trained with tools/film_gate_model/train.py box_scorer.
+
+/// Working pixels per cell of the scorer's image.
+const BOX_SCORER_CELL: usize = 16;
+/// Log-probability a box gives up per place it sits lower in the step ranking.
+const BOX_SCORER_RANK_COST: f32 = 1.0;
+
+/// Preference per box (higher is better): the ensemble's mean log-probability
+/// over the boxes, less the rank cost. `regions` are `[left, top, right,
+/// bottom]` in working pixels; `geometry` is |ln aspect|, area share and step
+/// score per box.
+fn box_scorer_preference(
+    working: &image::RgbImage,
+    regions: &[[f32; 4]],
+    geometry: &[[f32; 3]],
+) -> Vec<f32> {
+    let width = BOX_SCORER_WIDTH;
+    let image = box_scorer_image(working);
+    let (rows, cols) = (working.height() as usize / BOX_SCORER_CELL, working.width() as usize / BOX_SCORER_CELL);
+    let (half_rows, half_cols) = (rows / 2, cols / 2);
+    let masks: Vec<Vec<f32>> = regions
+        .iter()
+        .map(|region| box_coverage(region, (BOX_SCORER_CELL * 2) as f32, half_rows, half_cols))
+        .collect();
+    let mut preference = vec![0.0f32; regions.len()];
+    for model in 0..BOX_SCORER_MODELS {
+        let slice = |weights: &'static [f32], size: usize| &weights[model * size..(model + 1) * size];
+        let first = max_pool2(
+            &conv3x3_relu(
+                &image,
+                3,
+                rows,
+                cols,
+                slice(&BOX_SCORER_C1_W, width * 27),
+                slice(&BOX_SCORER_C1_B, width),
+                true,
+            ),
+            width,
+            rows,
+            cols,
+        );
+        // The image part of the second layer is the same for every box. The
+        // per-box layers work on tiny maps, so they run channels-last, where
+        // the inner loop covers all output channels at once.
+        let channels = 2 * width;
+        let shared = channels_last(
+            &conv3x3_relu(
+                &first,
+                width,
+                half_rows,
+                half_cols,
+                slice(&BOX_SCORER_C2_W, channels * width * 9),
+                slice(&BOX_SCORER_C2_B, channels),
+                false,
+            ),
+            channels,
+        );
+        let mask_taps = taps_last(slice(&BOX_SCORER_C2_MASK_W, channels * 9), channels, 1);
+        let third_taps = taps_last(slice(&BOX_SCORER_C3_W, channels * channels * 9), channels, channels);
+        let fourth_taps = taps_last(slice(&BOX_SCORER_C4_W, channels * channels * 9), channels, channels);
+        let logits: Vec<f32> = masks
+            .iter()
+            .zip(geometry)
+            .map(|(mask, geometry)| {
+                let mut second = shared.clone();
+                conv3x3_add_channels_last(&mut second, mask, half_rows, half_cols, 1, &mask_taps);
+                second.iter_mut().for_each(|value| *value = value.max(0.0));
+                let (rows, cols) = (half_rows / 2, half_cols / 2);
+                let second = max_pool2_channels_last(&second, channels, half_rows, half_cols);
+                let mut third = bias_map(slice(&BOX_SCORER_C3_B, channels), rows * cols);
+                conv3x3_add_channels_last(&mut third, &second, rows, cols, channels, &third_taps);
+                third.iter_mut().for_each(|value| *value = value.max(0.0));
+                let mut fourth = bias_map(slice(&BOX_SCORER_C4_B, channels), rows * cols);
+                conv3x3_add_channels_last(&mut fourth, &third, rows, cols, channels, &fourth_taps);
+                fourth.iter_mut().for_each(|value| *value = value.max(0.0));
+                let mut peak = vec![f32::MIN; channels];
+                let mut mean = vec![0.0f32; channels];
+                for pixel in fourth.chunks_exact(channels) {
+                    for channel in 0..channels {
+                        peak[channel] = peak[channel].max(pixel[channel]);
+                        mean[channel] += pixel[channel] / (rows * cols) as f32;
+                    }
+                }
+                let mut features = peak;
+                features.extend(mean);
+                features.extend_from_slice(geometry);
+                let inputs = features.len();
+                let hidden_weights = slice(&BOX_SCORER_FC1_W, BOX_SCORER_HIDDEN * inputs);
+                let hidden_bias = slice(&BOX_SCORER_FC1_B, BOX_SCORER_HIDDEN);
+                let output_weights = slice(&BOX_SCORER_FC2_W, BOX_SCORER_HIDDEN);
+                (0..BOX_SCORER_HIDDEN)
+                    .map(|unit| {
+                        let row = &hidden_weights[unit * inputs..(unit + 1) * inputs];
+                        let value = row.iter().zip(&features).map(|(w, x)| w * x).sum::<f32>()
+                            + hidden_bias[unit];
+                        value.max(0.0) * output_weights[unit]
+                    })
+                    .sum::<f32>()
+                    + BOX_SCORER_FC2_B[model]
+            })
+            .collect();
+        let peak = logits.iter().fold(f32::MIN, |a, b| a.max(*b));
+        let log_total = peak + logits.iter().map(|logit| (logit - peak).exp()).sum::<f32>().ln();
+        for (value, logit) in preference.iter_mut().zip(&logits) {
+            *value += (logit - log_total) / BOX_SCORER_MODELS as f32;
+        }
+    }
+    for (rank, value) in preference.iter_mut().enumerate() {
+        *value -= BOX_SCORER_RANK_COST * rank as f32;
+    }
+    preference
+}
+
+/// The working image as 16 px cell means in (channel, row, column) layout,
+/// normalised by its own mean and spread.
+fn box_scorer_image(working: &image::RgbImage) -> Vec<f32> {
+    let cell = BOX_SCORER_CELL;
+    let (rows, cols) = (working.height() as usize / cell, working.width() as usize / cell);
+    let mut image = vec![0.0f32; 3 * rows * cols];
+    for row in 0..rows {
+        for col in 0..cols {
+            let mut sum = [0.0f32; 3];
+            for y in row * cell..(row + 1) * cell {
+                for x in col * cell..(col + 1) * cell {
+                    let pixel = working.get_pixel(x as u32, y as u32);
+                    for channel in 0..3 {
+                        sum[channel] += pixel[channel] as f32;
+                    }
+                }
+            }
+            for channel in 0..3 {
+                image[channel * rows * cols + row * cols + col] = sum[channel] / (cell * cell) as f32;
+            }
+        }
+    }
+    let count = image.len() as f64;
+    let mean = image.iter().map(|value| *value as f64).sum::<f64>() / count;
+    let variance = image.iter().map(|value| (*value as f64 - mean).powi(2)).sum::<f64>() / count;
+    let (mean, spread) = (mean as f32, (variance.sqrt() + 8.0) as f32);
+    image.iter_mut().for_each(|value| *value = (*value - mean) / spread);
+    image
+}
+
+/// Share of each `cell` px square covered by the box `[left, top, right, bottom]`.
+fn box_coverage(region: &[f32; 4], cell: f32, rows: usize, cols: usize) -> Vec<f32> {
+    let overlap = |index: usize, low: f32, high: f32| {
+        ((index as f32 + 1.0).min(high / cell) - (index as f32).max(low / cell)).clamp(0.0, 1.0)
+    };
+    let mut mask = vec![0.0f32; rows * cols];
+    for row in 0..rows {
+        let vertical = overlap(row, region[1], region[3]);
+        for col in 0..cols {
+            mask[row * cols + col] = vertical * overlap(col, region[0], region[2]);
+        }
+    }
+    mask
+}
+
+/// 3x3 convolution with zero padding on a `rows` x `cols` map, in PyTorch's
+/// (channel, row, column) layout, optionally followed by ReLU.
+fn conv3x3_relu(
+    input: &[f32],
+    channels: usize,
+    rows: usize,
+    cols: usize,
+    weights: &[f32],
+    bias: &[f32],
+    relu: bool,
+) -> Vec<f32> {
+    let plane_size = rows * cols;
+    let mut output = vec![0.0f32; bias.len() * plane_size];
+    for (out, plane) in output.chunks_exact_mut(plane_size).enumerate() {
+        plane.fill(bias[out]);
+        for channel in 0..channels {
+            let source = &input[channel * plane_size..(channel + 1) * plane_size];
+            for ky in 0..3usize {
+                for kx in 0..3usize {
+                    let weight = weights[((out * channels + channel) * 3 + ky) * 3 + kx];
+                    let (col_start, col_end) = (1usize.saturating_sub(kx), (cols + 1 - kx).min(cols));
+                    for row in 1usize.saturating_sub(ky)..(rows + 1 - ky).min(rows) {
+                        let y = row + ky - 1;
+                        let target = &mut plane[row * cols + col_start..row * cols + col_end];
+                        let from = &source[y * cols + col_start + kx - 1..];
+                        for (value, sample) in target.iter_mut().zip(from) {
+                            *value += weight * sample;
+                        }
+                    }
+                }
+            }
+        }
+        if relu {
+            plane.iter_mut().for_each(|value| *value = value.max(0.0));
+        }
+    }
+    output
+}
+
+/// 2x2 max pooling that drops an odd last row or column, as PyTorch does.
+fn max_pool2(input: &[f32], channels: usize, rows: usize, cols: usize) -> Vec<f32> {
+    let (pooled_rows, pooled_cols) = (rows / 2, cols / 2);
+    let mut pooled = vec![0.0f32; channels * pooled_rows * pooled_cols];
+    for channel in 0..channels {
+        let at = |y: usize, x: usize| input[channel * rows * cols + y * cols + x];
+        for row in 0..pooled_rows {
+            for col in 0..pooled_cols {
+                pooled[(channel * pooled_rows + row) * pooled_cols + col] = at(2 * row, 2 * col)
+                    .max(at(2 * row, 2 * col + 1))
+                    .max(at(2 * row + 1, 2 * col))
+                    .max(at(2 * row + 1, 2 * col + 1));
+            }
+        }
+    }
+    pooled
+}
+
+/// A (channel, row, column) map as (row, column, channel).
+fn channels_last(input: &[f32], channels: usize) -> Vec<f32> {
+    let plane = input.len() / channels;
+    let mut output = vec![0.0f32; input.len()];
+    for channel in 0..channels {
+        for index in 0..plane {
+            output[index * channels + channel] = input[channel * plane + index];
+        }
+    }
+    output
+}
+
+/// PyTorch 3x3 weights (output, input, ky, kx) as (ky, kx, input, output).
+fn taps_last(weights: &[f32], outputs: usize, inputs: usize) -> Vec<f32> {
+    let mut taps = vec![0.0f32; weights.len()];
+    for output in 0..outputs {
+        for input in 0..inputs {
+            for tap in 0..9 {
+                taps[(tap * inputs + input) * outputs + output] = weights[(output * inputs + input) * 9 + tap];
+            }
+        }
+    }
+    taps
+}
+
+fn bias_map(bias: &[f32], pixels: usize) -> Vec<f32> {
+    bias.iter().copied().cycle().take(bias.len() * pixels).collect()
+}
+
+/// Adds a zero-padded 3x3 convolution of a channels-last map to `output`.
+fn conv3x3_add_channels_last(
+    output: &mut [f32],
+    input: &[f32],
+    rows: usize,
+    cols: usize,
+    inputs: usize,
+    taps: &[f32],
+) {
+    let outputs = output.len() / (rows * cols);
+    for row in 0..rows {
+        for col in 0..cols {
+            let target = &mut output[(row * cols + col) * outputs..(row * cols + col + 1) * outputs];
+            for ky in 0..3 {
+                let Some(y) = (row + ky).checked_sub(1).filter(|y| *y < rows) else {
+                    continue;
+                };
+                for kx in 0..3 {
+                    let Some(x) = (col + kx).checked_sub(1).filter(|x| *x < cols) else {
+                        continue;
+                    };
+                    let source = &input[(y * cols + x) * inputs..(y * cols + x + 1) * inputs];
+                    let tap = &taps[(ky * 3 + kx) * inputs * outputs..(ky * 3 + kx + 1) * inputs * outputs];
+                    for (value, weights) in source.iter().zip(tap.chunks_exact(outputs)) {
+                        if *value == 0.0 {
+                            continue;
+                        }
+                        for (sum, weight) in target.iter_mut().zip(weights) {
+                            *sum += value * weight;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// 2x2 max pooling of a channels-last map, dropping an odd last row or column.
+fn max_pool2_channels_last(input: &[f32], channels: usize, rows: usize, cols: usize) -> Vec<f32> {
+    let (pooled_rows, pooled_cols) = (rows / 2, cols / 2);
+    let mut pooled = vec![f32::MIN; pooled_rows * pooled_cols * channels];
+    for row in 0..pooled_rows * 2 {
+        for col in 0..pooled_cols * 2 {
+            let source = &input[(row * cols + col) * channels..(row * cols + col + 1) * channels];
+            let at = ((row / 2) * pooled_cols + col / 2) * channels;
+            for (value, sample) in pooled[at..at + channels].iter_mut().zip(source) {
+                *value = value.max(*sample);
+            }
+        }
+    }
+    pooled
+}
+
+// ---------------------------------------------------------------------------
+// 135 strips: the sprocket rows fix the strip's direction and the band the
+// picture lies in, so every side of the picture is a position along one of two
+// 1-D profiles of the strip. A small 1-D network (trained with
+// tools/film_gate_model/strip.py) scores every position along the strip as
+// the start or end of the picture, the hard sides: a frame gap may be faint and
+// the picture may hold stronger lines. The long sides follow from the hole rows.
+
+/// Feature channels of a strip profile.
+pub const STRIP_CHANNELS: usize = 8;
+/// Hidden channels, kernel and dilations of the side network.
+const STRIP_WIDTH: usize = 16;
+const STRIP_KERNEL: usize = 5;
+const STRIP_DILATIONS: [usize; 8] = [1, 2, 4, 8, 16, 32, 64, 1];
+/// Hole rows closer than this share of the image's cross size are one edge.
+const STRIP_MIN_ROW_GAP: f64 = 0.4;
+/// Share of the hole-row distance left out at each side of the along profile's band.
+const STRIP_BAND_INSET: f64 = 0.25;
+/// Share of the picture length left out at each end of a line across the strip.
+const STRIP_SPAN_TRIM: f64 = 0.15;
+/// Picture height as a share of the hole-row distance, and width over height,
+/// of the 135 formats: 24 x 36 mm between the rows, and 1:1 run over them.
+const STRIP_FORMATS: [(f64, f64); 2] = [(0.86, 1.5), (1.0, 1.0)];
+/// Quantile of a line across the strip that misses the holes: they take up
+/// under half of a hole row.
+const STRIP_HOLE_QUANTILE: f64 = 0.3;
+/// Samples on each side of a step when a long side is snapped onto it.
+const STRIP_SNAP_WINDOW: usize = 3;
+/// How far a long side may lie from its format's place, in hole-row distances.
+const STRIP_SNAP_RADIUS: f64 = 0.04;
+/// Relative play of a picture's width around its format's.
+const STRIP_WIDTH_TOLERANCE: f64 = 0.012;
+
+/// A 135 strip turned so that it runs along x: `rgb` is `along` x `across`
+/// pixels, row-major, and `near` / `far` are the hole-row centres across it.
+#[doc(hidden)]
+pub struct StripView {
+    pub transposed: bool,
+    pub along: usize,
+    pub across: usize,
+    pub near: f64,
+    pub far: f64,
+    rgb: Vec<[f32; 3]>,
+}
+
+impl StripView {
+    /// The strip of a working image with two hole rows far enough apart.
+    fn new(working: &image::RgbImage, rows: &[SprocketRow]) -> Option<Self> {
+        let (width, height) = (working.width() as usize, working.height() as usize);
+        let along_x = [true, false]
+            .into_iter()
+            .find(|axis| rows.iter().filter(|row| row.along_x == *axis).count() >= 2)?;
+        let centres: Vec<f64> = rows.iter().filter(|row| row.along_x == along_x).map(|row| row.centre).collect();
+        let near = centres.iter().copied().fold(f64::MAX, f64::min);
+        let far = centres.iter().copied().fold(f64::MIN, f64::max);
+        let (along, across) = if along_x { (width, height) } else { (height, width) };
+        if far - near < STRIP_MIN_ROW_GAP * across as f64 {
+            return None;
+        }
+        let mut rgb = vec![[0.0f32; 3]; along * across];
+        for (x, y, pixel) in working.enumerate_pixels() {
+            let (a, c) = if along_x { (x as usize, y as usize) } else { (y as usize, x as usize) };
+            rgb[c * along + a] = [pixel[0] as f32, pixel[1] as f32, pixel[2] as f32];
+        }
+        Some(Self {
+            transposed: !along_x,
+            along,
+            across,
+            near,
+            far,
+            rgb,
+        })
+    }
+
+    fn row_gap(&self) -> f64 {
+        self.far - self.near
+    }
+
+    /// The profile along the strip over the band between the hole rows.
+    #[doc(hidden)]
+    pub fn along_profile(&self) -> Vec<f32> {
+        let inset = STRIP_BAND_INSET * self.row_gap();
+        let (low, high) = ((self.near + inset).round() as usize, (self.far - inset).round() as usize);
+        let centre = self.along as f64 / 2.0;
+        self.profile(true, low, high, centre)
+    }
+
+    /// Luma per position across the strip over `[start, end)` along it, less
+    /// trimmed ends: a low quantile, which in a hole row
+    /// reads the film between the holes rather than the light through them.
+    fn across_luma(&self, start: f64, end: f64) -> Vec<f64> {
+        let trim = STRIP_SPAN_TRIM * (end - start);
+        let low = ((start + trim).round().max(0.0) as usize).min(self.along - 1);
+        let high = ((end - trim).round().max(0.0) as usize).clamp(low + 1, self.along);
+        let mut row = Vec::with_capacity(high - low);
+        (0..self.across)
+            .map(|position| {
+                row.clear();
+                row.extend(
+                    self.rgb[position * self.along + low..position * self.along + high]
+                        .iter()
+                        .map(|pixel| (pixel[0] + pixel[1] + pixel[2]) / 3.0),
+                );
+                let at = (STRIP_HOLE_QUANTILE * row.len() as f64) as usize;
+                *row.select_nth_unstable_by(at, f32::total_cmp).1 as f64
+            })
+            .collect()
+    }
+
+    /// Per position along `along_axis` (or across it), averaged over `[low,
+    /// high)` of the other axis, in (channel, position) layout: the log colour
+    /// and the log luma of each half of the range against the profile's median
+    /// log luma, the luma's spread over the range, the position from `centre`
+    /// in hole-row distances, and the hole-row distance as a share of the length.
+    fn profile(&self, along_axis: bool, low: usize, high: usize, centre: f64) -> Vec<f32> {
+        let length = if along_axis { self.along } else { self.across };
+        let middle = (low + high) / 2;
+        let mut sums = vec![[0.0f64; 6]; length];
+        for other in low..high {
+            for (position, sum) in sums.iter_mut().enumerate() {
+                let pixel = if along_axis {
+                    self.rgb[other * self.along + position]
+                } else {
+                    self.rgb[position * self.along + other]
+                };
+                let luma = (pixel[0] + pixel[1] + pixel[2]) as f64 / 3.0;
+                sum[0] += pixel[0] as f64;
+                sum[1] += pixel[1] as f64;
+                sum[2] += pixel[2] as f64;
+                sum[if other < middle { 3 } else { 4 }] += luma;
+                sum[5] += luma * luma;
+            }
+        }
+        let count = (high - low) as f64;
+        let (first, second) = ((middle - low).max(1) as f64, (high - middle).max(1) as f64);
+        let mut log_luma: Vec<f64> = sums.iter().map(|sum| (1.0 + (sum[3] + sum[4]) / count).ln()).collect();
+        let reference = median_f64(&mut log_luma);
+        let gap = self.row_gap();
+        let mut features = vec![0.0f32; STRIP_CHANNELS * length];
+        for (position, sum) in sums.iter().enumerate() {
+            let mean = (sum[3] + sum[4]) / count;
+            let spread = (sum[5] / count - mean * mean).max(0.0).sqrt() / (mean + 8.0);
+            let values = [
+                (1.0 + sum[0] / count).ln() - reference,
+                (1.0 + sum[1] / count).ln() - reference,
+                (1.0 + sum[2] / count).ln() - reference,
+                (1.0 + sum[3] / first).ln() - reference,
+                (1.0 + sum[4] / second).ln() - reference,
+                spread,
+                (position as f64 - centre) / gap,
+                gap / length as f64,
+            ];
+            for (channel, value) in values.iter().enumerate() {
+                features[channel * length + position] = *value as f32;
+            }
+        }
+        features
+    }
+
+    /// A rectangle `[start, end] x [top, bottom]` of the strip in working pixels.
+    fn quad(&self, start: f64, end: f64, top: f64, bottom: f64) -> [[f64; 2]; 4] {
+        let corners = [[start, top], [end, top], [end, bottom], [start, bottom]];
+        if self.transposed {
+            // Along runs down the image: the strip's top side is the image's left.
+            [corners[0], corners[3], corners[2], corners[1]].map(|[a, c]| [c, a])
+        } else {
+            corners
+        }
+    }
+}
+
+/// The working image's strip view, if the image shows a 135 strip.
+fn strip_view(working: &image::RgbImage) -> Option<StripView> {
+    let luma = LumaPlane {
+        width: working.width() as usize,
+        height: working.height() as usize,
+        data: working
+            .pixels()
+            .map(|pixel| (pixel[0] as f32 + pixel[1] as f32 + pixel[2] as f32) / 3.0)
+            .collect(),
+    };
+    StripView::new(working, &sprocket_rows(&luma))
+}
+
+/// The picture of a 135 strip, when the image shows one: High when the corner
+/// verifier accepts all four corners.
+fn detect_strip_picture(thumbnail: &DynamicImage) -> Option<FilmBorderDetection> {
+    let working = gate_working_rgb(thumbnail)?;
+    let view = strip_view(&working)?;
+    let quad = strip_picture(&view)?;
+    let (width, height) = working.dimensions();
+    if !gate_quad_is_sane(&quad, width as f64, height as f64) {
+        return None;
+    }
+    let accepted = verify_corners(&working, &quad).iter().all(|probability| *probability >= VERIFIER_THRESHOLD);
+    let gate = GateBox {
+        quad,
+        working_width: width,
+        working_height: height,
+    };
+    let confidence = if accepted {
+        DetectionConfidence::High
+    } else {
+        DetectionConfidence::Low
+    };
+    Some(FilmBorderDetection {
+        status: "detected_strip",
+        ..gate_detection(&gate, confidence)
+    })
+}
+
+#[doc(hidden)]
+pub fn film_border_strip_view(thumbnail: &DynamicImage) -> Option<StripView> {
+    strip_view(&gate_working_rgb(thumbnail)?)
+}
+
+/// Per-position logits of the two sides, (side, position), from the side network.
+#[doc(hidden)]
+pub fn strip_side_logits(features: &[f32], weights: &[f32], biases: &[f32]) -> Vec<f32> {
+    let length = features.len() / STRIP_CHANNELS;
+    let mut input = features.to_vec();
+    let mut channels = STRIP_CHANNELS;
+    let (mut weight_at, mut bias_at) = (0, 0);
+    for (layer, dilation) in STRIP_DILATIONS.iter().enumerate() {
+        let last = layer + 1 == STRIP_DILATIONS.len();
+        let outputs = if last { 2 } else { STRIP_WIDTH };
+        let layer_weights = &weights[weight_at..weight_at + outputs * channels * STRIP_KERNEL];
+        input = conv1d(&input, channels, length, *dilation, layer_weights, &biases[bias_at..bias_at + outputs], !last);
+        weight_at += outputs * channels * STRIP_KERNEL;
+        bias_at += outputs;
+        channels = outputs;
+    }
+    input
+}
+
+/// Zero-padded "same" 1-D convolution of a (channel, position) map, as PyTorch's
+/// `Conv1d(padding=dilation * (kernel - 1) / 2)`, optionally followed by ReLU.
+fn conv1d(
+    input: &[f32],
+    channels: usize,
+    length: usize,
+    dilation: usize,
+    weights: &[f32],
+    bias: &[f32],
+    relu: bool,
+) -> Vec<f32> {
+    let half = (STRIP_KERNEL / 2 * dilation) as isize;
+    let mut output = vec![0.0f32; bias.len() * length];
+    for (out, row) in output.chunks_exact_mut(length).enumerate() {
+        row.fill(bias[out]);
+        for channel in 0..channels {
+            let source = &input[channel * length..(channel + 1) * length];
+            for tap in 0..STRIP_KERNEL {
+                let weight = weights[(out * channels + channel) * STRIP_KERNEL + tap];
+                let shift = tap as isize * dilation as isize - half;
+                let start = (-shift).max(0) as usize;
+                let end = (length as isize - shift).clamp(0, length as isize) as usize;
+                for position in start..end {
+                    row[position] += weight * source[(position as isize + shift) as usize];
+                }
+            }
+        }
+        if relu {
+            row.iter_mut().for_each(|value| *value = value.max(0.0));
+        }
+    }
+    output
+}
+
+/// The best pair of positions for the two sides, first before second, at
+/// least `min` and at most `max` apart, from (side, position) logits; each
+/// refined to a fraction of a pixel on the parabola through its peak.
+fn best_side_pair(logits: &[f32], min: f64, max: f64) -> Option<(f64, f64, f32)> {
+    let length = logits.len() / 2;
+    let log_softmax = |row: &[f32]| {
+        let peak = row.iter().fold(f32::MIN, |a, b| a.max(*b));
+        let total = peak + row.iter().map(|value| (value - peak).exp()).sum::<f32>().ln();
+        row.iter().map(|value| value - total).collect::<Vec<f32>>()
+    };
+    let (first, second) = (log_softmax(&logits[..length]), log_softmax(&logits[length..]));
+    let (min, max) = (min.ceil().max(1.0) as usize, max.floor() as usize);
+    let mut best: Option<(usize, usize, f32)> = None;
+    for start in 0..length {
+        for end in start + min..(start + max + 1).min(length) {
+            let score = first[start] + second[end];
+            if best.map_or(true, |current| score > current.2) {
+                best = Some((start, end, score));
+            }
+        }
+    }
+    let (start, end, score) = best?;
+    let refine = |row: &[f32], at: usize| {
+        if at == 0 || at + 1 >= row.len() {
+            return at as f64;
+        }
+        let (a, b, c) = (row[at - 1] as f64, row[at] as f64, row[at + 1] as f64);
+        let curvature = a - 2.0 * b + c;
+        if curvature >= 0.0 {
+            return at as f64;
+        }
+        at as f64 + (0.5 * (a - c) / curvature).clamp(-0.5, 0.5)
+    };
+    Some((refine(&first, start), refine(&second, end), score))
+}
+
+/// The picture of a 135 strip as a quad in working pixels. The long sides
+/// follow from the hole rows: the picture of each format is centred between
+/// them at a fixed share of their distance, give or take a camera's gate, so
+/// each format's long sides are snapped onto the nearby step across the strip,
+/// and the format whose weaker long side has the stronger step wins. Its width
+/// then ties together the two short sides the side network scores.
+fn strip_picture(view: &StripView) -> Option<[[f64; 2]; 4]> {
+    let gap = view.row_gap();
+    let middle = (view.near + view.far) / 2.0;
+    let logits = strip_side_logits(&view.along_profile(), &STRIP_ALONG_W, &STRIP_ALONG_B);
+    // The format is not known before the short sides are: measure the long
+    // sides over the middle of the strip, which every format's picture covers.
+    let span = (view.along as f64 / 2.0 - gap / 2.0, view.along as f64 / 2.0 + gap / 2.0);
+    let luma = view.across_luma(span.0, span.1);
+    let (format, top, bottom) = STRIP_FORMATS
+        .iter()
+        .map(|(height_share, _)| {
+            let height = height_share * gap;
+            let radius = STRIP_SNAP_RADIUS * gap;
+            let top = snap_to_step(&luma, middle - height / 2.0, radius, true);
+            let bottom = snap_to_step(&luma, middle + height / 2.0, radius, false);
+            (top, bottom, top.1.min(bottom.1))
+        })
+        .zip(STRIP_FORMATS)
+        .max_by(|a, b| a.0 .2.total_cmp(&b.0 .2))
+        .filter(|((_, _, step), _)| *step >= GATE_SNAP_MIN_STEP as f64)
+        .map(|((top, bottom, _), format)| (format, top.0, bottom.0))?;
+    let (height_share, aspect) = format;
+    let width = aspect * height_share * gap;
+    let (start, end, _) =
+        best_side_pair(&logits, width * (1.0 - STRIP_WIDTH_TOLERANCE), width * (1.0 + STRIP_WIDTH_TOLERANCE))?;
+    // The 24 mm height is standard and the step search only adds noise to it;
+    // a picture run over the hole rows has no standard height.
+    let (top, bottom) = if height_share < 1.0 {
+        (middle - height_share * gap / 2.0, middle + height_share * gap / 2.0)
+    } else {
+        let luma = view.across_luma(start, end);
+        let radius = STRIP_SNAP_RADIUS * gap;
+        (
+            snap_to_step(&luma, top, radius, true).0,
+            snap_to_step(&luma, bottom, radius, false).0,
+        )
+    };
+    Some(view.quad(start, end, top, bottom))
+}
+
+/// The strongest step from bright outside to dark inside within `radius` of
+/// `position` in a profile, the outside lying before the position when
+/// `outside_first`, as the boundary between two samples, with its height.
+fn snap_to_step(profile: &[f64], position: f64, radius: f64, outside_first: bool) -> (f64, f64) {
+    let window = STRIP_SNAP_WINDOW;
+    let low = ((position - radius).round().max(window as f64)) as usize;
+    let high = ((position + radius).round().max(0.0) as usize).min(profile.len().saturating_sub(window));
+    let mean = |from: usize, to: usize| profile[from..to].iter().sum::<f64>() / (to - from) as f64;
+    let mut best = (position, f64::MIN);
+    for at in low..=high {
+        let (before, after) = (mean(at - window, at), mean(at, at + window));
+        let step = if outside_first { before - after } else { after - before };
+        if step > best.1 {
+            best = (at as f64, step);
+        }
+    }
+    best
+}
+
+/// The along-strip network's logits, for the training tools' equivalence check.
+#[doc(hidden)]
+pub fn strip_side_logits_along(features: &[f32]) -> Vec<f32> {
+    strip_side_logits(features, &STRIP_ALONG_W, &STRIP_ALONG_B)
 }

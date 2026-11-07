@@ -25,7 +25,11 @@ pub const DENSITY_ANCHOR_ALGORITHM_VERSION: &str = "density_anchor_v2";
 /// instead of collapsing them onto one shared scale, so endpoints derived by
 /// rule 2 (shared origin and span, plus a per-channel span response) have to be
 /// re-derived.
-pub const DENSITY_WINDOW_RULE_VERSION: u32 = 3;
+///
+/// 4: camera RAWs decoded by LibRaw run the density stage in camera-native RGB
+/// instead of a gamut-compressed ProPhoto estimate, so their film base and
+/// endpoints are in a different channel basis and have to be re-derived.
+pub const DENSITY_WINDOW_RULE_VERSION: u32 = 4;
 
 fn default_calibration_profile_payload_version() -> u32 {
     CALIBRATION_PROFILE_PAYLOAD_VERSION
@@ -723,6 +727,13 @@ pub struct PipelineProcessingReport {
     /// persisted before this field existed deserializes to.
     #[serde(default)]
     pub analysis_window_rule: u32,
+    /// Row-major camera RGB -> linear sRGB matrix of this frame's working
+    /// buffer. `Some` means the density stage ran in camera-native RGB (a
+    /// LibRaw camera RAW), so the normalized positive is mapped to display
+    /// with this matrix. `None` is the ProPhoto estimate every other input
+    /// uses, and what a frame persisted before this field existed reads as.
+    #[serde(default)]
+    pub camera_to_display: Option<[f32; 9]>,
 }
 
 impl PipelineProcessingReport {
@@ -748,6 +759,7 @@ impl PipelineProcessingReport {
             fallback_reason: String::new(),
             input_domain: InputDomainRecord::default(),
             analysis_window_rule: DENSITY_WINDOW_RULE_VERSION,
+            camera_to_display: None,
         }
     }
 
@@ -865,6 +877,20 @@ pub enum DensityAnchorConfidence {
     Verified,
 }
 
+/// Channel basis of the Smart Auto working buffer a density was measured in.
+/// Densities taken in one basis cannot be subtracted from another.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkingBasis {
+    /// Linear ProPhoto estimate: scans, TIFF, JPEG, DNG, and every camera RAW
+    /// analysed before camera RAWs moved to camera-native RGB.
+    #[default]
+    ProPhotoEstimate,
+    /// LibRaw camera RGB with no camera matrix or gamut compression before the
+    /// log.
+    CameraNative,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DensityAnchorProvenance {
     pub input_domain: DataDomain,
@@ -877,6 +903,11 @@ pub struct DensityAnchorProvenance {
     pub algorithm_version: String,
     #[serde(default)]
     pub legacy: bool,
+    /// Basis of the Smart Auto working buffer the anchor was sampled from.
+    /// Anchors persisted before the field existed were all sampled from a
+    /// ProPhoto estimate, which is what the default records.
+    #[serde(default)]
+    pub working_basis: WorkingBasis,
 }
 
 impl Default for DensityAnchorProvenance {
@@ -888,6 +919,7 @@ impl Default for DensityAnchorProvenance {
             raw_decode_version: None,
             algorithm_version: "legacy_unknown".to_string(),
             legacy: true,
+            working_basis: WorkingBasis::ProPhotoEstimate,
         }
     }
 }
