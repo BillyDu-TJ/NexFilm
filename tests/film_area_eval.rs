@@ -71,7 +71,10 @@ fn film_area_eval() {
         let mut variants = Vec::new();
         for size in [640, 1024, 1600] {
             let sized = resized_to_longest_edge(&original, size);
-            let detection = nexfilm_engine::film_border::detect_film_border(&sized);
+            let detection = nexfilm_engine::film_border::detect_film_border_with_format(
+                &sized,
+                Some(&truth.roll_format),
+            );
             variants.push(VariantResult {
                 size,
                 corner_error: corner_error(&detection.points, &truth.points),

@@ -9139,6 +9139,12 @@ pub async fn auto_detect_film_border(
     }
 
     let normalized_path = normalize_path(&file_path);
+    let roll_format = state.rolls.read().ok().and_then(|rolls| {
+        rolls
+            .iter()
+            .find(|roll| roll.roll_id == roll_id)
+            .map(|roll| roll.format.clone())
+    });
     let in_memory_thumbnail = state.items.iter().find_map(|entry| {
         let item = read_lock(entry.value());
         (item.roll_id == roll_id && normalize_path(&item.file_path) == normalized_path)
@@ -9164,7 +9170,7 @@ pub async fn auto_detect_film_border(
                     .ok_or_else(|| "CACHED_THUMBNAIL_NOT_FOUND".to_string())?
             }
         };
-        detect_film_border_from_encoded(&encoded)
+        detect_film_border_from_encoded(&encoded, roll_format.as_deref())
     })
     .await
     .map_err(|error| format!("Film-border worker failed: {error}"))??;
@@ -9175,6 +9181,7 @@ pub async fn auto_detect_film_border(
 
 fn detect_film_border_from_encoded(
     encoded: &str,
+    roll_format: Option<&str>,
 ) -> Result<crate::film_border::FilmBorderDetection, String> {
     let encoded = if encoded.starts_with("data:") {
         encoded
@@ -9189,7 +9196,10 @@ fn detect_film_border_from_encoded(
         .map_err(|error| format!("Cached thumbnail is not valid base64: {error}"))?;
     let thumbnail = image::load_from_memory(&bytes)
         .map_err(|error| format!("Cached thumbnail cannot be decoded: {error}"))?;
-    Ok(crate::film_border::detect_film_border(&thumbnail))
+    Ok(crate::film_border::detect_film_border_with_format(
+        &thumbnail,
+        roll_format,
+    ))
 }
 
 fn normalize_persisted_geometry(mut geom: GeometryState) -> GeometryState {

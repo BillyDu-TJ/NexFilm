@@ -15,6 +15,9 @@ const MAX_SIDE_RATIO: f64 = 6.0;
 const MAX_DIAGONAL_RATIO: f64 = 3.0;
 const MIN_GRADIENT_PROMINENCE: f64 = 1.22;
 const MAX_ANALYSIS_EDGE: u32 = 640;
+const STANDARD_FRAME_ASPECTS: [f64; 6] =
+    [3.0 / 2.0, 1.0, 4.0 / 3.0, 6.0 / 7.0, 6.0 / 9.0, 65.0 / 24.0];
+const ASPECT_SCORE_SIGMA: f64 = 0.20;
 
 /// Gate refinement: how far inward (as a fraction of the edge's own span) a
 /// rebate walk may travel before it is declared a misdetection.
@@ -79,10 +82,21 @@ impl FilmBorderDetection {
 /// Detect a film gate from a cached thumbnail. This function never opens the
 /// source image and therefore cannot trigger a RAW decode.
 pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
+    detect_film_border_with_format(thumbnail, None)
+}
+
+/// Detect a film gate with an optional Roll format hint. The format only
+/// changes candidate weighting and confidence; an unusual but visually strong
+/// candidate is never discarded.
+pub fn detect_film_border_with_format(
+    thumbnail: &DynamicImage,
+    roll_format: Option<&str>,
+) -> FilmBorderDetection {
     let (width, height) = thumbnail.dimensions();
     if width < 16 || height < 16 {
         return FilmBorderDetection::fallback();
     }
+    let preferred_aspect = roll_format.and_then(expected_frame_aspect);
 
     let gray = analysis_grayscale(thumbnail);
     let (width, height) = gray.dimensions();
@@ -92,11 +106,13 @@ pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
     // holes and image texture break or join their edges. Locate the four long
     // gate edges from robust Sobel projections first, then fit each edge.
     if let Some(points) = detect_from_gradient_projections(&blurred) {
+        let aspect_score = candidate_aspect_score(&points, preferred_aspect);
         return detected_result(
             refine_to_gate(thumbnail, points),
             width,
             height,
             "detected_gradient",
+            aspect_score,
         );
     }
 
@@ -104,12 +120,12 @@ pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
     let otsu_edges = canny(&binary, 25.0, 75.0);
     let grayscale_edges = canny(&blurred, 18.0, 58.0);
 
-    let best = find_best_quad(&grayscale_edges, width, height)
+    let best = find_best_quad(&grayscale_edges, width, height, preferred_aspect)
         .into_iter()
-        .chain(find_best_quad(&otsu_edges, width, height))
+        .chain(find_best_quad(&otsu_edges, width, height, preferred_aspect))
         .max_by(|left, right| left.1.total_cmp(&right.1));
 
-    let Some((points, _)) = best else {
+    let Some((points, _, aspect_score)) = best else {
         return FilmBorderDetection::fallback();
     };
 
@@ -118,6 +134,7 @@ pub fn detect_film_border(thumbnail: &DynamicImage) -> FilmBorderDetection {
         width,
         height,
         "detected_contour",
+        aspect_score,
     )
 }
 
@@ -510,8 +527,9 @@ fn find_best_quad(
     edges: &image::GrayImage,
     width: u32,
     height: u32,
-) -> Option<([Point<i32>; 4], f64)> {
-    let mut best: Option<([Point<i32>; 4], f64)> = None;
+    preferred_aspect: Option<f64>,
+) -> Option<([Point<i32>; 4], f64, f64)> {
+    let mut best: Option<([Point<i32>; 4], f64, f64)> = None;
     for contour in find_contours_with_threshold::<i32>(&edges, 0) {
         if contour.points.len() < 12 {
             continue;
@@ -536,10 +554,16 @@ fn find_best_quad(
             continue;
         };
         let area = polygon_area(&points);
-        if validate_quad(&points, width, height, area)
-            && best.as_ref().is_none_or(|(_, best_area)| area > *best_area)
+        if !validate_quad(&points, width, height, area) {
+            continue;
+        }
+        let aspect_score = candidate_aspect_score(&points, preferred_aspect);
+        let score = area * (0.82 + 0.30 * aspect_score);
+        if best
+            .as_ref()
+            .is_none_or(|(_, best_score, _)| score > *best_score)
         {
-            best = Some((points, area));
+            best = Some((points, score, aspect_score));
         }
     }
 
@@ -857,6 +881,7 @@ fn detected_result(
     width: u32,
     height: u32,
     status: &'static str,
+    aspect_score: f64,
 ) -> FilmBorderDetection {
     let width_scale = (width.saturating_sub(1)).max(1) as f32;
     let height_scale = (height.saturating_sub(1)).max(1) as f32;
@@ -867,9 +892,87 @@ fn detected_result(
                 (point.y as f32 / height_scale).clamp(0.0, 1.0),
             ]
         }),
-        confidence: DetectionConfidence::High,
+        confidence: if aspect_score >= 0.35 {
+            DetectionConfidence::High
+        } else {
+            DetectionConfidence::Low
+        },
         status,
     }
+}
+
+fn expected_frame_aspect(roll_format: &str) -> Option<f64> {
+    let normalized = roll_format.trim().to_ascii_lowercase();
+    if normalized.contains("half-frame") || normalized.contains("half frame") {
+        return Some(4.0 / 3.0);
+    }
+    if normalized.contains("xpan") {
+        return Some(65.0 / 24.0);
+    }
+    if normalized == "135" || normalized.starts_with("135 ") || normalized.starts_with("35mm") {
+        return Some(3.0 / 2.0);
+    }
+    if normalized.contains("6x4.5") || normalized.contains("645") {
+        return Some(4.0 / 3.0);
+    }
+    if normalized.contains("6x6") {
+        return Some(1.0);
+    }
+    if normalized.contains("6x7") {
+        return Some(6.0 / 7.0);
+    }
+    if normalized.contains("6x9") {
+        return Some(6.0 / 9.0);
+    }
+    if normalized.contains("6x12") {
+        return Some(6.0 / 12.0);
+    }
+    if normalized.contains("6x17") {
+        return Some(6.0 / 17.0);
+    }
+    if normalized.contains("4x5") {
+        return Some(4.0 / 5.0);
+    }
+    if normalized.contains("5x7") {
+        return Some(5.0 / 7.0);
+    }
+    if normalized.contains("8x10") {
+        return Some(8.0 / 10.0);
+    }
+    None
+}
+
+fn candidate_aspect_score(points: &[Point<i32>; 4], preferred_aspect: Option<f64>) -> f64 {
+    let corners = points.map(|point| [point.x as f64, point.y as f64]);
+    let side =
+        |left: [f64; 2], right: [f64; 2]| (right[0] - left[0]).hypot(right[1] - left[1]).max(1.0);
+    let horizontal = (side(corners[0], corners[1]) + side(corners[3], corners[2])) * 0.5;
+    let vertical = (side(corners[0], corners[3]) + side(corners[1], corners[2])) * 0.5;
+    let actual = (horizontal / vertical).max(1.0 / 50.0);
+    let standard = STANDARD_FRAME_ASPECTS
+        .iter()
+        .map(|expected| aspect_match_score(actual, *expected))
+        .fold(0.0, f64::max);
+    let Some(preferred) = preferred_aspect else {
+        return standard;
+    };
+    let preferred = aspect_match_score(actual, preferred);
+    0.68 * preferred + 0.32 * standard
+}
+
+fn aspect_match_score(actual: f64, expected: f64) -> f64 {
+    let actual = if actual < 1.0 {
+        1.0 / actual.max(1.0e-6)
+    } else {
+        actual
+    };
+    let expected = if expected < 1.0 {
+        1.0 / expected.max(1.0e-6)
+    } else {
+        expected
+    };
+    let distance = (actual / expected).ln() / ASPECT_SCORE_SIGMA;
+    (-distance * distance).exp()
 }
 
 fn order_quad(points: [Point<i32>; 4]) -> [Point<i32>; 4] {
@@ -1051,6 +1154,39 @@ mod tests {
         assert!(analysis
             .pixels()
             .all(|pixel| (pixel[0] as i32 - 128).abs() <= 1));
+    }
+
+    #[test]
+    fn roll_formats_map_to_the_standard_frame_prior() {
+        assert_eq!(expected_frame_aspect("135"), Some(3.0 / 2.0));
+        assert_eq!(expected_frame_aspect("135 Half-frame"), Some(4.0 / 3.0));
+        assert_eq!(expected_frame_aspect("120 (6x6)"), Some(1.0));
+        assert_eq!(expected_frame_aspect("120 (6x7)"), Some(6.0 / 7.0));
+        assert_eq!(expected_frame_aspect("120 (6x9)"), Some(6.0 / 9.0));
+        assert_eq!(expected_frame_aspect("XPan"), Some(65.0 / 24.0));
+        assert_eq!(expected_frame_aspect("APS"), None);
+    }
+
+    #[test]
+    fn aspect_prior_weights_candidates_without_rejecting_unusual_frames() {
+        let three_by_two = [
+            Point::new(0, 0),
+            Point::new(300, 0),
+            Point::new(300, 200),
+            Point::new(0, 200),
+        ];
+        let square = [
+            Point::new(0, 0),
+            Point::new(200, 0),
+            Point::new(200, 200),
+            Point::new(0, 200),
+        ];
+
+        let square_as_three_by_two = candidate_aspect_score(&square, Some(3.0 / 2.0));
+        let square_as_square = candidate_aspect_score(&square, Some(1.0));
+        assert!(square_as_square > square_as_three_by_two);
+        assert!(square_as_three_by_two > 0.0);
+        assert!(candidate_aspect_score(&three_by_two, Some(3.0 / 2.0)) > 0.98);
     }
 
     /// A synthetic scan: open light panel outside the film body, a uniform
