@@ -20,8 +20,8 @@ const STANDARD_FRAME_ASPECTS: [f64; 6] =
     [3.0 / 2.0, 1.0, 4.0 / 3.0, 6.0 / 7.0, 6.0 / 9.0, 65.0 / 24.0];
 const ASPECT_SCORE_SIGMA: f64 = 0.20;
 const ROLL_PRIOR_WINDOW: f32 = 0.05;
-const ROLL_PRIOR_DETECTED_INSET: f32 = 0.02;
-const ROLL_PRIOR_INHERITED_INSET: f32 = 0.03;
+const ROLL_PRIOR_INSET: f32 = 0.03;
+const SOURCE_PRIOR_INSET: f32 = 0.03;
 
 /// Gate refinement: how far inward (as a fraction of the edge's own span) a
 /// rebate walk may travel before it is declared a misdetection.
@@ -73,6 +73,9 @@ pub struct FilmAreaPrior {
     /// Median of the samples, normalized like a detected film area.
     pub points: [[f32; 2]; 4],
     pub sample_count: usize,
+    /// A source-file containment prior is already inside every known selection
+    /// for that file, so detection must not expand back out of it.
+    pub safe_envelope: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -215,19 +218,176 @@ pub fn film_area_prior_from_samples(samples: &[FilmAreaPriorSample]) -> Option<F
         return None;
     };
 
-    let points = median_prior_points(&source);
-    let consistent = source.iter().all(|sample| {
-        sample
-            .points
-            .iter()
-            .flatten()
-            .zip(points.iter().flatten())
-            .all(|(actual, prior)| (actual - prior).abs() <= ROLL_PRIOR_WINDOW)
-    });
-    consistent.then_some(FilmAreaPrior {
+    let cluster = consistent_prior_cluster(&source)?;
+    let points = median_prior_points(&cluster);
+    Some(FilmAreaPrior {
         points,
-        sample_count: source.len(),
+        sample_count: cluster.len(),
+        safe_envelope: false,
     })
+}
+
+/// Build a conservative area contained by every confirmed selection. This is
+/// used when one scanner file has been imported more than once with different
+/// sub-frame choices: the common area is the only range that is guaranteed not
+/// to include light panel or rebate for any of them.
+pub fn film_area_prior_from_common_area(samples: &[FilmAreaPriorSample]) -> Option<FilmAreaPrior> {
+    let confirmed = samples
+        .iter()
+        .filter(|sample| sample.confirmed)
+        .copied()
+        .collect::<Vec<_>>();
+    if confirmed.is_empty() {
+        return None;
+    }
+
+    let left = confirmed
+        .iter()
+        .map(|sample| {
+            sample
+                .points
+                .iter()
+                .map(|point| point[0])
+                .fold(f32::INFINITY, f32::min)
+        })
+        .fold(f32::NEG_INFINITY, f32::max);
+    let right = confirmed
+        .iter()
+        .map(|sample| {
+            sample
+                .points
+                .iter()
+                .map(|point| point[0])
+                .fold(f32::NEG_INFINITY, f32::max)
+        })
+        .fold(f32::INFINITY, f32::min);
+    let top = confirmed
+        .iter()
+        .map(|sample| {
+            sample
+                .points
+                .iter()
+                .map(|point| point[1])
+                .fold(f32::INFINITY, f32::min)
+        })
+        .fold(f32::NEG_INFINITY, f32::max);
+    let bottom = confirmed
+        .iter()
+        .map(|sample| {
+            sample
+                .points
+                .iter()
+                .map(|point| point[1])
+                .fold(f32::NEG_INFINITY, f32::max)
+        })
+        .fold(f32::INFINITY, f32::min);
+    if !(left < right && top < bottom) {
+        return None;
+    }
+
+    let center = [(left + right) * 0.5, (top + bottom) * 0.5];
+    let mut scale = 1.0f32;
+    for _ in 0..40 {
+        let candidate = [
+            [
+                center[0] + (left - center[0]) * scale,
+                center[1] + (top - center[1]) * scale,
+            ],
+            [
+                center[0] + (right - center[0]) * scale,
+                center[1] + (top - center[1]) * scale,
+            ],
+            [
+                center[0] + (right - center[0]) * scale,
+                center[1] + (bottom - center[1]) * scale,
+            ],
+            [
+                center[0] + (left - center[0]) * scale,
+                center[1] + (bottom - center[1]) * scale,
+            ],
+        ];
+        if polygon_area_f32(&candidate) >= MIN_AREA_RATIO as f32
+            && candidate.iter().all(|point| {
+                confirmed
+                    .iter()
+                    .all(|sample| point_in_convex_quad(*point, &sample.points))
+            })
+        {
+            return Some(FilmAreaPrior {
+                points: candidate,
+                sample_count: confirmed.len(),
+                safe_envelope: true,
+            });
+        }
+        scale *= 0.9;
+    }
+    None
+}
+
+fn point_in_convex_quad(point: [f32; 2], quad: &[[f32; 2]; 4]) -> bool {
+    let sign = polygon_area_f32(quad).is_sign_positive();
+    (0..4).all(|index| {
+        let start = quad[index];
+        let end = quad[(index + 1) % 4];
+        let cross = (end[0] - start[0]) * (point[1] - start[1])
+            - (end[1] - start[1]) * (point[0] - start[0]);
+        if sign {
+            cross >= -1.0e-6
+        } else {
+            cross <= 1.0e-6
+        }
+    })
+}
+
+fn consistent_prior_cluster(samples: &[FilmAreaPriorSample]) -> Option<Vec<FilmAreaPriorSample>> {
+    if samples.is_empty() {
+        return None;
+    }
+    if samples.len() < 3 {
+        let points = median_prior_points(samples);
+        let consistent = samples.iter().all(|sample| {
+            sample
+                .points
+                .iter()
+                .flatten()
+                .zip(points.iter().flatten())
+                .all(|(actual, prior)| (actual - prior).abs() <= ROLL_PRIOR_WINDOW)
+        });
+        return consistent.then(|| samples.to_vec());
+    }
+
+    let mut best = Vec::new();
+    for seed in samples {
+        let cluster = samples
+            .iter()
+            .filter(|sample| {
+                sample
+                    .points
+                    .iter()
+                    .flatten()
+                    .zip(seed.points.iter().flatten())
+                    .all(|(actual, expected)| (actual - expected).abs() <= ROLL_PRIOR_WINDOW)
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        if cluster.len() > best.len() {
+            best = cluster;
+        }
+    }
+    if best.len() < 3 {
+        return None;
+    }
+    let points = median_prior_points(&best);
+    best.iter()
+        .all(|sample| {
+            sample
+                .points
+                .iter()
+                .flatten()
+                .zip(points.iter().flatten())
+                .all(|(actual, prior)| (actual - prior).abs() <= ROLL_PRIOR_WINDOW)
+        })
+        .then_some(best)
 }
 
 fn median_prior_points(samples: &[FilmAreaPriorSample]) -> [[f32; 2]; 4] {
@@ -243,10 +403,14 @@ fn median_prior_points(samples: &[FilmAreaPriorSample]) -> [[f32; 2]; 4] {
     })
 }
 
-fn apply_roll_prior(
-    mut detection: FilmBorderDetection,
-    prior: &FilmAreaPrior,
-) -> FilmBorderDetection {
+fn apply_roll_prior(detection: FilmBorderDetection, prior: &FilmAreaPrior) -> FilmBorderDetection {
+    if prior.safe_envelope {
+        return FilmBorderDetection {
+            points: inset_points(prior.points, SOURCE_PRIOR_INSET),
+            confidence: DetectionConfidence::Low,
+            status: "source_prior_safe",
+        };
+    }
     let inside_window = detection.confidence == DetectionConfidence::High
         && !detection.status.contains("fallback")
         && detection
@@ -256,25 +420,22 @@ fn apply_roll_prior(
             .zip(prior.points.iter().flatten())
             .all(|(actual, expected)| (actual - expected).abs() <= ROLL_PRIOR_WINDOW);
 
-    if inside_window {
-        for (point, prior_point) in detection.points.iter_mut().zip(prior.points) {
-            for axis in 0..2 {
-                point[axis] = point[axis].clamp(
-                    prior_point[axis] - ROLL_PRIOR_WINDOW,
-                    prior_point[axis] + ROLL_PRIOR_WINDOW,
-                );
-            }
-        }
-        detection.points = inset_points(detection.points, ROLL_PRIOR_DETECTED_INSET);
-        detection.status = "detected_roll_prior";
-        return detection;
-    }
-
-    let conservative = inset_points(prior.points, ROLL_PRIOR_INHERITED_INSET);
+    // The prior is the scale-stable geometry contract. Local detection may
+    // confirm it and raise confidence, but must not make the returned quad vary
+    // when the same frame is analysed at 640, 1024 or 1600 pixels.
+    let conservative = inset_points(prior.points, ROLL_PRIOR_INSET);
     FilmBorderDetection {
         points: conservative,
-        confidence: DetectionConfidence::Low,
-        status: "prior_inherited",
+        confidence: if inside_window {
+            DetectionConfidence::High
+        } else {
+            DetectionConfidence::Low
+        },
+        status: if inside_window {
+            "detected_roll_prior"
+        } else {
+            "prior_inherited"
+        },
     }
 }
 
@@ -1436,10 +1597,71 @@ mod tests {
     }
 
     #[test]
+    fn a_dominant_confirmed_cluster_ignores_one_outlier() {
+        let points = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]];
+        let shifted = [[0.2, 0.1], [1.0, 0.1], [1.0, 0.9], [0.2, 0.9]];
+
+        let prior = film_area_prior_from_samples(&[
+            prior_sample(points, true),
+            prior_sample(points, true),
+            prior_sample(points, true),
+            prior_sample(shifted, true),
+        ])
+        .expect("three agreeing confirmations form a prior");
+        assert_eq!(prior.points, points);
+        assert_eq!(prior.sample_count, 3);
+    }
+
+    #[test]
+    fn source_common_area_is_contained_by_every_confirmed_selection() {
+        let full = [[0.05, 0.0], [0.96, 0.0], [0.96, 1.0], [0.05, 1.0]];
+        let right_half = [[0.45, 0.04], [0.95, 0.04], [0.95, 0.95], [0.45, 0.95]];
+        let prior = film_area_prior_from_common_area(&[
+            prior_sample(full, true),
+            prior_sample(right_half, true),
+        ])
+        .expect("overlapping confirmed selections have a common area");
+
+        assert!(prior.safe_envelope);
+        assert_eq!(prior.sample_count, 2);
+        assert!(prior
+            .points
+            .iter()
+            .all(|point| point_in_convex_quad(*point, &full)));
+        assert!(prior
+            .points
+            .iter()
+            .all(|point| point_in_convex_quad(*point, &right_half)));
+
+        let applied = apply_roll_prior(
+            FilmBorderDetection {
+                points: right_half,
+                confidence: DetectionConfidence::High,
+                status: "detected_gradient",
+            },
+            &prior,
+        );
+        assert_eq!(applied.status, "source_prior_safe");
+        assert_eq!(applied.confidence, DetectionConfidence::Low);
+    }
+
+    #[test]
+    fn disjoint_source_confirmations_do_not_form_a_common_area() {
+        let left = [[0.0, 0.0], [0.4, 0.0], [0.4, 1.0], [0.0, 1.0]];
+        let right = [[0.6, 0.0], [1.0, 0.0], [1.0, 1.0], [0.6, 1.0]];
+        assert!(film_area_prior_from_common_area(&[
+            prior_sample(left, true),
+            prior_sample(right, true),
+        ])
+        .is_none());
+    }
+
+    #[test]
     fn roll_prior_clamps_local_refinement_and_inherits_on_failure() {
         let prior = FilmAreaPrior {
             points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
             sample_count: 3,
+            safe_envelope: false,
         };
         let local = FilmBorderDetection {
             points: [[0.125, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
@@ -1457,7 +1679,7 @@ mod tests {
         assert_eq!(inherited.status, "prior_inherited");
         assert_eq!(
             inherited.points,
-            inset_points(prior.points, ROLL_PRIOR_INHERITED_INSET)
+            inset_points(prior.points, ROLL_PRIOR_INSET)
         );
     }
 

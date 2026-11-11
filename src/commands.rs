@@ -9125,6 +9125,31 @@ mod geometry_thumbnail_invalidation_tests {
         extra_turn.rotate_90_count = 4;
         assert!(!geometry_framing_changed(&base, &extra_turn));
     }
+
+    #[test]
+    fn detection_thumbnail_uses_the_oriented_full_frame() {
+        let image =
+            image::RgbImage::from_raw(2, 2, vec![255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 255])
+                .unwrap();
+        let mut geom = crate::app_state::GeometryState::default();
+        geom.flip_h = true;
+        geom.crop_rect = crate::app_state::CropRect {
+            x: 0.25,
+            y: 0.25,
+            width: 0.5,
+            height: 0.5,
+        };
+
+        let oriented =
+            super::orient_detection_thumbnail(&image::DynamicImage::ImageRgb8(image), &geom);
+        let oriented = oriented.to_rgb8();
+
+        assert_eq!(oriented.dimensions(), (2, 2));
+        assert_eq!(oriented.get_pixel(0, 0).0, [0, 255, 0]);
+        assert_eq!(oriented.get_pixel(1, 0).0, [255, 0, 0]);
+        assert_eq!(oriented.get_pixel(0, 1).0, [255, 255, 255]);
+        assert_eq!(oriented.get_pixel(1, 1).0, [0, 0, 255]);
+    }
 }
 
 #[tauri::command(rename_all = "snake_case")]
@@ -9147,30 +9172,42 @@ pub async fn auto_detect_film_border(
     });
     let in_memory_thumbnail = state.items.iter().find_map(|entry| {
         let item = read_lock(entry.value());
-        (item.roll_id == roll_id && normalize_path(&item.file_path) == normalized_path)
-            .then(|| item.embedded_thumbnail_base64.clone())
+        (item.roll_id == roll_id && normalize_path(&item.file_path) == normalized_path).then(|| {
+            (
+                item.embedded_thumbnail_base64.clone(),
+                Some(item.geom.clone()),
+            )
+        })
     });
 
     let result = tokio::task::spawn_blocking(move || {
-        let encoded = match in_memory_thumbnail {
-            Some(encoded) => encoded,
+        let (encoded, geom) = match in_memory_thumbnail {
+            Some(value) => value,
             None => {
                 let connection = persistence::open_connection()
                     .map_err(|error| format!("Failed to open state database: {error}"))?;
-                connection
+                let (encoded, geometry) = connection
                     .query_row(
-                        "SELECT COALESCE(embedded_thumb_base64, thumbnail_base64)
+                        "SELECT COALESCE(embedded_thumb_base64, thumbnail_base64), geom
                          FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
                         rusqlite::params![roll_id, file_path],
-                        |row| row.get::<_, Option<String>>(0),
+                        |row| {
+                            Ok((
+                                row.get::<_, Option<String>>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                            ))
+                        },
                     )
                     .optional()
                     .map_err(|error| format!("Failed to read cached thumbnail: {error}"))?
-                    .flatten()
-                    .ok_or_else(|| "CACHED_THUMBNAIL_NOT_FOUND".to_string())?
+                    .ok_or_else(|| "CACHED_THUMBNAIL_NOT_FOUND".to_string())?;
+                let encoded = encoded.ok_or_else(|| "CACHED_THUMBNAIL_NOT_FOUND".to_string())?;
+                let geom = geometry
+                    .and_then(|geometry| serde_json::from_str::<GeometryState>(&geometry).ok());
+                (encoded, geom)
             }
         };
-        detect_film_border_from_encoded(&encoded, roll_format.as_deref())
+        detect_film_border_from_encoded(&encoded, roll_format.as_deref(), geom.as_ref())
     })
     .await
     .map_err(|error| format!("Film-border worker failed: {error}"))??;
@@ -9212,7 +9249,7 @@ pub async fn auto_detect_film_border_batch(
             (item.roll_id == roll_id).then(|| {
                 (
                     normalize_path(&item.file_path),
-                    item.embedded_thumbnail_base64.clone(),
+                    (item.embedded_thumbnail_base64.clone(), item.geom.clone()),
                 )
             })
         })
@@ -9252,33 +9289,125 @@ pub async fn auto_detect_film_border_batch(
                 }
             }
         }
+        let family_prior = if roll_prior_allowed {
+            None
+        } else {
+            let mut family_statement = connection
+                .prepare(
+                    "SELECT ge.geom FROM image_states AS ge
+                     JOIN rolls AS r USING (roll_id)
+                     WHERE r.roll_format = 'Loose'
+                       AND json_extract(ge.geom, '$.calibration_confirmed') = 1
+                       AND json_extract(ge.geom, '$.calibration_points') IS NOT NULL
+                       AND (lower(ge.file_path) LIKE '%.nef'
+                            OR lower(ge.file_path) LIKE '%.raf'
+                            OR lower(ge.file_path) LIKE '%.dng')",
+                )
+                .map_err(|error| format!("Failed to prepare camera family areas: {error}"))?;
+            let family_rows = family_statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| format!("Failed to read camera family areas: {error}"))?;
+            let mut family_samples = Vec::new();
+            for geometry in family_rows {
+                let geometry: Value = serde_json::from_str(
+                    &geometry
+                        .map_err(|error| format!("Failed to read family geometry: {error}"))?,
+                )
+                .map_err(|error| format!("Failed to parse family geometry: {error}"))?;
+                let Some(points) = geometry.get("calibration_points") else {
+                    continue;
+                };
+                if let Ok(points) = serde_json::from_value::<[[f32; 2]; 4]>(points.clone()) {
+                    family_samples.push(crate::film_border::FilmAreaPriorSample {
+                        points,
+                        confirmed: true,
+                        confidence: crate::film_border::DetectionConfidence::High,
+                    });
+                }
+            }
+            crate::film_border::film_area_prior_from_common_area(&family_samples)
+        };
 
         let mut results = Vec::with_capacity(file_paths.len());
         for file_path in file_paths {
-            let encoded =
-                if let Some(encoded) = in_memory_thumbnails.get(&normalize_path(&file_path)) {
-                    encoded.clone()
-                } else {
-                    connection
-                        .query_row(
-                            "SELECT COALESCE(embedded_thumb_base64, thumbnail_base64)
+            let mut prior = crate::film_border::film_area_prior_from_samples(&samples);
+            if prior.is_none() {
+                let mut source_statement = connection
+                    .prepare(
+                        "SELECT geom FROM image_states
+                         WHERE file_path = ?1
+                           AND json_extract(geom, '$.calibration_confirmed') = 1
+                           AND json_extract(geom, '$.calibration_points') IS NOT NULL",
+                    )
+                    .map_err(|error| format!("Failed to prepare source film areas: {error}"))?;
+                let source_rows = source_statement
+                    .query_map(rusqlite::params![file_path], |row| row.get::<_, String>(0))
+                    .map_err(|error| format!("Failed to read source film areas: {error}"))?;
+                let mut source_samples = Vec::new();
+                for geometry in source_rows {
+                    let geometry: Value = serde_json::from_str(
+                        &geometry
+                            .map_err(|error| format!("Failed to read source geometry: {error}"))?,
+                    )
+                    .map_err(|error| format!("Failed to parse source geometry: {error}"))?;
+                    let Some(points) = geometry.get("calibration_points") else {
+                        continue;
+                    };
+                    if let Ok(points) = serde_json::from_value::<[[f32; 2]; 4]>(points.clone()) {
+                        source_samples.push(crate::film_border::FilmAreaPriorSample {
+                            points,
+                            confirmed: true,
+                            confidence: crate::film_border::DetectionConfidence::High,
+                        });
+                    }
+                }
+                prior = crate::film_border::film_area_prior_from_common_area(&source_samples);
+            }
+            let lower_path = file_path.to_ascii_lowercase();
+            let camera_raw = lower_path.ends_with(".nef")
+                || lower_path.ends_with(".raf")
+                || lower_path.ends_with(".dng");
+            if prior.is_none() && !roll_prior_allowed && camera_raw {
+                prior = family_prior.clone();
+            }
+            let (encoded, geom) = if let Some((encoded, geom)) =
+                in_memory_thumbnails.get(&normalize_path(&file_path))
+            {
+                (encoded.clone(), Some(geom.clone()))
+            } else {
+                let (encoded, geom) = connection
+                    .query_row(
+                        "SELECT COALESCE(embedded_thumb_base64, thumbnail_base64), geom
                          FROM image_states WHERE roll_id = ?1 AND file_path = ?2",
-                            rusqlite::params![roll_id, file_path],
-                            |row| row.get::<_, Option<String>>(0),
-                        )
-                        .optional()
-                        .map_err(|error| format!("Failed to read cached thumbnail: {error}"))?
-                        .flatten()
-                        .ok_or_else(|| format!("CACHED_THUMBNAIL_NOT_FOUND: {file_path}"))?
-                };
-            let thumbnail = decode_cached_thumbnail(&encoded)?;
-            let prior = crate::film_border::film_area_prior_from_samples(&samples);
+                        rusqlite::params![roll_id, file_path],
+                        |row| {
+                            Ok((
+                                row.get::<_, Option<String>>(0)?,
+                                row.get::<_, Option<String>>(1)?,
+                            ))
+                        },
+                    )
+                    .optional()
+                    .map_err(|error| format!("Failed to read cached thumbnail: {error}"))?
+                    .ok_or_else(|| format!("CACHED_THUMBNAIL_NOT_FOUND: {file_path}"))?;
+                let encoded =
+                    encoded.ok_or_else(|| format!("CACHED_THUMBNAIL_NOT_FOUND: {file_path}"))?;
+                let geom =
+                    geom.and_then(|geometry| serde_json::from_str::<GeometryState>(&geometry).ok());
+                (encoded, geom)
+            };
+            let mut thumbnail = decode_cached_thumbnail(&encoded)?;
+            if let Some(geom) = geom.as_ref() {
+                thumbnail = orient_detection_thumbnail(&thumbnail, geom);
+            }
             let detection = crate::film_border::detect_film_border_with_prior(
                 &thumbnail,
                 roll_format.as_deref(),
                 prior.as_ref(),
             );
-            if detection.confidence == crate::film_border::DetectionConfidence::High {
+            if roll_prior_allowed
+                && detection.confidence == crate::film_border::DetectionConfidence::High
+            {
                 samples.push(crate::film_border::FilmAreaPriorSample {
                     points: detection.points,
                     confirmed: false,
@@ -9299,8 +9428,12 @@ pub async fn auto_detect_film_border_batch(
 fn detect_film_border_from_encoded(
     encoded: &str,
     roll_format: Option<&str>,
+    geom: Option<&GeometryState>,
 ) -> Result<crate::film_border::FilmBorderDetection, String> {
-    let thumbnail = decode_cached_thumbnail(encoded)?;
+    let mut thumbnail = decode_cached_thumbnail(encoded)?;
+    if let Some(geom) = geom {
+        thumbnail = orient_detection_thumbnail(&thumbnail, geom);
+    }
     Ok(crate::film_border::detect_film_border_with_format(
         &thumbnail,
         roll_format,
@@ -9557,6 +9690,27 @@ fn compute_geometry_proxy(
     }
 
     current
+}
+
+/// Put a cached raw thumbnail into the same oriented full-frame coordinates as
+/// persisted film-area points. Crop is intentionally excluded: Film Area is
+/// edited against the whole oriented frame, not the finished crop.
+pub fn orient_detection_thumbnail(
+    thumbnail: &image::DynamicImage,
+    geom: &crate::app_state::GeometryState,
+) -> image::DynamicImage {
+    let rgb = thumbnail.to_rgb8();
+    let rgb16 = ImageBuffer::from_fn(rgb.width(), rgb.height(), |x, y| {
+        let pixel = rgb.get_pixel(x, y).0;
+        Rgb([
+            u16::from(pixel[0]) * 257,
+            u16::from(pixel[1]) * 257,
+            u16::from(pixel[2]) * 257,
+        ])
+    });
+    image::DynamicImage::ImageRgb16(compute_geometry_proxy(&rgb16, geom))
+        .to_rgb8()
+        .into()
 }
 
 #[tauri::command]

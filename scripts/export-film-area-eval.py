@@ -98,21 +98,16 @@ def evaluation_group(roll_id: str, roll_format: str, category: str, source_path:
 
 def pick_image(
     embedded: bytes | None, thumbnail: bytes | None
-) -> tuple[bytes, tuple[int, int], str]:
+) -> tuple[bytes, tuple[int, int], str, bool]:
     embedded_size = jpeg_size(embedded) if embedded else None
     thumbnail_size = jpeg_size(thumbnail) if thumbnail else None
-    if embedded and embedded_size and thumbnail_size:
-        embedded_aspect = embedded_size[0] / embedded_size[1]
-        thumbnail_aspect = thumbnail_size[0] / thumbnail_size[1]
-        same_orientation = (embedded_size[0] >= embedded_size[1]) == (
-            thumbnail_size[0] >= thumbnail_size[1]
-        )
-        if same_orientation and abs(embedded_aspect - thumbnail_aspect) <= 0.015:
-            return embedded, embedded_size, "embedded"
-    if thumbnail and thumbnail_size:
-        return thumbnail, thumbnail_size, "thumbnail"
+    # The stored thumbnail is the cropped render. Film-area truth lives in the
+    # oriented full frame, so always start from the raw embedded preview and let
+    # the harness apply GeometryState without crop.
     if embedded and embedded_size:
-        return embedded, embedded_size, "embedded"
+        return embedded, embedded_size, "embedded", True
+    if thumbnail and thumbnail_size:
+        return thumbnail, thumbnail_size, "thumbnail", False
     raise ValueError("frame has no decodable thumbnail")
 
 
@@ -142,7 +137,7 @@ def export(database: Path, output: Path) -> None:
             continue
         embedded = decode_thumbnail(row["embedded_thumb_base64"])
         thumbnail = decode_thumbnail(row["thumbnail_base64"])
-        payload, size, source_kind = pick_image(embedded, thumbnail)
+        payload, size, source_kind, orient_with_geom = pick_image(embedded, thumbnail)
         filename = f"frame_{index:04d}.jpg"
         (images / filename).write_bytes(payload)
 
@@ -161,7 +156,9 @@ def export(database: Path, output: Path) -> None:
                 "source_path": row["file_path"],
                 "image": f"images/{filename}",
                 "image_source": source_kind,
+                "orient_with_geom": orient_with_geom,
                 "image_size": list(size),
+                "geom": geometry,
                 "points": [[float(point[0]), float(point[1])] for point in points],
             }
         )

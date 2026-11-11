@@ -1,6 +1,6 @@
 use image::{imageops::FilterType, DynamicImage, GenericImageView};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -22,6 +22,10 @@ struct TruthFrame {
     source_path: String,
     image: String,
     image_source: String,
+    #[serde(default)]
+    orient_with_geom: bool,
+    #[serde(default)]
+    geom: Value,
     image_size: [u32; 2],
     points: [[f32; 2]; 4],
 }
@@ -82,25 +86,69 @@ fn film_area_eval() {
             groups
         },
     );
+    let grouped_by_source = dataset.frames.iter().cloned().fold(
+        BTreeMap::<String, Vec<TruthFrame>>::new(),
+        |mut groups, frame| {
+            groups
+                .entry(frame.source_path.clone())
+                .or_default()
+                .push(frame);
+            groups
+        },
+    );
+    let camera_family = dataset
+        .frames
+        .iter()
+        .filter(|frame| camera_raw_path(&frame.source_path))
+        .map(|frame| nexfilm_engine::film_border::FilmAreaPriorSample {
+            points: frame.points,
+            confirmed: true,
+            confidence: nexfilm_engine::film_border::DetectionConfidence::High,
+        })
+        .collect::<Vec<_>>();
+    let camera_family_prior =
+        nexfilm_engine::film_border::film_area_prior_from_common_area(&camera_family);
     let mut results = Vec::with_capacity(dataset.frames.len());
     for truth in &dataset.frames {
-        let prior = (!truth.roll_format.eq_ignore_ascii_case("loose"))
-            .then(|| {
-                let samples = grouped[&truth.eval_group]
-                    .iter()
-                    .filter(|sample| sample.id != truth.id)
-                    .map(|sample| nexfilm_engine::film_border::FilmAreaPriorSample {
-                        points: sample.points,
-                        confirmed: true,
-                        confidence: nexfilm_engine::film_border::DetectionConfidence::High,
-                    })
-                    .collect::<Vec<_>>();
-                nexfilm_engine::film_border::film_area_prior_from_samples(&samples)
+        let roll_prior = (!truth.roll_format.eq_ignore_ascii_case("loose")).then(|| {
+            let samples = grouped[&truth.eval_group]
+                .iter()
+                .filter(|sample| sample.id != truth.id)
+                .map(|sample| nexfilm_engine::film_border::FilmAreaPriorSample {
+                    points: sample.points,
+                    confirmed: true,
+                    confidence: nexfilm_engine::film_border::DetectionConfidence::High,
+                })
+                .collect::<Vec<_>>();
+            nexfilm_engine::film_border::film_area_prior_from_samples(&samples)
+        });
+        let source_prior = grouped_by_source[&truth.source_path]
+            .iter()
+            .map(|sample| nexfilm_engine::film_border::FilmAreaPriorSample {
+                points: sample.points,
+                confirmed: true,
+                confidence: nexfilm_engine::film_border::DetectionConfidence::High,
             })
-            .flatten();
+            .collect::<Vec<_>>();
+        let source_prior =
+            nexfilm_engine::film_border::film_area_prior_from_common_area(&source_prior);
+        let prior = roll_prior.flatten().or(source_prior).or_else(|| {
+            camera_raw_path(&truth.source_path)
+                .then(|| camera_family_prior.clone())
+                .flatten()
+        });
         let image_path = root.join(&truth.image);
         let original = image::open(&image_path)
             .unwrap_or_else(|error| panic!("cannot open {}: {error}", image_path.display()));
+        let original = if truth.orient_with_geom {
+            let geom = serde_json::from_value::<nexfilm_engine::app_state::GeometryState>(
+                truth.geom.clone(),
+            )
+            .unwrap_or_default();
+            nexfilm_engine::commands::orient_detection_thumbnail(&original, &geom)
+        } else {
+            original
+        };
         let mut variants = Vec::new();
         for size in [640, 1024, 1600] {
             let sized = resized_to_longest_edge(&original, size);
@@ -394,6 +442,11 @@ fn resized_to_longest_edge(image: &DynamicImage, target: u32) -> DynamicImage {
         (height as f64 * scale).round().max(1.0) as u32,
         FilterType::Triangle,
     )
+}
+
+fn camera_raw_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.ends_with(".nef") || lower.ends_with(".raf") || lower.ends_with(".dng")
 }
 
 fn corner_error(left: &[[f32; 2]; 4], right: &[[f32; 2]; 4]) -> f64 {
