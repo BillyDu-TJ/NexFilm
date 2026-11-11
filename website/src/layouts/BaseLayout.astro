@@ -1,0 +1,66 @@
+---
+import { ClientRouter } from 'astro:transitions';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import { withBase, switchLocalePath } from '../utils/urls';
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description?: string;
+  lang: 'zh' | 'en';
+  canonicalUrl?: string;
+}
+
+const { 
+  title, 
+  description = 'NexFilm Engine - 科学级胶片密度域反转与校色工作台。将相机翻拍与扫描仪 RAW 负片转换为自然、可解释的真实色彩。', 
+  lang,
+  canonicalUrl
+} = Astro.props;
+
+const fullTitle = title.includes('NexFilm') ? title : `${title} · NexFilm Engine`;
+const currentPath = Astro.url.pathname;
+const targetLang = lang === 'zh' ? 'en' : 'zh';
+const switchLangPath = switchLocalePath(currentPath, targetLang);
+---
+
+<!doctype html>
+<html lang={lang} class="dark scroll-smooth">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{fullTitle}</title>
+    <meta name="description" content={description} />
+    {canonicalUrl && <link rel="canonical" href={canonicalUrl} />}
+    <link rel="icon" type="image/png" href={withBase('/favicon.png')} />
+    <meta name="theme-color" content="#161618" />
+    
+    <!-- Open Graph / SEO -->
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={withBase('/gallery/portra-400-pos.webp')} />
+    <meta property="og:url" content={Astro.url.href} />
+
+    <!-- Google Fonts: Inter for UI + JetBrains Mono for optical readouts + Noto Serif SC for editorial touch -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Serif+SC:wght@500;700&display=swap" rel="stylesheet">
+    
+    <!-- Astro View Transitions -->
+    <ClientRouter />
+
+    <!-- Release Hydrator Script -->
+    <script src="../scripts/release-hydrator.ts"></script>
+  </head>
+  <body class="min-h-screen flex flex-col bg-darkroom-bg text-text-primary antialiased selection:bg-accent selection:text-white">
+    <Header lang={lang} switchLangPath={switchLangPath} />
+    
+    <main class="flex-grow">
+      <slot />
+    </main>
+
+    <Footer lang={lang} />
+  </body>
+</html>

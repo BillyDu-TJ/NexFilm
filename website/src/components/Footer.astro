@@ -1,0 +1,72 @@
+---
+import { withBase } from '../utils/urls';
+
+interface Props {
+  lang: 'zh' | 'en';
+}
+
+const { lang } = Astro.props;
+---
+
+<footer class="border-t border-darkroom-line bg-darkroom-canvas text-text-secondary py-12 px-4 sm:px-6 lg:px-8 mt-20">
+  <div class="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-4 gap-8">
+    <!-- Brand Info -->
+    <div class="md:col-span-2 space-y-4">
+      <div class="flex items-center gap-2.5">
+        <img src={withBase('/nexfilm-logo.svg')} alt="NexFilm" class="h-6 w-auto" />
+        <span class="font-bold text-base text-text-primary tracking-tight">NexFilm Engine</span>
+      </div>
+      <p class="text-xs text-text-secondary max-w-md leading-relaxed font-sans">
+        {lang === 'zh' 
+          ? '基于真实光学密度定律与片基对数透射率的底片反转工作台。专为胶片摄影师、暗房工作者与高质量数码翻拍而设计。'
+          : 'A transparent, physically grounded film negative inversion workspace built on optical density and linear transmittance.'
+        }
+      </p>
+      <div class="text-[11px] text-text-muted space-y-1 font-mono">
+        <p>{lang === 'zh' ? '软件作者: Billy_Du · UI 设计: lonely-xmw' : 'Author: Billy_Du · UI Design: lonely-xmw'}</p>
+        <p>{lang === 'zh' ? '采用 GNU General Public License v3.0 协议开源' : 'Licensed under GNU General Public License v3.0'}</p>
+      </div>
+    </div>
+
+    <!-- Quick Links (Primary) -->
+    <div>
+      <h4 class="text-xs font-mono font-semibold text-text-primary uppercase tracking-wider mb-4">
+        {lang === 'zh' ? '产品与功能' : 'Product'}
+      </h4>
+      <ul class="space-y-2 text-xs font-sans">
+        <li><a href={withBase(`/${lang}/`)} class="hover:text-accent transition-colors">{lang === 'zh' ? '首页' : 'Home'}</a></li>
+        <li><a href={withBase(`/${lang}/features/`)} class="hover:text-accent transition-colors">{lang === 'zh' ? '功能详解' : 'Features'}</a></li>
+        <li><a href={withBase(`/${lang}/gallery/`)} class="hover:text-accent transition-colors">{lang === 'zh' ? '效果画廊' : 'Gallery'}</a></li>
+        <li><a href={withBase(`/${lang}/docs/`)} class="hover:text-accent transition-colors">{lang === 'zh' ? '图文文档' : 'Documentation'}</a></li>
+        <li><a href={withBase(`/${lang}/docs/quick-start/`)} class="hover:text-accent transition-colors">{lang === 'zh' ? '快速上手' : 'Quick Start'}</a></li>
+        <li><a href={withBase(`/${lang}/docs/workspace-and-views/`)} class="hover:text-accent transition-colors">{lang === 'zh' ? '工作台手册' : 'User Manual'}</a></li>
+        <li><a href={withBase(`/${lang}/changelog/`)} class="hover:text-accent transition-colors">{lang === 'zh' ? '更新日志' : 'Changelog'}</a></li>
+        <li><a href={withBase(`/${lang}/download/`)} class="hover:text-accent transition-colors">{lang === 'zh' ? '下载安装' : 'Download'}</a></li>
+      </ul>
+    </div>
+
+    <!-- Community & Resources -->
+    <div>
+      <h4 class="text-xs font-mono font-semibold text-text-primary uppercase tracking-wider mb-4">
+        {lang === 'zh' ? '社区与支持' : 'Community'}
+      </h4>
+      <ul class="space-y-2 text-xs font-sans">
+        <li><a href={withBase(`/${lang}/faq/`)} class="hover:text-accent transition-colors">{lang === 'zh' ? '常见问题' : 'FAQ'}</a></li>
+        <li><a href={withBase(`/${lang}/feedback/`)} class="hover:text-accent transition-colors">{lang === 'zh' ? '反馈与赞赏' : 'Feedback & Sponsor'}</a></li>
+        <li><a href={withBase(`/${lang}/about/`)} class="hover:text-accent transition-colors">{lang === 'zh' ? '关于 NexFilm' : 'About'}</a></li>
+        <li><a href="https://github.com/BillyDu-TJ/NexFilm" target="_blank" rel="noopener noreferrer" class="hover:text-accent transition-colors">GitHub Repository</a></li>
+        <li><a href="https://github.com/BillyDu-TJ/NexFilm/releases" target="_blank" rel="noopener noreferrer" class="hover:text-accent transition-colors">GitHub Releases</a></li>
+        <li><a href="https://github.com/BillyDu-TJ/NexFilm/issues" target="_blank" rel="noopener noreferrer" class="hover:text-accent transition-colors">Issue Tracker</a></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="max-w-7xl mx-auto mt-8 pt-6 border-t border-darkroom-line flex flex-col sm:flex-row items-center justify-between text-[11px] text-text-muted gap-4 font-mono">
+    <p>{lang === 'zh' ? '本站纯静态运行，不跟踪用户隐私。' : 'Static website with zero tracking cookies.'}</p>
+    <div class="flex items-center gap-4">
+      <a href="https://github.com/BillyDu-TJ/NexFilm/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" class="hover:text-text-secondary transition-colors">GNU GPL-3.0</a>
+      <span>•</span>
+      <span>Tauri 2 + Rust + WebGL</span>
+    </div>
+  </div>
+</footer>

@@ -1,0 +1,282 @@
+/* docs-prose.css - Darkroom Technical Typography for Documentation */
+
+.docs-prose {
+  color: #aaaab0;
+  font-size: 0.9375rem;
+  line-height: 1.8;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+.docs-prose p {
+  margin-top: 1.125rem;
+  margin-bottom: 1.125rem;
+}
+
+.docs-prose strong {
+  color: #f0f0f1;
+  font-weight: 600;
+}
+
+.docs-prose em {
+  color: #d2d2d6;
+  font-style: italic;
+}
+
+.docs-prose a {
+  color: #c4814f;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  transition: color 0.15s ease;
+}
+
+.docs-prose a:hover {
+  color: #d28e59;
+}
+
+/* Headings */
+.docs-prose h2 {
+  color: #f0f0f1;
+  font-size: 1.375rem;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  margin-top: 2.75rem;
+  margin-bottom: 1.125rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  scroll-margin-top: 5rem;
+}
+
+.docs-prose h2:first-child {
+  margin-top: 0;
+}
+
+.docs-prose h3 {
+  color: #f0f0f1;
+  font-size: 1.125rem;
+  font-weight: 600;
+  margin-top: 2rem;
+  margin-bottom: 0.75rem;
+  scroll-margin-top: 5rem;
+}
+
+.docs-anchor {
+  color: rgba(196, 129, 79, 0.4);
+  text-decoration: none;
+  margin-right: 0.5rem;
+  font-weight: 400;
+  font-family: ui-monospace, monospace;
+  transition: color 0.15s ease;
+}
+
+.docs-anchor:hover {
+  color: #c4814f;
+}
+
+/* Lists */
+.docs-prose ul {
+  list-style: disc outside;
+  margin-top: 1rem;
+  margin-bottom: 1.25rem;
+  padding-left: 1.5rem;
+}
+
+.docs-prose ol {
+  list-style: decimal outside;
+  margin-top: 1rem;
+  margin-bottom: 1.25rem;
+  padding-left: 1.5rem;
+}
+
+.docs-prose li {
+  margin-top: 0.375rem;
+  margin-bottom: 0.375rem;
+}
+
+.docs-prose li::marker {
+  color: #74747b;
+}
+
+/* Tables */
+.docs-prose table.doc-table {
+  width: 100%;
+  max-width: 100%;
+  border-collapse: collapse;
+  margin-top: 1.5rem;
+  margin-bottom: 1.5rem;
+  font-size: 0.8125rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.5rem;
+  display: block;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.docs-prose table.doc-table th,
+.docs-prose table.doc-table td {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  line-height: 1.6;
+  vertical-align: top;
+}
+
+.docs-prose table.doc-table th {
+  color: #f0f0f1;
+  font-weight: 600;
+  background-color: #222225;
+}
+
+.docs-prose table.doc-table td {
+  color: #aaaab0;
+  background-color: #161618;
+}
+
+.docs-prose table.doc-table tr:hover td {
+  background-color: #1d1d20;
+}
+
+/* Callouts & Alerts */
+.doc-callout {
+  margin: 1.5rem 0;
+  padding: 1rem 1.25rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-left: 4px solid #c4814f;
+  background-color: #1d1d20;
+}
+
+.doc-callout-title {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: #c4814f;
+  margin-bottom: 0.375rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.doc-callout-body {
+  font-size: 0.8125rem;
+  line-height: 1.65;
+  color: #aaaab0;
+}
+
+.doc-callout-body p {
+  margin: 0.5rem 0;
+}
+
+.doc-callout-body p:first-child {
+  margin-top: 0;
+}
+
+.doc-callout-body p:last-child {
+  margin-bottom: 0;
+}
+
+.doc-callout-warn {
+  border-left-color: #e06c65;
+  background-color: rgba(224, 108, 101, 0.08);
+}
+
+.doc-callout-warn .doc-callout-title {
+  color: #e06c65;
+}
+
+/* Code & Kbd */
+.docs-prose code {
+  padding: 0.15rem 0.375rem;
+  border-radius: 0.25rem;
+  background-color: #222225;
+  color: #c4814f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.docs-prose pre.doc-code-block {
+  position: relative;
+  margin: 1.25rem 0;
+  padding: 1rem 1.25rem;
+  border-radius: 0.5rem;
+  background-color: #121214;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  overflow-x: auto;
+}
+
+.docs-prose pre.doc-code-block code {
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+  color: #c4814f !important;
+  font-size: 0.8125rem;
+}
+
+.docs-prose kbd {
+  display: inline-block;
+  min-width: 1.25rem;
+  padding: 0.1rem 0.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-bottom-width: 2px;
+  border-radius: 0.25rem;
+  background-color: #222225;
+  color: #f0f0f1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
+}
+
+/* Copy button for code blocks */
+.doc-copy-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6875rem;
+  font-family: ui-monospace, monospace;
+  color: #74747b;
+  background-color: #222225;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.25rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.doc-copy-btn:hover {
+  color: #f0f0f1;
+  border-color: #c4814f;
+}
+
+/* Inline Darkroom SVG Graphics (exclude KaTeX math SVGs) */
+.docs-prose > svg,
+.docs-prose p > svg,
+.docs-prose figure > svg,
+.docs-prose div > svg:not(.katex svg) {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 1.5rem 0;
+}
+
+/* Strictly preserve KaTeX formula SVGs (brackets, delimiters, matrices, radicals) */
+.docs-prose .katex svg,
+.docs-prose .katex-html svg {
+  display: block !important;
+  position: absolute !important;
+  width: 100% !important;
+  height: inherit !important;
+  margin: 0 !important;
+  max-width: none !important;
+}
+
+/* KaTeX display formula container */
+.docs-prose .katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5rem 0;
+  margin: 1.25rem 0;
+}

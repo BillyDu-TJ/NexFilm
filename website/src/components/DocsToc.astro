@@ -1,0 +1,94 @@
+---
+import type { TocHeading } from '../utils/docs';
+
+interface Props {
+  toc: TocHeading[];
+  lang: 'zh' | 'en';
+}
+
+const { toc, lang } = Astro.props;
+---
+
+<aside class="hidden xl:block w-[220px] shrink-0 sticky top-20 self-start max-h-[calc(100vh-6rem)] overflow-y-auto pl-4 py-2 border-l border-darkroom-line scrollbar-thin">
+  <div class="text-[11px] font-mono font-bold tracking-wider uppercase text-text-muted mb-3 flex items-center justify-between">
+    <span>{lang === 'zh' ? '本页目录' : 'On This Page'}</span>
+    <span class="text-[10px] text-accent/70">{toc.length}</span>
+  </div>
+
+  <nav class="space-y-1 text-xs font-sans" aria-label={lang === 'zh' ? '本页目录' : 'Table of contents'}>
+    {toc.map((item) => (
+      <a
+        href={`#${item.id}`}
+        data-toc-link={item.id}
+        class={`block py-1 rounded transition-colors text-text-muted hover:text-text-primary truncate ${
+          item.depth === 3 ? 'pl-3 text-[11px]' : 'font-medium text-xs'
+        }`}
+      >
+        {item.text}
+      </a>
+    ))}
+  </nav>
+
+  <div class="mt-8 pt-4 border-t border-darkroom-line/60">
+    <a
+      href="#top"
+      class="text-[11px] text-text-muted hover:text-accent transition-colors flex items-center gap-1.5 font-mono"
+    >
+      <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 10l7-7m0 0l7 7m-7-7v18" />
+      </svg>
+      <span>{lang === 'zh' ? '返回页面顶部' : 'Back to top'}</span>
+    </a>
+  </div>
+</aside>
+
+<script>
+  // Active TOC highlight with IntersectionObserver
+  let activeObserver: IntersectionObserver | null = null;
+
+  function setupTocHighlight() {
+    activeObserver?.disconnect();
+    activeObserver = null;
+
+    const links = document.querySelectorAll<HTMLAnchorElement>('[data-toc-link]');
+    if (!links.length) return;
+
+    const headingIds = Array.from(links).map((link) => link.getAttribute('data-toc-link')!);
+    const headings = headingIds
+      .map((id) => document.getElementById(id))
+      .filter((el): el is HTMLElement => el !== null);
+
+    if (!headings.length) return;
+
+    let activeId = headingIds[0];
+
+    activeObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            activeId = entry.target.id;
+          }
+        });
+
+        links.forEach((link) => {
+          const target = link.getAttribute('data-toc-link');
+          if (target === activeId) {
+            link.classList.remove('text-text-muted');
+            link.classList.add('text-accent', 'font-semibold', 'translate-x-1');
+          } else {
+            link.classList.remove('text-accent', 'font-semibold', 'translate-x-1');
+            link.classList.add('text-text-muted');
+          }
+        });
+      },
+      {
+        rootMargin: '0px 0px -70% 0px',
+        threshold: 0,
+      }
+    );
+
+    headings.forEach((heading) => activeObserver?.observe(heading));
+  }
+
+  document.addEventListener('astro:page-load', setupTocHighlight);
+</script>

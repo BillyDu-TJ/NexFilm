@@ -1,0 +1,71 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import BeforeAfter from '../../components/BeforeAfter.astro';
+import { galleryManifest } from '../../data/gallery-manifest';
+---
+
+<BaseLayout title="效果画廊 · NexFilm Engine" lang="zh">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+    <div class="text-center max-w-3xl mx-auto mb-16">
+      <span class="text-xs font-mono uppercase tracking-widest text-accent block mb-2">Film Inversion Showcase</span>
+      <h1 class="text-3xl sm:text-5xl font-extrabold text-white tracking-tight">胶片真实反转效果对比</h1>
+      <p class="text-text-secondary text-base mt-4 leading-relaxed">
+        所有样片均为原始数码相机 RAW 翻拍，未经任何外部调色滤镜直接在 NexFilm 中完成密度反转与印片光校正。左右拖动滑块查看翻拍负片原貌与反转正片。
+      </p>
+    </div>
+
+    <!-- Gallery Grid -->
+    <div class="space-y-16 max-w-5xl mx-auto">
+      {galleryManifest.map((item, idx) => (
+        <div class="space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-darkroom-line pb-3">
+            <div>
+              <span class="text-xs font-mono text-accent">0{idx + 1} / 样片</span>
+              <h2 class="text-xl font-bold text-white">{item.title.zh}</h2>
+            </div>
+            <div class="flex items-center gap-3 text-xs font-mono text-text-muted">
+              <span>{item.gear}</span>
+              <span>·</span>
+              <span class="text-accent">{item.emulationLut}</span>
+            </div>
+          </div>
+
+          <BeforeAfter 
+            lang="zh"
+            beforeImg={item.negativeSrc}
+            afterImg={item.positiveSrc}
+            filmName={item.title.zh} 
+            camera={item.gear}
+            aspect={item.aspect}
+          />
+
+          <div class="text-sm text-text-secondary leading-relaxed bg-darkroom-panel p-4 rounded-xl border border-darkroom-line space-y-1.5">
+            <p>{item.desc.zh}</p>
+            <div class="text-xs font-mono text-text-muted flex flex-wrap gap-4 pt-1 border-t border-darkroom-line">
+              <span>输入域: <strong class="text-text-primary">{item.inputDomain}</strong></span>
+              <span>内置模拟 LUT: <strong class="text-accent">{item.emulationLut}</strong></span>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <!-- Submission callout -->
+    <div class="mt-20 p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel text-center max-w-3xl mx-auto space-y-4">
+      <h3 class="text-lg font-bold text-white">想在画廊展示你的反转作品？</h3>
+      <p class="text-sm text-text-secondary">
+        如果你使用 NexFilm 反转了满意的胶卷，欢迎将原始 RAW 翻拍文件与导出成片分享至 GitHub Discussions。
+      </p>
+      <a 
+        href="https://github.com/BillyDu-TJ/NexFilm/discussions" 
+        target="_blank" 
+        class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-darkroom-raised border border-accent/40 text-accent hover:text-white text-sm font-medium transition-all"
+      >
+        <span>前往 GitHub Discussions 投稿</span>
+        <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+        </svg>
+      </a>
+    </div>
+  </div>
+</BaseLayout>

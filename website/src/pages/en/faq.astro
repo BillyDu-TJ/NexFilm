@@ -1,0 +1,259 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { withBase } from '../../utils/urls';
+import { renderMathInHtml } from '../../utils/math';
+
+const categories = [
+  { id: 'all', name: 'All Questions', count: 21 },
+  { id: 'setup', name: 'Setup & Security', count: 4 },
+  { id: 'formats', name: 'Scanning & Formats', count: 4 },
+  { id: 'calibration', name: 'Calibration & Workflow', count: 4 },
+  { id: 'develop', name: 'Develop & Grading', count: 4 },
+  { id: 'export', name: 'Export & Color Space', count: 3 },
+  { id: 'privacy', name: 'Data & Privacy', count: 2 },
+];
+
+const faqs = [
+  // Category 1: Setup & Security
+  {
+    category: 'setup',
+    q: 'Why does Windows SmartScreen or macOS Gatekeeper show a security warning upon first launch?',
+    a: `NexFilm Engine is an open-source, non-profit photography tool. We currently do not pay hundreds of dollars annually for commercial enterprise code-signing certificates. Windows SmartScreen and macOS Gatekeeper will display security notices for unsigned binaries. Follow our step-by-step authorization guide to launch safely: <a href="${withBase('/en/docs/overview-and-install/#security-clearance')}" class="text-accent underline">First Launch Security Clearance →</a>`
+  },
+  {
+    category: 'setup',
+    q: 'How do I bypass the macOS "App is damaged / Developer cannot be verified" quarantine prompt via Terminal?',
+    a: `macOS automatically places downloaded open-source binaries under quarantine. Open your Terminal and run the following command to lift it immediately:<br><code class="inline-block px-2 py-1 mt-1 rounded bg-darkroom-canvas text-accent font-mono text-xs border border-darkroom-line">xattr -cr /Applications/NexFilm\\ Engine.app</code><br>Alternatively, authorize it via System Settings > Privacy & Security. See <a href="${withBase('/en/docs/overview-and-install/#first-launch-authorization-on-macos')}" class="text-accent underline">macOS Authorization Guide →</a>`
+  },
+  {
+    category: 'setup',
+    q: 'Is there an official Linux build available? How can I compile from source?',
+    a: `Our CI builds packages for macOS and Windows. Linux users can compile from source using Rust Cargo, requiring <code>webkit2gtk-4.1</code> and <code>libraw</code>. Simply run <code>cargo build --release</code> in the repository root to produce a native executable. See <a href="${withBase('/en/docs/overview-and-install/#package-selection')}" class="text-accent underline">Platform Selection →</a>`
+  },
+  {
+    category: 'setup',
+    q: 'Will updating to a new version overwrite my film roll edits and history database?',
+    a: `Never. NexFilm separates the application binary from your user data. All film indices, edits, and crop geometries are safely stored in your system SQLite database (<code>nexfilm_user.db</code>), ensuring smooth, lossless upgrades. See <a href="${withBase('/en/docs/troubleshooting-and-appendix/#data-storage-and-backup')}" class="text-accent underline">Data Storage and Backup Protocols →</a>`
+  },
+
+  // Category 2: Scanning & Formats
+  {
+    category: 'formats',
+    q: 'Why does digitizing with a mirrorless RAW produce vastly superior results compared to flatbed scanner JPEGs?',
+    a: `JPEGs are compressed 8-bit files baked with scanner-native gamma curves and lossy algorithms, discarding exposure headroom and original emulsion transmittance. Camera RAW files preserve un-interpolated, linear photon sensor counts, permitting accurate optical density calculations ($D = -\\log_{10}(T)$) with complete color fidelity. See <a href="${withBase('/en/docs/import-formats-and-library/#format-matrix')}" class="text-accent underline">Format Support Matrix →</a>`
+  },
+  {
+    category: 'formats',
+    q: 'Why cannot Nikon Z8 / Z9 high-efficiency (HE / HE*) RAW files be imported?',
+    a: `NexFilm utilizes the open-source LibRaw decoder, which does not yet license Nikon's proprietary TicoRAW compression. Please record your camera RAW files in "Lossless Compression RAW" format or convert them with Adobe DNG Converter prior to import. See <a href="${withBase('/en/docs/import-formats-and-library/#format-matrix')}" class="text-accent underline">RAW Format Specifications →</a>`
+  },
+  {
+    category: 'formats',
+    q: 'What light source requirements are needed for camera scanning backlight?',
+    a: `Your backlight panel is critical. We strongly recommend a dedicated light panel with high color rendering (<strong>CRI ≥ 95 / TLCI ≥ 98</strong>). Budget LED panels often display severe spectral gaps in the cyan/amber boundary, resulting in stubborn color crossovers. See <a href="${withBase('/en/docs/scanning-best-practices/#optical-illumination')}" class="text-accent underline">Optical Illumination Best Practices →</a>`
+  },
+  {
+    category: 'formats',
+    q: 'Will importing massive Hasselblad Imacon / Flextight .fff files crash or exhaust RAM?',
+    a: `No. As of v1.1.0, NexFilm natively decodes .fff files as scanner transmission data with a streaming bounded proxy architecture, preventing memory spikes. See <a href="${withBase('/en/docs/import-formats-and-library/#bounded-proxy-architecture')}" class="text-accent underline">Bounded Proxy Architecture →</a>`
+  },
+
+  // Category 3: Calibration & Workflow
+  {
+    category: 'calibration',
+    q: 'Why does my image appear dull, dark, and lacking contrast after Auto Invert?',
+    a: `The film active area (Film Area) includes exposed light table edges or sprocket holes. Backlight provides 100% transmittance, far brighter than any emulsion. If included in the bounding box, the algorithm misinterprets it as the image highlight, severely underexposing the frame. Simply shrink the crop box to exclude bare light borders. See <a href="${withBase('/en/docs/troubleshooting-and-appendix/#tone-and-color-troubleshooting')}" class="text-accent underline">Troubleshooting Decision Tree →</a>`
+  },
+  {
+    category: 'calibration',
+    q: 'How should I process 120 medium format rolls without leader black frames?',
+    a: `120 rolls lack the black leader found in 135 cassettes. You do not need leader calibration—simply click "Auto Invert". NexFilm's bounded span compensation automatically computes optimal tone endpoints based on actual emulsion distribution. See <a href="${withBase('/en/docs/roll-vs-loose-workflows/#120-and-headless-fallback')}" class="text-accent underline">120 and Headless Roll Fallback →</a>`
+  },
+  {
+    category: 'calibration',
+    q: 'When shooting mixed scenes on a roll, should I invert per frame or batch calibrate?',
+    a: `If digitized under identical light and camera settings, use <strong>Roll Calibration Batch Inversion</strong>. Sample film base once and run Auto Invert Roll. All frames share the roll's global highlight reference. For frames under mixed lighting, simply adjust Printer Lights individually. See <a href="${withBase('/en/docs/roll-vs-loose-workflows/#whole-roll-batch-processing')}" class="text-accent underline">Whole Roll Batch Processing →</a>`
+  },
+  {
+    category: 'calibration',
+    q: 'Will edge light flare or blue borders corrupt color calculation?',
+    a: 'Yes. Edge flaring usually stems from film holder reflections or lens vignetting. Adjust the corner handles in "Film Area" inward to encompass only clean, unvignetted emulsion. See <a href="' + withBase('/en/docs/film-area-and-geometry/#framing-pitfalls') + '" class="text-accent underline">Framing Pitfalls and Optical Mechanisms →</a>'
+  },
+
+  // Category 4: Develop & Grading
+  {
+    category: 'develop',
+    q: 'How do Printer Lights differ fundamentally from standard Temperature / Tint sliders?',
+    a: `Printer Lights recreate physical additive color timing from traditional optical darkroom enlargers. Red (R), Green (G), and Blue (B) sliders operate in logarithmic density units along complementary color axes. The adjustment respects photochemical emulsion response curves rather than digital hue warping. See <a href="${withBase('/en/docs/density-grading-and-curves/#printer-lights-laws')}" class="text-accent underline">Printer Lights Logarithmic Laws →</a>`
+  },
+  {
+    category: 'develop',
+    q: 'How can I inspect the sharpening mask in real time using the Alt / Option key?',
+    a: `In the Develop > Detail panel, <strong>hold the Alt key (Option on macOS) while dragging Amount, Radius, or Detail sliders</strong>. The canvas instantly switches to a high-contrast monochrome sharpening mask via shaders, showing exactly which edges are emphasized while preserving smooth emulsion grain. See <a href="${withBase('/en/docs/density-grading-and-curves/#curve-and-detail')}" class="text-accent underline">Tone Curves and Detail Panel →</a>`
+  },
+  {
+    category: 'develop',
+    q: 'What is the recommended workflow order for the four Tone Curve channels (Master, R, G, B)?',
+    a: `The classic darkroom rule: <strong>Global balance first, local contrast second</strong>. Step 1: Neutralize global color casts with Printer Lights; Step 2: Shape tonal contrast and highlight rolloff on Master Curve; Step 3: Polish subtle shadow/highlight tints via individual R, G, B point curves. See <a href="${withBase('/en/docs/density-grading-and-curves/#curve-and-detail')}" class="text-accent underline">Four-Channel Spline Curves →</a>`
+  },
+  {
+    category: 'develop',
+    q: 'What tips are recommended for Black & White (B&W) film inversion?',
+    a: `Toggle B&W mode on the right panel to activate the monochrome optical pipeline. Pairing this mode with our 7 built-in Ilford MGFB paper grade LUTs provides authentic variable contrast darkroom prints. See <a href="${withBase('/en/docs/print-film-emulation/#bw-darkroom-workflow')}" class="text-accent underline">Pure Silver Halide Monochrome Workflow →</a>`
+  },
+
+  // Category 5: Export & Color Space
+  {
+    category: 'export',
+    q: 'What export format and bit-depth are recommended for master archival?',
+    a: `For continued grading in Lightroom, Photoshop, or DaVinci Resolve, export as <strong>16-bit TIFF or Linear DNG</strong>. 16-bit preserves 65,536 tonal levels per channel, preventing posterization during extreme color adjustments. For web sharing, export high-quality sRGB JPEG. See <a href="${withBase('/en/docs/export-and-contact-sheets/#format-decision-matrix')}" class="text-accent underline">Six Export Formats Decision Matrix →</a>`
+  },
+  {
+    category: 'export',
+    q: 'What is the specific use case for "Linear Export"?',
+    a: `Enabling Linear Export bypasses all tone and gamma curves, outputting raw physical optical transmittance density data with embedded linear ICC. This provides colorists and researchers with an untainted scientific master suitable for ACES pipelines. See <a href="${withBase('/en/docs/export-and-contact-sheets/#format-decision-matrix')}" class="text-accent underline">Linear Export and Master Delivery →</a>`
+  },
+  {
+    category: 'export',
+    q: 'Does batch export peg all CPU/GPU cores? How is UI responsiveness maintained?',
+    a: `NexFilm's Rust multi-threaded export engine dynamically balances thread priority according to system load. Even during a 36-frame 50MP batch export, the main UI and grading canvas remain smooth at 60 FPS. See <a href="${withBase('/en/docs/export-and-contact-sheets/#batch-export-queue')}" class="text-accent underline">Full-Roll Background Export Queue →</a>`
+  },
+
+  // Category 6: Data & Privacy
+  {
+    category: 'privacy',
+    q: 'Does NexFilm upload scans or telemetry to remote cloud servers?',
+    a: `<strong>Zero uploads, zero telemetry, zero network dependencies.</strong> NexFilm is 100% offline. All functions operate fully without an internet connection, ensuring your artistic assets remain strictly on your local disk. See <a href="${withBase('/en/docs/troubleshooting-and-appendix/#known-limitations')}" class="text-accent underline">Known Limitations and Disclosures →</a>`
+  },
+  {
+    category: 'privacy',
+    q: 'Where are project databases stored? How can I create a full backup?',
+    a: `All project indices, grades, and crops reside in a local SQLite file. Back up your raw scan folders alongside the application database: <br><span class="text-xs font-mono text-accent mt-1 inline-block">Windows: %APPDATA%\\NexFilm Engine\\nexfilm_user.db<br>macOS: ~/Library/Application Support/NexFilm Engine/nexfilm_user.db</span><br>See <a href="${withBase('/en/docs/troubleshooting-and-appendix/#data-storage-and-backup')}" class="text-accent underline">Cross-Platform Data Storage and Backup →</a>`
+  }
+];
+---
+
+<BaseLayout 
+  title="FAQ · 6 Categorized Modules · NexFilm Engine" 
+  description="Comprehensive answers covering OS gatekeeper setup, RAW format compatibility, roll calibration, printer lights grading, and 16-bit linear export."
+  lang="en"
+>
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+    <!-- Header -->
+    <div class="text-center max-w-3xl mx-auto mb-14 space-y-4">
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-darkroom-line bg-darkroom-panel text-xs font-mono text-accent">
+        <span>FAQ & TROUBLESHOOTING</span>
+        <span>•</span>
+        <span>21 QUESTIONS</span>
+      </div>
+      <h1 class="text-3xl sm:text-5xl font-sans font-bold text-text-primary tracking-tight leading-tight">
+        Frequently Asked Questions
+      </h1>
+      <p class="text-text-secondary text-base sm:text-lg leading-relaxed font-sans">
+        Answers regarding installation gatekeeper, RAW compatibility, scanning pitfalls, printer lights, and data privacy.
+      </p>
+    </div>
+
+    <!-- Category Filter Tabs -->
+    <div class="mb-10 flex flex-wrap items-center justify-center gap-2">
+      {categories.map((cat, idx) => (
+        <button 
+          type="button"
+          data-category-btn={cat.id}
+          class={`faq-tab-btn px-4 py-2 rounded-xl text-xs font-medium font-sans transition-all border ${
+            idx === 0 
+              ? 'bg-accent text-darkroom-canvas border-accent font-semibold shadow-sm' 
+              : 'bg-darkroom-panel text-text-secondary border-darkroom-line hover:text-text-primary hover:border-accent/40'
+          }`}
+        >
+          <span>{cat.name}</span>
+          <span class="ml-1.5 px-1.5 py-0.5 rounded-full bg-darkroom-canvas border border-darkroom-line text-[10px] font-mono">
+            {cat.count}
+          </span>
+        </button>
+      ))}
+    </div>
+
+    <!-- FAQ Accordion List -->
+    <div class="space-y-4" id="faq-list">
+      {faqs.map((item, idx) => (
+        <details 
+          data-faq-category={item.category}
+          class="faq-item group p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel open:bg-darkroom-raised open:border-accent/40 transition-all duration-200 shadow-darkroom-card"
+        >
+          <summary class="flex items-start justify-between cursor-pointer list-none text-base sm:text-lg font-sans font-semibold text-text-primary group-hover:text-accent transition-colors">
+            <span class="flex items-start gap-3">
+              <span class="text-accent font-mono text-xs sm:text-sm pt-0.5 font-normal">
+                Q{String(idx + 1).padStart(2, '0')}.
+              </span>
+              <span>{item.q}</span>
+            </span>
+            <span class="ml-4 flex-shrink-0 transition-transform duration-200 group-open:rotate-180 text-text-muted pt-1">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </span>
+          </summary>
+          <div class="mt-4 pt-4 border-t border-darkroom-line text-xs sm:text-sm text-text-secondary leading-relaxed font-sans space-y-2 pl-8" set:html={renderMathInHtml(item.a)} />
+        </details>
+      ))}
+    </div>
+
+    <!-- Feedback Banner -->
+    <div class="mt-16 text-center p-8 sm:p-10 rounded-2xl border border-darkroom-line bg-darkroom-panel space-y-4 shadow-darkroom-card">
+      <h3 class="text-xl font-sans font-bold text-text-primary">Have Unanswered Questions?</h3>
+      <p class="text-xs sm:text-sm text-text-muted max-w-md mx-auto font-sans">
+        Join our GitHub Discussions or open an Issue to collaborate with the creator and community photographers.
+      </p>
+      <div class="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3">
+        <a 
+          href={withBase('/en/feedback/')} 
+          class="px-5 py-2.5 rounded-xl bg-accent hover:bg-accent-hover text-darkroom-canvas text-xs font-bold transition-all shadow-sm"
+        >
+          <span>Community Feedback</span>
+        </a>
+        <a 
+          href={withBase('/en/docs/')} 
+          class="px-5 py-2.5 rounded-xl bg-darkroom-raised border border-darkroom-line text-text-primary text-xs font-medium hover:border-accent/50 transition-all"
+        >
+          <span>Explore Documentation & Guide →</span>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function setupFaqTabs() {
+      const buttons = document.querySelectorAll<HTMLButtonElement>('.faq-tab-btn');
+      const items = document.querySelectorAll<HTMLElement>('.faq-item');
+      if (buttons.length === 0 || items.length === 0) return;
+
+      buttons.forEach((btn) => {
+        if (btn.dataset.faqBound === 'true') return;
+        btn.dataset.faqBound = 'true';
+
+        btn.addEventListener('click', () => {
+          const cat = btn.getAttribute('data-category-btn');
+
+          buttons.forEach((b) => {
+            b.classList.remove('bg-accent', 'text-darkroom-canvas', 'border-accent', 'font-semibold', 'shadow-sm');
+            b.classList.add('bg-darkroom-panel', 'text-text-secondary', 'border-darkroom-line');
+          });
+          btn.classList.remove('bg-darkroom-panel', 'text-text-secondary', 'border-darkroom-line');
+          btn.classList.add('bg-accent', 'text-darkroom-canvas', 'border-accent', 'font-semibold', 'shadow-sm');
+
+          items.forEach((item) => {
+            const itemCat = item.getAttribute('data-faq-category');
+            if (cat === 'all' || itemCat === cat) {
+              item.style.display = '';
+            } else {
+              item.style.display = 'none';
+            }
+          });
+        });
+      });
+    }
+
+    document.addEventListener('astro:page-load', setupFaqTabs);
+  </script>
+</BaseLayout>

@@ -3292,6 +3292,21 @@ body[data-theme="dark"] {
     padding: 8px;
 }
 
+.documentation-nav-group-header {
+    padding: 8px 10px 4px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.documentation-nav-group-header:not(:first-child) {
+    margin-top: 6px;
+    border-top: 1px solid var(--line);
+    padding-top: 10px;
+}
+
 .documentation-nav-item {
     display: flex;
     flex-direction: column;
@@ -3499,6 +3514,13 @@ body[data-theme="dark"] {
     font-size: 13.5px;
     line-height: 1.75;
     color: var(--ui-text);
+}
+
+.documentation-section-body svg {
+    max-width: 100%;
+    height: auto;
+    display: block;
+    margin: 16px 0;
 }
 
 .documentation-section-body p {

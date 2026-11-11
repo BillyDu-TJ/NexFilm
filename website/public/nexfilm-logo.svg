@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 36" role="img" aria-labelledby="title">
+  <title id="title">NexFilm logo</title>
+  <path fill="#0A5AA8" d="M56 36H40V21.6L46 27l-6-7.36V0h16v36Zm-4-4v2h2v-2h-2Zm0-2h2v-2h-2v2Zm0-4h2v-2h-2v2Zm0-4h2v-2h-2v2Zm0-4h2v-2h-2v2Zm0-4h2v-2h-2v2Zm0-4h2V8h-2v2Zm0-4h2V4h-2v2Z"/>
+  <path fill="#0A5AA8" d="M16 0 24 7.2v14.4L20 18l4 6v12H8V0h8Z"/>
+  <path fill="#0A5AA8" d="M0 0h16l40 36H40L0 0Z"/>
+</svg>

@@ -1,0 +1,272 @@
+---
+import BaseLayout from '../../../layouts/BaseLayout.astro';
+import DocsSearchModal from '../../../components/DocsSearchModal.astro';
+import { withBase } from '../../../utils/urls';
+import { getTrackGroups } from '../../../utils/docs';
+
+const lang = 'zh';
+const groups = await getTrackGroups('zh');
+
+const portalCards = [
+  {
+    track: 'getting-started',
+    kicker: '01 / 快速上手',
+    title: '快速上手与翻拍实战',
+    subtitle: '面向新用户与数码翻拍玩家，从硬件选型、系统放行到五分钟完成第一卷底片反相与导出。',
+    targetSlug: 'overview-and-install',
+    badge: '4 篇双语精编',
+    badgeColor: 'text-accent border-accent/30 bg-accent-soft',
+    highlights: [
+      '物理可解释的负片对数反相原理',
+      'CRI ≥ 95 高显指光源与向右曝光',
+      '保留未曝光透明片基边缘的核心铁律',
+      '整卷批处理共享白点消除同场景跳色',
+    ],
+  },
+  {
+    track: 'user-manual',
+    kicker: '02 / 工作台手册',
+    title: '工作台全功能手册',
+    subtitle: '100% 对齐真实界面的完整暗房操作指南，覆盖五大视图、几何校正、四通道曲线与母带级导出。',
+    targetSlug: 'workspace-and-views',
+    badge: '7 篇功能手册',
+    badgeColor: 'text-text-secondary border-darkroom-line bg-darkroom-raised',
+    highlights: [
+      '五大核心视图分工与底片条人体工程学',
+      '胶片范围自动片门识别与白灯板剔除',
+      '暗房印片光对数微调',
+      '14 款内置 Kodak / Ilford 经典相纸 LUT',
+    ],
+  },
+  {
+    track: 'color-science',
+    kicker: '03 / 色彩科学',
+    title: '色彩科学与光学密度白皮书',
+    subtitle: '面向进阶玩家与专业调色师，严谨推导负片管线三大数学域、有界通道跨度与硬件校准。',
+    targetSlug: 'three-mathematical-domains',
+    badge: '4 篇进阶白皮书',
+    badgeColor: 'text-emerald-400 border-emerald-400/30 bg-emerald-400/10',
+    highlights: [
+      '透射率域、光学密度域与输出域严格推导',
+      '输入域五级解析与设备分离矩阵隔离',
+      '有界通道跨度响应 (1.15× / 1.35× / 3.0×)',
+      '平场暗场归一化与无损线性正片交付',
+    ],
+  },
+  {
+    track: 'architecture',
+    kicker: '04 / 架构设计',
+    title: '系统架构与开源贡献指南',
+    subtitle: '面向开源开发者，剖析 Tauri 2 进程模型、WebGL2 片段着色器与 Rust CPU 渲染等价契约。',
+    targetSlug: 'system-architecture',
+    badge: '3 篇架构与贡献指南',
+    badgeColor: 'text-sky-400 border-sky-400/30 bg-sky-400/10',
+    highlights: [
+      '导入期零全量 RAW 解码与按需 16-bit 代理',
+      'GPU WebGL2 与 CPU 全分辨率导出 WYSIWYG 契约',
+      '跨平台编译与 LibRaw / Rawler 双后端编排',
+      '自动化回归测试套件与 GPL-3.0 协议规范',
+    ],
+  },
+];
+
+const quickTasks = [
+  {
+    title: '高显指翻拍背光与曝光准则',
+    category: '前期采集',
+    path: '/zh/docs/scanning-best-practices/#optical-illumination',
+  },
+  {
+    title: '五分钟端到端处理第一卷底片',
+    category: '实操入门',
+    path: '/zh/docs/first-roll-in-five-minutes/#import-workflow',
+  },
+  {
+    title: '剔除白灯板与齿孔防画面发灰',
+    category: '几何范围',
+    path: '/zh/docs/first-roll-in-five-minutes/#film-area-definition',
+  },
+  {
+    title: '整卷批处理共享白点消除跳色',
+    category: '整卷一致性',
+    path: '/zh/docs/roll-vs-loose-workflows/#whole-roll-batch-processing',
+  },
+  {
+    title: '120 中画幅与无片头底片回退机制',
+    category: '有界跨度',
+    path: '/zh/docs/roll-vs-loose-workflows/#120-and-headless-fallback',
+  },
+  {
+    title: '四通道曲线与 9 项全局快捷键',
+    category: '工作台手册',
+    path: '/zh/docs/density-grading-and-curves/#curve-and-detail',
+  },
+];
+---
+
+<BaseLayout
+  title="使用文档与技术手册 · NexFilm Engine"
+  description="NexFilm Engine 官方文档中心：从翻拍背光规范、五分钟快速上手，到工作台全功能手册与光学密度色彩科学白皮书。"
+  lang={lang}
+>
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 sm:py-16 space-y-16">
+    
+    <!-- Hero Header -->
+    <header class="text-center space-y-4 max-w-3xl mx-auto">
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-accent-soft border border-accent/30 text-accent text-xs font-mono">
+        <span class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse"></span>
+        <span>NexFilm SSOT Documentation Hub</span>
+      </div>
+      <h1 class="text-4xl sm:text-5xl font-bold tracking-tight text-text-primary font-sans">
+        科学、严谨、物理可解释的<br />
+        <span class="text-accent">胶片反相与暗房技术手册</span>
+      </h1>
+      <p class="text-base sm:text-lg text-text-secondary leading-relaxed font-sans">
+        杜绝经验黑盒与大纲敷衍。NexFilm 文档严格对齐软件真实界面与光学物理原理，助你掌握从前期采集、密度反相到母带级导出的完整暗房工程。
+      </p>
+
+      <!-- Quick Search Trigger in Hero -->
+      <div class="pt-2 max-w-md mx-auto">
+        <button
+          type="button"
+          class="doc-search-trigger w-full flex items-center justify-between px-4 py-3 rounded-2xl bg-darkroom-panel border border-darkroom-line hover:border-accent text-text-muted hover:text-text-secondary text-sm transition-all shadow-darkroom-card group"
+        >
+          <div class="flex items-center gap-3">
+            <svg class="w-4 h-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+            </svg>
+            <span>快速全文检索手册与白皮书...</span>
+          </div>
+          <kbd class="px-2 py-0.5 text-xs font-mono bg-darkroom-raised rounded-lg border border-darkroom-line text-text-muted group-hover:border-accent/40 group-hover:text-accent transition-colors">⌘K</kbd>
+        </button>
+      </div>
+    </header>
+
+    <!-- Quick Task Navigator (6 High-Frequency Jump Points) -->
+    <section class="space-y-4">
+      <div class="flex items-center justify-between border-b border-darkroom-line pb-3">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-accent"></span>
+          <h2 class="text-sm font-mono font-bold tracking-wider uppercase text-text-primary">核心任务速查入口</h2>
+        </div>
+        <span class="text-xs text-text-muted font-mono">Quick Access</span>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {quickTasks.map((task) => (
+          <a
+            href={withBase(task.path)}
+            class="group p-3.5 rounded-xl bg-darkroom-panel border border-darkroom-line hover:border-accent/60 transition-all flex items-center justify-between"
+          >
+            <div class="space-y-0.5 min-w-0 pr-2">
+              <span class="text-[10px] font-mono text-accent block uppercase tracking-wider">{task.category}</span>
+              <span class="text-xs font-medium text-text-primary group-hover:text-accent transition-colors truncate block">
+                {task.title}
+              </span>
+            </div>
+            <svg class="w-4 h-4 text-text-muted group-hover:text-accent group-hover:translate-x-0.5 transition-all shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" />
+            </svg>
+          </a>
+        ))}
+      </div>
+    </section>
+
+    <!-- Four Track Audience Cards -->
+    <section class="space-y-6">
+      <div class="flex items-center justify-between border-b border-darkroom-line pb-3">
+        <div class="flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-accent"></span>
+          <h2 class="text-sm font-mono font-bold tracking-wider uppercase text-text-primary">四大受众体系导览</h2>
+        </div>
+        <span class="text-xs text-text-muted font-mono">Four Core Pillars</span>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {portalCards.map((card) => {
+          const targetUrl = card.targetSlug
+            ? withBase(`/zh/docs/${card.targetSlug}/`)
+            : card.externalUrl!;
+          const isExternal = !card.targetSlug;
+
+          return (
+            <div class="p-6 sm:p-8 rounded-2xl bg-darkroom-panel border border-darkroom-line flex flex-col justify-between space-y-6 shadow-darkroom-card hover:border-accent/50 transition-all relative group">
+              <!-- Top Header -->
+              <div class="space-y-3">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-mono font-bold tracking-wider uppercase text-accent">
+                    {card.kicker}
+                  </span>
+                  <span class={`px-2.5 py-0.5 rounded-full text-[11px] font-mono border ${card.badgeColor}`}>
+                    {card.badge}
+                  </span>
+                </div>
+                
+                <h3 class="text-xl sm:text-2xl font-bold font-sans text-text-primary group-hover:text-accent transition-colors">
+                  {card.title}
+                </h3>
+                
+                <p class="text-xs sm:text-sm text-text-secondary font-sans leading-relaxed">
+                  {card.subtitle}
+                </p>
+              </div>
+
+              <!-- Highlight Bullets -->
+              <div class="p-4 rounded-xl bg-darkroom-canvas border border-darkroom-line space-y-2">
+                <div class="text-[10.5px] font-mono text-text-muted uppercase tracking-wider">重点技术要点</div>
+                <ul class="space-y-1.5 text-xs text-text-secondary font-sans">
+                  {card.highlights.map((item) => (
+                    <li class="flex items-start gap-2">
+                      <span class="text-accent shrink-0 mt-0.5 font-mono">›</span>
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <!-- Bottom CTA Button -->
+              <div>
+                <a
+                  href={targetUrl}
+                  target={isExternal ? '_blank' : '_self'}
+                  rel={isExternal ? 'noopener noreferrer' : ''}
+                  class="w-full py-2.5 px-4 rounded-xl bg-darkroom-raised hover:bg-accent text-text-primary hover:text-darkroom-canvas font-semibold text-xs transition-all flex items-center justify-center gap-2 group/btn border border-darkroom-line hover:border-accent shadow-sm"
+                >
+                  <span>{isExternal ? '在 GitHub 上查看源码与架构' : '开始阅读本板块'}</span>
+                  <svg class="w-3.5 h-3.5 transform group-hover/btn:translate-x-0.5 transition-transform" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3" />
+                  </svg>
+                </a>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+
+    <!-- Bottom Download / Fast Track CTA -->
+    <section class="p-8 sm:p-10 rounded-2xl bg-darkroom-panel border border-darkroom-line text-center space-y-4">
+      <h3 class="text-2xl font-bold text-text-primary font-sans">准备好开始反相你的第一卷胶片了吗？</h3>
+      <p class="text-xs sm:text-sm text-text-secondary max-w-xl mx-auto font-sans leading-relaxed">
+        下载 NexFilm Engine 原生安装包，在你的电脑上体验零学习成本、极速响应的纯物理光学反相工作台。
+      </p>
+      <div class="pt-2 flex flex-wrap items-center justify-center gap-4">
+        <a
+          href={withBase('/zh/download/')}
+          class="px-6 py-2.5 rounded-xl bg-accent hover:bg-accent-hover text-darkroom-canvas text-xs font-semibold shadow-sm transition-all"
+        >
+          前往下载稳定版
+        </a>
+        <a
+          href={withBase('/zh/docs/overview-and-install/')}
+          class="px-6 py-2.5 rounded-xl bg-darkroom-raised hover:bg-darkroom-chrome text-text-primary text-xs font-semibold border border-darkroom-line transition-all"
+        >
+          直接从第 1 章开始阅读 →
+        </a>
+      </div>
+    </section>
+
+  </div>
+
+  <DocsSearchModal lang={lang} />
+</BaseLayout>

@@ -1,0 +1,24 @@
+---
+import { withBase } from '../utils/urls';
+const targetZh = withBase('/zh/');
+const targetEn = withBase('/en/');
+---
+<!doctype html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="refresh" content={`0;url=${targetZh}`} />
+    <title>NexFilm Engine</title>
+    <script is:inline define:vars={{ targetZh, targetEn }}>
+      const userLang = navigator.language || navigator['userLanguage'] || '';
+      if (userLang.toLowerCase().startsWith('en')) {
+        window.location.replace(targetEn);
+      } else {
+        window.location.replace(targetZh);
+      }
+    </script>
+  </head>
+  <body class="bg-darkroom-bg text-text-secondary flex items-center justify-center min-h-screen">
+    <p>Redirecting to <a href={targetZh} class="text-accent underline">NexFilm Engine</a>...</p>
+  </body>
+</html>

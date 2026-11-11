@@ -1,0 +1,35 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { withBase } from '../utils/urls';
+---
+
+<BaseLayout title="404 - 页面未找到" lang="zh">
+  <div class="max-w-3xl mx-auto px-4 py-28 text-center font-sans">
+    <div class="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-darkroom-panel border border-darkroom-line text-accent mb-6 shadow-darkroom-card">
+      <svg class="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+      </svg>
+    </div>
+    
+    <span class="text-xs font-mono uppercase tracking-widest text-accent block mb-2">Error 404 / Frame Blank</span>
+    <h1 class="text-3xl sm:text-4xl font-bold text-text-primary mb-4 font-sans">这一帧画面似乎曝光失败了</h1>
+    <p class="text-text-secondary text-base max-w-md mx-auto mb-8 font-sans">
+      你访问的页面不存在或已被归档迁移。别担心，你的胶卷原片依然安全无损。
+    </p>
+
+    <div class="flex items-center justify-center gap-4">
+      <a 
+        href={withBase('/zh/')} 
+        class="px-5 py-2.5 rounded-xl bg-accent hover:bg-accent-hover text-darkroom-canvas font-semibold text-sm transition-all shadow-sm"
+      >
+        返回官网首页
+      </a>
+      <a 
+        href={withBase('/zh/download/')} 
+        class="px-5 py-2.5 rounded-xl border border-darkroom-line bg-darkroom-panel hover:bg-darkroom-raised text-text-primary font-medium text-sm transition-all"
+      >
+        前往软件下载
+      </a>
+    </div>
+  </div>
+</BaseLayout>

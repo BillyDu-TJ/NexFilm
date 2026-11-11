@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000">
+  <defs>
+    <linearGradient id="hp5-sky-pos" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fafafc"/>
+      <stop offset="50%" stop-color="#dadade"/>
+      <stop offset="100%" stop-color="#a4a4ac"/>
+    </linearGradient>
+    <filter id="hp5-grain-pos" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="4" result="noise"/>
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.12 0" in="noise" result="coloredNoise"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="1000" fill="#121214"/>
+
+  <!-- 6x6 Medium Format Inverted Gelatin Silver Print -->
+  <g transform="translate(440, 140)">
+    <rect width="720" height="720" fill="url(#hp5-sky-pos)"/>
+
+    <!-- Classical Stone Arch (Warm deep blacks to luminous silver midtones) -->
+    <path d="M 120,720 L 120,380 C 120,180 600,180 600,380 L 600,720 L 460,720 L 460,420 C 460,280 260,280 260,420 L 260,720 Z" fill="#28282c"/>
+
+    <!-- Stone texture & midtone bevels -->
+    <path d="M 140,720 L 140,400 C 140,220 580,220 580,400 L 580,720 L 540,720 L 540,420 C 540,260 180,260 180,420 L 180,720 Z" fill="#505058" opacity="0.6"/>
+
+    <!-- Piercing Sunlight through Arch (Pure white paper base) -->
+    <ellipse cx="360" cy="540" rx="140" ry="180" fill="#f8f8fa" opacity="0.95"/>
+    <ellipse cx="360" cy="540" rx="80" ry="100" fill="#ffffff"/>
+
+    <!-- Floor Flagstones with rich shadow gradients -->
+    <rect x="0" y="640" width="720" height="80" fill="#1c1c1f"/>
+    <line x1="0" y1="680" x2="720" y2="680" stroke="#383840" stroke-width="2"/>
+    <line x1="200" y1="640" x2="160" y2="720" stroke="#383840" stroke-width="2"/>
+    <line x1="420" y1="640" x2="390" y2="720" stroke="#383840" stroke-width="2"/>
+
+    <rect width="720" height="720" filter="url(#hp5-grain-pos)" opacity="0.55" pointer-events="none"/>
+  </g>
+
+  <g font-family="monospace" font-size="13" fill="#aaaab0" opacity="0.7">
+    <text x="440" y="890">ILFORD HP5 PLUS · 120 (6x6)</text>
+    <text x="440" y="910" fill="#c4814f">PRINTED ON ILFORD MGFB 2 (VARIABLE CONTRAST SILVER GELATIN)</text>
+    <text x="1160" y="890" text-anchor="end">D_min: 0.08 (CLEAR BASE)</text>
+    <text x="1160" y="910" text-anchor="end">UNIFIED DENSITY ENGINE</text>
+  </g>
+</svg>

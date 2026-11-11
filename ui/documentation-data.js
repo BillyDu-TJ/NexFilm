@@ -1,1813 +1,1283 @@
-// NexFilm Engine documentation content.
-//
-// Chapters are written for the people who use the application, not for the
-// people who build it. Button names in this file follow the interface in both
-// languages, and every claim here should be checkable in the running app.
-//
-// Structure:
-//   DOCS[locale] -> [chapter, ...]
-//   chapter = { id, kicker, title, subtitle, readingTime, sections }
-//   section = { id, heading, content }   // content is trusted local HTML
+// AUTO-GENERATED FROM docs/handbook — DO NOT EDIT MANUALLY
 (function (global) {
     'use strict';
 
     const CHAPTERS = {
-        'zh-CN': [
-            {
-                id: 'quick-start',
-                kicker: '01 / 快速开始',
-                title: '快速开始',
-                subtitle: '安装软件，导入一卷底片，完成第一次反相与导出。',
-                readingTime: 6,
-                sections: [
-                    {
-                        id: 'install',
-                        heading: '安装与首次启动',
-                        content: `
-<p>NexFilm Engine 提供 Windows 10/11（x64）和 macOS（Apple Silicon、Intel）安装包。请从仓库的 Releases 页面下载，不要下载自动生成的 Source code 压缩包，后者不是可运行的安装程序。</p>
-<ul>
-    <li><strong>Windows</strong>：运行 <code>.exe</code> 安装程序。安装包尚未进行代码签名，SmartScreen 可能提示"未知发布者"。</li>
-    <li><strong>macOS</strong>：打开 <code>.dmg</code>，把 NexFilm Engine 拖入"应用程序"。DMG 尚未经过 Apple 公证，首次启动被拦截时，可在 Finder 中右键应用并选择"打开"，或前往"系统设置 → 隐私与安全性"允许启动。</li>
-</ul>
-<p>首次启动时，应用会在系统用户目录下创建数据目录，用于保存图库索引、编辑参数和预览图。软件不会修改或移动原始扫描文件，工作过程中也不需要联网。</p>
-<div class="doc-callout doc-callout-warn">
-    <div class="doc-callout-title">处理真实胶卷之前</div>
-    <div class="doc-callout-body">请始终保留原始扫描文件的备份。第一次使用时，建议先导入少量画面，从导入、反相到导出完整走一遍，确认结果符合预期之后，再处理整卷。</div>
-</div>
-`
-                    },
-                    {
-                        id: 'tour',
-                        heading: '界面总览',
-                        content: `
-<p>窗口从上到下分为四个区域：</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>区域</th><th>用途</th></tr>
-    </thead>
-    <tbody>
-        <tr>
-            <td><strong>菜单栏</strong></td>
-            <td>左上角的 <strong>setting</strong> 用于切换界面语言和浅色/深色主题；<strong>View</strong> 用于在视图之间跳转；<strong>Help</strong> 提供"关于 NexFilm"。</td>
-        </tr>
-        <tr>
-            <td><strong>顶栏与视图标签</strong></td>
-            <td>显示 NexFilm 版本，并提供五个视图：<strong>图库</strong>、<strong>工作台</strong>、<strong>历史胶卷记录</strong>、<strong>硬件校正</strong>、<strong>使用文档</strong>。右侧固定放置<strong>导出胶卷</strong>、<strong>导入胶卷</strong>和<strong>导出</strong>三个操作按钮。</td>
-        </tr>
-        <tr>
-            <td><strong>主工作区</strong></td>
-            <td>当前视图的内容。图库显示缩略图网格，工作台显示画布和右侧检查器，历史胶卷记录显示已归档的胶卷，硬件校正显示采集校正配置。</td>
-        </tr>
-        <tr>
-            <td><strong>底片条</strong></td>
-            <td>工作台底部按顺序列出当前胶卷的画面，用于快速切换。底片条可见时，<kbd>←</kbd> 和 <kbd>→</kbd> 也可以切换上一张和下一张。</td>
-        </tr>
-    </tbody>
-</table>
-<p>本文档中的按钮名称与中文界面一致。切换到英文界面后，五个视图对应 Library、Develop、Rolls、Hardware Calibration 和 Documentation。</p>
-`
-                    },
-                    {
-                        id: 'first-frame',
-                        heading: '处理第一张底片',
-                        content: `
-<p>下面是一条最短的完整流程。熟练之后，一张底片通常在一分钟内就能处理完。</p>
-<ol>
-    <li><strong>导入。</strong>点击右上角的<strong>导入胶卷</strong>。整卷扫描选择<strong>按胶卷导入</strong>，填写画幅、相机、胶片型号和日期；单张或零星扫描可以选择<strong>散张导入</strong>，也可以直接把文件拖进窗口。导入只建立索引与预览，不会复制或改写原片。</li>
-    <li><strong>进入工作台。</strong>在<strong>图库</strong>中双击任意一张缩略图，或点击顶部的<strong>工作台</strong>标签。</li>
-    <li><strong>确认胶片范围。</strong>点击工具栏的<strong>设置胶片范围</strong>，再点击<strong>自动识别</strong>。检查框线是否紧贴画面边缘：尺孔和胶片边缘外露的白色灯板必须排除在外。必要时拖动四角或边缘手柄修正，然后点击<strong>保存范围</strong>。</li>
-    <li><strong>反相。</strong>点击<strong>自动反相</strong>。软件会测量这一帧的片基并生成正片。同卷画面位置一致时，确认第一张后可以用<strong>批量应用</strong>把胶片范围和片基标记下发到其余画面。</li>
-    <li><strong>微调。</strong>在右侧检查器中调整密度范围、印片光、曲线、观感调整、细节等参数。所有调整都是非破坏性的，可以随时用 <kbd>Ctrl</kbd>+<kbd>Z</kbd>（macOS 为 <kbd>⌘</kbd>+<kbd>Z</kbd>）撤销。</li>
-    <li><strong>导出。</strong>点击右上角的<strong>导出</strong>输出选中画面，或点击<strong>导出胶卷</strong>输出整卷。在对话框中确认格式、尺寸和目标文件夹后开始导出。</li>
-</ol>
-<div class="doc-callout">
-    <div class="doc-callout-title">关于胶片范围的一条实用规则</div>
-    <div class="doc-callout-body">范围可以略微包含片基，但不要包含尺孔和灯板。灯板的透光率远高于胶片上的任何区域，一旦被框进范围，它会成为画面中最亮的像素，把正常曝光的影调整体压低，反相结果就会发灰、发暗。</div>
-</div>
-`
-                    },
-                    {
-                        id: 'whole-roll',
-                        heading: '整卷的推荐做法',
-                        content: `
-<p>整卷处理的关键，是让同一卷的画面共享同一套物理基准。</p>
-<ol>
-    <li>导入整卷后，在<strong>图库</strong>中选中画面，点击工具栏右侧的<strong>标定片头片基</strong>，按提示分别采样未曝光片基和全曝光片头。片基决定色罩，片头决定密度上限；两者确定后，整卷共用同一组物理锚点。</li>
-    <li>如果胶卷没有可用的片头，例如 120 胶卷，或片头已经被裁掉，跳过标定直接使用<strong>自动反相</strong>即可。此时密度上限由画面内容确定，软件会对通道跨度做有界补偿。</li>
-    <li>真正需要逐张判断的是<strong>胶片范围</strong>。机位固定、画面位置一致时用<strong>批量应用</strong>一次下发；位置有明显偏移时逐张确认。</li>
-    <li>调好一张基准画面后，用<strong>复制设置</strong>把影调参数应用到同场景的其他画面。复制面板可以按类别勾选要复制的内容。</li>
-</ol>
-<p>整卷反相也可以交给软件连续处理：当整卷已经采样了片基与片头之后，单帧的<strong>自动反相</strong>旁边会出现<strong>整卷批处理</strong>，它会先测量整卷最亮的一帧作为白点基准，再依次反相其余画面，完成后报告成功与失败的数量。</p>
-`
-                    },
-                    {
-                        id: 'where-to-look',
-                        heading: '遇到问题时',
-                        content: `
-<ul>
-    <li>反相结果不符合预期时，先检查<strong>胶片范围</strong>，再检查片基采样是否正确。多数偏色和发灰问题都来自这两步。</li>
-    <li>具体现象的排查步骤见<strong>常见问题与故障排查</strong>。</li>
-    <li>需要了解算法细节、输入域解析或色彩管理时，见<strong>色彩科学参考</strong>。</li>
-    <li>本文档支持搜索：在右上角的搜索框中输入按钮名称或关键词，可以定位到相关小节。</li>
-</ul>
-`
-                    }
-                ]
-            },
-            {
-                id: 'interface-basics',
-                kicker: '02 / 界面与基本概念',
-                title: '界面与基本概念',
-                subtitle: '五个视图各自的职责，以及文档中反复出现的术语。',
-                readingTime: 5,
-                sections: [
-                    {
-                        id: 'views',
-                        heading: '五个视图',
-                        content: `
-<table class="doc-table">
-    <thead>
-        <tr><th>视图</th><th>英文名称</th><th>用途</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>图库</strong></td><td>Library</td><td>当前工作胶卷的缩略图网格。选择画面、批量选择、删除画面，以及启动片头片基标定都在这里进行。</td></tr>
-        <tr><td><strong>工作台</strong></td><td>Develop</td><td>处理单张画面的地方。左侧是画布和几何工具栏，右侧是检查器，底部是底片条。</td></tr>
-        <tr><td><strong>历史胶卷记录</strong></td><td>Rolls</td><td>已归档胶卷的列表。可以按画幅、相机和日期筛选，查看某卷内容，继续编辑，或导出接触印相。</td></tr>
-        <tr><td><strong>硬件校正</strong></td><td>Hardware Calibration</td><td>为固定的翻拍或扫描设备保存校正配置：相机、光源、镜头和参考文件。详见"硬件校正"一章。</td></tr>
-        <tr><td><strong>使用文档</strong></td><td>Documentation</td><td>当前页面。</td></tr>
-    </tbody>
-</table>
-<p>右上角的<strong>导入胶卷</strong>、<strong>导出</strong>和<strong>导出胶卷</strong>在所有视图中都可用。导入和导出都在后台执行，处理期间可以继续浏览和编辑其他画面。</p>
-`
-                    },
-                    {
-                        id: 'filmstrip',
-                        heading: '底片条',
-                        content: `
-<p>工作台底部的底片条按顺序列出当前胶卷的全部画面。点击其中一帧即可切换，当前帧会高亮显示。底片条可见时，<kbd>←</kbd> 和 <kbd>→</kbd> 可以切换相邻画面；鼠标滚轮在底片条上滚动会横向移动列表。</p>
-<p>缩略图会随编辑更新，因此在整卷处理过程中，底片条也可以用来快速比较不同画面的影调是否一致。</p>
-`
-                    },
-                    {
-                        id: 'inspector',
-                        heading: '检查器',
-                        content: `
-<p>工作台右侧的检查器按功能分组排列：示波器、反相与重置、密度范围、印片光、曲线、观感调整、细节、齿孔设置、输入色彩科学、印片胶片模拟。检查器左缘的模块导航条每个点对应一组，点击即可跳到该组，滚轮在检查器空白处滚动会翻动分组。校正配置与扫描仪输入两个 Profile 下拉框位于<strong>输入色彩科学</strong>分组内，不再单独占一组。</p>
-<p>两组操作细节值得记住：</p>
-<ul>
-    <li>滑块需要先点击一次，之后才能用鼠标滚轮微调。这样可以避免误触滚轮改掉参数。</li>
-    <li>滑块右侧的数值可以直接点击后输入，按 <kbd>Enter</kbd> 确认，按 <kbd>Esc</kbd> 取消。</li>
-</ul>
-<p>画布上的鼠标滚轮用于缩放预览，按住空格键拖动画面可以平移。</p>
-`
-                    },
-                    {
-                        id: 'glossary',
-                        heading: '术语表',
-                        content: `
-<table class="doc-table">
-    <thead>
-        <tr><th>术语</th><th>含义</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>胶卷</strong>（Roll）</td><td>一次导入的一组画面，带画幅、相机、胶片型号和日期等资料。散张导入的画面不归属于任何胶卷。</td></tr>
-        <tr><td><strong>画面</strong>（Frame）</td><td>胶卷中的一张底片，也是编辑和导出的最小单位。</td></tr>
-        <tr><td><strong>胶片范围</strong>（Film Area）</td><td>框定画面有效成像区域的四边形。它决定密度计算使用哪些像素，也会排除边缘外的高光干扰。</td></tr>
-        <tr><td><strong>片基</strong>（Film base）</td><td>底片上未曝光的透明部分。彩色负片的片基带有橙色色罩，测得的颜色即为去色罩的基准。</td></tr>
-        <tr><td><strong>片头</strong>（Film leader）</td><td>底片最前端完全曝光、显影彻底的部分。它的密度代表这卷胶卷能达到的密度上限。</td></tr>
-        <tr><td><strong>密度</strong>（Density）</td><td>透射率取负对数：阻光越多，密度越大。软件在密度域完成反相和影调映射，而不是直接在 RGB 数值上做减法。</td></tr>
-        <tr><td><strong>D-Min / D-Max</strong></td><td>检查器中"密度范围"的两个端点，分别对应片基附近的低密度端和片头附近的高密度端。</td></tr>
-        <tr><td><strong>印片灯光</strong>（Printer Lights）</td><td>模拟暗房放大机的曝光与滤色，按通道改变最终亮度与色彩平衡。</td></tr>
-        <tr><td><strong>色罩</strong>（Mask）</td><td>彩色负片自身带有的橙色偏色。去色罩就是把这个偏色作为基准扣除。</td></tr>
-        <tr><td><strong>接触印相</strong>（Contact sheet）</td><td>把整卷画面拼成一张带片边码的索引图。</td></tr>
-        <tr><td><strong>输入域</strong>（Input domain）</td><td>解码后像素数值所代表的意义，包括基色、传递曲线和是否已经线性化。软件会为每个文件单独解析。</td></tr>
-    </tbody>
-</table>
-`
-                    }
-                ]
-            },
-            {
-                id: 'import-and-rolls',
-                kicker: '03 / 导入与胶卷管理',
-                title: '导入与胶卷管理',
-                subtitle: '支持的格式、两种导入方式，以及历史胶卷记录中的常用操作。',
-                readingTime: 6,
-                sections: [
-                    {
-                        id: 'formats',
-                        heading: '支持的格式',
-                        content: `
-<p>导入选择器接受的相机 RAW 格式包括 DNG、NEF/NRW、CR2/CR3、ARW/SRF/SR2、RAF、RW2、ORF/ORI、SRW、PEF、3FR、ERF、KDC/DCR、IIQ、MOS、MRW、X3F、RWL、FFF 和 RAW，同时也接受 TIFF、JPEG 和 PNG。实际兼容性取决于内置解码器和具体机型；遇到无法导入的文件时，请记下相机或扫描仪型号、文件格式和错误信息。</p>
-<div class="doc-callout doc-callout-warn">
-    <div class="doc-callout-title">Nikon Z8 的 HE / HE* 压缩 NEF</div>
-    <div class="doc-callout-body">这类文件目前无法导入，因为内置解码器不支持该压缩方式，软件内无法绕过。需要在 NexFilm 中处理时，请在相机里改用常规 RAW 记录格式重新拍摄。</div>
-</div>
-<p>JPEG 没有留下完整的线性数据，扫描仪输出的 JPEG 通常也不包含片基区域，因此反相和校色效果无法保证。使用 JPEG 时，如果结果不理想，可以在<strong>印片灯光</strong>中手动补偿。</p>
-`
-                    },
-                    {
-                        id: 'import-roll',
-                        heading: '按胶卷导入',
-                        content: `
-<p>适用于按整卷扫描或翻拍的素材。</p>
-<ol>
-    <li>点击右上角的<strong>导入胶卷</strong>，在导入方式中选择<strong>按胶卷导入</strong>。</li>
-    <li>填写画幅、相机、胶片型号、日期和备注。相机和胶片型号可以直接输入新值，之后会出现在下拉列表中。</li>
-    <li>选择文件。导入过程中会生成缩略图和预览，原始文件保持原样。</li>
-</ol>
-<p>这些资料会保存在胶卷记录中，并用于导出时的命名模板和 EXIF 写入。整卷导入的画面在<strong>历史胶卷记录</strong>中会作为一组出现，而不是散落在图库里。</p>
-<p>备注是自由文本，用于区分同一款胶片的多卷素材，例如“第 2 卷”“棚拍”“过期卷”。它会显示在胶卷卡片和胶卷资料面板上，也可以在<strong>编辑信息</strong>中随时补充或修改。</p>
-`
-                    },
-                    {
-                        id: 'loose-import',
-                        heading: '散张导入与拖放',
-                        content: `
-<p>适用于单张扫描、测试片，或者暂时不需要归档到某一卷的画面。</p>
-<ul>
-    <li>点击<strong>导入胶卷</strong>后选择<strong>散张导入</strong>，或直接在图库空状态中点击<strong>从磁盘导入</strong>。</li>
-    <li>也可以把文件直接拖到窗口内。松开鼠标后文件会作为散张画面加入。</li>
-</ul>
-<p>散张画面没有胶卷资料，因此始终按单张进行分析：不参与整卷标定，也不会被整卷批处理覆盖。已经导入过的文件再次拖入时会被识别出来，不会重复添加。</p>
-`
-                    },
-                    {
-                        id: 'roll-info',
-                        heading: '胶卷信息与图库',
-                        content: `
-<p>图库显示当前工作胶卷。如果同时处理多个胶卷，可以在<strong>历史胶卷记录</strong>中选中某一卷并选择<strong>继续编辑胶卷</strong>，它会成为当前工作卷；也可以从那里把整卷<strong>加入图库</strong>。</p>
-<p>胶卷的画幅、相机、胶片型号和日期可以在历史胶卷记录中用<strong>编辑信息</strong>修改。修改后，导出命名模板中的对应字段和写入 EXIF 的内容会随之更新。</p>
-<p>从图库中删除画面时，对话框会询问两种做法：只移除 NexFilm 中的记录，或者同时把源文件移入系统回收站。选择移入回收站时，仍被其他胶卷引用的文件会被保留；误删的文件可以从系统回收站恢复。</p>
-`
-                    },
-                    {
-                        id: 'rolls-view',
-                        heading: '历史胶卷记录',
-                        content: `
-<p>左侧筛选面板可以按画幅、相机和日期组合筛选，面板顶部会显示符合条件的确切胶卷数与画面数，<strong>Clear</strong> 用于清除全部筛选条件。</p>
-<p>选中一卷进入内容视图后，可以：</p>
-<ul>
-    <li>查看该卷的全部画面，并<strong>继续编辑胶卷</strong>或<strong>加入图库</strong>；</li>
-    <li>用<strong>编辑信息</strong>修改胶卷资料；</li>
-    <li>用<strong>导出接触印相</strong>生成索引图；</li>
-    <li>用<strong>删除胶卷</strong>移除记录，或同时删除源文件。</li>
-</ul>
-`
-                    },
-                    {
-                        id: 'missing-files',
-                        heading: '源文件被移动或删除之后',
-                        content: `
-<p>NexFilm 只记录源文件的路径，不复制原图。源文件被移动、重命名或删除后，对应画面会显示为离线状态，缩略图仍然可见，但无法反相或导出。</p>
-<p>此时使用画面上的<strong>定位文件</strong>重新关联源文件即可。如果原图已经不在，可以从图库或胶卷中移除对应记录。整个数据目录和原图目录都建议定期备份。</p>
-`
-                    }
-                ]
-            },
-            {
-                id: 'develop-workspace',
-                kicker: '04 / 处理工作台',
-                title: '处理工作台',
-                subtitle: '胶片范围、片头片基标定、反相，以及检查器中的每一个面板。',
-                readingTime: 12,
-                sections: [
-                    {
-                        id: 'film-area',
-                        heading: '胶片范围与几何',
-                        content: `
-<p>胶片范围是密度计算的边界：只有框内的像素参与片基估计和影调分析。它同时承担两个作用——确定画面边缘，以及把尺孔、片边和灯板排除在分析之外。</p>
-<p>框选时的判断标准：</p>
-<ul>
-    <li>框线应紧贴画面的有效成像区域。常规做法是切除全部外围黑边和白边。</li>
-    <li>希望软件用片边估计片基时，可以沿一侧留出 1 到 2 毫米的均匀未曝光片边，但不要露出发白的灯板。</li>
-    <li>范围只影响分析，不会自动改变画面透视，也不会裁掉导出的像素。构图裁切使用工具栏的<strong>裁切</strong>。</li>
-</ul>
-<p>几何工具位于画布上方的工具栏：<strong>裁切</strong>与<strong>重置裁切</strong>、<strong>拉直</strong>、<strong>设置胶片范围</strong>、逆时针与顺时针旋转、水平与垂直翻转。透视和镜头畸变校正在检查器的几何分组中，可以修正翻拍架轻微的俯仰或镜头的桶形、枕形形变。</p>
-`
-                    },
-                    {
-                        id: 'auto-area',
-                        heading: '自动识别与手动修正',
-                        content: `
-<p>点击<strong>设置胶片范围</strong>进入范围编辑状态，工具栏会切换到<strong>自动识别</strong>和<strong>保存范围</strong>。自动识别基于已缓存的缩略图估计边界，速度快，但结果需要人工确认，尤其是画面本身有大面积低反差天空或深色阴影时。</p>
-<ol>
-    <li>点击<strong>自动识别</strong>，等待框线出现。</li>
-    <li>拖动四角或边缘手柄修正。四个角点可以独立移动。</li>
-    <li>确认无误后点击<strong>保存范围</strong>。未保存就切换画面不会写入结果。</li>
-</ol>
-<p>同卷画面位置一致时，工具栏中的<strong>批量应用</strong>可以把当前范围下发到其他画面。批量应用只处理几何位置与片基标记；每一帧的片基仍会在目标画面上重新测量，以适应光源照度的轻微不均匀。</p>
-`
-                    },
-                    {
-                        id: 'film-calibration',
-                        heading: '片头片基标定',
-                        content: `
-<p>片头片基标定用整卷采样确定两个物理锚点：未曝光片基的颜色，以及全曝光片头的密度上限。标定完成后，整卷共用同一组基准，跨帧的色彩一致性通常比逐张自动估计更好。</p>
-<ol>
-    <li>回到<strong>图库</strong>，用复选框选中包含未曝光片基和全曝光片头的画面。一卷可以选多张参考图。</li>
-    <li>点击图库工具栏右侧的<strong>标定片头片基</strong>。</li>
-    <li>在对话框中分别选择<strong>吸取片基</strong>和<strong>吸取片头</strong>，然后点击图片上的对应区域。点击时软件会取一个小范围的平均值，因此不必精确到单个像素，但应避开划痕、灰尘和明显的密度渐变。</li>
-    <li>两个参考都完成采样后点击<strong>确定</strong>保存。</li>
-</ol>
-<p>被你采样的这些照片属于标定参考，不算画面：它们不参与整卷批处理，也不参与整卷白点的测量。片头那一张本身就是胶片密度最高的地方，如果让它当成一张普通照片参与测量，整卷白点会被拉到片头上，其余画面都会欠曝。</p>
-<div class="doc-callout">
-    <div class="doc-callout-title">没有片头时怎么办</div>
-    <div class="doc-callout-body">只采样片基也可以保存。缺少片头时，密度上限由画面内容确定，软件会限制通道跨度之间的补偿幅度，避免因为画面本身缺少纯黑而把反差拉得过高。120 胶卷和片头已被裁掉的 135 胶卷都属于这种情况。</div>
-</div>
-<p>标定以胶卷为单位保存，不会写入原始文件。需要重新标定时再次执行即可。</p>
-`
-                    },
-                    {
-                        id: 'invert',
-                        heading: '反相',
-                        content: `
-                    <p>检查器的反相区域默认只有<strong>自动反相</strong>和<strong>Reset</strong>两个按钮，对应按卷未标定与 Loose Import；整卷采样了片基与片头之后，中间才会出现<strong>整卷批处理</strong>，因为整卷共用同一个白点依赖这一对物理锚点。</p>
-                    <table class="doc-table">
-                        <thead>
-                            <tr><th>按钮</th><th>作用</th></tr>
-                        </thead>
-                        <tbody>
-                            <tr><td><strong>自动反相</strong></td><td>处理当前画面。软件测量这一帧的片基与内容范围，生成正片并写入当前画面的参数。</td></tr>
-                            <tr><td><strong>整卷批处理</strong></td><td>仅在整卷已标定片基与片头时出现。先测量整卷中最亮的一帧作为白点参考，再依次反相其余画面，最后报告成功与失败的数量；标定用的参考帧会被跳过，也不参与白点测量。适合机位固定的整卷翻拍。</td></tr>
-                            <tr><td><strong>Reset</strong></td><td>清除当前画面的色彩调整，回到未反相状态。</td></tr>
-                        </tbody>
-                    </table>
-<p>反相是可重复执行的。调整胶片范围或片基标定之后重新执行一次，结果会按新的基准重新计算。</p>
-<p>画面模式在反相按钮下方的<strong>Color</strong>和<strong>B&amp;W</strong>之间切换。黑白模式只保留密度转换，不做通道平衡，适合黑白负片和需要单独通道处理的素材。</p>
-`
-                    },
-                    {
-                        id: 'inspector-panels',
-                        heading: '检查器面板',
-                        content: `
-<table class="doc-table">
-    <thead>
-        <tr><th>面板</th><th>可调整的内容</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>示波器</strong></td><td>直方图和波形图。两者都可以切换到显示通道或亮度，用于判断影调分布和色彩是否溢出。</td></tr>
-        <tr><td><strong>密度范围</strong></td><td>Master D-Min 与 Master D-Max 两个端点，以及三个通道各自的微调。下面的读数显示本帧实际测得的密度端点。</td></tr>
-        <tr><td><strong>印片灯光</strong></td><td>曝光、红青、绿品红、蓝黄四组控制。右上角的吸管是<strong>白平衡吸管</strong>，点击画面中的中性灰区域即可校正整体偏色，它调整的是通道曝光偏移，不是片基采样。</td></tr>
-        <tr><td><strong>曲线</strong></td><td>四条控制点曲线：RGB 主曲线加红、绿、蓝三条分通道。拖动控制点即可调整，单击空白处添加，右键删除，端点可以上下移动（提起黑场或压低白场），<strong>重置该通道</strong>恢复当前通道。曲线作用在印片光之后、观感调整之前，背景是本帧的直方图。</td></tr>
-        <tr><td><strong>观感调整</strong></td><td>曝光、Gamma、对比度、高光、阴影、饱和度、色温和色调等观感参数。这些参数作用在反相之后，不会改变物理基准。</td></tr>
-        <tr><td><strong>细节</strong></td><td><strong>锐化</strong>的数量、半径、细节与蒙版，以及<strong>偏好</strong>组的纹理、清晰度和去朦胧。数量为 0 时整个分组不参与计算。</td></tr>
-        <tr><td><strong>齿孔设置</strong></td><td><strong>采样齿孔</strong>用于在正片边框上去除齿孔痕迹，另有容差与羽化两个参数控制识别范围与过渡。</td></tr>
-        <tr><td><strong>输入色彩科学</strong></td><td>显示当前画面的采集色彩空间，并承载校正配置与扫描仪输入两个 Profile 下拉框。解码阶段确定后一般不需要改动。</td></tr>
-        <tr><td><strong>印片胶片模拟</strong></td><td>选择内置的印片胶片与相纸 LUT，或载入自定义 <code>.cube</code> 文件，并用不透明度控制强度。选择"无内置 LUT"表示不做模拟。</td></tr>
-    </tbody>
-</table>
-<p>从<strong>密度范围</strong>开始，每个分组的标题右侧都有一个三角：点一下收起该分组的参数，标题保留，再点一下重新展开。收起状态是全局的，重启后仍会保留。左侧模块导航栏点击只负责跳转到对应分组，不会展开被收起的分组。</p>
-<p><strong>输入色彩科学</strong>分组内还有两个下拉框：<strong>Calibration Config Profile</strong> 按胶卷绑定硬件校正配置，<strong>Scanner Input Profile</strong> 为扫描仪指定输入配置。两者都默认使用自动判断，只有在校正配置已经建立时才需要手动选择。</p>
-<p>输出的色彩空间不在检查器中设置，而是在导出对话框里选择。</p>
-`
-                    },
-                    {
-                        id: 'curve-and-detail',
-                        heading: '曲线与细节',
-                        content: `
-<p>这两个分组都作用在反相之后的成片上，不改变密度基准。位置也说明了作用顺序：<strong>曲线</strong>在印片光之后、观感调整之前；<strong>细节</strong>在观感调整之后。</p>
-<p><strong>曲线</strong>提供四条控制点曲线。红、绿、蓝三条分通道先作用，RGB 主曲线再读取它们的结果，与常见修图软件的色调曲线一致。插值使用单调三次曲线：无论控制点怎样拖动，曲线都不会在两点之间反向或越出 0–1 范围。每条曲线最多 16 个控制点。</p>
-<ul>
-    <li>拖动控制点即可调整；单击空白处添加控制点，右键删除。</li>
-    <li>两端的控制点输入值固定在 0 与 1，只能上下移动，用来提起黑场或压低白场。</li>
-    <li>横向拖动端点不会没有反应：越过一小段距离后，它会拉出一个跟随指针的中间控制点。</li>
-    <li><strong>重置该通道</strong>把当前通道恢复为直线。</li>
-</ul>
-<p><strong>细节</strong>分为锐化与偏好两组，参数名称与常见修图软件保持一致：</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>控制</th><th>作用</th><th>范围</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>数量</strong></td><td>锐化强度。为 0 时整个锐化阶段不参与计算，画面逐像素保持原样。</td><td>0 – 150</td></tr>
-        <tr><td><strong>半径</strong></td><td>锐化作用的尺度，半径越大，影响的边缘越宽。</td><td>0.5 – 3.0</td></tr>
-        <tr><td><strong>细节</strong></td><td>在大结构边缘与细部纹理之间加权，低值只在明显边缘上锐化。</td><td>0 – 100</td></tr>
-        <tr><td><strong>蒙版</strong></td><td>把锐化限制在边缘上：100 时只有明显边缘会被处理，平坦区域不会被放大噪点。</td><td>0 – 100</td></tr>
-        <tr><td><strong>纹理</strong></td><td>中等频率的局部对比，用于强调织物、皮肤等质感。</td><td>-100 – 100</td></tr>
-        <tr><td><strong>清晰度</strong></td><td>较大尺度的局部对比，并按中间调加权，避免两端被进一步压缩。</td><td>-100 – 100</td></tr>
-        <tr><td><strong>去朦胧</strong></td><td>去除灰雾并恢复反差，负值反过来增加雾感。</td><td>-100 – 100</td></tr>
-    </tbody>
-</table>
-<p>这些控制都参与导出计算，导出对话框中的<strong>输出锐化</strong>是独立的另一步，作用在缩放之后的输出像素上。</p>
-<p>按住 <kbd>Alt</kbd> 拖动这四个锐化参数时，预览画布换成灰度视图：<strong>数量</strong>、<strong>半径</strong>与<strong>细节</strong>显示锐化信号本身（中间灰底上的边缘），<strong>蒙版</strong>显示蒙版的黑白分布，方便判断半径宽窄与蒙版阈值是否合适。该视图只作用于预览画布，示波器与缩略图仍读取正常成片。</p>
-<p>算法均为公开实现：锐化、纹理与清晰度是不同尺度上的高反差保留（局部对比），去朦胧使用暗通道先验估计透射率并以显示白点作为大气光。所有半径都按长边 2560 像素换算到当前渲染分辨率，预览与导出因此得到相同的观感。</p>
-`
-                    },
-                    {
-                        id: 'batch-vs-copy',
-                        heading: '批量应用与复制设置',
-                        content: `
-<p>这两个功能都用于把一张画面的处理结果带到其他画面，但分工不同。</p>
-<table class="doc-table">
-    <thead>
-        <tr><th></th><th>批量应用</th><th>复制 / 粘贴设置</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>位置</strong></td><td>画布上方工具栏</td><td>检查器顶部</td></tr>
-        <tr><td><strong>传递内容</strong></td><td>胶片范围与片基标记</td><td>勾选的影调与几何参数</td></tr>
-        <tr><td><strong>目标画面的片基</strong></td><td>在目标画面上重新测量</td><td>不改动目标画面的物理基准</td></tr>
-        <tr><td><strong>适用场景</strong></td><td>整卷机位固定，需要统一范围和色罩基准</td><td>同场景画面需要统一的影调风格</td></tr>
-    </tbody>
-</table>
-<p>批量应用之所以在每张画面上重新测量片基，是因为即使机位固定，光源照度分布、镜头暗角和胶片的轻微位移都会让不同画面的片基读数有细微差别。直接沿用源帧的数值会把这点差别放大成偏色。只有在目标画面完全测不到片基时，软件才沿用继承值，并提示确认胶片范围后重新反相。</p>
-<p>粘贴设置的对话框按类别分组：扫描与密度、片基去色罩与反相、胶片模式、密度范围、印片光、观感调整、曲线、细节、变换、透视调整、印片胶片模拟、内置或自定义 LUT、齿孔采样点。面板上方提供"全部可用设置""影调与色彩""仅几何调整"三个预设，也可以逐项勾选。"影调与色彩"包含曲线但不包含细节，与常见修图软件的分组一致。</p>
-`
-                    },
-                    {
-                        id: 'history-undo',
-                        heading: '撤销与重置',
-                        content: `
-<p>所有编辑步骤都会记录在撤销历史中：<kbd>Ctrl</kbd>+<kbd>Z</kbd> 撤销，<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> 或 <kbd>Ctrl</kbd>+<kbd>Y</kbd> 重做（macOS 使用 <kbd>⌘</kbd>）。在输入框中编辑文字时，这两个快捷键不会拦截键盘输入。</p>
-<p>检查器中的 <strong>Reset</strong> 清除当前画面的色彩调整；工具栏的<strong>重置裁切</strong>和检查器几何分组中的重置按钮只影响几何参数。两者互不影响。</p>
-`
-                    }
-                ]
-            },
-            {
-                id: 'export-and-contact-sheets',
-                kicker: '05 / 导出与接触印相',
-                title: '导出与接触印相',
-                subtitle: '导出对话框中的每一项设置，以及整卷索引图的生成方式。',
-                readingTime: 7,
-                sections: [
-                    {
-                        id: 'export-basics',
-                        heading: '导出画面',
-                        content: `
-<p>在<strong>图库</strong>中勾选画面后，点击右上角的<strong>导出</strong>按钮（按钮上的数字是当前选中的画面数），或者打开<strong>View → 工作台</strong>后单独导出。导出对话框打开时会显示选中数量。</p>
-<p>导出在后台执行，写入文件期间可以继续浏览和编辑。每个选中的画面都会以全分辨率重新解码，原始扫描文件不会被覆盖。</p>
-<div class="doc-callout doc-callout-warn">
-    <div class="doc-callout-title">批量导出前先试一张</div>
-    <div class="doc-callout-body">正式导出整卷之前，建议先用相同设置导出其中一张，检查影调、色彩和尺寸是否符合预期。</div>
-</div>
-`
-                    },
-                    {
-                        id: 'export-format',
-                        heading: '格式与色彩空间',
-                        content: `
-<table class="doc-table">
-    <thead>
-        <tr><th>格式</th><th>说明</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>TIFF · 16-bit</strong></td><td>适合存档和后续精修，保留的层次最多。</td></tr>
-        <tr><td><strong>TIFF · 8-bit</strong></td><td>需要 TIFF 容器但不需要高位深时使用。</td></tr>
-        <tr><td><strong>PNG · 16-bit</strong></td><td>无损压缩，适合归档或交付。</td></tr>
-        <tr><td><strong>JPEG · 8-bit</strong></td><td>体积小，适合分享和预览。选择后会出现质量滑块，范围 40 到 100，默认 92。</td></tr>
-    </tbody>
-</table>
-<p>输出色彩空间可选 sRGB IEC 61966-2.1、Display P3、Adobe RGB (1998)、ITU-R BT.2020、ProPhoto RGB (ROMM RGB)、ACEScg (AP1) 和 ACES2065-1 (AP0)。选定的 ICC 配置文件会随文件一同写入。面向网络发布时选 sRGB，需要更宽色域继续处理时选 ProPhoto RGB 或 ACES 系列。</p>
-<p>输出锐化提供<strong>无</strong>（保留颗粒）、<strong>低</strong>（网页与屏幕）、<strong>标准</strong>（默认）和<strong>高</strong>（小尺寸输出）四档。</p>
-<p>格式列表下方的<strong>线性 / RAW</strong> 分组提供三种交付方式，用于把结果交给其他软件继续处理：</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>格式</th><th>说明</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>TIFF · 16-bit linear</strong></td><td>线性光输出，不含显示曲线，并把对应的线性 ICC 配置文件写入 TIFF。</td></tr>
-        <tr><td><strong>DNG · linear</strong></td><td>把已完成的正片写成 LinearRaw DNG，色彩空间随所选输出色彩写入文件，可在 Lightroom、Camera Raw 等软件中继续调色。</td></tr>
-        <tr><td><strong>DNG · camera RAW</strong></td><td>把该画面自己的相机 RAW 马赛克数据原样封装为 DNG，采样值、片基黑电平、有效区域和方向都保持不变。</td></tr>
-    </tbody>
-</table>
-<div class="doc-callout">
-    <div class="doc-callout-title">线性输出与相机 RAW DNG 的区别</div>
-    <div class="doc-callout-body">线性输出是<strong>处理结果</strong>：反相、校色、缩放和输出锐化照常生效，只是最后不套显示曲线。相机 RAW DNG 是<strong>原始素材</strong>：它不参与任何调整，因此输出色彩、缩放和锐化对它无效；同时它只适用于相机 RAW 文件，TIFF、JPEG 和扫描仪线性 DNG 没有可封装的马赛克数据，导出时会以失败列出，需要改用线性 DNG。</div>
-</div>
-`
-                    },
-                    {
-                        id: 'export-size',
-                        heading: '尺寸',
-                        content: `
-<p>尺寸策略有两种：</p>
-<ul>
-    <li><strong>原始尺寸</strong>：按解码后的全分辨率输出。</li>
-    <li><strong>指定长边</strong>：输入目标长边像素值，预设提供 1024、2048、4096 和 8192，默认 2048。缩放保持宽高比。</li>
-</ul>
-<p>勾选<strong>允许放大</strong>后，长边小于目标值的画面也会被放大；默认不勾选，避免把小图插值放大。</p>
-`
-                    },
-                    {
-                        id: 'export-files',
-                        heading: '命名与重名处理',
-                        content: `
-<p>文件名模板支持以下变量，默认值为 <code>{Roll}_{Seq}</code>：</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>变量</th><th>含义</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><code>{Roll}</code></td><td>胶卷标识</td></tr>
-        <tr><td><code>{Camera}</code></td><td>相机名称</td></tr>
-        <tr><td><code>{Film}</code></td><td>胶片型号</td></tr>
-        <tr><td><code>{Date}</code></td><td>拍摄日期</td></tr>
-        <tr><td><code>{Original}</code></td><td>原始文件名</td></tr>
-        <tr><td><code>{Seq}</code></td><td>画面序号</td></tr>
-    </tbody>
-</table>
-<p>对话框下方会实时显示命名预览。文件名中的非法字符会被自动替换。遇到同名文件时可以选择：<strong>保留两者</strong>（自动添加后缀，默认）、<strong>替换</strong>或<strong>跳过</strong>。软件不会在未告知的情况下覆盖已有文件。</p>
-<p>勾选<strong>将胶卷、胶片、相机与日期写入 EXIF</strong> 后，这些资料会随导出的文件一起保存。</p>
-`
-                    },
-                    {
-                        id: 'export-roll',
-                        heading: '导出整卷',
-                        content: `
-<p>右上角的<strong>导出胶卷</strong>按钮直接导出当前胶卷的全部画面，使用的是同一套导出设置。如果该卷中有源文件缺失或画面缺少已保存的处理状态，软件会先提示数量并中止导出，而不是跳过这些画面。</p>
-<p>导出整卷同样在后台执行，完成后会提示保存位置和成功的画面数。</p>
-`
-                    },
-                    {
-                        id: 'contact-sheet',
-                        heading: '接触印相',
-                        content: `
-<p>接触印相把整卷画面拼成一张带片边码的索引图，用于快速浏览和归档。</p>
-<ol>
-    <li>打开<strong>历史胶卷记录</strong>，选中目标胶卷并进入内容视图。</li>
-    <li>点击<strong>导出接触印相</strong>。</li>
-    <li>选择保存位置。生成过程可能需要几秒钟。</li>
-</ol>
-<p>每行的画面数量由画幅决定：135 每行 6 帧，645 与 6×6 每行 4 帧，6×7 每行 3 帧，6×9 和 6×12 每行 2 帧，6×17 每行 1 帧。当前的网格不可自定义。</p>
-<p>输出为 JPEG，文件名格式为 <code>contact_sheet_胶卷标识_相机.jpg</code>。片边码包含胶片型号、画面编号和 NexFilm 字标；拍摄时间和曝光参数不会印在印相上。</p>
-`
-                    }
-                ]
-            },
-            {
-                id: 'troubleshooting',
-                kicker: '06 / 常见问题与故障排查',
-                title: '常见问题与故障排查',
-                subtitle: '按现象查找原因，以及每一步可以确认什么。',
-                readingTime: 8,
-                sections: [
-                    {
-                        id: 'flat',
-                        heading: '反相之后画面发灰、发暗或缺少对比度',
-                        content: `
-<p>按顺序检查以下三项：</p>
-<ol>
-    <li><strong>胶片范围是否包含了灯板。</strong>这是最常见的原因。灯板的亮度远高于胶片上的任何区域，一旦进入范围就会成为分析用的最亮像素，把正常影调整体压低。重新进入<strong>设置胶片范围</strong>，把尺孔和白色底板排除在框外。</li>
-    <li><strong>片基是否采样正确。</strong>片基点如果取到了画面内容而不是未曝光片基，去色罩的基准就会偏差。用<strong>标定片头片基</strong>重新采样，采样点应落在均匀的透明片边上。</li>
-    <li><strong>密度范围端点是否需要微调。</strong>在<strong>密度范围</strong>面板中调整 Master D-Min 和 Master D-Max。面板下方的读数显示本帧实际测得的端点，可以作为参考。</li>
-</ol>
-<p>如果画面本身是阴天、雾天或夜景，缺少纯黑或纯白是正常现象。软件不会强行把内容拉满，此时适度的低反差就是正确结果。</p>
-`
-                    },
-                    {
-                        id: 'color-cast',
-                        heading: '反相之后整体偏色',
-                        content: `
-<p>先判断偏色的性质：</p>
-<ul>
-    <li><strong>整卷方向一致的偏色</strong>通常来自片基基准。检查标定用的片基画面是否真的未曝光，以及是否有明显的密度渐变。</li>
-    <li><strong>单张偏色且该帧画面以某种颜色为主</strong>可能是通道跨度补偿在正常工作。软件的补偿幅度有上限，不会为了迁就大面积单色而把画面拉平。如果结果仍不满意，用<strong>印片灯光</strong>手动校正。</li>
-    <li><strong>边缘偏色</strong>常见于翻拍光源照度不均。让胶片范围稍微收紧，避开照度变化最明显的边缘，然后重新反相。</li>
-</ul>
-<p><strong>印片灯光</strong>面板右上角的吸管是白平衡吸管：点击画面中的中性灰区域，软件会据此调整通道曝光偏移。它改变的是印片灯光，不会改写片基标定结果。</p>
-`
-                    },
-                    {
-                        id: 'batch-tint',
-                        heading: '批量应用之后个别画面偏色',
-                        content: `
-<p>批量应用会下发胶片范围与片基标记，但每一帧的片基是在目标画面上重新测量的，因为光源照度、镜头暗角和胶片位移都会让不同画面的片基读数有细微差别。如果目标画面测不到可用的片基，软件会沿用继承值并给出提示。</p>
-<p>处理办法：确认该画面的胶片范围是否留出了可用的片边，然后重新运行<strong>自动反相</strong>。如果这一帧的拍摄位置与整卷差异较大，逐张确认范围比批量下发更可靠。</p>
-`
-                    },
-                    {
-                        id: 'choose-format',
-                        heading: '导出时选 TIFF 还是 JPEG',
-                        content: `
-<ul>
-    <li>需要存档、继续精修或用于打印时选 <strong>TIFF · 16-bit</strong> 或 <strong>PNG · 16-bit</strong>，并选择与之匹配的输出色彩空间。</li>
-    <li>只用于分享、预览或交付小图时选 <strong>JPEG · 8-bit</strong>，色彩空间通常选 sRGB。</li>
-</ul>
-<p>导出体积取决于画面内容、尺寸、位深和压缩质量，没有固定的对应关系。需要比较时，用相同设置导出少量画面即可。</p>
-`
-                    },
-                    {
-                        id: 'raw-import',
-                        heading: '某些 RAW 文件无法导入',
-                        content: `
-<p>RAW 兼容性取决于内置解码器与具体机型。可以尝试的排查：</p>
-<ul>
-    <li>确认文件扩展名与实际格式一致。部分相机的"RAW"实际是高效率压缩格式。</li>
-    <li>Nikon Z8 的 HE 与 HE* 压缩 NEF 目前无法解码，需要在相机中改用常规 RAW 记录格式。</li>
-    <li>换成 DNG 或其他被支持的格式重新导出一次源文件。</li>
-    <li>如果问题依旧，请记录相机或扫描仪型号、文件格式和错误信息，通过 Issues 反馈。请勿上传含有隐私内容的原片。</li>
-</ul>
-`
-                    },
-                    {
-                        id: 'preview-vs-export',
-                        heading: '预览和导出结果不完全一致',
-                        content: `
-<p>工作台预览使用有界代理图以保持交互流畅：默认长边 2560 像素，需要时会提高到 4096。导出会对每个选中画面做全分辨率解码。两者使用同一套密度管线，因此影调与色彩应当一致。细节分组里的半径、纹理、清晰度与去朦胧都按长边 2560 像素为基准换算到当前渲染分辨率，所以预览里的锐化观感与导出文件一致；但代理图毕竟是被缩小的图像，极细的噪点与边纹仍可能出现轻微差别。正式批量输出前导出样片核对，是最稳妥的做法。</p>
-<p>示波器与直方图读取的是<strong>细节</strong>分组之前的基础渲染结果，用于判断影调分布。曲线会反映在示波器中，锐化、清晰度与去朦胧不会。</p>
-`
-                    },
-                    {
-                        id: 'originals',
-                        heading: '软件会修改原始文件吗',
-                        content: `
-<p>不会。NexFilm 不覆盖也不移动源扫描文件，图库、编辑参数和预览图都保存在应用的数据目录中。删除画面时，软件会询问是只移除记录，还是同时把源文件移入系统回收站；选择后者时，仍被其他胶卷引用的文件会被保留。</p>
-<p>源文件被移动或重命名后，对应画面会离线，需要用<strong>定位文件</strong>重新关联。</p>
-`
-                    },
-                    {
-                        id: 'backup',
-                        heading: '如何备份工作',
-                        content: `
-<p>需要备份两部分内容：原始扫描文件，以及应用的数据目录。数据目录中的主数据库 <code>nexfilm_user.db</code> 保存了胶卷资料、编辑参数和预览图；它记录的是源文件路径，不包含原图本身。只备份数据目录无法恢复被删除的原片，只备份原片则需要在重新导入后重做调整。</p>
-<p>数据目录的具体位置见附录。</p>
-`
-                    }
-                ]
-            },
-            {
-                id: 'color-science',
-                kicker: '07 / 色彩科学参考',
-                title: '色彩科学参考',
-                subtitle: '面向需要了解算法细节的读者：光学密度、统一密度管线与色彩管理。',
-                readingTime: 12,
-                sections: [
-                    {
-                        id: 'optical-density',
-                        heading: '光学密度',
-                        content: `
-<p>底片的颜色不是可以直接读取的像素值。光穿过胶片时被部分吸收，不同感光层吸收的比例不同，测量这一比例才能还原被摄物的颜色。描述阻光程度的量就是光学密度：</p>
-<div class="doc-code-block"><code>D = -log10(T)　　T = 透射光强 ÷ 入射光强</code></div>
-<p>密度与透射率之间是非线性的对数关系。透射率减半时密度增加约 0.30，透射率降到十分之一时密度增加 1.00。这意味着同一片密度变化，在透射率较高和较低的区域对应完全不同的亮度差。直接在透射率数值上做加减，等于让阴影和高光的响应比例不一致；先取对数进入密度域，再处理影调，计算才与胶片的实际阻光行为对应。</p>
-<p>片基对应密度的下限。彩色负片的片基带有橙色色罩，测得它的颜色之后，把它当作零点扣除，画面的颜色才回到中性。片头是全曝光、显影彻底的部分，对应密度的上限。两者合起来确定了这一卷可以使用的密度范围。</p>
-`
-                    },
-                    {
-                        id: 'pipeline',
-                        heading: '统一密度管线',
-                        content: `
-<p>不论素材是整卷翻拍的 RAW、扫描仪的 FFF，还是散张导入的 TIFF，反相都会经过同一条管线。输入类型只影响第一步的输入域解析，不改变后面的密度数学。</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>步骤</th><th>内容</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>1. 解码与输入域解析</strong></td><td>确定这份文件代表什么：基色、传递曲线、是否已经线性化。解码结果统一转换到线性 ProPhoto RGB 的 32 位浮点工作域。</td></tr>
-        <tr><td><strong>2. 扣除片基</strong></td><td>逐通道减去测得的片基，得到透射率，再取 <code>-log10</code> 进入密度域。</td></tr>
-        <tr><td><strong>3. 建立共享窗口</strong></td><td>有可用片基时，三个通道共享同一个窗口原点，不额外施加每通道的密度偏移。</td></tr>
-        <tr><td><strong>4. 通道跨度响应</strong></td><td>比较三个通道测得的跨度，在受限范围内让各通道的窗口宽度跟随实际响应。详见下一节。</td></tr>
-        <tr><td><strong>5. 显示映射</strong></td><td>ProPhoto RGB 转到显示色彩空间，再应用伽马与 LUT。</td></tr>
-    </tbody>
-</table>
-<p>如果完全测不到可用的片基，管线会退回内容对齐：用画面内容估算窗口原点，并把对齐幅度限制在 0.20 密度以内，避免画面被强行拉平。</p>
-`
-                    },
-                    {
-                        id: 'anchors',
-                        heading: '物理锚点与内容范围',
-                        content: `
-<p>把"底片的物理基准"和"画面内容的明暗分布"分开对待，是这套管线与单纯拉伸直方图的主要区别。</p>
-<p>片基与片头由胶片的化学性质决定，不随拍摄内容变化。同一卷里，无论拍的是雪山还是夜景，片基的颜色和片头的密度都是同一个物理量。因此标定完成后，整卷可以共享同一组锚点。</p>
-<p>而画面内容的明暗分布是另一回事。阴雾天、夜景和舞台照片本来就没有纯黑或纯白，把直方图强行拉满会破坏真实的层次，并把暗部噪点放大。软件因此不会让内容范围覆盖物理锚点，只会用内容信息来估计锚点缺失的那一端。</p>
-`
-                    },
-                    {
-                        id: 'channel-span',
-                        heading: '有界通道跨度响应',
-                        content: `
-<p>真实扫描中，三个通道对同一张画面的响应不会完全一致。差异可能来自胶片的感光层、扫描仪的通道增益或翻拍光源的光谱。如果完全忽略，画面会留下稳定的偏色；如果完全按测量值分离通道，色彩主体单一的画面又会被压平。软件的折中办法是给补偿设置上限和死区。</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>通道跨度比</th><th>行为</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>低于 1.15</strong></td><td>视为三通道响应一致，共享窗口保持原样，不做通道分离。</td></tr>
-        <tr><td><strong>1.15 到 1.35</strong></td><td>按测量到的比例逐步放开各通道的窗口宽度。</td></tr>
-        <tr><td><strong>到 1.35 为止</strong></td><td>完全采用测量值。补偿最多让各通道相差共享跨度的 1.35 倍。</td></tr>
-        <tr><td><strong>超过 2.0</strong></td><td>视为上游有通道被截断（例如拼接扫描中某个通道只剩其他通道三分之一的密度范围），上限放宽到 3 倍，避免留下无法消除的偏色。</td></tr>
-    </tbody>
-</table>
-<p>补偿后的窗口不会窄于 0.2 密度，以防退化成没有层次的显示范围。</p>
-`
-                    },
-                    {
-                        id: 'input-domain',
-                        heading: '输入域解析',
-                        content: `
-<p>同一份像素数据，可能来自相机 RAW，也可能来自线性扫描仪输出，两者代表的意义完全不同。导入时软件按以下顺序判断输入域，先命中的规则生效：</p>
-<ol>
-    <li><strong>内嵌 ICC 配置文件</strong>：以文件自带的色彩配置为准，可信度最高。</li>
-    <li><strong>扫描仪容器记录</strong>：Flextight / Imacon 的 FFF 及部分 TIFF 在容器中记录了基色与 Gamma，按记录值处理；记录不可读时使用文档默认值并标记为估计。</li>
-    <li><strong>扫描仪输入配置</strong>：在"硬件校正"中为设备建立的输入配置，适用于非 RAW 文件与 DNG。</li>
-    <li><strong>DNG</strong>：线性 RAW 的扫描仪 DNG 按线性 sRGB 读取；其余 DNG 按相机 RAW 处理。</li>
-    <li><strong>其他 RAW</strong>：使用相机原生基色与相机 RAW 传递曲线。</li>
-    <li><strong>兜底</strong>：其余文件按 sRGB 解释，并标记为估计结果。</li>
-</ol>
-<p>解析结果会随画面一起保存，可以在技术报告中查看该文件实际命中了哪一条规则。</p>
-`
-                    },
-                    {
-                        id: 'output-color',
-                        heading: '输出色彩',
-                        content: `
-<p>输出色彩空间在导出对话框中选择，可选 sRGB、Display P3、Adobe RGB (1998)、Rec.2020、ProPhoto RGB、ACEScg 和 ACES2065-1。选定的 ICC 配置文件会写入文件，使其他软件以相同方式解释像素值。</p>
-<ul>
-    <li>面向网页、社交平台和大多数看图软件：<strong>sRGB</strong>。</li>
-    <li>需要更宽的色域并继续在专业软件中处理：<strong>ProPhoto RGB</strong> 或 <strong>ACES</strong> 系列。</li>
-    <li>匹配广色域显示器或特定印刷流程：<strong>Display P3</strong> 或 <strong>Adobe RGB (1998)</strong>。</li>
-</ul>
-<p>如果输出文件在别的软件中看起来偏色，先确认该软件是否读取了内嵌的 ICC 配置文件。未做色彩管理的看图工具会把任何色彩空间都当作 sRGB 显示。</p>
-`
-                    },
-                    {
-                        id: 'capture-tips',
-                        heading: '翻拍与扫描建议',
-                        content: `
-<p>以下做法可以让后续处理更稳定：</p>
-<ul>
-    <li><strong>保持机位固定。</strong>整卷在同一位置拍摄，胶片范围和片基读数才能共享，批量应用也才有意义。</li>
-    <li><strong>让光源均匀。</strong>平板光源边缘的照度通常比中心低几个百分点，胶片范围越靠近画面中心越安全。</li>
-    <li><strong>保留一段未曝光的片边。</strong>片基是去色罩的基准，画面外留一点片边，软件就能测到真实色罩。</li>
-    <li><strong>遮住环境光。</strong>翻拍时围住胶片周围，避免环境光反射到画面上。</li>
-    <li><strong>用 RAW 或 16 位输出。</strong>高位深保留了更多密度层次，尤其是暗部。</li>
-    <li><strong>避免把灯板拍进画面。</strong>灯板的高光会主导分析，是发灰最常见的来源。</li>
-</ul>
-`
-                    }
-                ]
-            },
-            {
-                id: 'hardware-calibration',
-                kicker: '08 / 硬件校正',
-                title: '硬件校正（实验性）',
-                subtitle: '为固定的翻拍或扫描设备保存采集配置，以及这项功能目前能做什么。',
-                readingTime: 5,
-                sections: [
-                    {
-                        id: 'status',
-                        heading: '当前状态',
-                        content: `
-<p>硬件校正是较新的功能，界面中相关的验证入口也标注为实验性。它的定位是：把固定设备的采集条件记录下来，并在处理时复用，减少每次都要重新判断的环节。</p>
-<p>需要明确的是，登记参考文件不等于完成了密度标定。界面中会直接提示"已配置的参考文件不是实测密度"。在验证通过之前，处理仍然使用逐帧的自动分析。</p>
-<p>如果只是想处理手上的胶卷，这一章可以跳过。片头片基标定已经能覆盖绝大多数整卷需求，且不依赖硬件校正配置。</p>
-`
-                    },
-                    {
-                        id: 'profiles',
-                        heading: '校正配置',
-                        content: `
-<p>每个配置记录一套固定采集条件：相机、光源、镜头，以及参考文件。参考文件按用途登记，包括暗帧、开放片门、平场、透射标板、片基参考、全曝光参考和光谱采集等类型。</p>
-<p>配置的采集管线按顺序包含这些环节：</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>环节</th><th>内容</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>暗场扣除</strong></td><td>采集域的暗电流与黑电平参考。</td></tr>
-        <tr><td><strong>开放片门归一</strong></td><td>采集域的照度与通道归一化。</td></tr>
-        <tr><td><strong>平场校正</strong></td><td>采集域的照度不均与灰尘参考。</td></tr>
-        <tr><td><strong>采集分离</strong></td><td>可选的设备特性拟合，在取对数之前进行。</td></tr>
-        <tr><td><strong>密度参考</strong></td><td>可选的、取对数之后使用的实测标板。</td></tr>
-        <tr><td><strong>胶卷锚点</strong></td><td>片基与全曝光锚点仍以胶卷为单位。</td></tr>
-        <tr><td><strong>胶片重建</strong></td><td>为将来的实测胶片模型预留。</td></tr>
-    </tbody>
-</table>
-`
-                    },
-                    {
-                        id: 'create',
-                        heading: '建立与导入配置',
-                        content: `
-<ol>
-    <li>打开<strong>硬件校正</strong>视图。</li>
-    <li>点击<strong>新建配置</strong>，填写相机、光源和镜头，并添加对应的参考文件；也可以点击<strong>导入扫描仪配置</strong>导入已有的设备配置。</li>
-    <li>保存后，可以在配置详情中运行<strong>验证采集（实验性）</strong>，检查参考文件是否可用。</li>
-</ol>
-<p>参考文件被移动或修改后，配置详情会出现提示，此时运行时不会使用该配置。</p>
-`
-                    },
-                    {
-                        id: 'use',
-                        heading: '在处理时使用',
-                        content: `
-<p>工作台的检查器在<strong>输入色彩科学</strong>分组内有两个下拉框：</p>
-<ul>
-    <li><strong>Calibration Config Profile</strong>：按胶卷绑定硬件校正配置，默认值为 Smart Auto。绑定结果会随胶卷保存，导出画面时也会保留该绑定。</li>
-    <li><strong>Scanner Input Profile</strong>：为扫描仪指定输入配置，影响输入域解析中"扫描仪输入配置"这一条规则。</li>
-</ul>
-<p>如果绑定的配置不可用或需要处理，软件会给出提示并退回逐帧自动分析。</p>
-`
-                    },
-                    {
-                        id: 'limits',
-                        heading: '当前限制',
-                        content: `
-<ul>
-    <li>硬件校正目前提供的是采集配置管理，不代表已经完成密度标定；胶片密度环节仍标注为未验证。</li>
-    <li>散张导入始终使用逐帧自动分析，不参与整卷配置。</li>
-    <li>可用的参考文件类型与验证方式会随版本变化，请以界面提示为准。</li>
-</ul>
-`
-                    }
-                ]
-            },
-            {
-                id: 'appendix',
-                kicker: '09 / 附录',
-                title: '附录',
-                subtitle: '快捷键、数据文件位置、版本信息、已知限制与反馈渠道。',
-                readingTime: 4,
-                sections: [
-                    {
-                        id: 'shortcuts',
-                        heading: '快捷键',
-                        content: `
-<p>应用中的全局快捷键只有下表这些。其余操作都通过界面按钮完成。</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>按键</th><th>作用</th><th>生效条件</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>⌘</kbd>+<kbd>Z</kbd></td><td>撤销</td><td>不在文本输入框中编辑时</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> 或 <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>重做</td><td>不在文本输入框中编辑时</td></tr>
-        <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>切换到上一张或下一张画面</td><td>底片条可见时</td></tr>
-        <tr><td><kbd>Enter</kbd></td><td>确认裁切</td><td>裁切模式中</td></tr>
-        <tr><td><kbd>Esc</kbd></td><td>关闭当前对话框、菜单或取消数值输入</td><td>对话框或菜单打开时</td></tr>
-        <tr><td>按住 <kbd>Space</kbd> 拖动</td><td>平移画布</td><td>已打开画面时</td></tr>
-        <tr><td>鼠标滚轮</td><td>缩放预览；在底片条上横向翻动</td><td>工作台中</td></tr>
-        <tr><td>鼠标滚轮</td><td>微调滑块数值</td><td>先点击过该滑块</td></tr>
-        <tr><td>按住 <kbd>Alt</kbd> 拖动</td><td>锐化的数量、半径、细节显示锐化信号的灰度视图，蒙版显示蒙版本身</td><td>按住锐化参数拖动时</td></tr>
-    </tbody>
-</table>
-<p>画布上还支持以下鼠标操作：拖动平移，滚轮以指针位置为中心缩放。检查器中的滑块支持拖动和点击轨道定位。</p>
-<p><kbd>Alt</kbd> 视图只替换预览画布上的画面，示波器与缩略图仍然读取正常成片，导出的文件也不受影响；松开 <kbd>Alt</kbd> 或松开鼠标即回到正常画面。</p>
-`
-                    },
-                    {
-                        id: 'data-locations',
-                        heading: '数据文件位置',
-                        content: `
-<table class="doc-table">
-    <thead>
-        <tr><th>平台</th><th>数据目录</th></tr>
-    </thead>
-    <tbody>
-        <tr><td>Windows 正式版</td><td><code>%APPDATA%\\NexFilm Engine\\</code></td></tr>
-        <tr><td>macOS 正式版</td><td><code>~/Library/Application Support/NexFilm Engine/</code></td></tr>
-        <tr><td>Debug 构建</td><td>仓库工作目录</td></tr>
-    </tbody>
-</table>
-<p>主数据库为 <code>nexfilm_user.db</code>，保存胶卷资料、画面索引、编辑参数、输入域记录和预览图，不包含完整的原图副本。<code>rolls.json</code> 是兼容用的镜像文件。</p>
-<p>备份时请同时保留原图目录与数据目录。数据库记录的是源文件的绝对路径，移动原图后需要用<strong>定位文件</strong>重新关联。</p>
-`
-                    },
-                    {
-                        id: 'version',
-                        heading: '版本与更新',
-                        content: `
-<p>当前稳定版本为 <strong>v1.1.0</strong>。安装包与更新说明统一发布在仓库的 Releases 页面，请以那里为准。</p>
-<p>升级不会删除数据目录，但涉及数据库结构变化时软件会在首次启动时自动迁移。跨越较大版本升级之前，建议先备份数据目录。</p>
-<p>从 1.0.2 升级到 1.1.0 时，迁移会清除用旧密度配方渲染的缩略图。升级后请对旧胶卷重新执行一次自动反相，让缩略图与实际渲染结果一致。</p>
-`
-                    },
-                    {
-                        id: 'known-limits',
-                        heading: '已知限制',
-                        content: `
-<ul>
-    <li>Windows 与 macOS 安装包尚未进行代码签名，macOS DMG 尚未经过 Apple 公证。</li>
-    <li>Nikon Z8 的 HE 与 HE* 压缩 NEF 目前无法解码。</li>
-    <li>不同相机、扫描仪与 FFF 文件的兼容性仍需在更多设备上验证。</li>
-    <li>目前没有经过验证的 Linux 正式安装包。</li>
-    <li>数据库引用源文件路径，不复制原图；移动或删除源文件会导致画面离线。</li>
-    <li>预览使用有界代理图；与全分辨率导出在像素级别上可能仍有细微差别。</li>
-    <li>硬件校正中的采集验证仍为实验性。</li>
-</ul>
-`
-                    },
-                    {
-                        id: 'license',
-                        heading: '许可与致谢',
-                        content: `
-<p>NexFilm Engine 以 <strong>GNU General Public License v3.0 only</strong> 发布，完整文本见仓库根目录的 LICENSE 文件。使用、修改和再分发请遵循该许可的条款。</p>
-<p>感谢知乎用户 @黄昊Haosky 与 @V777 分享的科学去色罩理论，以及所有提交问题与建议的使用者。内置的印片胶片与相纸 LUT 来自仓库中随应用分发的 <code>.cube</code> 文件，可以在"印片胶片模拟"面板中使用。</p>
-`
-                    },
-                    {
-                        id: 'feedback',
-                        heading: '反馈与贡献',
-                        content: `
-<p>问题与建议请提交到仓库的 Issues。提交问题时请包含以下信息：</p>
-<ul>
-    <li>操作系统版本与软件版本号；</li>
-    <li>相机或扫描仪型号、文件格式；</li>
-    <li>复现步骤与完整的错误信息。</li>
-</ul>
-<p>请勿上传包含隐私内容的原片。代码贡献请保持改动聚焦，并在 Pull Request 中说明验证方式。</p>
-`
-                    }
-                ]
-            },
-        ],
-        'en': [
-            {
-                id: 'quick-start',
-                kicker: '01 / Quick Start',
-                title: 'Quick Start',
-                subtitle: 'Install the app, import a roll, and finish your first inversion and export.',
-                readingTime: 6,
-                sections: [
-                    {
-                        id: 'install',
-                        heading: 'Installing and first launch',
-                        content: `
-<p>NexFilm Engine ships installers for Windows 10/11 (x64) and macOS (Apple Silicon and Intel). Download from this repository's Releases page. The automatically generated Source code archives are not runnable installers.</p>
-<ul>
-    <li><strong>Windows</strong>: run the <code>.exe</code> installer. The package is not code-signed, so SmartScreen may warn about an unknown publisher.</li>
-    <li><strong>macOS</strong>: open the <code>.dmg</code> and drag NexFilm Engine into Applications. The DMG is not notarized by Apple; if the first launch is blocked, right-click the app in Finder and choose Open, or allow it under System Settings → Privacy &amp; Security.</li>
-</ul>
-<p>On first launch the app creates a data directory in your user account to hold the library index, edit parameters, and previews. NexFilm does not modify or move your source scans, and it does not need a network connection to work.</p>
-<div class="doc-callout doc-callout-warn">
-    <div class="doc-callout-title">Before you process real film</div>
-    <div class="doc-callout-body">Always keep a backup of the original scans. For a first run, import a few frames and take them all the way through inversion and export before committing a whole roll.</div>
-</div>
-`
-                    },
-                    {
-                        id: 'tour',
-                        heading: 'The window at a glance',
-                        content: `
-<p>The window is divided into four areas from top to bottom:</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>Area</th><th>What it does</th></tr>
-    </thead>
-    <tbody>
-        <tr>
-            <td><strong>Menu bar</strong></td>
-            <td><strong>setting</strong> switches the interface language and the light/dark theme. <strong>View</strong> jumps between views. <strong>Help</strong> opens About NexFilm.</td>
-        </tr>
-        <tr>
-            <td><strong>Header and view tabs</strong></td>
-            <td>Shows the NexFilm version and the five views: <strong>Library</strong>, <strong>Develop</strong>, <strong>Rolls</strong>, <strong>Hardware Calibration</strong>, and <strong>Documentation</strong>. The right side holds <strong>Export Roll</strong>, <strong>Import Roll</strong>, and <strong>Export</strong>.</td>
-        </tr>
-        <tr>
-            <td><strong>Main workspace</strong></td>
-            <td>The content of the active view: a thumbnail grid in Library, the canvas and inspector in Develop, archived rolls in Rolls, and capture profiles in Hardware Calibration.</td>
-        </tr>
-        <tr>
-            <td><strong>Filmstrip</strong></td>
-            <td>Lists the frames of the current roll along the bottom of Develop for quick switching. While it is visible, <kbd>←</kbd> and <kbd>→</kbd> also move between frames.</td>
-        </tr>
-    </tbody>
-</table>
-<p>Button names in this manual match the English interface. In the Chinese interface the five views are 图库, 工作台, 历史胶卷记录, 硬件校正, and 使用文档.</p>
-`
-                    },
-                    {
-                        id: 'first-frame',
-                        heading: 'Your first frame',
-                        content: `
-<p>This is the shortest complete path. With a little practice, a single frame takes about a minute.</p>
-<ol>
-    <li><strong>Import.</strong> Choose <strong>Import Roll</strong> in the upper-right corner. Use <strong>Import by Roll</strong> for a complete roll and fill in format, camera, film stock, and date. Use <strong>Loose Import</strong> for single scans, or drag files into the window. Import only creates an index and previews; originals are never copied or changed.</li>
-    <li><strong>Open Develop.</strong> Double-click any thumbnail in <strong>Library</strong>, or select the <strong>Develop</strong> tab.</li>
-    <li><strong>Confirm the film area.</strong> Choose <strong>Set Film Area</strong>, then <strong>Auto Area</strong>. Check that the outline hugs the image: sprocket holes and any bare light panel must stay outside. Adjust corners or edges if needed, then choose <strong>Save Area</strong>.</li>
-    <li><strong>Invert.</strong> Choose <strong>Auto Invert</strong>. The app measures the film base for this frame and produces a positive. When every frame sits in the same place, use <strong>Batch Apply</strong> to send the area and base marker to the rest of the roll.</li>
-    <li><strong>Refine.</strong> Adjust Density Limits, Printer Lights, the Tone Curve, Aesthetics, Detail, and the other groups in the inspector. Every adjustment is non-destructive, and <kbd>Ctrl</kbd>+<kbd>Z</kbd> (<kbd>⌘</kbd>+<kbd>Z</kbd> on macOS) undoes it.</li>
-    <li><strong>Export.</strong> Use <strong>Export</strong> for the selected frames or <strong>Export Roll</strong> for the whole roll, confirm format, size, and destination, then start the export.</li>
-</ol>
-<div class="doc-callout">
-    <div class="doc-callout-title">One practical rule for the film area</div>
-    <div class="doc-callout-body">The area may include a little film base, but it must not include sprocket holes or the light panel. The panel transmits far more light than any part of the film; if it is inside the area it becomes the brightest pixel, the normal exposure range gets pushed down, and the positive looks flat and dark.</div>
-</div>
-`
-                    },
-                    {
-                        id: 'whole-roll',
-                        heading: 'How to handle a whole roll',
-                        content: `
-<p>The key to a consistent roll is letting every frame share the same physical reference.</p>
-<ol>
-    <li>After importing a roll, select frames in <strong>Library</strong> and choose <strong>Calibrate Film</strong> in the toolbar. Sample the unexposed film base and the fully exposed film leader. The base sets the mask reference and the leader sets the density ceiling; once both are set, the roll shares one pair of anchors.</li>
-    <li>If the roll has no usable leader, for example 120 film or a 135 roll whose leader was cut off, skip the calibration and use <strong>Auto Invert</strong>. The density ceiling then comes from the frame content, with bounded compensation between channels.</li>
-    <li>The step that genuinely needs a human decision is the <strong>film area</strong>. When the camera position is fixed, <strong>Batch Apply</strong> sends it to the whole roll in one action; when frame placement varies, confirm each frame.</li>
-    <li>Once one reference frame looks right, use <strong>Copy Settings</strong> to carry the tone parameters to similar frames. The copy panel lets you tick the categories you want.</li>
-</ol>
-<p>The app can also invert a roll continuously: once the roll has sampled film base and leader, <strong>Invert Whole Roll</strong> appears next to <strong>Auto Invert</strong>, measuring the brightest frame as a white point and then processing the rest, reporting how many frames succeeded and failed.</p>
-`
-                    },
-                    {
-                        id: 'where-to-look',
-                        heading: 'When something looks wrong',
-                        content: `
-<ul>
-    <li>If the positive does not look right, check the <strong>film area</strong> first, then the film base sample. Most casts and flat results come from those two steps.</li>
-    <li>See <strong>FAQ &amp; Troubleshooting</strong> for symptom-by-symptom checks.</li>
-    <li>See <strong>Color Science Reference</strong> for the algorithm, input domain resolution, and color management.</li>
-    <li>This manual is searchable: type a button name or keyword in the search box to jump to the matching section.</li>
-</ul>
-`
-                    }
-                ]
-            },
-            {
-                id: 'interface-basics',
-                kicker: '02 / Interface & Concepts',
-                title: 'Interface and Key Concepts',
-                subtitle: 'What each view is for, and the terms used throughout this manual.',
-                readingTime: 5,
-                sections: [
-                    {
-                        id: 'views',
-                        heading: 'The five views',
-                        content: `
-<table class="doc-table">
-    <thead>
-        <tr><th>View</th><th>Chinese name</th><th>Purpose</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>Library</strong></td><td>图库</td><td>Thumbnail grid of the current roll. Select and delete frames, and start film calibration here.</td></tr>
-        <tr><td><strong>Develop</strong></td><td>工作台</td><td>Single-frame work: canvas and geometry toolbar on the left, inspector on the right, filmstrip along the bottom.</td></tr>
-        <tr><td><strong>Rolls</strong></td><td>历史胶卷记录</td><td>Archived rolls. Filter by format, camera, and date; open a roll, continue editing, or export a contact sheet.</td></tr>
-        <tr><td><strong>Hardware Calibration</strong></td><td>硬件校正</td><td>Saved capture profiles for a fixed scanning or copy setup: camera, light source, lens, and reference files. See the Hardware Calibration chapter.</td></tr>
-        <tr><td><strong>Documentation</strong></td><td>使用文档</td><td>This page.</td></tr>
-    </tbody>
-</table>
-<p><strong>Import Roll</strong>, <strong>Export</strong>, and <strong>Export Roll</strong> stay available in every view. Both import and export run in the background, so you can keep browsing and editing while they work.</p>
-`
-                    },
-                    {
-                        id: 'filmstrip',
-                        heading: 'The filmstrip',
-                        content: `
-<p>The filmstrip at the bottom of Develop lists every frame of the current roll in order. Click a frame to switch to it; the active frame is highlighted. While the filmstrip is visible, <kbd>←</kbd> and <kbd>→</kbd> move between adjacent frames, and the mouse wheel scrolls the strip sideways.</p>
-<p>Thumbnails update as you edit, so the filmstrip is also a quick way to check whether the tone of a roll is consistent.</p>
-`
-                    },
-                    {
-                        id: 'inspector',
-                        heading: 'The inspector',
-                        content: `
-<p>The inspector on the right of Develop is grouped by function: Scopes, Invert &amp; Reset, Density Limits, Printer Lights, Tone Curve, Aesthetics, Detail, Sprocket Settings, Input Color Science, Print Film Emulation. Each dot on the module strip beside the inspector maps to one group, and the wheel scrolls between groups when the pointer is over empty inspector space. The Calibration Config Profile and Scanner Input Profile selectors live inside the <strong>Input Color Science</strong> group rather than occupying groups of their own.</p>
-<p>Two interaction details are worth remembering:</p>
-<ul>
-    <li>A slider must be clicked once before the mouse wheel will adjust it. This prevents accidental changes while scrolling the panel.</li>
-    <li>The numeric readout beside each slider can be clicked and typed into. <kbd>Enter</kbd> confirms and <kbd>Esc</kbd> cancels.</li>
-</ul>
-<p>On the canvas, the mouse wheel zooms the preview and holding <kbd>Space</kbd> while dragging pans it.</p>
-`
-                    },
-                    {
-                        id: 'glossary',
-                        heading: 'Glossary',
-                        content: `
-<table class="doc-table">
-    <thead>
-        <tr><th>Term</th><th>Meaning</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>Roll</strong></td><td>One imported set of frames with format, camera, film stock, and date. Loose frames belong to no roll.</td></tr>
-        <tr><td><strong>Frame</strong></td><td>A single negative in a roll, and the smallest unit of editing and export.</td></tr>
-        <tr><td><strong>Film area</strong></td><td>The quadrilateral marking the usable image region. It decides which pixels feed the density analysis and excludes bright edges.</td></tr>
-        <tr><td><strong>Film base</strong></td><td>The unexposed, clear part of the negative. On color negative film it carries the orange mask, and measuring it is the reference for mask removal.</td></tr>
-        <tr><td><strong>Film leader</strong></td><td>The fully exposed, fully developed start of the roll. Its density is the upper limit the film can reach.</td></tr>
-        <tr><td><strong>Density</strong></td><td>Negative log of transmission: the more light an area blocks, the higher its density. Inversion and tone mapping happen in the density domain rather than by subtracting RGB values.</td></tr>
-        <tr><td><strong>D-Min / D-Max</strong></td><td>The two endpoints in the Density Limits panel, near the film base and near the leader respectively.</td></tr>
-        <tr><td><strong>Printer Lights</strong></td><td>An emulation of enlarger exposure and filtration: per-channel changes to final brightness and color balance.</td></tr>
-        <tr><td><strong>Mask</strong></td><td>The orange cast built into color negative film. Removing the mask means subtracting it as the reference.</td></tr>
-        <tr><td><strong>Contact sheet</strong></td><td>One index image containing every frame of the roll with edge codes.</td></tr>
-        <tr><td><strong>Input domain</strong></td><td>What the decoded pixel values mean: primaries, transfer curve, and whether they are linear. Resolved per file.</td></tr>
-    </tbody>
-</table>
-`
-                    }
-                ]
-            },
-            {
-                id: 'import-and-rolls',
-                kicker: '03 / Import & Roll Management',
-                title: 'Import and Roll Management',
-                subtitle: 'Supported formats, the two import paths, and everyday work in Rolls.',
-                readingTime: 6,
-                sections: [
-                    {
-                        id: 'formats',
-                        heading: 'Supported formats',
-                        content: `
-<p>The import picker accepts common camera RAW formats: DNG, NEF/NRW, CR2/CR3, ARW/SRF/SR2, RAF, RW2, ORF/ORI, SRW, PEF, 3FR, ERF, KDC/DCR, IIQ, MOS, MRW, X3F, RWL, FFF, and RAW, plus TIFF, JPEG, and PNG. Compatibility depends on the bundled decoder and the specific device. If a file will not import, note the camera or scanner model, the file format, and the error message.</p>
-<div class="doc-callout doc-callout-warn">
-    <div class="doc-callout-title">Nikon Z8 HE / HE* compressed NEF</div>
-    <div class="doc-callout-body">These files cannot be imported at present because the bundled decoder does not support that compression, and the app cannot work around it. To use NexFilm, switch the camera to a standard RAW recording format.</div>
-</div>
-<p>JPEG does not retain complete linear data, and scanner JPEGs usually contain no film base region, so inversion and grading results cannot be guaranteed. If a JPEG result is disappointing, compensate manually with <strong>Printer Lights</strong>.</p>
-`
-                    },
-                    {
-                        id: 'import-roll',
-                        heading: 'Import by Roll',
-                        content: `
-<p>Use this for material scanned or copied as a complete roll.</p>
-<ol>
-    <li>Choose <strong>Import Roll</strong> and select <strong>Import by Roll</strong>.</li>
-    <li>Fill in format, camera, film stock, date, and notes. New camera and film names can be typed directly and will appear in the lists afterwards.</li>
-    <li>Select the files. Thumbnails and previews are generated during import; the originals stay untouched.</li>
-</ol>
-<p>These details are stored with the roll and feed the export filename template and EXIF writing. A roll imported this way appears as a group in <strong>Rolls</strong> rather than as loose frames in the library.</p>
-<p>Notes are free text, meant to tell several rolls of the same film stock apart — "roll 2", "studio", "expired stock". They appear on the roll card and in the roll details panel, and can be edited later through <strong>Edit Info</strong>.</p>
-`
-                    },
-                    {
-                        id: 'loose-import',
-                        heading: 'Loose Import and drag and drop',
-                        content: `
-<p>Use this for single scans, test frames, or images that do not need to belong to a roll.</p>
-<ul>
-    <li>Choose <strong>Import Roll</strong> and then <strong>Loose Import</strong>, or use <strong>Import From Disk</strong> from the empty library state.</li>
-    <li>Files can also be dragged straight into the window. They are added as loose frames when the drop is released.</li>
-</ul>
-<p>Loose frames have no roll metadata and are always analysed individually. They never take part in roll calibration and are not covered by Invert Whole Roll. Files that were already imported are recognised and are not added twice.</p>
-`
-                    },
-                    {
-                        id: 'roll-info',
-                        heading: 'Roll details and the library',
-                        content: `
-<p>Library shows the current working roll. When more than one roll is in play, select one in <strong>Rolls</strong> and choose <strong>Continue Editing Roll</strong> to make it current, or use <strong>Promote to Library</strong> to bring it in.</p>
-<p>Format, camera, film stock, and date can be changed with <strong>Edit Info</strong> in Rolls. The export filename template and the EXIF fields follow those values.</p>
-<p>When deleting frames from the library, the dialog asks whether to remove only the NexFilm record or to move the source files to the system trash as well. Files still referenced by another roll are kept, and anything sent to the trash can be restored from there.</p>
-`
-                    },
-                    {
-                        id: 'rolls-view',
-                        heading: 'Rolls',
-                        content: `
-<p>The filter panel on the left combines format, camera, and date filters and shows the exact number of matching rolls and frames. <strong>Clear</strong> removes every filter.</p>
-<p>Open a roll to:</p>
-<ul>
-    <li>review every frame and use <strong>Continue Editing Roll</strong> or <strong>Promote to Library</strong>;</li>
-    <li>change roll details with <strong>Edit Info</strong>;</li>
-    <li>generate an index with <strong>Export Contact Sheet</strong>;</li>
-    <li>remove the record, or the record and its source files, with <strong>Delete Rolls</strong>.</li>
-</ul>
-`
-                    },
-                    {
-                        id: 'missing-files',
-                        heading: 'After source files move or disappear',
-                        content: `
-<p>NexFilm stores the path to each source file rather than a copy of it. If a file is moved, renamed, or deleted, the frame goes offline: the thumbnail remains but the frame cannot be inverted or exported.</p>
-<p>Use <strong>Locate File</strong> on the frame to reconnect it. If the original is gone for good, remove the record from the library or the roll. Back up both your originals and the application data directory.</p>
-`
-                    }
-                ]
-            },
-            {
-                id: 'develop-workspace',
-                kicker: '04 / Develop',
-                title: 'The Develop Workspace',
-                subtitle: 'Film area, film calibration, inversion, and every inspector panel.',
-                readingTime: 12,
-                sections: [
-                    {
-                        id: 'film-area',
-                        heading: 'Film area and geometry',
-                        content: `
-<p>The film area is the boundary for density analysis: only pixels inside it feed the base estimate and the tone analysis. It does two jobs at once, defining the image edges and keeping sprocket holes, film edges, and the light panel out of the analysis.</p>
-<p>How to judge it:</p>
-<ul>
-    <li>The outline should hug the usable image region. The usual practice is to exclude all surrounding black and white borders.</li>
-    <li>If you want the base estimated from the film edge, leave 1 to 2 mm of even, unexposed edge along one side, but never expose the light panel.</li>
-    <li>The area only affects analysis. It does not change perspective and does not crop exported pixels; composition cropping uses <strong>Crop</strong> in the toolbar.</li>
-</ul>
-<p>Geometry tools sit above the canvas: <strong>Crop</strong> and <strong>Reset Crop</strong>, <strong>Straighten</strong>, <strong>Set Film Area</strong>, rotate counterclockwise and clockwise, and horizontal and vertical flip. Perspective and lens distortion correction live in the geometry group of the inspector, and can correct a slight copy-stand tilt or barrel and pincushion distortion.</p>
-`
-                    },
-                    {
-                        id: 'auto-area',
-                        heading: 'Auto Area and manual correction',
-                        content: `
-<p>Choose <strong>Set Film Area</strong> to enter area editing; the toolbar switches to <strong>Auto Area</strong> and <strong>Save Area</strong>. Auto Area estimates the boundary from the cached thumbnail, which is fast but always needs a human check, especially when the picture contains large low-contrast sky or deep shadow.</p>
-<ol>
-    <li>Choose <strong>Auto Area</strong> and wait for the outline.</li>
-    <li>Drag the corners or edge handles to correct it. The four corners move independently.</li>
-    <li>Choose <strong>Save Area</strong> when it is right. Switching frames without saving discards the result.</li>
-</ol>
-<p>When every frame in the roll sits in the same place, <strong>Batch Apply</strong> in the toolbar sends the current area to the others. It only transfers geometry and the base marker; each target frame still re-measures its own film base to absorb slight unevenness in the light source.</p>
-`
-                    },
-                    {
-                        id: 'film-calibration',
-                        heading: 'Film calibration',
-                        content: `
-<p>Film calibration uses roll-wide samples to establish two physical anchors: the colour of the unexposed film base and the density ceiling of the fully exposed leader. Once calibrated, the whole roll shares one reference, which usually gives more consistent colour across frames than per-frame estimates.</p>
-<ol>
-    <li>Go back to <strong>Library</strong> and tick the frames that contain unexposed base and a fully exposed leader. A roll may use several reference frames.</li>
-    <li>Choose <strong>Calibrate Film</strong> in the library toolbar.</li>
-    <li>In the dialog, pick <strong>Sample film base</strong> or <strong>Sample film leader</strong> and click the matching area on the image. A small neighbourhood is averaged, so the click does not need to be pixel-exact, but avoid scratches, dust, and obvious density gradients.</li>
-    <li>Once both references are sampled, choose <strong>Confirm</strong> to save.</li>
-</ol>
-<div class="doc-callout">
-    <div class="doc-callout-title">When there is no leader</div>
-    <div class="doc-callout-body">Sampling only the base is allowed. Without a leader, the density ceiling comes from frame content, and the app limits how far the channel spans may be pulled apart so that a picture with no true black does not get an exaggerated contrast. 120 film and 135 rolls with the leader cut off both behave this way.</div>
-</div>
-<p>Calibration is stored per roll and never written to the original files. Run it again whenever you want to re-anchor the roll.</p>
-`
-                    },
-                    {
-                        id: 'invert',
-                        heading: 'Inverting',
-                        content: `
-<p>The inspector ships with two inversion buttons by default, <strong>Auto Invert</strong> and <strong>Reset</strong>, which cover roll imports without sampled anchors and Loose Import. <strong>Invert Whole Roll</strong> only appears once the roll has sampled film base and leader, because a roll-wide white point depends on that pair of physical anchors.</p>
-                    <table class="doc-table">
-                        <thead>
-                            <tr><th>Button</th><th>What it does</th></tr>
-                        </thead>
-                        <tbody>
-                            <tr><td><strong>Auto Invert</strong></td><td>Processes the current frame, measuring its base and content range, writing the result into that frame's parameters.</td></tr>
-                            <tr><td><strong>Invert Whole Roll</strong></td><td>Only shown when the roll has sampled base and leader anchors. Measures the brightest frame of the roll as a white point, then inverts the rest, reporting how many frames succeeded and failed. Suited to rolls copied with a fixed setup.</td></tr>
-                            <tr><td><strong>Reset</strong></td><td>Clears the colour adjustments on the current frame and returns it to the un-inverted state.</td></tr>
-                        </tbody>
-                    </table>
-<p>Inversion can be run repeatedly. After changing the film area or the calibration, run it again and the result is recomputed from the new reference.</p>
-<p>Film mode switches between <strong>Color</strong> and <strong>B&amp;W</strong> below the buttons. Black and white keeps the density conversion and drops channel balancing, which suits black and white negatives and material you want to handle channel by channel.</p>
-`
-                    },
-                    {
-                        id: 'inspector-panels',
-                        heading: 'Inspector panels',
-                        content: `
-<table class="doc-table">
-    <thead>
-        <tr><th>Panel</th><th>What you can change</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>Scopes</strong></td><td>Histogram and waveform, each switchable between channels and luminance, for judging tone distribution and clipping.</td></tr>
-        <tr><td><strong>Density Limits</strong></td><td>Master D-Min and Master D-Max plus per-channel trims. The readout below shows the endpoints actually measured for this frame.</td></tr>
-        <tr><td><strong>Printer Lights</strong></td><td>Exposure plus red/cyan, green/magenta, and blue/yellow. The eyedropper in the panel header is the <strong>White Balance Eyedropper</strong>: click a neutral grey area in the picture to correct an overall cast. It adjusts channel exposure offsets, not the film base sample.</td></tr>
-        <tr><td><strong>Tone Curve</strong></td><td>Four point curves: the composite RGB curve plus red, green, and blue channels. Drag a point to move it, click an empty spot to add one, right-click to remove one. The endpoints move vertically, which is how a lifted black point or a pulled-down white point is expressed; <strong>Reset Channel</strong> restores the active channel. The curve runs between Printer Lights and Aesthetics, with the frame's histogram behind it.</td></tr>
-        <tr><td><strong>Aesthetics</strong></td><td>Contrast, highlights, shadows, saturation, temperature, and tint. These act after inversion and do not change the physical reference.</td></tr>
-        <tr><td><strong>Detail</strong></td><td><strong>Sharpening</strong> with amount, radius, detail, and masking, plus the <strong>Presence</strong> group: texture, clarity, and dehaze. At zero amount the sharpening stage does no work at all.</td></tr>
-        <tr><td><strong>Sprocket Settings</strong></td><td><strong>Sample Sprocket Hole</strong> removes perforation marks from the positive border, with tolerance and feather controls for detection range and transition.</td></tr>
-        <tr><td><strong>Input Color Science</strong></td><td>Shows the capture colour space of the current frame and holds the Calibration Config and Scanner Input profile selectors. Once decoding has resolved it, it rarely needs changing.</td></tr>
-        <tr><td><strong>Print Film Emulation</strong></td><td>Choose a bundled print film or paper LUT, or load a custom <code>.cube</code> file, with opacity control. "No Built-in LUT" disables the emulation.</td></tr>
-    </tbody>
-</table>
-<p>From <strong>Density Limits</strong> onwards every group carries a triangle at the right of its title: click it to fold the controls away while the title stays, and click again to open them. The state is global and survives a restart. The module strip on the left only scrolls to a group; it never re-opens a collapsed one.</p>
-<p>Two selectors inside the <strong>Input Color Science</strong> group: <strong>Calibration Config Profile</strong> binds a hardware calibration profile to the roll, and <strong>Scanner Input Profile</strong> names the input profile for a scanner. Both default to automatic and only need changing after a profile exists.</p>
-<p>The output colour space is not set in the inspector; it is chosen in the export dialog.</p>
-`
-                    },
-                    {
-                        id: 'curve-and-detail',
-                        heading: 'Tone curve and Detail',
-                        content: `
-<p>Both groups act on the finished positive, not on the density reference underneath it. Their place in the panel is also their order: the <strong>Tone Curve</strong> runs after Printer Lights and before Aesthetics, and <strong>Detail</strong> runs after Aesthetics.</p>
-<p>The <strong>Tone Curve</strong> holds four point curves. The red, green, and blue channels run first and the composite RGB curve then reads their result, matching the tone curve other editors expose. Interpolation is a monotone cubic: however the control points are dragged, the curve never doubles back between two of them and never leaves the 0–1 range. A curve carries up to 16 points.</p>
-<ul>
-    <li>Drag a control point to move it; click an empty spot to add one, right-click to remove one.</li>
-    <li>The two endpoints are pinned to input 0 and 1 and move vertically only, which is how a lifted black point or a pulled-down white point is drawn.</li>
-    <li>Pulling an endpoint sideways is not a dead end: past a short distance it grows an interior control point that follows the pointer.</li>
-    <li><strong>Reset Channel</strong> restores the active channel to a straight line.</li>
-</ul>
-<p><strong>Detail</strong> splits into Sharpening and Presence, with the control names other editors use:</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>Control</th><th>What it does</th><th>Range</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>Amount</strong></td><td>Sharpening strength. At 0 the whole sharpening stage is skipped and every pixel is left untouched.</td><td>0 – 150</td></tr>
-        <tr><td><strong>Radius</strong></td><td>The scale sharpening works at: a larger radius reaches wider edges.</td><td>0.5 – 3.0</td></tr>
-        <tr><td><strong>Detail</strong></td><td>Weights the balance between structural edges and fine texture; a low value sharpens only the obvious edges.</td><td>0 – 100</td></tr>
-        <tr><td><strong>Masking</strong></td><td>Restricts sharpening to edges: at 100 only strong edges are touched, so flat areas keep their grain and noise.</td><td>0 – 100</td></tr>
-        <tr><td><strong>Texture</strong></td><td>Mid-frequency local contrast for fabric, skin, and similar structure.</td><td>-100 – 100</td></tr>
-        <tr><td><strong>Clarity</strong></td><td>Large-scale local contrast, weighted towards the midtones so neither end is compressed further.</td><td>-100 – 100</td></tr>
-        <tr><td><strong>Dehaze</strong></td><td>Removes a veil and restores contrast; a negative value adds haze instead.</td><td>-100 – 100</td></tr>
-    </tbody>
-</table>
-<p>These controls take part in the export as well. <strong>Output sharpening</strong> in the export dialog is a separate step that runs on the resized output pixels.</p>
-<p>Holding <kbd>Alt</kbd> while dragging one of the four Sharpening controls swaps the preview canvas for a grayscale view: <strong>Amount</strong>, <strong>Radius</strong>, and <strong>Detail</strong> show the sharpening signal itself — edges on a mid grey field — and <strong>Masking</strong> shows the mask in black and white, which is how to judge the radius and the mask threshold. The view only replaces the preview canvas; the scopes and the stored thumbnail keep reading the finished frame.</p>
-<p>Every algorithm is a published one: sharpening, texture, and clarity are high-pass (local contrast) stages at different scales, and dehaze estimates transmission with the Dark Channel Prior using the display white as the atmospheric light. All radii are quoted at a 2560 px long edge and converted to the resolution being rendered, so the preview and the export show the same amount of work.</p>
-`
-                    },
-                    {
-                        id: 'batch-vs-copy',
-                        heading: 'Batch Apply versus Copy Settings',
-                        content: `
-<p>Both carry work from one frame to others, but they carry different things.</p>
-<table class="doc-table">
-    <thead>
-        <tr><th></th><th>Batch Apply</th><th>Copy / Paste Settings</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>Where</strong></td><td>Toolbar above the canvas</td><td>Top of the inspector</td></tr>
-        <tr><td><strong>What it carries</strong></td><td>Film area and base marker</td><td>The ticked tone and geometry parameters</td></tr>
-        <tr><td><strong>Base on the target</strong></td><td>Re-measured on each target frame</td><td>Leaves the target's physical reference alone</td></tr>
-        <tr><td><strong>Typical use</strong></td><td>One fixed setup for the whole roll</td><td>One look across frames from the same scene</td></tr>
-    </tbody>
-</table>
-<p>Batch Apply re-measures the base on every frame because even with a fixed setup, uneven illumination, lens vignetting, and small film shifts make base readings differ slightly between frames. Reusing one reading would turn that difference into a colour cast. Only when a target frame has no measurable base does the app keep the inherited value, and it tells you to confirm the film area and run Auto Invert again.</p>
-<p>The paste dialog groups settings: Scan and Density, Film Base and Inversion, Film Mode, Density Limits, Printer Lights, Aesthetics, Tone Curve, Detail, Transform, Perspective, Print Film Emulation, built-in or custom LUT, and the sampled sprocket point. Three presets above the list select all settings, tone and colour, or geometry only, and individual rows can be ticked. "Tone and colour" includes the curve but leaves Detail out, matching the grouping other editors use.</p>
-`
-                    },
-                    {
-                        id: 'history-undo',
-                        heading: 'Undo and reset',
-                        content: `
-<p>Editing steps are recorded in the undo history: <kbd>Ctrl</kbd>+<kbd>Z</kbd> undoes and <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> or <kbd>Ctrl</kbd>+<kbd>Y</kbd> redoes (macOS uses <kbd>⌘</kbd>). While a text field has focus, these shortcuts do not intercept typing.</p>
-<p><strong>Reset</strong> in the inspector clears the colour adjustments for the current frame. <strong>Reset Crop</strong> in the toolbar and the reset buttons in the geometry group only affect geometry. The two do not interfere.</p>
-`
-                    }
-                ]
-            },
-            {
-                id: 'export-and-contact-sheets',
-                kicker: '05 / Export & Contact Sheets',
-                title: 'Export and Contact Sheets',
-                subtitle: 'Every setting in the export dialog, and how the roll index is produced.',
-                readingTime: 7,
-                sections: [
-                    {
-                        id: 'export-basics',
-                        heading: 'Exporting frames',
-                        content: `
-<p>Tick frames in <strong>Library</strong>, then choose <strong>Export</strong> in the upper-right corner (the number on the button is the current selection), or open <strong>View → Develop</strong> and export from there. The dialog opens with the selection count.</p>
-<p>Export runs in the background, so you can keep browsing and editing while files are written. Every selected frame is decoded at full resolution, and source scans are never overwritten.</p>
-<div class="doc-callout doc-callout-warn">
-    <div class="doc-callout-title">Export one test frame first</div>
-    <div class="doc-callout-body">Before committing a full roll, export a single frame with the same settings and check tone, colour, and dimensions.</div>
-</div>
-`
-                    },
-                    {
-                        id: 'export-format',
-                        heading: 'Format and colour space',
-                        content: `
-<table class="doc-table">
-    <thead>
-        <tr><th>Format</th><th>Notes</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>TIFF · 16-bit</strong></td><td>Best for archiving and further editing; keeps the most tonal information.</td></tr>
-        <tr><td><strong>TIFF · 8-bit</strong></td><td>For workflows that need a TIFF container without high bit depth.</td></tr>
-        <tr><td><strong>PNG · 16-bit</strong></td><td>Lossless compression, suitable for archive or delivery.</td></tr>
-        <tr><td><strong>JPEG · 8-bit</strong></td><td>Small files for sharing and review. Choosing it reveals a quality slider from 40 to 100, default 92.</td></tr>
-    </tbody>
-</table>
-<p>Output colour space can be sRGB IEC 61966-2.1, Display P3, Adobe RGB (1998), ITU-R BT.2020, ProPhoto RGB (ROMM RGB), ACEScg (AP1), or ACES2065-1 (AP0). The chosen ICC profile is written into the file. Use sRGB for the web, and ProPhoto RGB or an ACES space when you need a wider gamut for further work.</p>
-<p>Output sharpening offers <strong>None</strong> (preserve grain), <strong>Low</strong> (web and screens), <strong>Standard</strong> (default), and <strong>High</strong> (small output).</p>
-<p>The <strong>Linear / RAW</strong> group below the finished formats hands the result to another application:</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>Format</th><th>Notes</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>TIFF · 16-bit linear</strong></td><td>Linear-light output with no display curve, tagged with a matching linear ICC profile.</td></tr>
-        <tr><td><strong>DNG · linear</strong></td><td>The finished positive written as a LinearRaw DNG in the selected output colour, ready for further grading in Lightroom, Camera Raw and similar tools.</td></tr>
-        <tr><td><strong>DNG · camera RAW</strong></td><td>The frame's own camera RAW mosaic re-wrapped as DNG. Sample values, black level, active area and orientation are preserved exactly.</td></tr>
-    </tbody>
-</table>
-<div class="doc-callout">
-    <div class="doc-callout-title">Linear output is not the same as a camera RAW DNG</div>
-    <div class="doc-callout-body">Linear output is a <strong>processed result</strong>: inversion, grading, resizing and output sharpening all apply, and only the display curve is left out. Camera RAW DNG is the <strong>original capture</strong>: no adjustments take part, so output colour, resizing and sharpening have no effect on it, and it only works for camera RAW files. TIFF, JPEG and scanner linear DNGs have no mosaic to wrap; those frames are reported as failures and should be exported as linear DNG.</div>
-</div>
-`
-                    },
-                    {
-                        id: 'export-size',
-                        heading: 'Dimensions',
-                        content: `
-<p>There are two resize policies:</p>
-<ul>
-    <li><strong>Original dimensions</strong> exports at the full decoded resolution.</li>
-    <li><strong>Set long edge</strong> takes a target in pixels, with presets of 1024, 2048, 4096, and 8192 and a default of 2048. Aspect ratio is preserved.</li>
-</ul>
-<p><strong>Allow enlargement</strong> also scales frames smaller than the target. It is off by default so small sources are not interpolated upward.</p>
-`
-                    },
-                    {
-                        id: 'export-files',
-                        heading: 'Naming and existing files',
-                        content: `
-<p>The filename template accepts these tokens, with a default of <code>{Roll}_{Seq}</code>:</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>Token</th><th>Value</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><code>{Roll}</code></td><td>Roll identifier</td></tr>
-        <tr><td><code>{Camera}</code></td><td>Camera name</td></tr>
-        <tr><td><code>{Film}</code></td><td>Film stock</td></tr>
-        <tr><td><code>{Date}</code></td><td>Capture date</td></tr>
-        <tr><td><code>{Original}</code></td><td>Original file name</td></tr>
-        <tr><td><code>{Seq}</code></td><td>Frame sequence number</td></tr>
-    </tbody>
-</table>
-<p>A live preview of the resulting name appears below the field. Invalid filename characters are replaced automatically. When a file already exists you can <strong>Keep both</strong> (adds a suffix, the default), <strong>Replace existing file</strong>, or <strong>Skip existing file</strong>. NexFilm does not overwrite silently.</p>
-<p>Ticking <strong>Write Roll, film, camera and date to EXIF</strong> stores those details in the exported files.</p>
-`
-                    },
-                    {
-                        id: 'export-roll',
-                        heading: 'Exporting a whole roll',
-                        content: `
-<p><strong>Export Roll</strong> in the header exports every frame of the current roll with the same output settings. If some frames have missing source files or no saved processing state, the app reports how many and stops rather than skipping them quietly.</p>
-<p>A roll export also runs in the background and reports the destination and the number of frames written when it finishes.</p>
-`
-                    },
-                    {
-                        id: 'contact-sheet',
-                        heading: 'Contact sheets',
-                        content: `
-<p>A contact sheet lays the whole roll out as one index image with edge codes, useful for reviewing and archiving.</p>
-<ol>
-    <li>Open <strong>Rolls</strong>, select the roll, and enter its contents view.</li>
-    <li>Choose <strong>Export Contact Sheet</strong>.</li>
-    <li>Pick a destination folder. Generating the sheet can take a few seconds.</li>
-</ol>
-<p>Frames per row follow the format: 6 for 135, 4 for 645 and 6×6, 3 for 6×7, 2 for 6×9 and 6×12, and 1 for 6×17. The grid is not user-configurable at present.</p>
-<p>The output is a JPEG named <code>contact_sheet_roll_camera.jpg</code>. Edge codes carry the film stock, frame number, and the NexFilm wordmark; capture time and exposure settings are not printed.</p>
-`
-                    }
-                ]
-            },
-            {
-                id: 'troubleshooting',
-                kicker: '06 / FAQ & Troubleshooting',
-                title: 'FAQ and Troubleshooting',
-                subtitle: 'Find the cause by symptom, and what to confirm at each step.',
-                readingTime: 8,
-                sections: [
-                    {
-                        id: 'flat',
-                        heading: 'The positive looks flat, dark, or lacks contrast',
-                        content: `
-<p>Check these three things in order:</p>
-<ol>
-    <li><strong>Does the film area include the light panel?</strong> This is the most common cause. The panel is far brighter than any part of the film, so once it is inside the area it becomes the brightest pixel used for analysis and pushes the normal range down. Re-enter <strong>Set Film Area</strong> and put sprocket holes and the white panel outside the outline.</li>
-    <li><strong>Was the film base sampled correctly?</strong> If the base sample landed on picture content instead of unexposed film, the mask reference is offset. Re-sample with <strong>Calibrate Film</strong>, placing the sample on an even, clear film edge.</li>
-    <li><strong>Do the density endpoints need a trim?</strong> Adjust Master D-Min and Master D-Max in <strong>Density Limits</strong>. The readout below the sliders shows the endpoints measured for this frame.</li>
-</ol>
-<p>If the scene really was overcast, foggy, or shot at night, the absence of true black or white is correct. The app will not force the content to fill the range, and a moderate contrast is the right result.</p>
-`
-                    },
-                    {
-                        id: 'color-cast',
-                        heading: 'The positive has an overall colour cast',
-                        content: `
-<p>First decide what kind of cast it is:</p>
-<ul>
-    <li><strong>The whole roll leans the same way</strong>: usually the base reference. Check that the calibration frame really contains unexposed base and has no strong density gradient.</li>
-    <li><strong>One frame leans, and the picture is dominated by one colour</strong>: the channel span compensation may be working as intended. Its range is limited so that a single dominant colour cannot flatten the picture. If the result is still not right, correct it with <strong>Printer Lights</strong>.</li>
-    <li><strong>The cast appears at the edges</strong>: usually uneven copy lighting. Tighten the film area to avoid the worst edges and invert again.</li>
-</ul>
-<p>The eyedropper in the <strong>Printer Lights</strong> header is the white balance eyedropper: click a neutral grey area and the app adjusts the channel exposure offsets. It changes printer lights, not the film calibration.</p>
-`
-                    },
-                    {
-                        id: 'batch-tint',
-                        heading: 'A few frames are tinted after Batch Apply',
-                        content: `
-<p>Batch Apply carries the film area and the base marker, but every frame re-measures its own base, because illumination, vignetting, and small film shifts make readings differ. If a target frame has no usable base, the app keeps the inherited value and says so.</p>
-<p>Check whether that frame's film area leaves a usable film edge, then run <strong>Auto Invert</strong> again. If the frame was placed noticeably differently from the rest of the roll, confirming its area by hand is more reliable than batch transfer.</p>
-`
-                    },
-                    {
-                        id: 'choose-format',
-                        heading: 'TIFF or JPEG for export',
-                        content: `
-<ul>
-    <li>For archiving, further editing, or printing, choose <strong>TIFF · 16-bit</strong> or <strong>PNG · 16-bit</strong> with a matching output colour space.</li>
-    <li>For sharing, review, or small deliverables, choose <strong>JPEG · 8-bit</strong>, usually in sRGB.</li>
-</ul>
-<p>Export size depends on picture content, dimensions, bit depth, and compression quality, so there is no fixed correspondence. When it matters, export a few frames with the same settings and compare.</p>
-`
-                    },
-                    {
-                        id: 'raw-import',
-                        heading: 'Some RAW files will not import',
-                        content: `
-<p>RAW compatibility depends on the bundled decoder and the specific device. Things worth trying:</p>
-<ul>
-    <li>Confirm that the extension matches the real format; some cameras record a high-efficiency compressed format behind a RAW extension.</li>
-    <li>Nikon Z8 HE and HE* compressed NEF cannot be decoded at present; switch the camera to a standard RAW recording format.</li>
-    <li>Re-export the source as DNG or another supported format.</li>
-    <li>If it still fails, report the camera or scanner model, file format, and error message through Issues. Do not upload private scans.</li>
-</ul>
-`
-                    },
-                    {
-                        id: 'preview-vs-export',
-                        heading: 'Preview and export are not identical',
-                        content: `
-<p>Develop uses a bounded proxy to stay responsive: 2560 px on the long edge by default, raised to 4096 when needed. Export decodes every selected frame at full resolution. Both go through the same density pipeline, so tone and colour should match. Every radius in the Detail group is quoted at a 2560 px long edge and converted into the pixels being rendered, so the sharpening you see is the sharpening you export; a scaled proxy still cannot reproduce the very finest noise and edge detail, so exporting a test frame before a full batch remains the reliable check.</p>
-<p>The scopes and histogram read the base render from before the <strong>Detail</strong> group, which is what makes them a tone-distribution tool. The curve is included; sharpening, clarity, and dehaze are not.</p>
-`
-                    },
-                    {
-                        id: 'originals',
-                        heading: 'Does NexFilm modify my originals?',
-                        content: `
-<p>No. NexFilm does not overwrite or move source scans. The library, edit parameters, and previews live in the application data directory. When deleting frames, the app asks whether to remove the record only or to move the source files to the system trash as well; in the second case, files still referenced by another roll are kept.</p>
-<p>If a source file is moved or renamed, the frame goes offline and must be reconnected with <strong>Locate File</strong>.</p>
-`
-                    },
-                    {
-                        id: 'backup',
-                        heading: 'How to back up your work',
-                        content: `
-<p>Back up two things: your original scans and the application data directory. The main database <code>nexfilm_user.db</code> holds roll details, edit parameters, and previews; it stores paths to source files, not the images themselves. Backing up only the data directory cannot recover deleted originals, and backing up only the originals means re-importing and redoing the edits.</p>
-<p>The exact data directory is listed in the appendix.</p>
-`
-                    }
-                ]
-            },
-            {
-                id: 'color-science',
-                kicker: '07 / Color Science Reference',
-                title: 'Color Science Reference',
-                subtitle: 'For readers who want the algorithm: optical density, the unified pipeline, and colour management.',
-                readingTime: 12,
-                sections: [
-                    {
-                        id: 'optical-density',
-                        heading: 'Optical density',
-                        content: `
-<p>The colour of a negative cannot be read directly from its pixel values. Light passing through film is partly absorbed, each layer absorbing a different proportion, and measuring that proportion is what recovers the subject's colour. The quantity describing how much light is blocked is optical density:</p>
-<div class="doc-code-block"><code>D = -log10(T)　　T = transmitted intensity ÷ incident intensity</code></div>
-<p>Density and transmission are related logarithmically. Halving transmission adds about 0.30 to density; reducing transmission to a tenth adds 1.00. The same density change therefore corresponds to a very different brightness change in thin and dense areas. Adding and subtracting transmission values directly gives shadow and highlight responses in the wrong proportion; taking the logarithm first and working in the density domain matches how the film actually blocks light.</p>
-<p>The film base sets the lower end of the density range. On colour negative film the base carries an orange mask, and measuring it and subtracting it as the zero point is what returns the picture to neutral. The fully exposed leader sets the upper end. Together they define the density range available to the roll.</p>
-`
-                    },
-                    {
-                        id: 'pipeline',
-                        heading: 'The unified density pipeline',
-                        content: `
-<p>Whatever the material, a roll of copied RAW files, a scanner FFF, or a loose TIFF, inversion goes through the same pipeline. Input type affects only the first step, input domain resolution; the density mathematics afterwards does not change.</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>Step</th><th>What happens</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>1. Decode and resolve the input domain</strong></td><td>Determine what the file represents: primaries, transfer curve, and whether it is already linear. The decoded result is converted into a 32-bit floating-point linear ProPhoto RGB working space.</td></tr>
-        <tr><td><strong>2. Subtract the film base</strong></td><td>Remove the measured base per channel to obtain transmission, then take <code>-log10</code> to enter the density domain.</td></tr>
-        <tr><td><strong>3. Build the shared window</strong></td><td>With a usable base, all three channels share one window origin, with no extra per-channel density offset.</td></tr>
-        <tr><td><strong>4. Channel span response</strong></td><td>Compare the measured spans of the three channels and let each channel's window width follow its response within limits. See the next section.</td></tr>
-        <tr><td><strong>5. Display mapping</strong></td><td>Convert ProPhoto RGB to the display space, then apply gamma and any LUT.</td></tr>
-    </tbody>
-</table>
-<p>When no usable film base can be measured at all, the pipeline falls back to content alignment: the window origin is estimated from picture content and the alignment is limited to 0.20 density so the picture is not flattened.</p>
-`
-                    },
-                    {
-                        id: 'anchors',
-                        heading: 'Physical anchors and content range',
-                        content: `
-<p>Treating the film's physical reference and the picture's tonal distribution as separate things is the main difference between this pipeline and simply stretching a histogram.</p>
-<p>The base and the leader are set by the chemistry of the film and do not change with the subject. Within one roll, the base colour and the leader density are the same physical quantities whether the picture shows snow or a night street. Once calibrated, the whole roll can share those anchors.</p>
-<p>The tonal distribution of a picture is a different matter. An overcast scene, a night shot, or a stage photograph may simply contain no true black or white, and forcing the histogram to fill the range would destroy genuine tonal separation and amplify shadow noise. The app therefore does not let content range override the physical anchors; it uses content only to estimate an endpoint that is missing.</p>
-`
-                    },
-                    {
-                        id: 'channel-span',
-                        heading: 'Bounded channel span response',
-                        content: `
-<p>In real scans the three channels do not respond identically to the same picture. The difference can come from the film layers, the scanner's channel gains, or the spectrum of the copy light. Ignoring it leaves a stable cast; following the measured values exactly can flatten a picture dominated by one colour. The compromise is a dead band and a ceiling.</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>Channel span ratio</th><th>Behaviour</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>Below 1.15</strong></td><td>Treated as equal response; the shared window is kept exactly as measured, with no channel separation.</td></tr>
-        <tr><td><strong>1.15 to 1.35</strong></td><td>Channel window widths open up gradually according to the measured ratios.</td></tr>
-        <tr><td><strong>Up to 1.35</strong></td><td>Measured values are trusted in full. Compensation may bend the channels apart by at most 1.35 times the shared span.</td></tr>
-        <tr><td><strong>Above 2.0</strong></td><td>Treated as an upstream-truncated channel (for example a stitched scan where one channel kept only a third of the others' density range). The ceiling widens to 3 times so an unfixable cast is not left behind.</td></tr>
-    </tbody>
-</table>
-<p>A compensated window is never allowed to collapse below 0.2 density, so the display range cannot degenerate into a flat strip.</p>
-`
-                    },
-                    {
-                        id: 'input-domain',
-                        heading: 'Input domain resolution',
-                        content: `
-<p>The same pixel values may come from a camera RAW or a linear scanner output, and the two mean entirely different things. At import the app checks these rules in order and the first match wins:</p>
-<ol>
-    <li><strong>Embedded ICC profile</strong>: the file's own colour profile is used, with the highest confidence.</li>
-    <li><strong>Scanner container record</strong>: Flextight / Imacon FFF files and some TIFFs record primaries and gamma in the container, which are used directly; if the record cannot be read, documented defaults are used and marked as estimated.</li>
-    <li><strong>Scanner input profile</strong>: a profile created under Hardware Calibration for the device, applied to non-RAW files and DNG.</li>
-    <li><strong>DNG</strong>: a linear RAW scanner DNG is read as linear sRGB; other DNGs are treated as camera RAW.</li>
-    <li><strong>Other RAW</strong>: camera native primaries with the camera RAW transfer curve.</li>
-    <li><strong>Fallback</strong>: everything else is interpreted as sRGB and marked as estimated.</li>
-</ol>
-<p>The resolved record is stored with the frame, and the technical report shows which rule matched for that file.</p>
-`
-                    },
-                    {
-                        id: 'output-color',
-                        heading: 'Output colour',
-                        content: `
-<p>The output colour space is chosen in the export dialog: sRGB, Display P3, Adobe RGB (1998), Rec.2020, ProPhoto RGB, ACEScg, or ACES2065-1. The chosen ICC profile is written into the file so other software interprets the values the same way.</p>
-<ul>
-    <li>For the web, social platforms, and most image viewers: <strong>sRGB</strong>.</li>
-    <li>To carry a wider gamut into professional software: <strong>ProPhoto RGB</strong> or an <strong>ACES</strong> space.</li>
-    <li>To match a wide-gamut display or a specific print pipeline: <strong>Display P3</strong> or <strong>Adobe RGB (1998)</strong>.</li>
-</ul>
-<p>If an exported file looks wrong in another application, first check whether that application honours the embedded ICC profile. Viewers without colour management display every space as if it were sRGB.</p>
-`
-                    },
-                    {
-                        id: 'capture-tips',
-                        heading: 'Copy and scanning advice',
-                        content: `
-<p>These habits make everything downstream more predictable:</p>
-<ul>
-    <li><strong>Keep the camera fixed.</strong> Copied in the same position, a whole roll can share the film area and base readings, and Batch Apply becomes meaningful.</li>
-    <li><strong>Even out the lighting.</strong> A flat panel is usually a few percent dimmer at the edges than in the centre; the closer the film area stays to the middle, the safer the result.</li>
-    <li><strong>Leave a strip of unexposed film edge.</strong> The base is the reference for mask removal, and a little edge outside the picture lets the app measure the real mask.</li>
-    <li><strong>Block ambient light.</strong> Surround the film while copying so stray light does not reflect into the frame.</li>
-    <li><strong>Use RAW or 16-bit output.</strong> Higher bit depth preserves more density separation, especially in the shadows.</li>
-    <li><strong>Keep the light panel out of frame.</strong> Its highlight dominates the analysis and is the most common cause of a flat positive.</li>
-</ul>
-`
-                    }
-                ]
-            },
-            {
-                id: 'hardware-calibration',
-                kicker: '08 / Hardware Calibration',
-                title: 'Hardware Calibration (Experimental)',
-                subtitle: 'Saved capture profiles for a fixed scanning or copy setup, and what the feature can do today.',
-                readingTime: 5,
-                sections: [
-                    {
-                        id: 'status',
-                        heading: 'Current status',
-                        content: `
-<p>Hardware Calibration is a newer feature, and the validation entry points in the interface are labelled experimental. Its purpose is to record the capture conditions of a fixed setup so they can be reused, instead of being re-judged every time.</p>
-<p>It is important to be clear that registering reference files is not the same as completing a density calibration. The interface says so directly: configured references are not measured density. Until validation passes, processing continues to use per-frame analysis.</p>
-<p>If you only want to process the film in front of you, this chapter can be skipped. Film calibration already covers most roll-wide needs and does not depend on a hardware calibration profile.</p>
-`
-                    },
-                    {
-                        id: 'profiles',
-                        heading: 'Capture profiles',
-                        content: `
-<p>Each profile records one fixed capture setup: camera, light source, lens, and reference files. References are registered by kind, including dark frame, open gate, flat field, transmission target, film base reference, full-exposure reference, and spectral capture.</p>
-<p>The capture pipeline lists these stages in order:</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>Stage</th><th>What it covers</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><strong>Dark subtraction</strong></td><td>Capture-domain black level and dark-current reference.</td></tr>
-        <tr><td><strong>Open-gate normalization</strong></td><td>Capture-domain illumination and channel normalization.</td></tr>
-        <tr><td><strong>Flat-field correction</strong></td><td>Capture-domain shading and dust reference.</td></tr>
-        <tr><td><strong>Capture separation</strong></td><td>Optional device characterisation before the log conversion.</td></tr>
-        <tr><td><strong>Density reference</strong></td><td>Optional verified target used after the log conversion.</td></tr>
-        <tr><td><strong>Roll anchors</strong></td><td>Film base and full-exposure anchors remain roll-scoped.</td></tr>
-        <tr><td><strong>Film reconstruction</strong></td><td>Reserved for a later measured film model.</td></tr>
-    </tbody>
-</table>
-`
-                    },
-                    {
-                        id: 'create',
-                        heading: 'Creating and importing profiles',
-                        content: `
-<ol>
-    <li>Open the <strong>Hardware Calibration</strong> view.</li>
-    <li>Choose <strong>New Profile</strong>, fill in camera, light source, and lens, and add the matching reference files. Alternatively, choose <strong>Import Scanner Profile</strong> to bring in an existing device profile.</li>
-    <li>After saving, run <strong>Validate Capture (Experimental)</strong> in the profile detail to check that the references are usable.</li>
-</ol>
-<p>If a reference file is moved or modified, the profile detail reports it and the profile is not used at runtime.</p>
-`
-                    },
-                    {
-                        id: 'use',
-                        heading: 'Using a profile while processing',
-                        content: `
-<p>Two selectors inside the Input Color Science group of the Develop inspector are relevant:</p>
-<ul>
-    <li><strong>Calibration Config Profile</strong> binds a hardware calibration profile to a roll. Its default is Smart Auto. The binding is stored with the roll and is kept when the frames are exported.</li>
-    <li><strong>Scanner Input Profile</strong> names the input profile for a scanner, which feeds the "scanner input profile" rule in input domain resolution.</li>
-</ul>
-<p>If a bound profile is unavailable or needs attention, the app says so and falls back to per-frame analysis.</p>
-`
-                    },
-                    {
-                        id: 'limits',
-                        heading: 'Current limits',
-                        content: `
-<ul>
-    <li>Hardware Calibration manages capture configuration; it is not a completed density calibration, and the film-density stage is still marked unvalidated.</li>
-    <li>Loose frames always use per-frame analysis and never take part in a roll profile.</li>
-    <li>The available reference kinds and validation steps will change between versions. Treat the interface as the source of truth.</li>
-</ul>
-`
-                    }
-                ]
-            },
-            {
-                id: 'appendix',
-                kicker: '09 / Appendix',
-                title: 'Appendix',
-                subtitle: 'Shortcuts, data locations, version information, known limits, and where to send feedback.',
-                readingTime: 4,
-                sections: [
-                    {
-                        id: 'shortcuts',
-                        heading: 'Keyboard shortcuts',
-                        content: `
-<p>These are the only global shortcuts in the application. Everything else is done with the on-screen controls.</p>
-<table class="doc-table">
-    <thead>
-        <tr><th>Key</th><th>Action</th><th>When it applies</th></tr>
-    </thead>
-    <tbody>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd> / <kbd>⌘</kbd>+<kbd>Z</kbd></td><td>Undo</td><td>While not editing a text field</td></tr>
-        <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> or <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>Redo</td><td>While not editing a text field</td></tr>
-        <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>Previous or next frame</td><td>While the filmstrip is visible</td></tr>
-        <tr><td><kbd>Enter</kbd></td><td>Confirm the crop</td><td>In crop mode</td></tr>
-        <tr><td><kbd>Esc</kbd></td><td>Close the current dialog or menu, or cancel a value edit</td><td>While a dialog or menu is open</td></tr>
-        <tr><td>Hold <kbd>Space</kbd> and drag</td><td>Pan the canvas</td><td>While a frame is open</td></tr>
-        <tr><td>Mouse wheel</td><td>Zoom the preview; scroll the filmstrip sideways</td><td>In Develop</td></tr>
-        <tr><td>Mouse wheel</td><td>Adjust a slider value</td><td>After clicking that slider once</td></tr>
-        <tr><td>Hold <kbd>Alt</kbd> and drag</td><td>Amount, Radius, and Detail show the sharpening signal as a grayscale view; Masking shows the mask itself</td><td>While dragging a Sharpening control</td></tr>
-    </tbody>
-</table>
-<p>The canvas also supports dragging to pan and wheel zooming centred on the pointer. Sliders in the inspector support dragging and clicking the track to jump.</p>
-<p>An <kbd>Alt</kbd> view replaces the picture on the preview canvas only: the scopes and the stored thumbnail still read the finished frame, and exported files are unaffected. Releasing <kbd>Alt</kbd> or the mouse button returns to the normal picture.</p>
-`
-                    },
-                    {
-                        id: 'data-locations',
-                        heading: 'Data file locations',
-                        content: `
-<table class="doc-table">
-    <thead>
-        <tr><th>Platform</th><th>Data directory</th></tr>
-    </thead>
-    <tbody>
-        <tr><td>Windows release</td><td><code>%APPDATA%\\NexFilm Engine\\</code></td></tr>
-        <tr><td>macOS release</td><td><code>~/Library/Application Support/NexFilm Engine/</code></td></tr>
-        <tr><td>Debug build</td><td>Repository working directory</td></tr>
-    </tbody>
-</table>
-<p>The main database is <code>nexfilm_user.db</code>. It stores roll details, the frame index, edit parameters, input domain records, and previews, but not a complete copy of the originals. <code>rolls.json</code> is a compatibility mirror.</p>
-<p>Back up the originals and the data directory together. The database records absolute paths to source files, so moved originals must be reconnected with <strong>Locate File</strong>.</p>
-`
-                    },
-                    {
-                        id: 'version',
-                        heading: 'Version and updates',
-                        content: `
-<p>The current stable release is <strong>v1.1.0</strong>. Installers and release notes are published on the repository's Releases page; treat that page as the source of truth.</p>
-<p>Upgrading does not delete the data directory, but when the database schema changes the app migrates it automatically on first launch. Before a large version jump, back up the data directory first.</p>
-<p>When upgrading from 1.0.2 to 1.1.0, the migration clears thumbnails rendered with the retired density recipe. Run Auto Invert once more on older rolls so the filmstrip matches the actual render.</p>
-`
-                    },
-                    {
-                        id: 'known-limits',
-                        heading: 'Known limitations',
-                        content: `
-<ul>
-    <li>Windows and macOS packages are unsigned, and macOS DMGs are not notarized by Apple.</li>
-    <li>Nikon Z8 HE and HE* compressed NEF files cannot currently be decoded.</li>
-    <li>Compatibility across cameras, scanners, and FFF variants still needs wider validation.</li>
-    <li>No verified Linux release package is currently provided.</li>
-    <li>The database references source paths rather than copying originals, so moved or deleted files take frames offline.</li>
-    <li>Develop uses a bounded proxy; pixel-level differences against a full-resolution export can remain.</li>
-    <li>Capture validation in Hardware Calibration is still experimental.</li>
-</ul>
-`
-                    },
-                    {
-                        id: 'license',
-                        heading: 'Licence and credits',
-                        content: `
-<p>NexFilm Engine is released under the <strong>GNU General Public License v3.0 only</strong>. The full text is in the LICENSE file at the repository root; use, modification, and redistribution follow its terms.</p>
-<p>Thanks to the Zhihu users @黄昊Haosky and @V777 for sharing their work on scientific film-mask removal, and to everyone who files issues and suggestions. The bundled print film and paper LUTs are the <code>.cube</code> files distributed with the application and are available in the Print Film Emulation panel.</p>
-`
-                    },
-                    {
-                        id: 'feedback',
-                        heading: 'Feedback and contributions',
-                        content: `
-<p>Report problems and suggestions through the repository's Issues page. Please include:</p>
-<ul>
-    <li>your operating system version and the NexFilm version;</li>
-    <li>the camera or scanner model and the file format;</li>
-    <li>reproduction steps and the complete error message.</li>
-</ul>
-<p>Do not upload private scans. Keep code contributions focused and describe how you verified them in the pull request.</p>
-`
-                    }
-                ]
-            },
-        ]
-    };
+    "zh-CN": [
+        {
+            "id": "overview-and-install",
+            "track": "getting-started",
+            "trackTitle": "快速上手",
+            "trackOrder": 1,
+            "chapterOrder": 1,
+            "kicker": "01.1 / 快速上手",
+            "title": "认识 NexFilm 与跨平台安装指南",
+            "subtitle": "物理可解释的负片反相工作台与系统环境配置。",
+            "readingTime": 7,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "quick-start"
+            ],
+            "sections": [
+                {
+                    "id": "core-principles",
+                    "heading": "核心设计理念与物理反相基础",
+                    "content": "<p>彩色负片反相长期依赖通用图像处理软件的显示伽马曲线硬拉或预设套用。在传统数码暗房软件中，用户导入数码相机翻拍或扫描仪获取的负片 RAW/TIFF 文件后，通常通过反转 RGB 曲线端点、反复拉扯色阶滑块或应用经验黑盒色彩查找表来尝试消除橙褐色片基色罩。这种操作路径存在根本性的物理缺陷：数码相机传感器记录的 RAW 数据处于线性透射率域，而胶片乳剂层中染料吸收光线的规律遵循比尔-朗伯定律，其光学密度与光线透射率之间呈对数比例关系。在非线性的显示伽马空间直接反转像素值，必然导致通道间数学关系错位，引发亮部高光色偏、暗部细节泥泞以及同一卷胶卷各画面色彩无法对齐等问题。</p>\n<p>NexFilm Engine 的设计核心建立在统一光学密度管线之上。软件将输入的传感器原始透射率数据通过严格的数学变换对数化为真实光学密度值，并在密度域中执行未曝光片基（<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>）与全曝光化学上限（<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>）的物理锚定。在密度域中，色彩平衡调整等价于向各通道密度施加纯粹的加法偏移，这完全等价于光学暗房中通过彩色放大机透镜滤光片控制红、绿、蓝印片曝光时间的物理过程。NexFilm 坚持物理可解释的算法设计，软件内部提供的 40 余款胶卷型号列表仅用于元数据归档、EXIF 信息写入以及接触印样抬头排版，实际反相运算完全依靠画面中真实测量的片基物理光学密度，而非依赖不可验证的黑盒胶卷风格滤镜。</p>\n<p>通过理清透射率域、光学密度域与正片输出色彩空间之间的数学边界，NexFilm 实现了从单张底片快速反相到整卷胶卷色彩高度一致的工程化处理。无论面对 135 规格彩色负片、120 中画幅底片、大画幅散页片，还是大幅面滚筒扫描仪生成的线性 TIFF，软件均能以可重复、可逆且完全非破坏性的方式还原乳剂记录的原始色调。</p>"
+                },
+                {
+                    "id": "package-selection",
+                    "heading": "跨平台安装包选型与系统要求",
+                    "content": "<p>NexFilm 采用基于 Rust 与现代化 Web 渲染引擎的桌面架构，兼具系统底层底层内存安全性与 GPU 片段着色器的高速并行计算能力。软件面向主流操作系统提供独立编译的原生安装程序。用户在部署前应核对硬件架构与系统版本，以获得最佳运行稳定性。</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>操作系统架构</th><th>安装包文件名模式</th><th>适用硬件环境</th><th>底层解码加速特性</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>Windows x64</strong></td>\n            <td><code>NexFilm.Engine_{version}_x64-setup.exe</code></td>\n            <td>Windows 10 / 11 64 位操作系统，配备支持 WebGL 2.0 的独立显卡或集成显卡</td>\n            <td>多线程 LibRaw 解码引擎，支持 Direct3D 11 后端 WebGL2 实时渲染</td>\n        </tr>\n        <tr>\n            <td><strong>macOS Apple Silicon</strong></td>\n            <td><code>NexFilm.Engine_{version}_aarch64.dmg</code></td>\n            <td>搭载 Apple M1 / M2 / M3 / M4 系列芯片的 Mac 电脑，macOS 11.0 Big Sur 及更高版本</td>\n            <td>原生 ARM64 架构指令集执行，集成 Metal 后端 WebKit 硬件色彩渲染加速</td>\n        </tr>\n        <tr>\n            <td><strong>macOS Intel</strong></td>\n            <td><code>NexFilm.Engine_{version}_x64.dmg</code></td>\n            <td>搭载 64 位 Intel 处理器的旧款 Mac 电脑，macOS 10.15 Catalina 及更高版本</td>\n            <td>x86_64 原生编译，AVX2 矢量指令集加速，支持 AMD / Intel 显卡渲染</td>\n        </tr>\n    </tbody>\n</table><div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">安装包下载来源辨析</div>\n    <div class=\"doc-callout-body\">从 GitHub Releases 官方发布页获取安装文件时，必须选择上方表格中对应的安装包资产。请勿下载发布页底部由 Git 自动打包的 <code>Source code (zip)</code> 或 <code>Source code (tar.gz)</code> 源码压缩包。源码压缩包不包含预编译的系统二进制程序和前端运行时，无法直接双击运行。</div>\n</div><p>在图像格式支持方面，NexFilm 支持数码单反与无反相机拍摄的标准 RAW 文件（如索尼 <code>.ARW</code>、佳能 <code>.CR2</code> / <code>.CR3</code>、尼康 <code>.NEF</code>、富士 <code>.RAF</code> 等）、哈苏与易麦康（Imacon / Flextight）专业底片扫描仪生成的 <code>.fff</code> 格式、各型扫描仪输出的 16 位线性 TIFF，以及标准 8 位与 16 位 TIFF/PNG 图像。需要特别注意：由于当前底层 LibRaw 依赖库的技术限制，尼康 Z8 与 Z9 机身内录制的 <strong>HE</strong> 与 <strong>HE*</strong> 高效率压缩 NEF 格式尚无法直接被解码读取。使用此类机身翻拍底片的用户，需在相机菜单中将 RAW 录制格式设置为无损压缩，或先借助 Adobe DNG Converter 批量转为标准线性 DNG 后再导入本软件。</p>"
+                },
+                {
+                    "id": "security-clearance",
+                    "heading": "系统安全拦截与首次放行流程",
+                    "content": "<p>NexFilm 是一款由开源社区独立维护的自由软件。由于开发团队未向商业认证机构购买高昂的企业级代码签名证书，各操作系统内置的安全防护机制在首次启动时可能会触发安全警告或拦截拦截提示。这些提示属于未签名开源软件的通用安全行为，软件内部不包含任何遥测追踪、广告插件或联网上传逻辑。请按照以下规范流程放行运行权限。</p>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">系统完整性保护与安全性原则</div>\n    <div class=\"doc-callout-body\">在配置 macOS 权限时，任何指导用户在终端执行 <code>csrutil disable</code> 关闭系统全局完整性保护（SIP）的行为均存在系统安全风险。NexFilm 仅需按照常规未公证应用的方式在安全设置中单独授权，严禁诱导或关闭系统全局安全防护功能。</div>\n</div><h3 id=\"first-launch-authorization-on-windows\" class=\"scroll-mt-24\">Windows 系统的首次启动放行</h3>\n<p>双击运行 <code>.exe</code> 安装程序时，Windows Defender SmartScreen 界面可能会弹出蓝色警告卡片，提示“Windows 已保护你的电脑，Microsoft Defender SmartScreen 已阻止启动未知应用”。放行步骤如下：</p>\n<ol>\n<li>在 SmartScreen 弹窗正文中，点击灰色的 <strong>更多信息</strong> 文本超链接。</li>\n<li>界面下方将显示该程序的实际名称与未知发布者状态，右下角将出现 <strong>仍要运行</strong> 操作按钮。</li>\n<li>点击 <strong>仍要运行</strong>，安装向导将正常启动并解压相关运行时组件至系统程序目录。</li>\n</ol>\n<h3 id=\"first-launch-authorization-on-macos\" class=\"scroll-mt-24\">macOS 系统的首次启动放行</h3>\n<p>双击打开下载的 <code>.dmg</code> 磁盘映像镜像，将 <code>NexFilm Engine.app</code> 图标拖拽至应用程序文件夹完成安装。首次从访达或启动台打开应用时，macOS Gatekeeper 可能弹出提示窗口，告知“无法打开 NexFilm Engine，因为 Apple 无法检查其是否包含恶意软件”。标准放行方案如下：</p>\n<ol>\n<li><strong>访达右键放行法（首选推荐）</strong>：打开访达，进入 <strong>应用程序</strong> 文件夹，找到 <code>NexFilm Engine</code> 应用图标。按住键盘上的 <kbd>Control</kbd> 键并单击该图标（或直接鼠标右键单击），在弹出的上下文菜单中点击 <strong>打开</strong>。此时系统弹窗的按钮将变为包含 <strong>打开</strong> 选项的对话框，点击 <strong>打开</strong> 即可解除隔离标记并启动。</li>\n<li><strong>系统设置放行法（备选方案）</strong>：若首次点击已被系统拦截关闭，请点击屏幕左上角苹果菜单进入 <strong>系统设置</strong>，在左侧导航栏选择 <strong>隐私与安全性</strong>。向下滑动至“安全性”区域，界面将显示“已阻止使用 NexFilm Engine，因为来自身份不明的开发者”。点击其右侧的 <strong>仍要打开</strong> 按钮，在系统身份认证窗口输入管理员密码或通过触控 ID 验证，即可永久授权该版本运行。</li>\n</ol>"
+                },
+                {
+                    "id": "storage-architecture",
+                    "heading": "数据目录结构与源片只读保障",
+                    "content": "<p>图像资产的完整性是摄影后期处理的生命线。NexFilm 在架构层面执行严格的<strong>源片绝对只读原则</strong>。在导入底片、分析片基、生成 WebGL 预览以及最终批量导出的整个生命周期中，软件仅对原始文件执行流式只读读取，绝不改写、覆盖、重命名或重定位用户的任何原始 RAW 或 TIFF 扫描文件。</p>\n<p>所有的胶卷归档元数据、各帧裁剪框坐标、测光与片基几何标记、调色参数以及缩略图缓存，均集中保存在当前用户操作系统的标准应用支持目录中。</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>运行平台</th><th>本地主数据库与工作配置目录</th><th>关键文件清单与物理用途</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>Windows</strong></td>\n            <td><code>%APPDATA%\\NexFilm Engine\\</code></td>\n            <td><code>nexfilm_user.db</code>（核心 SQLite 数据库，记录图库索引与参数）<br /><code>rolls.json</code>（向后兼容的胶卷镜像归档文件）<br /><code>profiles/</code>（硬件校正采集配置文件目录）</td>\n        </tr>\n        <tr>\n            <td><strong>macOS</strong></td>\n            <td><code>~/Library/Application Support/NexFilm Engine/</code></td>\n            <td><code>nexfilm_user.db</code>（核心 SQLite 数据库，保存几何与调色历史）<br /><code>rolls.json</code>（格式镜像快照）<br /><code>profiles/</code>（平场暗场与色彩校准数据）</td>\n        </tr>\n    </tbody>\n</table><p>由于软件仅在数据库中记录原始文件的绝对存储路径，当用户在操作系统中移动了原始扫描文件夹、重命名了外置移动硬盘卷标或更换了工作目录时，数据库中的文件引用将失效，在图库中会显示红色的离线标记。此时无需重新导入或重新调色，只需在图库或工作台中点击 <strong>定位文件</strong> 按钮，在文件选择对话框中重新指向新的文件夹路径，NexFilm 将自动基于文件名对整卷底片完成重关联并恢复所有编辑历史。</p>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">版本升级后的缩略图与缓存刷新建议</div>\n    <div class=\"doc-callout-body\">如果用户从旧版（如 <code>v1.0.2</code>）升级至 <code>v1.1.0</code> 或更新版本，由于新版引擎引入了改进的片基采样加权与有界跨度反相算法，旧版保存的缩略图配方可能显示较暗。建议打开既有胶卷，在工作台中重新点击一次 <strong>自动反相</strong>，即可刷新该帧的高清缩略图与正片配方。在初次使用本软件处理具有珍贵价值的商业胶卷前，建议先导入两三张样本底片完整演练导入、反相与导出流程，确认各环节符合预期后再进行批量作业。</div>\n</div>"
+                },
+                {
+                    "id": "interface-layout",
+                    "heading": "界面四大核心功能区域速览",
+                    "content": "<p>NexFilm 界面严格遵循暗房工作流人体工程学设计，整体布局清晰收敛，最大限度为图像预览与精密参数调节留出操作空间。软件窗口自顶向下划分为四大功能区域：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>界面区域</th><th>物理位置与构成要素</th><th>核心交互职责与操作特征</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>菜单栏</strong></td>\n            <td>窗口最左上方导航区域，包含 <code>NEXFILM</code> 品牌标识、<strong>设置</strong>、<strong>视图</strong> 与 <strong>帮助</strong> 下拉菜单</td>\n            <td>管理全局应用偏好。在 <strong>设置</strong> 中可切换中英文界面显示语言（zh-CN / en）以及浅色/深色主题；在 <strong>视图</strong> 中可快捷跳转至各子模块；在 <strong>帮助</strong> 中可查看版本声明与关于信息。</td>\n        </tr>\n        <tr>\n            <td><strong>顶栏视图标签与全局动作</strong></td>\n            <td>居中为五大主视图标签切换器，右侧固定放置三大全局主操作按钮</td>\n            <td>五大视图分别为：<strong>图库</strong>、<strong>工作台</strong>、<strong>历史胶卷记录</strong>、<strong>硬件校正</strong> 与 <strong>使用文档</strong>。右侧常驻的 <strong>导出胶卷</strong>、<strong>导入胶卷</strong> 与 <strong>导出</strong> 按钮支持在任意视图下直接触发核心批量或单帧导出流程。</td>\n        </tr>\n        <tr>\n            <td><strong>主工作区</strong></td>\n            <td>占据窗口中央的主视口区域，内容随上方选中的视图标签动态切换</td>\n            <td>在 <strong>图库</strong> 下呈现高响应缩略图网格与整卷元数据抬头；在 <strong>工作台</strong> 下左侧为主画布（支持 WebGL 2.0 实时显色、对焦缩放与平移），右侧为参数检查器（包含直方图、波形图、胶片范围、几何校正、片基标定、印片光与曲线等面板）；在 <strong>历史胶卷记录</strong> 下呈现过往胶卷归档档案。</td>\n        </tr>\n        <tr>\n            <td><strong>底片条</strong></td>\n            <td>工作台底部的横向可收展底片抽屉</td>\n            <td>按实际曝光顺序水平陈列当前胶卷的所有画幅缩略图。底片条显示时，可通过鼠标滚轮横向滚动，或直接使用键盘快捷键 <kbd>←</kbd> 与 <kbd>→</kbd> 快速切换前一帧或后一帧。</td>\n        </tr>\n    </tbody>\n</table><p>熟练掌握各区域的分工能够显著提升暗房后期的吞吐效率。在接下来的章节中，我们将进一步深入探讨采集端的光学物理标准，为获得高保真度的色彩还原打下坚实的前期基础。</p>"
+                }
+            ]
+        },
+        {
+            "id": "scanning-best-practices",
+            "track": "getting-started",
+            "trackTitle": "快速上手",
+            "trackOrder": 1,
+            "chapterOrder": 2,
+            "kicker": "01.2 / 快速上手",
+            "title": "相机翻拍与扫描仪前期采集规范",
+            "subtitle": "光源显指、曝光准则与透明片基保留的物理原理。",
+            "readingTime": 8,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "optical-illumination",
+                    "heading": "背光光源显色性与光谱连续性",
+                    "content": "<p>在数字翻拍彩色负片的过程中，数码相机的图像传感器并非直接记录被摄物体的反射光谱，而是记录穿透底片染料乳剂层后的透射光能量。透射光强是光源发射光谱与胶片各染料层吸收光谱的乘积。如果在背光照明阶段使用了光谱存在严重下陷或尖峰的低质量光源，传感器所记录到的各通道透射率将产生物理不可逆的混叠与通道串扰。后期算法无论如何推导，都无法修复前期硬件采集丢失的光谱信息。因此，前期光学照明质量直接决定了色彩还原与去色罩精度的物理上限。</p>\n<p>彩色负片的感光乳剂通常由黄色、品红色和青色三层发色团染料构成。为了精确测定各染料层的吸收特性，背光照明光源必须具备连续平滑的光谱分布。</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>背光光源类型</th><th>显色性指标典型值</th><th>光谱连续性特征</th><th>对负片反相质量的影响判定</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>专业全光谱摄影观片灯板 / 闪光灯</strong></td>\n            <td>CRI ≥ 95 / TLCI ≥ 98 / TM-30 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>R</mi><mi>f</mi></msub><mo>≥</mo><mn>95</mn></mrow><annotation encoding=\"application/x-tex\">R_f \\ge 95</annotation></semantics></math></span></td>\n            <td>蓝紫光至深红光连续分布，无高能量尖峰与断裂谷底</td>\n            <td>推荐基准。各染料通道能量记录充沛，色彩分离清晰，去色罩后基底干净透明</td>\n        </tr>\n        <tr>\n            <td><strong>普通照明 LED 平板灯 / 简易灯箱</strong></td>\n            <td>CRI 80 左右，TLCI &lt; 70</td>\n            <td>450nm 蓝光尖峰强烈，青绿与深红区域光谱严重塌陷</td>\n            <td>极易导致青色染料层吸收数据失真，反相后肤色易发青发紫，暗部杂色难以消除</td>\n        </tr>\n        <tr>\n            <td><strong>手机 / 平板电脑 OLED 或 LCD 屏幕</strong></td>\n            <td>不可用，光谱由极窄的红绿蓝三基色线谱构成</td>\n            <td>三窄带发射，非吸收峰波段透射能量近乎为零，微观子像素存在网纹衍射</td>\n            <td>严禁使用。狭窄发射波长与胶片宽频吸收带严重失配，造成严重的非线性色彩串扰</td>\n        </tr>\n    </tbody>\n</table><p>光源的色温建议稳定在 5000K 至 5600K 之间的标准日光范围。过低色温（如 3000K 暖光）会导致蓝色通道传感器曝光严重不足，放大数码感光元件在蓝光波段的散粒噪声；而过高色温则会压低红色通道响应，导致负片最薄弱的高光密度信号沉入底噪。使用连续全光谱平板光源或配备漫射柔光箱的机顶闪光灯是获得稳定色彩的可靠选择。</p>"
+                },
+                {
+                    "id": "stray-light-control",
+                    "heading": "杂散光消除与遮光夹具标准",
+                    "content": "<p>负片翻拍属于典型的背光穿透式微距光学成像，对环境杂散光与片门边缘漏光极为敏感。负片中透明度最高的区域对应拍摄时的暗部，而透光率最低、银盐密度最高的黑褐色区域则对应真实场景中的高光。这一物理特性决定了微弱的杂散光泄漏会对底片反相产生截然相反的破坏效应。</p>\n<p>当观片灯板发出的高强度光线未经遮挡直接从片夹边缘射出，或翻拍环境中存在未关闭的天花板顶灯、窗外日光时，杂散光线会在微距镜头的镜片表面与镜筒内壁发生多次非成像全反射。部分漫射杂散光将直接叠加到相机传感器的高光成像区域（即负片上密度极高、几乎不透光的区域）。这种非来自底片内部透射的虚假光子会大幅抬高底片的最低透射率基底，在数学上相当于向光学密度公式叠加了一个恒定的伪雾翳能量值：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>T</mi><mtext>measured</mtext></msub><mo>=</mo><msub><mi>T</mi><mtext>actual</mtext></msub><mo>+</mo><msub><mi>T</mi><mtext>stray</mtext></msub></mrow><annotation encoding=\"application/x-tex\">T_{\\text{measured}} = T_{\\text{actual}} + T_{\\text{stray}}</annotation></semantics></math></span></p>\n<p>反相后，这一伪雾翳能量会导致画面高光区域被错误抬高，造成天空、反光与浅色织物细节灰雾弥漫，失去胶片应有的反差通透度。</p>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">物理遮光标准操作要领</div>\n    <div class=\"doc-callout-body\">在组装翻拍平台时，必须使用不透光的黑色哑光卡纸或专业片夹遮光板，将底片四周所有露出的灯板区域完全覆盖。底片画面边缘与遮光片边缘的缝隙应控制在 1 毫米以内。翻拍时应关闭工作室内所有直射环境光源，消除来自相机正面与侧面的漫反射光线。</div>\n</div>"
+                },
+                {
+                    "id": "camera-parameters",
+                    "heading": "数码相机翻拍参数与向右曝光原则",
+                    "content": "<p>翻拍负片时，数码相机的参数配置必须以“最大化捕获负片全动态范围且不发生传感器通道截断”为唯一准则。任何机内自动图像处理或非线性的动态范围扩展算法都会破坏 RAW 数据的线性物理比例。</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>曝光与光学控制项</th><th>推荐设置参数</th><th>工程实现原因与物理机理说明</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>感光度</strong></td>\n            <td>原生基准感光度（通常为 ISO 64 或 ISO 100）</td>\n            <td>数码传感器在原生基准感光度下具备最高的信噪比（SNR）与最宽的满阱容量，能有效记录负片高光区的微弱透射光</td>\n        </tr>\n        <tr>\n            <td><strong>光圈值</strong></td>\n            <td>f/5.6 至 f/8</td>\n            <td>专业微距镜头在该光圈段像差校正最佳、场曲最平缓，同时避开了 f/11 以后光波衍射导致的画质锐度衰减</td>\n        </tr>\n        <tr>\n            <td><strong>快门速度</strong></td>\n            <td>根据向右曝光测光结果灵活设定（配合三脚架与延迟快门）</td>\n            <td>翻拍为静态物体拍摄，应使用稳固翻拍架，避免手持抖动。若使用闪光灯翻拍，应使用同步快门速度（通常为 1/160s–1/250s）</td>\n        </tr>\n        <tr>\n            <td><strong>色彩优化与动态范围扩展</strong></td>\n            <td>全部关闭（关闭 D-Lighting、DRO、自动对比度优化）</td>\n            <td>机内优化算法会在 RAW 元数据或线性变换阶段插入非线性响应曲线，破坏透射率到光学密度的精确对数映射</td>\n        </tr>\n    </tbody>\n</table><p>翻拍曝光的核心法则是<strong>基于实时直方图的向右曝光（ETTR）原则</strong>。在相机屏幕上观察三通道实时直方图，在保证红、绿、蓝三个通道的最右侧信号均不顶格溢出的前提下，尽可能将直方图波形推向右侧高光端。由于负片未曝光片基是整个底片上透光率最高的区域，直方图中最右侧的单峰必然代表未曝光片基的透射信号。只要确保该片基峰值距离传感器纯白截断点保留约 1/3 档至 1/2 档的安全裕度，就能让负片中密度最高、透光最弱的景物高光区获得最充足的曝光量，从而彻底压低暗部读出噪声。</p>"
+                },
+                {
+                    "id": "film-base-retention",
+                    "heading": "保留未曝光透明片基边缘的铁律",
+                    "content": "<p>在构图取景时，初学者常犯的典型错误是将取景框紧贴景物边缘，彻底切除外围的透明片基。这一操作直接破坏了光学密度管线的标定前提。</p>\n<p>在 135 胶卷中，画面两侧的齿孔边缘以及两张画面之间的乳剂间隙属于拍摄时未受光线照射的区域；在 120 胶卷中，底片上下两侧无曝光的透明边缘同样属于纯粹的未曝光片基。这一区域仅包含片基材料本身的物理聚酯或醋酸纤维透光率以及化学显影定影后的未反应染料色罩。</p>\n<p>NexFilm 的反相引擎必须依赖测定该区域的光学密度作为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>（最小物理密度基准）。有了该基准，软件才能从整体透射率中通过对数减法精确剥离橙褐色染料阻光层。如果翻拍时未摄入任何透明片基，软件将失去测量真实色罩的物理标尺，被迫从画面最亮部分进行经验推测，极易造成白平衡偏移。</p>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">翻拍取景的核心铁律</div>\n    <div class=\"doc-callout-body\">翻拍构图时，取景器四周必须保留至少 1 至 2 毫米宽度的未曝光透明片基边缘，或包含一小截未曝光的胶片齿孔间隙。切勿让翻拍画面完全充满有效曝光内容。翻拍得到的 RAW 文件必须同时记录被摄景物与未曝光片基，这是保证 NexFilm 自动反相算法准确去色罩的必要输入条件。</div>\n</div><p>需要强调的是，保留片基边缘仅是为了在导入后供算法进行色罩基准采样。在后续进入 <strong>工作台</strong> 处理时，用户应在 <strong>设置胶片范围</strong> 步骤中使用裁剪框将此片基边缘及外围白灯板排除在有效画面之外。</p>"
+                },
+                {
+                    "id": "scanner-linear-capture",
+                    "heading": "扫描仪 16 位线性输出与自动处理规避",
+                    "content": "<p>若使用平板扫描仪（如爱普生 Epson Perfection V850 Pro）或专业底片扫描仪（如普斯特 Plustek OpticFilm、尼康 Super Coolscan 或易麦康 Imacon）进行底片数字化，获取输入源的关键在于彻底绕过扫描仪驱动程序内置的黑盒反相与对比度拉伸机制。</p>\n<p>传统扫描仪驱动程序（如 Epson Scan、SilverFast 或 VueScan）为了迎合普通用户的开箱即用需求，往往在扫描阶段就自动执行负片反相、自动色阶白平衡调整以及强烈的 S 曲线伽马压缩。经过此类处理输出的图像已经丧失了物理透射率的线性关系，强行导入 NexFilm 反复计算往往会导致色彩扭曲。</p>\n<p>针对不同扫描软件的推荐采集配置如下：</p>\n<ol>\n<li><strong>Epson Scan</strong>：在专业模式下，文件类型选择 <strong>16-bit 灰度 / 48-bit 彩色</strong>。图像类型务必选择 <strong>彩色负片</strong> 或直接选择 <strong>正片</strong> 模式以原始透射状态输出。在调整面板中，务必关闭“自动曝光”、“去网纹”、“色彩翻新”与“锐化滤镜”，输出未压缩的 16 位 TIFF 格式。</li>\n<li><strong>SilverFast</strong>：推荐使用 <strong>SilverFast Ai Studio</strong> 的 <strong>Archive Suite</strong> 模式，以 48-bit RAW 模式输出 16 位原始未反相 TIFF 数据。此模式仅记录扫描仪感光元器件的电荷转换值，完全跳过 SilverFast 专有的 NegaFix 胶卷预设曲线，保留最原始的密度梯度供 NexFilm 科学解算。</li>\n<li><strong>VueScan</strong>：在“输入”标签页中将介质类型设置为 <strong>图像</strong> 或将输出设置为 <strong>原始数据</strong>，位深设置为 <strong>48 位 RGB</strong>。在“滤镜”与“色彩”标签页中关闭所有颜色平衡算法（选择 <strong>无</strong>），以线性格式保存 16-bit TIFF。</li>\n</ol>\n<p>通过将扫描仪作为一台高位深、高信噪比的光学密度测量仪使用，获取未经任何非线性伽马篡改的真实透射文件，能够为 NexFilm 提供最纯净的数据源，重现胶卷丰富的乳剂影调层级。</p>"
+                }
+            ]
+        },
+        {
+            "id": "first-roll-in-five-minutes",
+            "track": "getting-started",
+            "trackTitle": "快速上手",
+            "trackOrder": 1,
+            "chapterOrder": 3,
+            "kicker": "01.3 / 快速上手",
+            "title": "五分钟完成第一卷底片反相与导出",
+            "subtitle": "从胶卷导入、胶片范围设定到印片光微调的端到端实操。",
+            "readingTime": 8,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "import-workflow",
+                    "heading": "步骤一：选择导入模式与登记元数据",
+                    "content": "<p>启动 NexFilm 后，默认呈现实时暗房风格的 <strong>图库</strong> 主视口。处理胶卷的第一步是将数字化扫描文件载入本地工作空间。点击顶栏右上角醒目的 <strong>导入胶卷</strong> 按钮，系统将弹出导入模式选择对话框。软件针对不同的拍摄与扫描习惯提供了两种导入路径：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>导入模式选项</th><th>适用底片场景</th><th>元数据输入项与系统行为</th><th>推荐处理路径</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>按胶卷导入</strong></td>\n            <td>完整拍摄的整卷底片（如 36 张 135 胶卷或 12 张 120 胶卷）</td>\n            <td>要求登记胶卷名称、胶片型号（从 40 余款列表中选取）、拍摄画幅（135 / 6x4.5 / 6x6 / 6x7 等）、拍摄相机与拍摄日期。建立独立的本地胶卷归档条目。</td>\n            <td>标准推荐。为整卷批处理、全局白点共享计算与接触印样排版提供完整的物理组织基础</td>\n        </tr>\n        <tr>\n            <td><strong>散张导入</strong></td>\n            <td>单张测试底片、零散历史扫描片或跨相机拼凑画幅</td>\n            <td>无需填写胶卷抬头信息，允许直接从操作系统的文件管理器中将若干 RAW 或 TIFF 文件拖拽入窗口主工作区。</td>\n            <td>快速测试。处理结果集中保存在临时归档列表中，后续可在历史记录中转换为正规胶卷</td>\n        </tr>\n    </tbody>\n</table><p>选择 <strong>按胶卷导入</strong> 后，点击“选择文件夹”或“选择文件”，定位到底片存储目录。输入胶片型号（例如 <code>Kodak Portra 400</code>）与拍摄画幅（例如 <code>135</code>）。点击 <strong>确认导入</strong>，应用会即刻在本地数据库 <code>nexfilm_user.db</code> 中为该卷建立归档索引。需要牢记的是：导入阶段仅在本地生成轻量级缩略图与元数据记录，源文件始终保持物理只读，绝不会被移动、改名或复制。</p>"
+                },
+                {
+                    "id": "proxy-generation",
+                    "heading": "步骤二：进入工作台与按需代理机制",
+                    "content": "<p>在 <strong>图库</strong> 网格中，双击任意一张代表性画面的缩略图，或在选中该画面后点击顶栏居中的 <strong>工作台</strong> 视图标签，应用将无缝切换至高精度的显色处理空间。</p>\n<p>首次进入工作台时，中心预览画布会短暂呈现加载指示器。这代表 NexFilm 正在触发底层的<strong>按需 16 位线性代理生成流水线</strong>。传统修图软件往往在导入阶段就对全卷数十张数十兆字节的相机 RAW 文件进行耗时长达数分钟的全量解码，极大挤占系统内存与磁盘吞吐带宽。NexFilm 采取了按需渲染架构：</p>\n<ol>\n<li><strong>导入期零全量解码</strong>：在图库浏览阶段，系统仅流式读取 RAW 容器内嵌的预览数据，实现秒级快速载入上百张胶卷。</li>\n<li><strong>工作台按需生成代理</strong>：仅当用户在工作台中激活某一张底片时，后台 Rust 引擎才调用 LibRaw 或高吞吐 TIFF 提取器，将原始拜耳数据解算为 16 位浮点精度的线性透射率纹理，并上传至 WebGL 2.0 显存纹理单元。</li>\n<li><strong>实时 GPU 管线渲染</strong>：中心视口完全依托 WebGL2 片段着色器实时计算光学密度对数反相、印片光加减色以及曲线映射，所有滑块调节均以 60 帧每秒的平滑帧率实时响应。</li>\n</ol>\n<p>在画布交互方面，用户可以使用鼠标滚轮以鼠标光标指针为锚点进行平滑缩放；按住键盘空格键 <kbd>Space</kbd> 并拖动鼠标，可自由平移观察局部胶片银盐颗粒与对焦锐度；随时双击画布空白处，视图将自动恢复至全画幅适应视口。</p>"
+                },
+                {
+                    "id": "film-area-definition",
+                    "heading": "步骤三：定义胶片有效范围与白边排除",
+                    "content": "<p>进入工作台后，决定反相品质最关键的一道工序是精准界定<strong>胶片有效范围</strong>。在右侧检查器顶部展开“几何与范围”控制组，点击 <strong>设置胶片范围</strong> 按钮，预览画布四周将出现包含四角手柄与四条边线的手动框选矩形。</p>\n<p>点击控制栏中的 <strong>自动识别</strong> 按钮，NexFilm 的边缘检测算法将快速扫描乳剂边缘与黑褐色画框交界处，自动拟合出推荐的裁剪边框。此时用户必须执行人工视觉复核。</p>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">白灯板与齿孔进框的严重光学后果</div>\n    <div class=\"doc-callout-body\">观片灯板 100% 透光的纯白发光区域，其透射光强往往是底片透明片基的数倍至数十倍。如果用户在框选胶片范围时不慎将外露的白灯板或 135 齿孔内的高亮区域圈入框内，算法在评估画面最亮像素时，会将灯板的异常高能量误判定为正片的最高白点。在后续对数归一化计算中，正常的胶片曝光范围被整体压缩向下推挤，导致最终生成的正片影调严重发灰、整体曝光发暗、中灰阶调浑浊发沉。</div>\n</div><table class=\"doc-table\">\n    <thead>\n        <tr><th>范围检查要点</th><th>合格框选标准</th><th>不合格框选表现</th><th>修正操作指引</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>外周白灯板</strong></td>\n            <td>边框内侧 100% 为胶片乳剂，看不到任何未经底片过滤的刺眼灯板白光</td>\n            <td>框选线偏大，四个角或某条边露出了翻拍灯板的发光平面</td>\n            <td>拖动边线手柄向内收缩，将明亮边界完全排除在选框之外</td>\n        </tr>\n        <tr>\n            <td><strong>135 齿孔与边码</strong></td>\n            <td>齿孔全被隔绝在选框之外，画面边缘仅包含胶片实际曝光内容</td>\n            <td>选框框入了矩形齿孔的镂空区域，齿孔透光直接落在框内</td>\n            <td>向内收拢上下边缘手柄，若底片存在轻微倾斜，先使用旋转滑块校平底片后再框选</td>\n        </tr>\n        <tr>\n            <td><strong>乳剂透明片基</strong></td>\n            <td>允许在画面边缘保留极窄的曝光未受光缝隙，但有效画面应占选框 98% 以上</td>\n            <td>大面积未曝光的橙褐色透明片基占据选框内部显著区域</td>\n            <td>裁剪框应紧贴曝光景物有效边缘，确保直方图能量全部分布在真实景物上</td>\n        </tr>\n    </tbody>\n</table><p>确认框选边界严密贴合画面有效曝光边缘后，点击检查器中的 <strong>保存范围</strong> 按钮。系统将把几何坐标持久化写入数据库，并在画布上隐藏辅助调节线。</p>"
+                },
+                {
+                    "id": "auto-invert-and-batch",
+                    "heading": "步骤四：自动反相与几何批处理下发",
+                    "content": "<p>保存范围后，点击工具栏中的 <strong>自动反相</strong> 按钮。NexFilm 将在毫秒级时间内执行核心运算：</p>\n<ol>\n<li>引擎在裁剪框外围或预先登记的片基标记点处精确采样未曝光片基透射率，测定该帧底片的橙色色罩对数密度向量 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mo stretchy=\"false\">(</mo><msubsup><mi>D</mi><mi>min</mi><mo>⁡</mo><mi>R</mi></msubsup><mo separator=\"true\">,</mo><msubsup><mi>D</mi><mi>min</mi><mo>⁡</mo><mi>G</mi></msubsup><mo separator=\"true\">,</mo><msubsup><mi>D</mi><mi>min</mi><mo>⁡</mo><mi>B</mi></msubsup><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">(D_{\\min}^R, D_{\\min}^G, D_{\\min}^B)</annotation></semantics></math></span>。</li>\n<li>对选框内的所有像素执行对数变换与密度矩阵相减，将底片透射率数据投影至绝对光学密度空间。</li>\n<li>应用有界通道跨度响应模型自动建立正片对比度与初始三色平衡，一键展现自然通透的正片视觉预览。</li>\n</ol>\n<p>如果这一卷底片是在固定翻拍架与固定片夹上连续拍摄的，底片在取景器中的物理画幅位置高度一致，此时无需对后续几十张画面逐一重复框选手柄。在已调校好范围的第一帧画面上，点击检查器底部的 <strong>批量应用</strong> 按钮。在弹出的分发选项中，勾选 <strong>胶片范围与几何</strong>，点击 <strong>应用至全卷</strong>。软件会自动将该帧的标准裁剪边界坐标瞬间分发至当前胶卷的所有画幅中，节省重复画框的工作量。</p>"
+                },
+                {
+                    "id": "printer-lights-tuning",
+                    "heading": "步骤五：暗房印片光微调与非破坏性编辑",
+                    "content": "<p>自动反相能够提供高精度的物理初始正片，但摄影师针对特定场景的创作意图往往需要个性化的影调与色彩平衡调节。在传统光学暗房中，调色师通过彩色放大机的红、绿、蓝三色滤光片微调各通道曝光量，这一经典设备被称为印片曝光机。</p>\n<p>NexFilm 在右侧检查器中完整重现了 <strong>暗房印片光</strong> 模块。在光学密度域中，印片光调节严格遵循对数加减色原理：</p>\n<ol>\n<li><strong>红光</strong>：向右滑动增加红光，正片整体向红色调倾斜，阴影与中间调冷青色被对数消除；向左滑动减少红光，正片向青色偏移。</li>\n<li><strong>绿光</strong>：向右滑动画面呈现暖绿偏向；向左滑动减少绿光，中和树叶或荧光灯反射杂色，画面向品红色调微调。</li>\n<li><strong>蓝光</strong>：向右滑动增加暖黄补偿；向左滑动画面向纯净冷蓝微调，可用于校准黄昏或室内白炽灯底片的色温。</li>\n</ol>\n<p>在调整参数时，NexFilm 提供了防误触滚轮设计：鼠标直接在滑块上方滚动不会改变数值，用户必须<strong>先用鼠标左键单击一次目标滑块激活焦点</strong>，此时使用鼠标滚轮方可进行微步数值步进。如果在微调过程中需要预览锐化细节，可按住键盘 <kbd>Alt</kbd> 键拖动锐化控制滑块（<strong>数量</strong>、<strong>半径</strong> 或 <strong>细节</strong>），预览画布将临时切换为高反差黑白边缘信号蒙版，松开按键即刻恢复全彩正片。</p>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">非破坏性历史与极简快捷键法则</div>\n    <div class=\"doc-callout-body\">在 NexFilm 中的所有操作均为完全非破坏性的内存状态记录。随时按下键盘撤销快捷键 <kbd>Ctrl</kbd>+<kbd>Z</kbd>（macOS 对应 <kbd>⌘</kbd>+<kbd>Z</kbd>）即可无损回退上一步修改；按下重做快捷键 <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> 或 <kbd>Ctrl</kbd>+<kbd>Y</kbd> 可重新恢复修改。在底片条可见时，使用键盘左右方向键 <kbd>←</kbd> 与 <kbd>→</kbd> 可瞬间切换至相邻画幅，所有参数均自动保存至数据库，无需手动点击繁琐的“保存”对话框。</div>\n</div>"
+                },
+                {
+                    "id": "export-and-verification",
+                    "heading": "步骤六：样片单张导出校验与整卷交付",
+                    "content": "<p>完成参数微调后，切勿直接盲目导出全卷上百张大图。标准暗房实践要求先输出单张高分辨率样片进行视觉校验。</p>\n<p>点击顶栏右上角的 <strong>导出</strong> 按钮，系统将弹出针对当前画面的导出配置对话框：</p>\n<ol>\n<li><strong>导出格式选择</strong>：常规社交媒体分享或快速预览推荐选择高质量 <strong>JPEG</strong>（品质设为 95–100）；若后续需要将正片导入 Photoshop、Lightroom 或 DaVinci Resolve 进行二级无损精修，强烈推荐导出 <strong>16-bit TIFF</strong> 格式。</li>\n<li><strong>色彩空间选择</strong>：Web 发布与通用显示设备建议选用标准 <strong>sRGB</strong>；使用宽色域广色域显示器（如 Apple Studio Display 或专业印刷校色屏）的用户可选择 <strong>Display P3</strong> 或 <strong>Adobe RGB</strong>。</li>\n<li><strong>色彩管理内嵌</strong>：确保勾选 <strong>内嵌 ICC 色彩配置文件</strong>，保证导出的正片在各看图软件与浏览器中呈现完全一致的饱和度与阶调。</li>\n</ol>\n<p>点击 <strong>确认导出</strong>，主线程将调度后台 Rust 渲染管道，在数秒内以全分辨率原片物理采样生成高质量交付正片。在系统的看图软件中打开该 TIFF 或 JPEG 文件，放大至 100% 仔细检查暗部噪点纯净度、皮肤色调自然度以及高光细节层次。</p>\n<p>当确认首张样片的反相风格完全符合预期后，即可在顶栏点击 <strong>导出胶卷</strong> 按钮。在整卷导出面板中，用户可以定义文件名输出模板（例如 <code>{Roll}_{Seq}_{Film}</code>），并设定多线程并行渲染任务数。点击启动后，系统将自动依次调度全卷底片执行批处理导出，在几分钟内交付一整卷色彩纯正、阶调连贯的现代数字胶片资产。</p>"
+                }
+            ]
+        },
+        {
+            "id": "roll-vs-loose-workflows",
+            "track": "getting-started",
+            "trackTitle": "快速上手",
+            "trackOrder": 1,
+            "chapterOrder": 4,
+            "kicker": "01.4 / 快速上手",
+            "title": "按卷物理标定工作流 vs 散张快速工作流",
+            "subtitle": "整卷片头片基标定、共享白点消除跳色与中画幅回退机制。",
+            "readingTime": 8,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "workflow-decision-matrix",
+                    "heading": "两种日常工作模式深度决策对比",
+                    "content": "<p>在胶片数字化暗房实践中，摄影师所面对的胶片来源与翻拍工况各不相同：有时是一整卷在相同光照条件下连续拍摄、连带片头完整冲洗的标准 135 胶卷；有时则是零散搜集的单张底片、无片头 120 中画幅底片或临时收到的测试样张。针对这些不同的工程输入，NexFilm 提供了两种既独立又可互相转化的核心工作模式：<strong>按卷物理标定工作流</strong> 与 <strong>散张快速工作流</strong>。</p>\n<p>理解两种工作模式的底层机制与适用边界，是获得高效批处理吞吐量与严谨色彩一致性的前提。</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>核心决策维度</th><th>按卷物理标定工作流</th><th>散张快速工作流</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>适用胶片输入源</strong></td>\n            <td>具备连续曝光画幅的完整胶卷（135 格式整卷、120 联条整卷），冲洗条件一致且机位固定</td>\n            <td>单张单张零星底片、大画幅散页片、临时调色样张或跨冲洗批次的杂片</td>\n        </tr>\n        <tr>\n            <td><strong>色罩物理标定方式</strong></td>\n            <td>在图库中统一采样未曝光片基（<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>）与全曝光片头（<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>），全卷共享双物理密度锚点</td>\n            <td>单帧独立运算：以当前画面的有效片基边界或画面最亮区进行局部色罩测定</td>\n        </tr>\n        <tr>\n            <td><strong>同场景色彩一致性</strong></td>\n            <td>极高。消除同场景各帧因画面构图明暗占比不同引发的“跳色”与“偏色漂移”</td>\n            <td>帧间独立。依赖单张视觉微调或借助复制设置进行参数迁移</td>\n        </tr>\n        <tr>\n            <td><strong>批处理自动化能力</strong></td>\n            <td>支持一键执行 <strong>整卷批处理</strong>，全自动扫描最亮白点并批量输出正片</td>\n            <td>依赖单张逐一处理，或在工作台使用 <strong>批量应用</strong> 下发特定参数</td>\n        </tr>\n        <tr>\n            <td><strong>归档与历史管理</strong></td>\n            <td>持久化写入本地数据库胶卷表，支持在 <strong>历史胶卷记录</strong> 中按卷回顾、排版接触印样与整卷导出</td>\n            <td>保存在临时会话列表中，支持后续在历史记录面板中打包转化为正规归档胶卷</td>\n        </tr>\n    </tbody>\n</table><p>对于日常整卷拍摄的纪实、人像或风光摄影，强烈建议采用按卷物理标定工作流；而对于日常零星扫描或快速验证翻拍布光，散张快速工作流则提供了最低的启动成本。</p>"
+                },
+                {
+                    "id": "physical-calibration-anchors",
+                    "heading": "片基与片头双物理锚点标定机制",
+                    "content": "<p>按卷工作流之所以能实现全卷色彩高度一致，核心在于建立了化学感光乳剂的双物理端值锚点：<strong>未曝光透明片基（<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>）</strong> 与 <strong>完全受光全黑片头（<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>）</strong>。</p>\n<p>在 135 胶卷装机引片时，拉出暗盒暴露在强光下的那一段胶片在冲洗后会发生彻底的银盐还原与发色，形成化学吸收上限，即最高饱和光学密度 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>；而在暗盒内部未曝光的片头末端或两帧缝隙处，乳剂未发生反应，仅保留片基塑料支撑体与残留染料色罩，形成最低光学密度 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>。两者共同界定了该卷乳剂在此次冲洗环境下的物理动态范围。</p>\n<p>标定操作在 <strong>图库</strong> 中完成：</p>\n<ol>\n<li>将整卷底片（包含翻拍的未曝光片基帧与黑褐色全曝光片头帧）导入为正规胶卷。</li>\n<li>在图库工具栏点击 <strong>标定片头片基</strong> 按钮，系统将进入交互标定引导流程。</li>\n<li>按照界面提示，先在包含纯净未曝光透明片基的缩略图上点击采样取样点，确认红、绿、蓝三通道的片基密度向量；随后切换至全曝光片头缩略图，在黑褐色区域点击采样全曝光密度。</li>\n<li>点击 <strong>确认标定</strong>，软件将计算并锁定当前胶卷的全局 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mo stretchy=\"false\">(</mo><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub><mo separator=\"true\">,</mo><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">(D_{\\min}, D_{\\max})</annotation></semantics></math></span> 物理跨度常数。</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">标定帧的自动排除与保护机制</div>\n    <div class=\"doc-callout-body\">在物理标定过程中被用户采样指定为片头或片基的特殊画面，仅具备光学仪器测量价值，并不包含实际拍摄景物。NexFilm 会自动在数据库中将此类画面标记为 <strong>标定参考帧</strong>。在后续进入 <strong>工作台</strong> 调色、执行 <strong>整卷批处理</strong> 以及最终 <strong>导出胶卷</strong> 时，系统将自动识别并跳过这些标定参考帧，防止无景物信息的黑褐色片头进入正片交付列表，避免浪费渲染算力与存储空间。</div>\n</div>"
+                },
+                {
+                    "id": "whole-roll-batch-processing",
+                    "heading": "整卷自动反相与共享白点防跳色",
+                    "content": "<p>在传统通用修图软件中批量处理一卷胶卷时，摄影师最常遭遇的痛点是“同场景跳色”。例如在同一逆光场景下连续拍摄的三张照片，第一张构图包含大面积天空，第二张构图特写了深色阴影，第三张为人像特写。如果对每张照片单独执行“自动色阶”或“自动曲线”，由于画面像素能量直方图分布截然不同，算法会对每张照片套用截然不同的拉伸比例，导致洗出的正片第一张发灰发青、第二张过曝发红、第三张肤色蜡黄，同场景色调彻底崩塌。</p>\n<p>NexFilm 依靠 <strong>整卷批处理</strong> 彻底攻克了这一难题。其工程机理如下：</p>\n<ol>\n<li><strong>共享片基色罩基准</strong>：全卷所有画面统一采用前述标定的全局 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span> 密度向量执行色罩剔除，消除底片基底引起的单帧色差。</li>\n<li><strong>全卷真实曝光扫描</strong>：在启动整卷批处理时，算法并不孤立评估单个画面，而是快速预读全卷所有已保存范围的画面内容，在光学密度域中寻找全卷所有有效景物中最亮真实高光点的密度极值。</li>\n<li><strong>建立全局共享白点</strong>：以全卷最高有效亮度作为共享的白点端值，统一下发至全卷所有画幅。</li>\n</ol>\n<p>由于整卷底片共享相同的物理白点与黑点映射常数，逆光天空不会因为局部构图占比变小而被过度提亮，深色阴影也不会因为缺乏高光而被强制拉灰。全卷所有画面的明暗反差与色彩倾向严格反映拍摄现场的真实光强比例，彻底消除同场景跳色现象。</p>"
+                },
+                {
+                    "id": "120-and-headless-fallback",
+                    "heading": "120 中画幅与无片头底片的跨度回退机制",
+                    "content": "<p>许多胶片摄影师经常处理 120 中画幅底片（由于背纸结构，冲洗后不存在强光曝透的引片段），或者处理已被冲洗店裁切除掉片头的 135 底片。在这类缺少 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span> 物理片头的工况下，强制要求片头标定显然脱离实际。</p>\n<p>NexFilm 为此类情况设计了完备的<strong>有界通道跨度响应平稳回退机制</strong>：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>跨度响应区间</th><th>通道最大跨度比</th><th>数学控制模型</th><th>影调保障目标</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>死区区间</strong></td>\n            <td>比值 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mo>≤</mo><mn>1.15</mn><mo>×</mo></mrow><annotation encoding=\"application/x-tex\">\\le 1.15\\times</annotation></semantics></math></span></td>\n            <td>不激活跨度拉伸，保持各通道自然对数线性比例</td>\n            <td>防止同色温纯色场景（如纯蓝天或绿草地）因算法强行平衡而破坏真实色彩倾向</td>\n        </tr>\n        <tr>\n            <td><strong>常规调节区间</strong></td>\n            <td><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>1.15</mn><mo>×</mo><mo>&lt;</mo><mtext>比值</mtext><mo>≤</mo><mn>1.35</mn><mo>×</mo></mrow><annotation encoding=\"application/x-tex\">1.15\\times &lt; \\text{比值} \\le 1.35\\times</annotation></semantics></math></span></td>\n            <td>执行平滑的非线性有界收敛加权，适度扩展动态范围</td>\n            <td>在无物理片头参考时，自动对画面内容进行柔和的高光阴影延展，还原通透层次</td>\n        </tr>\n        <tr>\n            <td><strong>安全截断上限</strong></td>\n            <td>比值 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mo>≥</mo><mn>3.0</mn><mo>×</mo></mrow><annotation encoding=\"application/x-tex\">\\ge 3.0\\times</annotation></semantics></math></span></td>\n            <td>强制硬性截断，严禁任何单一通道跨度超过主通道 3 倍</td>\n            <td>彻底杜绝传统算法中“灰世界假设”导致的电平强拉死白、色阶断层与极端高光偏色</td>\n        </tr>\n    </tbody>\n</table><p>当遇到无片头底片时，用户无需在图库中进行片头标定，直接在工作台中点击 <strong>自动反相</strong>。算法会自动激活有界通道跨度响应模型：以测得的片基为底，基于当前画面像素分布在安全阈值（<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>1.15</mn><mo>×</mo></mrow><annotation encoding=\"application/x-tex\">1.15\\times</annotation></semantics></math></span> 至 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>1.35</mn><mo>×</mo></mrow><annotation encoding=\"application/x-tex\">1.35\\times</annotation></semantics></math></span>）内动态推算合理的高光上限，既确保画面明快清透，又绝不逾越物理边界导致影调破裂。</p>"
+                },
+                {
+                    "id": "loose-import-to-archive",
+                    "heading": "散张导入管理与后续胶卷归档转化",
+                    "content": "<p>散张导入为高频次、轻量级的单张处理提供了极大的便利。用户可以直接把若干扫描文件拖入窗口，瞬间展开调色工作。</p>\n<p>但在实际长期资产管理中，零散的底片文件如果长期处于临时状态，不仅难以批量检索，也无法享受整卷接触印样排版功能。NexFilm 在 <strong>历史胶卷记录</strong> 中提供了完善的生命周期衔接机制：</p>\n<ol>\n<li><strong>查看临时会话</strong>：在顶栏点击进入 <strong>历史胶卷记录</strong> 视图，左侧胶卷列表中除了正规命名的胶卷外，顶部常驻有 <strong>散张导入历史</strong> 分组。</li>\n<li><strong>多选关联与批量重命名</strong>：在散张历史列表中，用户可以按住键盘 <kbd>Shift</kbd> 键批量多选属于同一批次拍摄的散张画面。</li>\n<li><strong>一键转化为正式胶卷</strong>：点击底部的 <strong>合并为新胶卷</strong> 按钮，系统将弹出标准胶卷元数据登记窗口。输入胶片名称、画幅与拍摄设备后确认，系统将在 SQLite 数据库中将这些画面的外键关系由临时会话重新关联至新建的正式胶卷中。</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">散张处理中的定位与重关联</div>\n    <div class=\"doc-callout-body\">散张底片同样严格遵守源片只读承诺。如果在操作系统中对散张底片所在的临时工作目录进行了清理或文件重命名，在图库中同样可以使用 <strong>定位文件</strong> 重新关联单个或多个文件，原有调整参数与历史快照完全不受影响。</div>\n</div><p>通过灵活组合按卷标定与散张快速处理，摄影师既能保持严谨的物理科学标准，又能从容应对多样化的底片数字化工作需求。</p>"
+                }
+            ]
+        },
+        {
+            "id": "workspace-and-views",
+            "track": "user-manual",
+            "trackTitle": "工作台手册",
+            "trackOrder": 2,
+            "chapterOrder": 1,
+            "kicker": "02 / 工作台手册",
+            "title": "界面总览、五大视图分工与交互准则",
+            "subtitle": "详解菜单栏、五大视图架构、底片条、检查器十组面板与非破坏性编辑交互",
+            "readingTime": 8,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "interface-basics"
+            ],
+            "sections": [
+                {
+                    "id": "menu-and-global-actions",
+                    "heading": "菜单栏与全域后台异步操作",
+                    "content": "<p>NexFilm Engine 采用基于暗房物理工作流的单窗口集中式设计，界面结构兼顾大批量胶卷处理的高吞吐需求与单帧微距精修的像素级控制精度。窗口顶层分布着系统全局菜单栏、顶栏核心视图导航区以及全局后台任务触发器。</p>\n<p>系统菜单栏承载全局偏好与运行环境控制：</p>\n<ul>\n<li><strong>偏好设置</strong>：支持运行时即时无缝切换界面语言（简体中文 <code>zh-CN</code> 与英文 <code>en</code>），以及切换暗房深色与浅色视觉主题。切换操作即刻生效，无需重启进程，且当前工作台的所有未保存调色滑块状态与缩放视角均完整保持。</li>\n<li><strong>View（视图导航）</strong>：提供全域五个核心界面的直接路由跳转命令，并支持标准的全屏沉浸工作流。</li>\n<li><strong>Help（帮助与关于）</strong>：提供本地内置离线使用文档快速入口、开源许可证说明以及运行环境软硬件信息。</li>\n</ul>\n<p>在顶栏导航右侧，常驻三个全域后台异步操作按钮：</p>\n<ol>\n<li><strong>导入胶卷</strong>：在任何视图中均可随时调出导入弹窗，将新的扫描文件夹或相机 RAW 素材加入处理队列。</li>\n<li><strong>导出</strong>：按钮文字右侧实时显示当前图库中勾选激活的画面计数徽标。点击后打开批处理导出对话框，针对已勾选画面执行定制化格式输出。</li>\n<li><strong>导出胶卷</strong>：一键导出当前正在处理的整卷底片，无需在图库中逐一全选。</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">后台多线程与非阻塞设计</div>\n    <div class=\"doc-callout-body\"><p>NexFilm 基于 Rust 底层引擎与多线程异步通道构建。所有的 RAW 解码、有界代理生成、全分辨率流式色彩矩阵映射以及图像文件写入均在后台独立工作线程池执行。在导入数百张高分辨率底片或后台并发导出 16-bit TIFF 期间，前端界面交互始终保持 60 FPS 顺滑响应，用户可以自由切换至工作台精修任意画面。</p></div>\n</div>"
+                },
+                {
+                    "id": "five-core-views",
+                    "heading": "五大视图职责分工与状态流转",
+                    "content": "<p>软件核心功能划分为五个彼此正交又紧密关联的视图。用户可通过顶栏中央的选项卡随时切换，各视图之间的职责边界与状态流转机制如下：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>视图名称</th><th>对应标识</th><th>核心职责与输入输出</th><th>典型使用时机</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>图库</strong></td><td>Library</td><td>展示当前工作胶卷的缩略图网格矩阵，支持单选、框选多选、删除帧，以及发起<strong>标定片头片基</strong>。</td><td>初次导入后检视全卷、批量剔除废片、选择参考帧建立整卷物理标定。</td></tr>\n        <tr><td><strong>工作台</strong></td><td>Develop</td><td>单张底片高精度暗房处理工作区。左侧为高保真交互画布与几何工具，右侧为十组参数检查器，底部为联动底片条。</td><td>微调胶片范围、校正翻拍透视、推拉印片灯光、绘制色调曲线与精细锐化。</td></tr>\n        <tr><td><strong>历史胶卷记录</strong></td><td>Rolls</td><td>本地胶卷数字档案库。提供多维筛选树，管理所有已归档胶卷的元数据、备注、重新载入图库或导出接触印样。</td><td>检索历史项目、补录胶卷拍摄备注、断链文件路径重新定位、生成整卷接触印样。</td></tr>\n        <tr><td><strong>硬件校正</strong></td><td>Hardware Calibration</td><td>翻拍机位硬件特征配置。标定相机传感器光谱分离矩阵、翻拍光源光谱功率分布（SPD）与微距镜头暗角补偿。</td><td>更换翻拍机身、升级高显色指数（CRI）翻拍背光源或更换微距镜头时的基准测定。</td></tr>\n        <tr><td><strong>使用文档</strong></td><td>Documentation</td><td>软件内置的离线完整手册与色彩科学参考白皮书，涵盖所有滑块物理模型、暗房印片光速查与排障决策树。</td><td>离线环境下遇到偏色疑难、查阅参数精确定义或学习数学管线推导。</td></tr>\n    </tbody>\n</table><p>各视图之间的数据状态保持实时单向同步。在“图库”中选定某张画面并双击，系统自动平滑切入“工作台”挂载该帧；在工作台中完成的每一次印片光调整或曲线变动，均会立即回写本地 SQLite 数据库并同步刷新图库与底片条中的对应缩略图。</p>"
+                },
+                {
+                    "id": "filmstrip-navigation",
+                    "heading": "底片条结构与多帧比对交互",
+                    "content": "<p>进入“工作台”视图后，主画布正下方横向展开底片条。底片条完整列出当前工作胶卷内的所有连续画面帧，是实现整卷色彩一致性评估与高效跨帧精修的核心交互中枢：</p>\n<ul>\n<li><strong>有序帧序列展示</strong>：底片条中的每一项均标有胶卷内部的绝对帧序号与文件名。已被选定为当前编辑对象的画面拥有醒目的强调色高亮外框。</li>\n<li><strong>无级横向滚动与切帧导航</strong>：将鼠标指针悬停于底片条区域时，滑动鼠标滚轮即可实现平滑横向滚动；按下键盘方向键 <kbd>←</kbd> 与 <kbd>→</kbd> 可瞬时切换至上一张或下一张画面。在切帧过程中，工作台保持当前缩放倍率不变，极大提升了连续比对相邻画面的效率。</li>\n<li><strong>实时同步调色缩略图</strong>：底片条上的缩略图并非静态只读快照。当你在右侧检查器调整印片光或更改相纸 3D LUT 时，底片条缩略图在几毫秒内利用轻量 GPU 渲染管道同步更新。通过底片条的一字排开视图，你可以一眼识别整卷中哪几帧存在曝光跳变或异常偏色。</li>\n<li><strong>标定帧物理角标提示</strong>：已被标记为“未曝光片基”或“全曝光片头”的参考帧，其缩略图角部会常驻专属的几何标定角标，防止用户误将其作为普通摄影作品调色或导出。</li>\n</ul>"
+                },
+                {
+                    "id": "inspector-controls-and-gestures",
+                    "heading": "检查器面板架构与精确输入控制",
+                    "content": "<p>工作台右侧的检查器是密度映射与暗房显影参数调控的集中操作台。检查器内部严格按照从光学密度解算到底片反相、再到成片审美印制的物理管线顺序，自顶向下组织为 10 大功能分组：</p>\n<ol>\n<li><strong>示波器</strong>：支持直方图与波形图视图切换，实时显示全色 RGB、单通道 R/G/B 或亮度 Y 的信号分布，并配备高光阴影溢出预警。</li>\n<li><strong>反相操作</strong>：包含单帧“自动反相”、依赖物理标定的“整卷批处理”以及重置色彩的“Reset”。</li>\n<li><strong>色彩模式</strong>：在“Color”（彩色负片三通道耦合）与“B&amp;W”（纯单通道光学密度还原）之间无缝切换。</li>\n<li><strong>密度范围</strong>：调节 Master D-Min（黑场端点）与 Master D-Max（白场端点），控制反差张力。</li>\n<li><strong>暗房印片光</strong>：红（Cyan/Red）、绿（Magenta/Green）、蓝（Yellow/Blue）三通道对数曝光控制与中性灰白平衡吸管。</li>\n<li><strong>曲线</strong>：四通道控制点曲线（RGB 主曲线及 R/G/B 分通道曲线），带实时直方图衬底。</li>\n<li><strong>观感调整</strong>：曝光量、Gamma、对比度、高光压制、阴影提亮、饱和度、色温与色调。</li>\n<li><strong>细节</strong>：空间自适应锐化（数量、半径、细节、蒙版）与局部对比偏好（纹理、清晰度、去朦胧）。</li>\n<li><strong>齿孔设置</strong>：齿孔透光采样、容差窗口与边缘羽化半径控制。</li>\n<li><strong>印片胶片与相纸模拟</strong>：14 款经典银盐相纸与电影印片 3D LUT 挂载及不透明度混合。</li>\n</ol>\n<p>为了确保复杂暗房参数调节的精确性与防误触，检查器确立了以下四项核心交互准则：</p>\n<ul>\n<li><strong>左侧模块导航点</strong>：检查器左侧边缘设有一列微型圆点导航条。每个圆点映射一个功能分组，点击即可瞬间将检查器平滑滚动至目标面板。</li>\n<li><strong>分组折叠状态持久化</strong>：点击每个分组标题右侧的折叠切换按钮，可收起不常用的面板以释放垂直空间。折叠与展开状态保存在用户配置中，下次打开软件依然维持相同排布。</li>\n<li><strong>滑块激活防误触保护</strong>：在检查器中，鼠标滚轮在空白处滚动为垂直滚动面板；只有当鼠标左键首先点击选中某一具体滑块后，该滑块才进入活动状态，此时滚动滚轮才会以极细步长微调数值，彻底消除了浏览面板时不慎误改参数的隐患。</li>\n<li><strong>数值点击直输与键盘接管</strong>：所有滑块右侧的数值标签均支持直接鼠标单击。点击后标签变为文本输入框，用户可直接键入精确小数，按下键盘 <kbd>Enter</kbd> 键确认保存，按下 <kbd>Esc</kbd> 键取消编辑并复原原值。</li>\n</ul>\n<p>画布主区域支持按住键盘 <kbd>Space</kbd>（空格键）配合鼠标左键拖动画布平移；直接滑动滚轮则以当前鼠标指针所在的像素坐标为中心进行平滑无级缩放。全局支持非破坏性撤销栈：在未聚焦文本框时，按快捷键 <kbd>⌘</kbd>+<kbd>Z</kbd>（Windows 为 <kbd>Ctrl</kbd>+<kbd>Z</kbd>）撤销上一步操作，按 <kbd>Shift</kbd>+<kbd>⌘</kbd>+<kbd>Z</kbd>（Windows 为 <kbd>Ctrl</kbd>+<kbd>Y</kbd>）恢复重做。</p>"
+                },
+                {
+                    "id": "terminology-glossary",
+                    "heading": "暗房与软件核心术语全表",
+                    "content": "<p>为建立严谨的学术与实操交流基准，下表收录 NexFilm 界面、控制参数与色彩科学白皮书中出现的专有术语及其物理定义：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>标准术语</th><th>英文对照</th><th>物理本质与软件内定义</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>胶卷</strong></td><td>Roll</td><td>一次物理拍摄或扫描批次的胶卷集合实体，携带画幅比例、机身名称、乳剂型号、拍摄日期与冲洗工艺备注等元数据属性。</td></tr>\n        <tr><td><strong>画面</strong></td><td>Frame</td><td>胶卷中的单个底片图像帧，是暗房参数调节、版本历史记录与高分辨率导出的最小原子单位。</td></tr>\n        <tr><td><strong>胶片范围</strong></td><td>Film Area</td><td>在源片画面中界定参与密度统计分析的闭合四边形。用于剔除齿孔漏光与观片灯板强光，决定片基与动态范围解算的取样界限。</td></tr>\n        <tr><td><strong>片基</strong></td><td>Film Base</td><td>胶片上完全未曝光的透明聚酯或醋酸纤维片基区域。彩色负片在此处呈现特征橙色色罩，其光学密度为去色罩测量的物理零点。</td></tr>\n        <tr><td><strong>片头</strong></td><td>Film Leader</td><td>胶卷引出装机时完全曝光并彻底显影的黑色末端，具有该卷底片物理上能够达到的最大银盐/染料沉淀密度（D-Max）。</td></tr>\n        <tr><td><strong>光学密度</strong></td><td>Optical Density (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>D</mi></mrow><annotation encoding=\"application/x-tex\">D</annotation></semantics></math></span>)</td><td>光线穿透介质能力的对数度量，数学定义为透射率倒数的常用对数：<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>D</mi><mo>=</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>T</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">D = -\\log_{10}(T)</annotation></semantics></math></span>。NexFilm 的全套反相与色彩平衡均在密度域执行。</td></tr>\n        <tr><td><strong>最小/最大密度</strong></td><td>D-Min / D-Max</td><td>检查器中“密度范围”的调校端点。D-Min 对应正片黑场沉淀起点，D-Max 对应正片高光上限，共同决定画面的动态反差张力。</td></tr>\n        <tr><td><strong>印片灯光</strong></td><td>Printer Lights</td><td>模拟暗房光学放大机双色向滤光头的三通道对数级曝光调节，用于修正乳剂偏色与营造中性灰平衡。</td></tr>\n        <tr><td><strong>色罩</strong></td><td>Orange Mask</td><td>彩色负片染料耦合过程中天然产生的橙红色中间体。去色罩即在对数密度域中将片基三通道基准密度归零扣除。</td></tr>\n        <tr><td><strong>接触印样</strong></td><td>Contact Sheet</td><td>暗房传统中将整卷底片直接压在相纸上曝光制成的一比一微缩索引印相。NexFilm 支持物理拟真齿孔与片边字码的数字接触印样导出。</td></tr>\n        <tr><td><strong>输入域</strong></td><td>Input Domain</td><td>解码底层像素数值所代表的客观物理意义（如未校正相机 RAW 线性传感器空间、扫描仪透射率空间或显示已编码非线性空间）。</td></tr>\n    </tbody>\n</table><div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">源片只读安全保障</div>\n    <div class=\"doc-callout-body\"><p>NexFilm 的所有编辑操作均遵循完全非破坏性原则。无论是调整胶片范围、校正几何透视、执行物理反相还是施加 3D LUT，原始扫描文件与相机 RAW 数据永远处于只读保护状态，绝不向源文件写入任何字节。所有的编辑参数均实时持久化于应用的数据目录中，用户可随时复原至未处理状态。</p></div>\n</div>"
+                }
+            ]
+        },
+        {
+            "id": "import-formats-and-library",
+            "track": "user-manual",
+            "trackTitle": "工作台手册",
+            "trackOrder": 2,
+            "chapterOrder": 2,
+            "kicker": "02 / 工作台手册",
+            "title": "格式支持矩阵、三态导入与胶卷档案库管理",
+            "subtitle": "全画幅 RAW、Flextight .fff 与扫描 TIFF 支持矩阵，按卷/散张导入架构与丢失文件断链恢复",
+            "readingTime": 9,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "import-and-rolls"
+            ],
+            "sections": [
+                {
+                    "id": "format-matrix",
+                    "heading": "输入格式支持矩阵与解码规格",
+                    "content": "<p>NexFilm Engine 面向胶片数字化全流程构建，旨在打破相机数码翻拍与传统专业扫描仪之间的文件格式壁垒。软件底层集成了基于原生 Rust 优化的高性能色彩与图像解码管线，能够直接读取从主流数码相机原始 RAW 到工业级鼓式扫描仪的无压缩图像文件。</p>\n<p>以下为当前版本完整支持的输入文件格式规格矩阵：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>格式类别</th><th>文件扩展名</th><th>色彩编码与位深</th><th>解码特性与暗房建议</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>相机原始 RAW</strong></td><td><code>.dng</code>, <code>.nef</code>, <code>.cr2</code>, <code>.cr3</code>, <code>.arw</code>, <code>.raf</code>, <code>.rw2</code>, <code>.orf</code>, <code>.pef</code>, <code>.3fr</code>, <code>.iiq</code> 等主流单反/无反格式</td><td>12-bit / 14-bit / 16-bit 线性传感器原始拜耳（Bayer）马赛克数据</td><td>相机翻拍的最佳输入源。绕过机内白平衡与色调曲线，保留完整的传感器动态范围与线性透射率数据，为高精度去色罩提供充沛的曝光宽容度。</td></tr>\n        <tr><td><strong>哈苏 Flextight / Imacon</strong></td><td><code>.fff</code></td><td>16-bit 线性扫描仪原始传感器数据</td><td>自 <strong>v1.1.0</strong> 起，NexFilm 重构了解码判定逻辑，直接按扫描仪流式线性光学密度解算，不再强依赖 FlexColor 的专有设备识别字符串，彻底杜绝了将扫描仪文件误判为相机 RAW 的历史缺陷。</td></tr>\n        <tr><td><strong>工业扫描仪 TIFF</strong></td><td><code>.tif</code>, <code>.tiff</code></td><td>16-bit / 8-bit 未压缩或 LZW 压缩格式</td><td>完美支持 Epson、Noritsu、Frontier、Plustek 等扫描仪输出的单通道黑白与三通道彩色正片 TIFF。支持按行流式解码百兆乃至 GB 级高分辨率大画幅图像，内存占用平稳可控。</td></tr>\n        <tr><td><strong>标准位图格式</strong></td><td><code>.png</code>, <code>.jpg</code>, <code>.jpeg</code></td><td>8-bit / 16-bit 标准 sRGB 或 Display P3 色彩空间</td><td>支持快速读取预览与测试。受限于 8-bit JPEG 严重的动态范围压缩与片基色罩截断，无法达到 RAW 级别的自动物理校色精度，仅建议用于快速验证构图。</td></tr>\n    </tbody>\n</table><div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Nikon Z8 / Z9 高效率压缩 NEF 格式限制</div>\n    <div class=\"doc-callout-body\"><p>当前内置解码库暂不支持 Nikon Z8 与 Z9 机身中的 <code>HE</code>（高效率）以及 <code>HE*</code>（高效率无损压缩）NEF 编码文件。若使用上述机型翻拍，请在相机机内设置中将 RAW 记录格式调整为标准的“无损压缩 RAW”，或在导入前使用官方免费的 Adobe DNG Converter 批量转换为标准线性 DNG 格式。</p></div>\n</div><p>针对 8-bit JPEG 格式，由于其在扫描或拍摄阶段已经被相机或扫描软件施加了非线性的 sRGB 色调曲线并裁剪了暗部与高光，导致片基色罩与微弱暗部信号相互混淆。在 NexFilm 中处理此类文件时，若自动反相效果不理想，建议通过“印片灯光”面板手动微调三通道曝光增益进行补偿。</p>"
+                },
+                {
+                    "id": "bounded-proxy-architecture",
+                    "heading": "有界代理架构与低内存极速索引",
+                    "content": "<p>在处理整卷 36 张 6000 万像素相机 RAW 文件或 4×5 大画幅超高分辨率 TIFF 扫描件时，传统修图软件往往会在导入阶段启动全局全图解码，导致数十 GB 的内存被瞬间吞噬、CPU 满载、风扇狂转并引发长时间的界面冻结。</p>\n<p>NexFilm 重构了这种传统模型，全面采用<strong>双阶有界代理架构（Two-Stage Bounded Proxy Architecture）</strong>：</p>\n<ol>\n<li><strong>第一阶段：轻量元数据快速注册与内嵌预览提取</strong>\n用户选择文件夹并点击导入时，引擎仅扫描文件头，以零解算开销提取文件中已预先生成的内嵌缩略图（Embedded Preview）与 Exif 拍摄元数据，并在本地数据库中建立轻量索引。这一过程使得数百张高分辨率照片可在 2 到 3 秒内完成入库并在“图库”中呈现完备网格，整个应用常驻内存仅占用不到 200 MB。</li>\n<li><strong>第二阶段：进入工作台时按需生成有界高精度代理</strong>\n只有当用户双击某张底片进入“工作台”时，后台计算引擎才按需唤起全管线解码器，针对该画面计算长边限定为 <code>2560 px</code> 的高质量工作代理图（Bounded Proxy）。该代理图能够充分满足 4K 乃至 5K 显示器上的实时交互精修需求，同时将实时调色计算的纹理显存牢牢锁定在极低水平。</li>\n</ol>\n<p>在最终执行“导出”时，引擎会跳过代理图，重新从磁盘流式读取原始源文件，以最高位深和全分辨率物理执行完整的调色与锐化矩阵计算，确保成片画质毫无妥协。</p>"
+                },
+                {
+                    "id": "tri-state-import",
+                    "heading": "三态导入工作流与元数据注入",
+                    "content": "<p>为了适应摄影师在不同场景下的摄录习惯，NexFilm 提供了完备的三态导入工作流，在文件入库的源头即赋予其严谨的暗房归档属性：</p>\n<h3 id=\"1-按卷导入-import-as-roll\" class=\"scroll-mt-24\">1. 按卷导入（Import as Roll）</h3>\n<p>此模式是暗房标准化作业的首选流程，专为按卷冲洗、翻拍或扫描的成套素材量身定制：</p>\n<ul>\n<li>打开导入对话框，选择“按胶卷导入”。</li>\n<li><strong>全画幅谱系选择</strong>：系统内置覆盖主流银盐格式的画幅预设：<ul>\n<li>135 全画幅（35mm）、135 半格（Half-frame）、APS；</li>\n<li>120 中画幅全系列：<code>120 (645)</code>、<code>120 (6x6)</code>、<code>120 (6x7)</code>、<code>120 (6x9)</code>、<code>120 (6x12)</code>、<code>120 (6x17)</code>；</li>\n<li>大画幅座机：<code>4x5</code>、<code>5x7</code>、<code>8x10</code>。</li>\n</ul>\n</li>\n<li><strong>设备与乳剂档案注入</strong>：选择或输入拍摄机身（如 Leica M6、Hasselblad 503CW）与胶卷型号（内置柯达 Gold 200、Portra 系列、富士 C200、伊尔福 HP5 Plus、电影卷 5219 等全系参数，并支持添加自定义型号）。</li>\n<li><strong>时间与胶卷备注（Roll Notes）</strong>：录入拍摄日期与自由文本备注（例如“第 03 卷、E100 增感一档、黄昏棚拍”）。这些信息将成为后续批量重命名模板与导出 Exif 标签的物理源。</li>\n</ul>\n<h3 id=\"2-散张导入\" class=\"scroll-mt-24\">2. 散张导入</h3>\n<p>适用于单张扫描排查、临时镜头测试片或不希望归入特定胶卷项目的散落底片：</p>\n<ul>\n<li>点击导入对话框中的“散张导入”，或直接将一个或多个图像文件拖拽至主窗口中央。</li>\n<li>散张导入的画面独立存在于图库中，拥有完备的单帧物理反相与微调能力，但默认不强制绑定胶卷元数据，也不参与整卷物理标定。</li>\n<li>软件具备强大的重复导入识别机制：当拖入的文件路径已存在于当前项目时，系统会自动跳过重复项，防止索引冗余。</li>\n</ul>\n<h3 id=\"3-追加画面至已有胶卷-append-to-roll\" class=\"scroll-mt-24\">3. 追加画面至已有胶卷（Append to Roll）</h3>\n<p>当一卷胶卷因分段翻拍或补扫而产生新文件时，用户无需新建胶卷，只需在“历史胶卷记录”中选中目标胶卷并点击“继续编辑胶卷”，随后通过右上角的“导入胶卷”选择新文件，新素材即可无缝追加进该卷的现有底片条末端，继承相同的机身与乳剂上下文。</p>"
+                },
+                {
+                    "id": "rolls-management",
+                    "heading": "历史胶卷记录多维筛选与归档管理",
+                    "content": "<p>点击顶栏的“历史胶卷记录”即可进入本地数字胶片档案库。随着拍摄项目的日积月累，这里将清晰归档用户处理过的每一卷底片资产。</p>\n<p>Rolls 视图的核心功能包括：</p>\n<ul>\n<li><strong>左侧多维组合筛选器</strong>：左侧面板支持按“画幅”（全画幅谱系分类）、“相机机身”以及“拍摄日期”进行交集组合筛选。面板顶部实时更新显示当前筛选条件下的确切胶卷数与画面总数，点击 <strong>Clear</strong> 按钮可一键复位筛选。</li>\n<li><strong>胶卷卡片摘要矩阵</strong>：右侧以画册式网格陈列胶卷卡片，直观呈现每卷的封面缩略图、总张数、画幅标签、相机、胶卷型号与创建日期。</li>\n<li><strong>胶卷详情与操作中枢</strong>：选中某卷进入胶卷内容视图后，可展开全卷底片微缩阵列，并执行以下关键动作：<ol>\n<li><strong>提升至图库（Promote to Library / 加入图库）</strong>：将该归档卷的所有画面载入当前活跃图库，方便重新进入工作台精修。</li>\n<li><strong>编辑胶卷信息（Edit Info）</strong>：支持随时修正或补充相机型号、胶卷名称、日期以及详细的胶卷备注，修改后将自动同步至未来导出的 Exif 元数据中。</li>\n<li><strong>导出接触印样</strong>：一键生成带有物理齿孔、片边字码与卷标头的数字暗房接触印样。</li>\n<li><strong>删除胶卷记录</strong>：点击删除时，系统会弹出双重安全选择：仅从 NexFilm 本地数据库中注销该卷索引，或者在注销索引的同时将磁盘上的原始文件移入操作系统废纸篓。选择后者时，若某些源片同时被其他项目引用，系统将安全保留原文件，杜绝误删风险。</li>\n</ol>\n</li>\n</ul>"
+                },
+                {
+                    "id": "locate-missing-files",
+                    "heading": "源文件离线与定位文件断链修复",
+                    "content": "<p>NexFilm 始终践行轻量化与非破坏性设计原则：<strong>软件绝不复制或挪动用户的原始素材文件</strong>。在数据库 <code>nexfilm_user.db</code> 中，仅记录了源文件在本地文件系统中的绝对物理路径。</p>\n<p>当用户在操作系统中重命名了存放底片的文件夹、移动了目录结构，或者拔出了外置移动硬盘时，工作台与图库中对应的画面会进入“离线脱机状态”：</p>\n<ul>\n<li>画面卡片上会出现明显的警告图标，提示“文件路径未找到”。</li>\n<li>得益于有界代理机制，画面的本地缓存缩略图依然可以正常浏览，但无法进行全分辨率导出或重新计算反相。</li>\n</ul>\n<p><strong>断链修复流程（Locate File）</strong>：</p>\n<ol>\n<li>选中处于脱机状态的画面，点击界面上弹出的 <strong>定位文件</strong> 操作按钮。</li>\n<li>在系统文件浏览窗口中，定位至该文件当前所在的新路径并点击确认。</li>\n<li>NexFilm 底层引擎会自动校正该记录的绝对路径，并智能探测同目录下其他同样处于脱机状态的相邻画面。若文件名与序列匹配，引擎将自动批量修复整卷的路径关联，无需用户逐张手动重新查找。</li>\n</ol>\n<p>通过严密的格式矩阵支持、零内存压力的代理架构以及稳健的档案管理机制，NexFilm 为严肃胶片摄影师构筑了一套值得长期信赖的数字化资产基石。</p>"
+                }
+            ]
+        },
+        {
+            "id": "film-area-and-geometry",
+            "track": "user-manual",
+            "trackTitle": "工作台手册",
+            "trackOrder": 2,
+            "chapterOrder": 3,
+            "kicker": "02 / 工作台手册",
+            "title": "胶片范围、几何变换与齿孔净边",
+            "subtitle": "区分分析区域与最终构图裁切，纠正翻拍机位透视与畸变，以及齿孔采样净边控制",
+            "readingTime": 8,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "film-area-vs-crop",
+                    "heading": "胶片范围与裁剪的本质职责区别",
+                    "content": "<p>在传统的数码修图软件中，“裁剪”通常只是一个决定最终画面构图与宽高比的排版工具。但在 NexFilm 的物理暗房工作流中，画面几何被严格划分为两个职责完全独立、处于不同计算管线层级的概念：<strong>胶片范围</strong> 与 <strong>常规裁剪</strong>。深入理解这两者的边界，是获得准确反相影调的基础。</p>\n<p>两者的核心差异与系统职责定义如下：</p>\n<ul>\n<li><strong>胶片范围是物理反相的有效光学计算域</strong>：它是一个四边形多边形，用于精准界定底片扫描件中“哪些像素代表真实的感光乳剂”，从而供算法提取片基最小密度（D-Min）、最大密度（D-Max）以及通道跨度统计。它决定了反相数学模型的输入样本。即使你的构图裁切很小，胶片范围也应当完整覆盖该底片的全部有效成像区域，以便算法获取最充足的高光与暗部统计样本。</li>\n<li><strong>常规裁剪是最终交付成片的构图窗口</strong>：它作用于物理反相和曲线调整之后，仅决定最终导出图像的边框边界与长宽比例（如 3:2、1:1 或自由比例）。裁剪操作绝不会剔除胶片范围所锁定的物理密度统计样本，因此在反相之后无论你如何收缩或微调裁切框，画面的整体反差与色彩平衡均保持绝对稳定，不会因为构图裁切而发生影调漂移。</li>\n</ul>\n<p>二者共享底层画布的统一坐标系，但在执行顺序上，胶片范围永远先于密度解算，而常规裁剪则位于渲染链条的末端。</p>"
+                },
+                {
+                    "id": "framing-pitfalls",
+                    "heading": "常见框选错误后果与光学机理剖析",
+                    "content": "<p>翻拍或扫描胶片时，底片四周往往伴随着强烈的背光灯板、片夹遮挡黑边或 135 齿孔。如果胶片范围框选不当，将对自动反相算法造成毁灭性的统计污染。</p>\n<p>下表系统梳理了三类最常见的不规范框选操作及其背后的光学失效机理：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>错误框选形态</th><th>混入统计的干扰区域</th><th>算法内部错误推导</th><th>最终正片异常表征</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>框入外围观片灯板</strong></td><td>底片外侧 100% 透射率的裸露光源区域（纯白强光）。</td><td>算法将亮度极高（近乎零密度）的灯板透射光误判为底片的最小密度（D-Min 片基点），导致底片自身的正常高光与阴影整体被大幅下压。</td><td>反相后整张正片严重发灰、发暗、动态范围压缩崩塌，仿佛蒙上一层浓重灰雾，暗部死黑而高光上不去。</td></tr>\n        <tr><td><strong>框入扫描仪死黑片夹</strong></td><td>扫描仪片夹、防反射遮光板或暗房压片框的完全不透光物理边缘。</td><td>算法将透射率接近 0（密度极高）的物理遮挡物误判为底片完全曝光的最大密度（D-Max 片头点），强行拉伸黑电平基准。</td><td>正片暗部反差异常丢失，深色阴影整体被强行向上抬升，呈现不自然的泛白与脏灰发雾感。</td></tr>\n        <tr><td><strong>框入 135 胶卷齿孔边缘</strong></td><td>135 胶卷连续齿孔内部的高亮强光与齿孔周围的局部漫反射光晕。</td><td>齿孔内部未受乳剂阻挡的强光严重破坏了三通道透射率的平衡比值，导致通道跨度保护逻辑错误介入。</td><td>画面边缘甚至整体产生严重的青色、品红色或黄色顽固偏色，白平衡吸管反复校准仍难以消除。</td></tr>\n    </tbody>\n</table><div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">绝不可将裸露灯板包含在胶片范围内</div>\n    <div class=\"doc-callout-body\"><p>无论拍摄的是高调画面还是暗调夜景，胶片范围的四个角点与边缘必须严密贴合底片真实的有效曝光矩形，将外部透光灯板 100% 阻隔在框线之外。如果你希望在成片中保留底片边缘的黑边风格，应使用检查器中的“齿孔设置”或专用相纸模拟边框，而切勿通过扩大胶片范围来实现。</p></div>\n</div>"
+                },
+                {
+                    "id": "auto-area-workflow",
+                    "heading": "自动识别与手动微调工作流",
+                    "content": "<p>进入工作台后，画布上方的几何工具栏提供了完整的胶片范围界定工具集：</p>\n<ol>\n<li><strong>进入范围编辑模式</strong>：点击工具栏中的 <strong>设置胶片范围</strong>，画布进入专用的范围编辑状态，外部非分析区域呈现半透明遮罩暗化，中央浮现带有 4 个角点与 4 条边中点手柄的多边形框线。</li>\n<li><strong>自动识别</strong>：点击工具栏的 <strong>自动识别</strong> 按钮，系统后台会基于当前画面的缓存缩略图执行快速边缘梯度检测，自动寻找底片边缘与外围高反差边界，通常在 0.2 秒内即可完成初步拟合。</li>\n<li><strong>手动精细微调</strong>：由于某些画面边缘可能存在大面积低反差天空或深沉阴影，自动识别可能产生微小的内缩或外溢。此时用户可直接用鼠标拖动 4 个角点手柄进行独立拉伸，或者拖动 4 条边线中心的手柄进行整体推进，使边框完美贴合有效感光乳剂。若希望利用片边未曝光区域进行片基估计，可沿一侧留出 1 毫米均匀纯净片边，但切记不得漏出白色灯板。</li>\n<li><strong>保存范围</strong>：微调完成后，必须点击工具栏右侧绿色的 <strong>保存范围</strong> 按钮。未点击保存而直接切换底片条切帧，系统将放弃本次几何改动。</li>\n<li><strong>固定机位下的批量应用</strong>：如果整卷胶卷采用翻拍架机位固定翻拍，各帧之间的底片位置高度一致，用户只需在第一帧精确标定范围并保存，随后点击工具栏的 <strong>批量应用</strong>，即可将该胶片范围一键分发至全卷其余所有画面。目标画面接收到几何范围后，会在各自的闭合框内独立重新测定局部照度片基，从而自动兼容微小的光源不均匀度。</li>\n</ol>"
+                },
+                {
+                    "id": "geometry-and-perspective",
+                    "heading": "几何变换：旋转、拉直、透视与畸变校正",
+                    "content": "<p>翻拍台机位在物理架设过程中，即使使用专业气泡水平仪，相机光轴与胶片平面之间依然难以避免产生微小的俯仰角偏差或水平倾斜。此外，微距微距镜头在近距离翻拍时也会产生微弱的几何形变。NexFilm 在工具栏与检查器中提供了全套几何变换工具：</p>\n<ul>\n<li><strong>正交旋转与镜像翻转</strong>：<ul>\n<li>工具栏提供顺时针 90° 与逆时针 90° 旋转，快速纠正竖拍底片的摆放朝向。</li>\n<li>提供 <strong>水平翻转</strong> 与 <strong>垂直翻转</strong>。当翻拍底片时不慎将药膜面反装导致文字镜像倒置时，无需重新装片翻拍，在软件中点击水平翻转即可瞬间无损镜像。</li>\n</ul>\n</li>\n<li><strong>角度拉直</strong>：提供精确到 0.1° 的角度旋转滑块（范围 -45° 至 +45°），配合画布上浮现的参考网格线，拖动滑块即可拉平倾斜的底片地平线。</li>\n<li><strong>梯形透视校正</strong>：位于检查器几何面板中，包含 <strong>垂直透视</strong> 与 <strong>水平透视</strong> 两项滑块。通过双向透视微调，可精确抵消相机传感器与胶片平面之间的微小夹角，将变形的梯形底片拉伸为纯正矩形。</li>\n<li><strong>纵横比与缩放控制</strong>：<strong>透视纵横比</strong> 用于微调矫正透视拉伸后的长宽比例失真；<strong>透视缩放</strong> 与 <strong>约束裁切</strong> 则保证几何旋转拉伸后画面主体不会被黑色外框截断。</li>\n<li><strong>镜头畸变补偿</strong>：微距镜头在 1:1 或 1:2 翻拍比下可能产生轻微的桶形或枕形边缘畸变，调节此滑块可将微弯的胶卷边框线彻底拉直。</li>\n<li><strong>构图裁切比例锁定</strong>：支持 Free（自由比例）、Original（原始拍摄比例）、1:1（方形中画幅）、2:3（135 全画幅）、3:4、4:5（大画幅常用画幅）、16:9 等多种工业标准纵横比。</li>\n</ul>"
+                },
+                {
+                    "id": "sprocket-control",
+                    "heading": "齿孔采样与边框净边控制",
+                    "content": "<p>对于使用 135 胶卷拍摄并保留齿孔曝光的实验性艺术创作，或者希望在正片中完整呈现胶片物理边缘的场景，检查器提供了专门的 <strong>齿孔设置</strong> 模块：</p>\n<ul>\n<li><strong>采样齿孔</strong>：点击该按钮激活专用吸管工具，移动鼠标至画面中齿孔镂空区域点击，算法即刻采样当前翻拍背光源在齿孔内的纯白透射基准色彩与绝对强度。</li>\n<li><strong>容差控制</strong>：滑块控制齿孔强光的检测敏感度区间。调高容差可将齿孔边缘由于镜头衍射产生的漫反射微弱光晕全部纳入剔除范围，防止其干扰相邻画面的色彩平衡。</li>\n<li><strong>羽化控制（Feather）</strong>：控制齿孔边缘到感光乳剂之间的过渡软硬程度。适当的羽化能够使底片边缘与透光齿孔之间的交界过渡自然平滑，杜绝因生硬的阈值硬切而产生数字锯齿伪影。</li>\n</ul>\n<p>通过将严谨的光学几何范围与灵活的物理透视校正相结合，NexFilm 确保了每一张底片在进入深层暗房反相之前，均处于最纯净、无畸变的标准物理测量基准之上。</p>"
+                }
+            ]
+        },
+        {
+            "id": "density-grading-and-curves",
+            "track": "user-manual",
+            "trackTitle": "工作台手册",
+            "trackOrder": 2,
+            "chapterOrder": 4,
+            "kicker": "02 / 工作台手册",
+            "title": "密度窗口、暗房印片光、曲线与细节精修",
+            "subtitle": "掌控 D-Min/D-Max 密度物理端点，对数印片光加减法则，4 通道单调样条曲线与高频细节锐化",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "develop-workspace"
+            ],
+            "sections": [
+                {
+                    "id": "mode-invert-and-batch",
+                    "heading": "画面模式、自动反相与整卷批处理",
+                    "content": "<p>NexFilm 的暗房解算引擎将黑白与彩色胶片的物理显影特性严格区隔。进入“工作台”后，检查器顶部的模式控制与反相操作面板决定了底片如何被映射为正片：</p>\n<ul>\n<li><strong>Color（彩色负片模式）</strong>：\n专为具有染料耦合色罩的彩色负片设计。算法启动复杂的三通道对数解耦管线，首先测定未曝光片基的橙色色罩密度，将其作为物理零点归零扣除，随后基于三层乳剂的光学特性进行光谱交叉互补反相。</li>\n<li><strong>B&amp;W（黑白负片模式）</strong>：\n切换至黑白模式后，软件直接将三通道色彩信息合并为单通道纯物理光学密度，彻底关闭彩色染料去色罩逻辑。此模式专注于银盐微粒的单色密度阶调映射，能够完美杜绝因彩色通道平衡错误而引起的黑白片基彩斑污染，是处理 Ilford HP5 Plus、Kodak Tri-X 等纯黑白负片的标准途径。</li>\n</ul>\n<p>反相操作区提供三个关键控制：</p>\n<ol>\n<li><strong>自动反相</strong>：\n面向当前所选单张画面。算法在已界定的胶片范围内，独立测定该帧画面的片基基准与内容动态极值，瞬间解算出中性平衡的正片结果，并将生成的全部调色与几何参数写入当前画面的工作栈中。</li>\n<li><strong>整卷批处理</strong>：\n此按钮在默认状态下处于隐藏或禁用状态。<strong>只有当用户在“图库”中预先完成了“标定片头片基”（Calibrate Film Base / Leader）后，该按钮才会激活显现</strong>。由于整卷胶卷已经采纳了统一的物理片头与片基锚点，整卷批处理将首先测量全卷中最亮的一帧作为全局白点参考，随后按照相同的物理基准依次反相全卷所有其余画面。该模式跳过作为标定参考的片头片基画面，杜绝单帧自动测光造成的帧间色彩漂移。</li>\n<li><strong>Reset（复位）</strong>：\n一键清除当前画面的所有色彩、印片光、曲线与细节调整，使画面回到未反相的原始负片状态。值得注意的是，Reset 仅影响色彩管线，不会清除用户精心绘制的胶片范围与几何透视裁切。</li>\n</ol>"
+                },
+                {
+                    "id": "density-limits",
+                    "heading": "密度范围（D-Min / D-Max）物理含义与调校",
+                    "content": "<p>在传统摄影物理中，光学密度（Optical Density, <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>D</mi></mrow><annotation encoding=\"application/x-tex\">D</annotation></semantics></math></span>）是度量介质对光线吸收能力的对数标尺：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mi>D</mi><mo>=</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>T</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">D = -\\log_{10}(T)</annotation></semantics></math></span></p>\n<p>其中 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>T</mi></mrow><annotation encoding=\"application/x-tex\">T</annotation></semantics></math></span> 为透射率。负片上完全未曝光的透明片基具有最低的光学阻碍，对应最小密度 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>；而强光彻底曝光显影后的黑色银盐结块则具有最高的光学阻碍，对应最大密度 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>。经过光学反相后，<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span> 转化为正片的黑场沉淀基底，而 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span> 则转化为正片的高光承载上限。</p>\n<p>检查器中的 <strong>密度范围</strong> 面板提供了直接调校这一物理窗口的核心滑块：</p>\n<ul>\n<li><strong>Master D-Min（主暗部端点，范围 -0.50 至 +0.50）</strong>：\n控制成片黑场沉淀的起点。向正方向推进 Master D-Min，将抬高黑场密度门槛，使阴影更加深邃扎实；向负方向微调则会保留微弱的暗部细节，防止阴影死黑并增加暗调层次。</li>\n<li><strong>Master D-Max（主亮部端点，范围 -0.50 至 +0.50）</strong>：\n控制成片白场高光的压缩上限。向正方向调整可延展亮部动态，防止大面积白云或高光反光发生硬性数字截断；向负方向压缩则可收紧高光动态，使整体反差更具冲印张力。</li>\n<li><strong>三通道独立微调读数</strong>：\n滑块下方实时显示当前画面测得的 Red、Green、Blue 三通道实际物理密度绝对值。若某一通道测得的密度跨度明显偏窄，说明底片可能存在局部欠曝或老化退化，用户可通过分通道微调单独修正该通道的起止范围。</li>\n</ul>"
+                },
+                {
+                    "id": "printer-lights-laws",
+                    "heading": "暗房印片光对数调色法则",
+                    "content": "<p>在传统光学暗房中，摄影师通过调节彩色放大机灯头内的三色减色法滤光片——青色、品红色、黄色——来改变投射在相纸上的曝光光质。NexFilm 的 <strong>印片光</strong> 模块正是这一经典工艺在数字域的严谨重现。</p>\n<p>与普通数码软件中粗暴的 RGB 线性增益截然不同，NexFilm 的印片光调整作用于对数密度域，严格遵循暗房对数互补法则。推拉印片光等于在负片与相纸之间增减滤光片的对数曝光厚度。</p>\n<p>下表建立了严密的偏色诊断与印片光调节方向速查指南：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>画面观察到的偏色症状</th><th>物理本质原因</th><th>推荐印片光调节动作</th><th>暗房等效物理操作</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>画面整体偏青</strong></td><td>红色通道透射密度不足，红光成分缺失。</td><td><strong>增加 Red 印片光（推正）</strong></td><td>等效于暗房中减少青色滤光片阻光，增加红光曝光量。</td></tr>\n        <tr><td><strong>画面整体偏红</strong></td><td>红色通道透射过剩，青色吸收不足。</td><td><strong>减少 Red 印片光（拉负）</strong></td><td>等效于在放大机灯头增加青色滤光片，压制红光。</td></tr>\n        <tr><td><strong>画面整体偏洋红</strong></td><td>绿色通道透射密度受阻，品红过多。</td><td><strong>增加 Green 印片光（推正）</strong></td><td>等效于减少品红色滤光片，注入更多绿色穿透光。</td></tr>\n        <tr><td><strong>画面整体偏绿</strong></td><td>绿色通道过度充盈，中和了品红染料。</td><td><strong>减少 Green 印片光（拉负）</strong></td><td>等效于增加品红滤光片，吸收过量绿光。</td></tr>\n        <tr><td><strong>画面整体偏黄</strong></td><td>蓝色通道透射受阻，黄色基团过剩。</td><td><strong>增加 Blue 印片光（推正）</strong></td><td>等效于减少黄色滤光片，引入更多蓝光能量。</td></tr>\n        <tr><td><strong>画面整体偏蓝</strong></td><td>蓝色通道信号泛滥，黄色成分被冲淡。</td><td><strong>减少 Blue 印片光（拉负）</strong></td><td>等效于增加黄色滤光片吸收蓝光，唤回暖黄色调。</td></tr>\n    </tbody>\n</table><p>面板右上角配备了 <strong>白平衡吸管</strong> 工具。点击激活后，在画面中寻找理论上的中性灰区域（如未受强烈反光干扰的柏油路面、灰色水泥墙面或中性色衣物）点击。软件会自动测量该采样区域与理想中性灰之间的光谱差异，并在几毫秒内将其转化为 Red、Green、Blue 三个通道的精确曝光对数偏移量。这一吸管校正直接体现在印片灯光滑块上，不会破坏物理片基标定数据。</p>"
+                },
+                {
+                    "id": "curve-and-detail",
+                    "heading": "曲线与细节",
+                    "content": "<p>在渲染管线中，<strong>曲线</strong> 与 <strong>细节</strong> 承上启下：曲线作用于印片光校色之后、全局观感调整之前；而细节面板则作用于观感调整之后，负责输出前的空间频率重构。两者均不改变底层的物理密度基准。</p>\n<h3 id=\"1-四通道控制点色调曲线\" class=\"scroll-mt-24\">1. 四通道控制点色调曲线</h3>\n<p>NexFilm 提供了完备的四通道曲线系统：包含一条全局 <strong>RGB 主曲线</strong> 以及 <strong>Red、Green、Blue 三条分通道独立曲线</strong>。</p>\n<ul>\n<li><strong>数学插值保证</strong>：曲线插值算法基于单调三次 Hermite 样条曲线。无论控制点如何密集排列或剧烈拖动，曲线在相邻两点之间严格保持单调递增，绝不会发生高光下凹、黑场翘起或局部数值越出 0 到 1 物理区间的反常震荡。</li>\n<li><strong>交互规范</strong>：<ul>\n<li>单击曲线空白处即可新增控制点，每条曲线最多容纳 16 个自由控制点；</li>\n<li>鼠标右键单击任意控制点即可将其删除；</li>\n<li>两端的端点输入值固定在 0 与 1，只能上下移动，用于直接提亮黑场沉淀或压制高光白点；</li>\n<li>横向拖动两端端点时，当位移越过阈值，系统会自动拉出一个跟随光标的中间控制点；</li>\n<li>点击“重置该通道”按钮，可将当前处于激活状态的通道单键复原为标准 45° 线性直线；</li>\n<li>曲线背景衬底实时渲染当前画面的高精度动态直方图，帮助摄影师精准针对特定明度区间下刀调色。</li>\n</ul>\n</li>\n</ul>\n<h3 id=\"2-观感调整面板\" class=\"scroll-mt-24\">2. 观感调整面板</h3>\n<p>为摄影师提供符合视觉习惯的直观审美润色参数：</p>\n<ul>\n<li><strong>曝光</strong>：按光圈挡位（EV）平移中间调明度，动态调节画面亮度；</li>\n<li><strong>Gamma 与 Contrast（对比度）</strong>：在保持黑白端点锁定的前提下，拉伸或压缩中调反差；</li>\n<li><strong>Highlights（高光）与 Shadows（阴影）</strong>：智能抑制过亮反射光晕与提振暗部纹理；</li>\n<li><strong>Saturation（饱和度）</strong>：在感知均匀色彩空间中调节色彩鲜艳度，避免单通道荧光过饱和溢出；</li>\n<li><strong>Temperature（色温）与 Tint（色调）</strong>：提供类似现代数码 RAW 的微调温感修正。</li>\n</ul>\n<h3 id=\"3-细节与空间自适应锐化\" class=\"scroll-mt-24\">3. 细节与空间自适应锐化</h3>\n<p>细节模块分为“锐化”与“偏好”两大控制阵列，其核心参数定义与工业标准保持一致：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>控制项</th><th>参数作用与算法原理</th><th>可调节数值范围</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>数量</strong></td><td>锐化总强度。当数值设为 0 时，整个细节管线完全被硬件级旁路，不耗费任何 GPU 算力，像素原汁原味输出。</td><td>0 – 150（默认 40）</td></tr>\n        <tr><td><strong>半径</strong></td><td>空间卷积核大小。控制高频反差强化的作用边缘宽度，小半径强化极细微发丝，大半径强化轮廓。</td><td>0.5 – 3.0 px（默认 1.0）</td></tr>\n        <tr><td><strong>细节</strong></td><td>高频纹理与大边缘之间的权重分配。低值仅强化清晰大边缘，高值充分释放银盐微粒。</td><td>0 – 100（默认 25）</td></tr>\n        <tr><td><strong>蒙版</strong></td><td>边缘自适应阈值。数值为 0 时全图均匀锐化；数值提高至 60 以上时，平坦的天空与纯色背景被彻底屏蔽，仅在明显边缘上施加锐化，避免放大扫描噪点。</td><td>0 – 100（默认 0）</td></tr>\n        <tr><td><strong>纹理</strong></td><td>中等空间频率的局部微对比度，特别适合强化布料织物、木纹与皮肤质感。</td><td>-100 – +100</td></tr>\n        <tr><td><strong>清晰度</strong></td><td>较大尺度的局部对比度增强，算法对中间调进行自适应加权，防止阴影死黑与高光溢出。</td><td>-100 – +100</td></tr>\n        <tr><td><strong>去朦胧</strong></td><td>基于暗通道先验物理模型估算大气透射率，有效消除镜头眩光与胶片乳剂灰雾。</td><td>-100 – +100</td></tr>\n    </tbody>\n</table><div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">按住 Alt 键实时灰度蒙版预览</div>\n    <div class=\"doc-callout-body\"><p>在工作台中按住键盘上的 <kbd>Alt</kbd> 键并用鼠标拖动锐化参数时，主画布会瞬时切换为高精度的黑白诊断灰度视图：</p>\n<ul>\n<li>拖动 <strong>数量</strong>、<strong>半径</strong> 与 <strong>细节</strong> 时，画布显示高频边缘反差信号本身（中性灰底色上的亮暗交界线），便于精准观察卷积半径是否合适；</li>\n<li>拖动 <strong>蒙版</strong> 时，画布呈现真正的黑白边缘二值蒙版（黑色区域完全不受锐化，白色边缘完全受保护）。\n该灰度视图仅接管画布预览，示波器与缩略图不受影响，松开按键即可恢复正常彩色视图。</li>\n</ul></div>\n</div><p>所有锐化、纹理与去朦胧参数的物理半径均严格以长边 <code>2560 px</code> 作为统一标准化换算基准。这意味着在工作台 2560 代理图上所见到的锐度与反差，在最终执行数千万像素全尺寸导出时将获得百分之百相同的像素相对锐度，杜绝了“预览锐利、导出疲软”的通病。</p>"
+                },
+                {
+                    "id": "scopes-and-clipping",
+                    "heading": "示波器系统与高光暗部溢出预警",
+                    "content": "<p>工作台右上角常驻高精度物理示波器，用于客观量化画面的影调动态与色彩极值：</p>\n<ul>\n<li><strong>直方图模式</strong>：呈现从纯黑（0）到纯白（255）的阶调像素分布，背景色块精准反映三通道的色彩重叠。</li>\n<li><strong>波形图模式</strong>：自左向右横向映射画面各个水平位置的垂直亮度走势，能够极其直观地揭示局部高光反光点是否触顶。</li>\n<li><strong>通道筛选控制</strong>：支持一键在全色 RGB、Red、Green、Blue 单通道以及 Luma（纯亮度 Y）通道之间切换显示。</li>\n<li><strong>高光与暗部溢出预警</strong>：波形图左右两侧配备了带有感叹号图标的阈值手柄。当画面的亮部或暗部像素被推过极限阈值发生硬截断时，示波器边框会闪烁警示，帮助摄影师在暗房调色时守住不丢细节的红线。</li>\n</ul>"
+                },
+                {
+                    "id": "copy-paste-vs-batch",
+                    "heading": "复制设置、粘贴设置与批量应用使用边界",
+                    "content": "<p>在处理整卷包含数十张连续拍摄的场景时，如何高效分发调色配方决定了生产力的高低。NexFilm 提供了两套机制，二者具有截然不同的使用边界：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>对比维度</th><th>批量应用</th><th>复制设置 / 粘贴设置（Copy / Paste Settings）</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>物理触发位置</strong></td><td>主画布正上方的几何工具栏。</td><td>右侧检查器顶部的独立操作按钮组。</td></tr>\n        <tr><td><strong>分发传递的核心内容</strong></td><td>胶片范围多边形与齿孔采样位置。</td><td>勾选的暗房影调、印片光、曲线、观感与细节参数。</td></tr>\n        <tr><td><strong>目标画面的物理基准</strong></td><td><strong>在目标画面上独立重新测定片基与光照分布</strong>。</td><td>直接覆盖目标画面对应参数，<strong>不改变目标画面的几何范围与基准</strong>。</td></tr>\n        <tr><td><strong>最佳适用场景</strong></td><td>同卷翻拍台机位固定，需要一键统一裁切范围与排除灯板干扰。</td><td>同场景多张不同构图的照片，需要统一暗房显影反差与色彩风格。</td></tr>\n    </tbody>\n</table><p>点击检查器顶部的 <strong>复制设置</strong>，当前画面的所有调色与几何参数被载入剪贴板；切换至其他画面点击 <strong>粘贴设置</strong> 时，系统会弹出细粒度的参数勾选对话框：</p>\n<ul>\n<li>对话框顶部提供三大快捷预设：<ol>\n<li><strong>All available settings（全部可用设置）</strong>：全选所有参数；</li>\n<li><strong>Tone and color（影调与色彩，默认推荐）</strong>：包含密度范围、印片灯光、色温、观感调整与曲线，但排除几何裁剪与细节锐化；</li>\n<li><strong>Geometry only（仅几何参数）</strong>：仅同步旋转、翻转、拉直与透视参数。</li>\n</ol>\n</li>\n<li>用户亦可展开类别列表，针对 <code>filmMode</code>、<code>printerLights</code>、<code>curve</code>、<code>sharpen</code>、<code>lut</code> 等 27 项细分参数进行独立勾选，实现手术刀般的调色分发。</li>\n</ul>\n<p>严禁在不同光照环境或不同机位拍摄的画面之间滥用批量应用；针对同场景微变构图，使用“复制设置（影调与色彩）”是最安全、最符合暗房物理规范的批处理实践。</p>"
+                }
+            ]
+        },
+        {
+            "id": "print-film-emulation",
+            "track": "user-manual",
+            "trackTitle": "工作台手册",
+            "trackOrder": 2,
+            "chapterOrder": 5,
+            "kicker": "02 / 工作台手册",
+            "title": "相纸与电影印片模拟（3D LUT）及银盐黑白工作流",
+            "subtitle": "两段式物理显影映射机制，14 款内置经典印片相纸 .cube LUT 详解与黑白反差号数控制",
+            "readingTime": 9,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "two-stage-physics",
+                    "heading": "暗房两段式物理显影映射机制",
+                    "content": "<p>在胶片摄影一百多年的暗房历史中，底片（Negative）从未被视为最终的视觉终点。底片在相机曝光后记录的仅仅是现实世界光线在银盐卤化物或染料层中引起的光学密度分布，其本质是高度线性的密度中间载体。在传统光学暗房中，一幅作品的最终诞生必须经历两个物理阶段：</p>\n<ol>\n<li><strong>第一阶段：底片显影与密度反相（Scene Density Reconstruction）</strong>\n消除底片色罩，依据三层感光乳剂的光学特性恢复客观场景的透射密度比值。这一步追求的是严谨、中性、无偏色的物理场景重建，确保阴影至高光的动态层次完整无损。</li>\n<li><strong>第二阶段：相纸与印片介质二次曝光显影（Print Medium Mapping）</strong>\n将反相后的正向光线通过放大机镜头，投射在特定的正片相纸（Photographic Paper）或工业电影印片胶片（Motion Picture Print Film）上。相纸乳剂特有的 S 型特征曲线（Characteristic H&amp;D Curve）、非线性高光滚降、深沉的银盐最大反射密度（D-Max）以及特定染料的光谱吸收峰，赋予了胶片摄影令人沉醉的有机质感与审美调性。</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">拒绝暴力曲线性质失真</div>\n    <div class=\"doc-callout-body\"><p>市面上许多数字调色滤镜往往试图通过一步到位的激进高反差 RGB 曲线强行模仿胶片色彩，这种做法会导致暗部细节严重被压死、高光生硬截断并产生难看的色彩分离断层。NexFilm 坚持纯正的暗房两段式物理架构：第一步由核心引擎完成中立精确的密度域反相，第二步通过高精度三维查找表（3D LUT）将图像映射至真实的感光相纸响应空间中。</p></div>\n</div>"
+                },
+                {
+                    "id": "builtin-luts-matrix",
+                    "heading": "内置 14 款官方 .cube LUT 全景特性矩阵",
+                    "content": "<p>NexFilm 仓库原生分发并内置了 14 款工业级 <code>.cube</code> 3D LUT 文件。所有文件均基于专业暗房分光光度计测量与感光测定数据精确拟合，绝不包含任何虚构的商业滤镜。</p>\n<p>下表系统梳理了全部 14 款内置 LUT 的介质类型、光学特性与推荐适配题材：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>LUT 精确文件名</th><th>模拟物理介质类别</th><th>影调曲线与色彩响应特性</th><th>推荐适配胶卷与典型题材</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><code>Kodak 2383.cube</code></td><td>35mm 工业彩色电影印片正片胶片</td><td>好莱坞经典电影工业基准。高光平滑温润收敛，暗部带有优雅深沉的微冷调，中间调饱和度适度浓郁，具备极佳的肤色分离度。</td><td>Kodak Vision3 500T/250D 等电影负片，戏剧化夜景、街头纪实与电影感叙事画面。</td></tr>\n        <tr><td><code>Kodak 2393.cube</code></td><td>高反差工业彩色电影印片胶片</td><td>相比 2383 具有更纯正深邃的黑位、更高的反差系数与更饱和纯净的色彩张力，暗部沉淀感极强。</td><td>低照度夜景、高对比度舞台摄影、赛博朋克霓虹灯光等大光比题材。</td></tr>\n        <tr><td><code>Kodak Portra Endura.cube</code></td><td>专业人像彩色银盐正片相纸</td><td>柔和软调人像相纸标准。高光过渡极其透亮平缓，阴影细节丰满不生硬，精准还原黄色与洋红色肤色阶调。</td><td>Kodak Portra 160/400/800，自然光人像、婚纱、室内静物与温润家庭纪实。</td></tr>\n        <tr><td><code>Kodak Endura Premier.cube</code></td><td>现代专业高阶彩色银盐相纸</td><td>当代商业输出旗舰基准。具备极高的色彩饱和度、纯净的高光白场与出色的锐度表现，层次极其分明。</td><td>时尚大片、商业静物、现代都市建筑与高色彩纯度的现代街拍。</td></tr>\n        <tr><td><code>Kodak Supra Endura.cube</code></td><td>全能通用型专业彩色相纸</td><td>经典平衡型相纸。反差适中，色彩生动而不艳俗，具备优良的抗指纹与长久保存特性。</td><td>Kodak Gold 200、ColorPlus 200，旅行风景、人文抓拍与多用途综合题材。</td></tr>\n        <tr><td><code>Kodak Ultra Endura.cube</code></td><td>超高饱和与高反差彩色相纸</td><td>视觉冲击力极强。大幅拉开亮暗对比，极度强化红、绿、蓝三原色的鲜艳度，暗部厚重结实。</td><td>Kodak Ektar 100，壮阔自然风光、秋季红叶、热带海景与强烈色彩构成。</td></tr>\n        <tr><td><code>Kodak Ektacolor Edge.cube</code></td><td>经典民用消费级彩色相纸</td><td>八九十年代家庭相册的熟悉记忆。带有轻微温暖复古的黄色调倾向，中间调反差平缓，充满怀旧生活气息。</td><td>过期彩色负片、扫街随拍、童年复古记忆与生活日常随记。</td></tr>\n        <tr><td><code>Ilford MGFB 00.cube</code></td><td>可变反差纤维纸基黑白相纸（超软调 00 号）</td><td>极度平缓的阶调曲线，动态宽容度极大。能够将暴晒直射光下的极端高光与深暗完全容纳下来。</td><td>极端大光比强光外景、逆光高光溢出底片与迫冲过度底片。</td></tr>\n        <tr><td><code>Ilford MGFB 0.cube</code></td><td>可变反差黑白相纸（软调 0 号）</td><td>低反差柔和过渡，高光与阴影具有非常丰富的灰阶微调层级。</td><td>漫射光室内人像、雾天风景与需要保留丰富暗部细节的底片。</td></tr>\n        <tr><td><code>Ilford MGFB 1.cube</code></td><td>可变反差黑白相纸（微软调 1 号）</td><td>微偏软调，适合将拍摄冲洗偏硬、反差偏大的负片拉回至舒适视觉区间。</td><td>阳光直射的人文纪实、硬光建筑与强反差街头抓拍。</td></tr>\n        <tr><td><code>Ilford MGFB 2.cube</code></td><td>可变反差黑白相纸（标准 2 号 Normal）</td><td>暗房标准中性基准号数。阶调分布均匀自然，黑白灰配比完美遵循经典纯银盐暗房美学。</td><td>Ilford HP5 Plus、Kodak Tri-X 400，全天候标准黑白摄影作品。</td></tr>\n        <tr><td><code>Ilford MGFB 3.cube</code></td><td>可变反差黑白相纸（微硬调 3 号）</td><td>反差适度提振，增强微弱灰阶之间的辨识度，令原本平淡的画面焕发生机。</td><td>阴天户外、平光环境、低反差镜头拍摄的底片与微反差作品。</td></tr>\n        <tr><td><code>Ilford MGFB 4.cube</code></td><td>可变反差黑白相纸（硬调 4 号）</td><td>强烈的黑白反差，压暗中灰阶调，显著强化物体的几何轮廓与光影剪影效果。</td><td>森山大道风格高反差街拍、粗颗粒夜间抓拍与抽象图形摄影。</td></tr>\n        <tr><td><code>Ilford MGFB 5.cube</code></td><td>可变反差黑白相纸（超硬调 5 号）</td><td>极高的银盐反差。灰阶被大幅压缩，画面黑白分明，呈现版画般的刚劲力量感。</td><td>黑白木刻版画质感创作、纯图形剪影、极简光影构成与实验性摄影。</td></tr>\n    </tbody>\n</table>"
+                },
+                {
+                    "id": "opacity-and-custom-luts",
+                    "heading": "混合强度控制与自定义 3D LUT 加载规范",
+                    "content": "<p>在“印片胶片模拟（Print Emulation）”面板中，除了选择内置 LUT 外，NexFilm 还提供了细致的控制逻辑：</p>\n<ul>\n<li><strong>不透明度（Opacity 0–100%）</strong>：\n默认值为 100%，代表完全映射相纸特性。用户可通过滑块进行精确的无级线性混合。当调低至 60%–80% 区间时，画面既保留了底层物理反相的中性真实动态，又微妙融入了相纸温润的高光滚降与色调沉淀，在写实纪录与暗房审美之间取得完美平衡。当选择“无内置 LUT（No Built-in LUT）”且不加载外部文件时，整个 LUT 渲染通道自动关闭。</li>\n<li><strong>加载外部自定义 <code>.cube</code> 文件</strong>：\n点击面板中的“Load Custom LUT”按钮，用户可加载第三方标准 3D LUT 文件。NexFilm 严格遵循行业通用的 Adobe <code>.cube</code> 规范，支持 17×17×17、33×33×33 以及 65×65×65 晶格分辨率，底层采用硬件三线性插值实时计算。</li>\n</ul>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">严禁误用影视摄影机 Log 还原 LUT</div>\n    <div class=\"doc-callout-body\"><p>检查器中的 3D LUT 模块位于渲染管线的成片输出端，其输入数据为已经完成密度反相的正片空间。切勿直接套用专为数字摄影机（如 ARRI LogC、Sony S-Log3）设计的 Log-to-Rec709 转换 LUT，否则会导致严重的饱和度过载与色彩相位颠倒。</p></div>\n</div>"
+                },
+                {
+                    "id": "bw-darkroom-workflow",
+                    "heading": "纯粹银盐黑白暗房工作流实战",
+                    "content": "<p>对于黑白摄影创作者而言，NexFilm 提供了一套高度拟真传统暗房可变反差相纸的工作流：</p>\n<ol>\n<li><strong>进入工作台切换至 B&amp;W 模式</strong>：\n在检查器模式开关中点击 <strong>B&amp;W</strong>。底层管线将三通道直接并入单通道密度域，消除彩色色罩干扰，直方图自动切换为纯单色亮度分布。</li>\n<li><strong>界定胶片范围并自动反相</strong>：\n框定有效成像矩形，点击 <strong>Auto Invert</strong>。引擎依据底片测得的最小与最大密度解算出标准的黑白正片。</li>\n<li><strong>选择 Ilford MGFB 反差号数</strong>：\n在“印片胶片模拟”下拉菜单中，摄影师可直观模拟暗房放大机更换滤色片的效果：<ul>\n<li>若拍摄的是雨天、阴天或反差偏平的负片，直接挂载 <code>Ilford MGFB 3</code> 或 <code>4</code>，中灰阶调瞬间被收紧，高光亮斑跃然纸上；</li>\n<li>若拍摄的是烈日强光直射的场景，负片本身反差过大、暗部容易死黑，挂载 <code>Ilford MGFB 0</code> 或 <code>00</code>，深层暗部细节瞬间舒展释放。</li>\n</ul>\n</li>\n<li><strong>配合细节面板的银盐颗粒保护</strong>：\n在细节面板中将锐化蒙版调至 40 以上，既保留了相纸号数带来的强烈明暗冲击，又不会放大底片固有的银盐颗粒底噪。</li>\n</ol>"
+                },
+                {
+                    "id": "downstream-interop",
+                    "heading": "印片模拟与下游工作流的协同边界",
+                    "content": "<p>理解印片模拟与下游专业后期软件（如 DaVinci Resolve、Adobe Photoshop）的分工边界，是构建现代专业色彩管线的关键：</p>\n<ul>\n<li><strong>立足 NexFilm 独立完成出片</strong>：\n若工作流的最终目标是直接导出高质量图片并在社交网络分享、提交客户交付或送交艺术微喷打印，建议在 NexFilm 工作台内直接选定心仪的相纸或电影印片 LUT，并配合 16-bit TIFF 或 sRGB JPEG 完成全套调色闭环。</li>\n<li><strong>交接达芬奇或影视调色管线</strong>：\n若胶片素材后续需要进入 DaVinci Resolve 与数字电影摄影机素材共同混剪调色，<strong>建议在 NexFilm 中将印片胶片模拟设为“无内置 LUT”，并导出 16-bit Linear TIFF 或 Linear DNG</strong>。通过将纯粹的无偏色线性正片交付下游，调色师可在达芬奇内部的 ACES 或 DaVinci Wide Gamut 宽色域管线中自由施加 Kodak 2383 等电影打印 LUT，从而确保全片色彩管线的统一可控。</li>\n</ul>"
+                }
+            ]
+        },
+        {
+            "id": "export-and-contact-sheets",
+            "track": "user-manual",
+            "trackTitle": "工作台手册",
+            "trackOrder": 2,
+            "chapterOrder": 6,
+            "kicker": "02 / 工作台手册",
+            "title": "母带级导出、色彩空间管理与接触印样",
+            "subtitle": "六大格式决策矩阵、七大输出色彩空间 ICC 匹配、批量令牌重命名与物理拟真接触印样",
+            "readingTime": 13,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "format-decision-matrix",
+                    "heading": "六大导出格式决策对比与选型指南",
+                    "content": "<p>在暗房工作流中，导出是将工作台内的非破坏性调色参数与像素矩阵进行最终固化序列化的关键工序。NexFilm 拒绝粗暴的一刀切导出设定，针对互联网展示、出版印刷、专业档案保存以及影视工业后期协同，构建了涵盖 6 大核心文件格式（分属交付型与母带型）的专业导出矩阵。</p>\n<p>下表系统梳理了各导出格式的技术规格、数据线性度与典型应用场景：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>导出格式名称</th><th>位深度与编码</th><th>数据线性度</th><th>是否内嵌调色结果</th><th>下游推荐适用软件</th><th>文件体积与画质权衡</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>JPEG · 8-bit</strong></td><td>8-bit 整型，有损压缩</td><td>非线性显示空间（套用色彩空间伽马）</td><td>是（完整包含印片光、曲线、细节与相纸 LUT）</td><td>全平台浏览器、移动端相册、社交网络与即时通讯软件。</td><td>极小体积（通常 2–8 MB），质量滑块提供 40–100（默认 92），适合日常快速分发与客户样片预览。</td></tr>\n        <tr><td><strong>PNG · 16-bit</strong></td><td>16-bit 整型，无损压缩</td><td>非线性显示空间</td><td>是（完整包含所有调色结果）</td><td>专业图片查看器、网页归档与印前排版软件。</td><td>中等体积（约 30–70 MB），无损保留全部 16 位灰阶阶调，杜绝 JPEG 的 DCT 块状压缩伪影。</td></tr>\n        <tr><td><strong>TIFF · 8-bit</strong></td><td>8-bit 整型，无损压缩</td><td>非线性显示空间</td><td>是（完整包含所有调色结果）</td><td>传统印前制版系统、桌面出版与旧版图像处理工具。</td><td>适中体积，专为必须使用 TIFF 容器但受限于系统内存的旧版下游管线设计。</td></tr>\n        <tr><td><strong>TIFF · 16-bit</strong></td><td>16-bit 整型，无损压缩</td><td>非线性显示空间</td><td>是（完整包含所有调色结果）</td><td>Adobe Photoshop、Lightroom、Capture One 与艺术微喷打印软件。</td><td>较大体积（80–180 MB），专业母带交付与高质量画册印刷首选，保留最充沛的后期分层微调余量。</td></tr>\n        <tr><td><strong>TIFF · 16-bit linear</strong></td><td>16-bit 整型，无损压缩</td><td><strong>纯物理线性光空间</strong>（不套显示 Gamma）</td><td>是（包含反相与印片光，但剥离显示曲线）</td><td>DaVinci Resolve、Autodesk Flame、Nuke 影视合成软件。</td><td>专业影视交付格式。内嵌线性 ICC 配置文件，像素数值与物理透射光强成正比，供调色师在宽色域中继续精修。</td></tr>\n        <tr><td><strong>DNG · linear</strong></td><td>16-bit 线性浮点/整型 DNG</td><td><strong>纯物理线性光空间</strong></td><td>是（写成 LinearRaw 规范 DNG 容器）</td><td>Lightroom、Adobe Camera Raw、Photoshop。</td><td>将反相后的正片原样封入 Adobe LinearRaw 规范中，下游软件能够像读取原生数码 RAW 一样无损拉动高光与阴影。</td></tr>\n        <tr><td><strong>DNG · camera RAW</strong></td><td>原始相机 Bayer 马赛克数据</td><td>原始传感器线性数据</td><td><strong>否（完全不含任何调色与反相数据）</strong></td><td>所有兼容 Adobe DNG 标准的原始 RAW 解析工具。</td><td><strong>纯原始数据封包归档</strong>。将相机拍摄的原始未修改马赛克像素直封入 DNG，仅供原始档案异地备份。</td></tr>\n    </tbody>\n</table><div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">严防混淆线性 DNG 与 Camera RAW DNG</div>\n    <div class=\"doc-callout-body\"><p><strong>Linear DNG（线性 DNG）是经过 NexFilm 物理反相的成品</strong>：反相、印片光、局部校色与几何裁切均已完成，仅保留了无损线性动态；而 <strong>Camera RAW DNG 仅仅是原始底片素材的无损打包</strong>：它完全不包含任何调色、反相或裁切，输出色彩空间与输出锐化对其完全无效，且该选项仅在源文件本身为相机 RAW 时可用（扫描仪 TIFF 无法导出 Camera RAW DNG）。</p></div>\n</div>"
+                },
+                {
+                    "id": "color-spaces-and-icc",
+                    "heading": "七大输出色彩空间 ICC 选择与色域映射",
+                    "content": "<p>色彩空间决定了导出的像素数值如何映射到物理显示器或印刷油墨的光谱色彩范围中。NexFilm 严谨集成了覆盖消费级屏幕到顶级电影母带的 7 大标准输出色彩空间，并自动在文件头部内嵌标准 ICC 配置文件：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>色彩空间标识</th><th>标准全称与色域范围</th><th>推荐交付目标与匹配介质</th><th>使用注意事项与红线原则</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>sRGB</strong></td><td>sRGB IEC 61966-2.1（标准网络色域）</td><td>互联网网页发布、微信/小红书/Instagram 等社交网络分享、普通办公显示器。</td><td>最安全、兼容性最好的色域。所有未经色彩管理的设备均默认将其视为 sRGB，杜绝偏色现象。</td></tr>\n        <tr><td><strong>Display P3</strong></td><td>Apple Display P3（DCI-P3 广色域配对 D65）</td><td>MacBook Pro、iPhone、iPad 以及高端广色域 OLED/Mini-LED 显示设备。</td><td>相比 sRGB 能在绿色与红色方向呈现更生动浓郁的饱和度，非常适合苹果生态内的高清影集浏览。</td></tr>\n        <tr><td><strong>Adobe RGB (1998)</strong></td><td>Adobe RGB (1998)（专业广色域）</td><td>专业艺术微喷输出（Giclée Printing）、高阶画册印刷制版、传统专业摄影显示器。</td><td>能够完整覆盖大部分青色与蓝绿色印刷油墨色域，是印前数字暗房的行业金标准。</td></tr>\n        <tr><td><strong>ITU-R BT.2020</strong></td><td>Rec.2020（超高清电视色域）</td><td>4K/8K 超高清电视广播、HDR 视频工作流与下一代宽色域显示终端。</td><td>色域极其宽广，适合与未来现代影视制作管线接轨。</td></tr>\n        <tr><td><strong>ProPhoto RGB</strong></td><td>ProPhoto RGB / ROMM RGB（超广色域）</td><td>16-bit 格式终极存档、底片极限饱和度色彩保留、Photoshop 深度精修。</td><td>覆盖了 90% 以上的人眼可见光谱，能够无损容纳所有极端胶片染料色彩。<strong>严禁用于 8-bit JPEG</strong>。</td></tr>\n        <tr><td><strong>ACEScg</strong></td><td>ACEScg (AP1 色彩空间，D60 白点)</td><td>电影视觉特效（VFX）、CGI 资产合成与数字调色工作色彩空间。</td><td>影视工业数字中间件标准，适合无缝交付给 DaVinci Resolve 调色项目。</td></tr>\n        <tr><td><strong>ACES2065-1</strong></td><td>ACES2065-1 (AP0 超大色域，D60 白点)</td><td>电影艺术与科学学院（AMPAS）官方母带长期归档与多机构交换标准。</td><td>完全包络全可见光谱甚至包含部分虚数虚色坐标，专为长期不可替代资产保存而设。</td></tr>\n    </tbody>\n</table><div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">严禁在 8-bit JPEG 中强行套用超宽色域</div>\n    <div class=\"doc-callout-body\"><p>当导出格式选择为 8-bit JPEG 时，可用的亮度与色彩量化阶梯仅有微不足道的 256 级。如果强行选择 ProPhoto RGB 或 ACES 这类超宽色域，极其有限的 8 位整型数值将被强行拉伸以覆盖巨大的色域空间，必然会导致平滑渐变（如蓝天、肤色）发生触目惊心的<strong>色彩断层（Banding / Posterization）</strong>。导出 8-bit JPEG 时，务必严格搭配 <strong>sRGB</strong> 或 <strong>Display P3</strong>。</p></div>\n</div>"
+                },
+                {
+                    "id": "dimensions-and-sharpening",
+                    "heading": "几何缩放策略、画质保护与输出锐化",
+                    "content": "<p>在导出对话框的“尺寸”区域，摄影师可针对下游用途定制精确的几何分辨率策略：</p>\n<h3 id=\"1-原始尺寸\" class=\"scroll-mt-24\">1. 原始尺寸</h3>\n<p>直接按底层全分辨率流式渲染导出，保留相机传感器或扫描仪的原始像素矩阵，是制作高阶出版母带与大画幅微喷的必选配置。</p>\n<h3 id=\"2-指定长边\" class=\"scroll-mt-24\">2. 指定长边</h3>\n<p>输入长边目标像素数值，范围覆盖 <strong><code>256</code> 至 <code>32768</code> 像素</strong>。面板提供了 1024、2048、4096 与 8192 四组一键快捷预设（例如 2048 px 完美适配主流移动端社交媒体高清分享）。系统在缩放时严格按源片长宽比进行等比重采样，保证构图几何绝不形变。</p>\n<h3 id=\"3-禁止小图放大保护\" class=\"scroll-mt-24\">3. 禁止小图放大保护</h3>\n<p>界面提供了“允许放大”复选框，<strong>软件在默认状态下严格保持未勾选</strong>。这意味着当某张原片的原始长边像素本就小于所设目标长边时，系统将自动保持原片大小导出，绝不施加生硬的插值放大运算，从而杜绝插值模糊对胶片原生颗粒质感的破坏。</p>\n<h3 id=\"4-四档输出锐化矩阵\" class=\"scroll-mt-24\">4. 四档输出锐化矩阵</h3>\n<p>输出锐化是独立于工作台细节面板的二次微调工序，专门作用于图像重采样缩放后的最终交付像素上：</p>\n<ul>\n<li><strong>None（无锐化）</strong>：完全不进行重采样补偿锐化，适合追求纯粹银盐大颗粒质感或后续准备在 Photoshop 中手工精细打磨的画面。</li>\n<li><strong>Low（低锐化）</strong>：温和补偿轻微的下采样模糊，适合在 Retina 广色域高密度屏幕上浏览。</li>\n<li><strong>Standard（标准锐化，默认推荐）</strong>：经过大量测试优化的均衡锐化，赋予画面清澈坚挺的轮廓感，兼顾屏幕浏览与桌面喷墨打印。</li>\n<li><strong>High（高锐化）</strong>：强化高频边缘反差，专为大幅缩小至 1024 px 以下的微缩索引图或长边极小的移动端预览图设计。</li>\n</ul>"
+                },
+                {
+                    "id": "naming-tokens-and-conflicts",
+                    "heading": "批量命名令牌系统与文件重名策略",
+                    "content": "<p>批量导出数十张底片时，规范的文件命名是避免项目混乱的生命线。NexFilm 内置了基于令牌的智能文件名重构引擎，支持以下 6 个核心命名变量：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>命名令牌变量</th><th>变量提取来源</th><th>实际渲染范例</th><th>应用价值</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><code>{Roll}</code></td><td>胶卷元数据中的胶卷唯一标识或自定卷名。</td><td><code>Roll01</code>, <code>2024_Hokkaido</code></td><td>将胶卷归属明确锁死在文件名头部。</td></tr>\n        <tr><td><code>{Camera}</code></td><td>胶卷记录中填写的拍摄相机机身名称。</td><td><code>LeicaM6</code>, <code>Hasselblad503CW</code></td><td>便于按设备管理历史摄影作品。</td></tr>\n        <tr><td><code>{Film}</code></td><td>胶卷记录中填写的感光乳剂型号。</td><td><code>Portra400</code>, <code>Tri-X400</code></td><td>直观区分不同乳剂的色彩风格。</td></tr>\n        <tr><td><code>{Date}</code></td><td>导入时录入的拍摄日期或数字化日期。</td><td><code>2024-11-05</code>, <code>Undated</code></td><td>建立时间序列档案。</td></tr>\n        <tr><td><code>{Original}</code></td><td>扫描文件或相机 RAW 在磁盘上的原始主文件名。</td><td><code>DSC_0428</code>, <code>scan_frame01</code></td><td>保留与源片物理扫描资产的溯源关联。</td></tr>\n        <tr><td><code>{Seq}</code></td><td>三位补零的卷内自增序列序号。</td><td><code>001</code>, <code>002</code>, <code>036</code></td><td>保证多张导出文件在文件管理器中按序陈列。</td></tr>\n    </tbody>\n</table><p><strong>实用命名模板组合示例</strong>：</p>\n<ul>\n<li><code>{Roll}_{Seq}</code> → 渲染为 <code>Roll01_001.jpg</code>（经典标准模板，默认推荐）；</li>\n<li><code>{Date}_{Film}_{Camera}_{Seq}</code> → 渲染为 <code>2024-11-05_Portra400_LeicaM6_001.tif</code>（详尽档案库模板）；</li>\n<li><code>{Roll}_{Original}_{Seq}</code> → 渲染为 <code>2024_Tokyo_DSC_1024_001.png</code>（追溯原片模板）。</li>\n</ul>\n<p><strong>非法字符清洗机制</strong>：\n模板在生成过程中会自动清洗 <code>&lt; &gt; : &quot; / \\ | ? *</code> 以及 ASCII 控制字符（统一转换为下划线 <code>_</code>），并智能拦截 Windows 平台历史保留字（如 <code>CON</code>, <code>PRN</code>, <code>AUX</code>, <code>NUL</code>, <code>COM1</code>–<code>COM9</code>, <code>LPT1</code>–<code>LPT9</code>），自动在前端补加下划线，确保跨平台文件系统百分之百安全落盘。</p>\n<p><strong>文件重名冲突策略</strong>：\n当导出目标目录中已存在同名文件时，摄影师可选择三种确定性策略：</p>\n<ol>\n<li><strong>Keep both · add a suffix（保留两者，追加递增后缀，默认推荐）</strong>：自动追加 <code>_1</code>、<code>_2</code> 后缀，杜绝数据覆写损失；</li>\n<li><strong>Replace existing file（替换已有文件）</strong>：直接覆盖旧文件，适合重复导出同一批样片时的覆写更新；</li>\n<li><strong>Skip existing file（跳过已有文件）</strong>：跳过已存在的文件，仅导出新追加的画面。</li>\n</ol>\n<p>勾选对话框底部的 <strong>将胶卷、胶片、相机与日期写入 EXIF</strong> 复选框，系统会在文件编码时将元数据真实注入图像的标准 Exif 与 IPTC 标签中，使导出的成品无论流转到何处均完整携带原始胶卷信息。</p>"
+                },
+                {
+                    "id": "contact-sheet-generation",
+                    "heading": "接触印样物理拟真生成机理",
+                    "content": "<p>在传统暗房中，摄影师将整卷剪成数段的底片药膜面朝下直接紧压在 8×10 英寸感光相纸上，开灯进行短暂的一对一漫射曝光，显影出的微缩索引相纸被称为 <strong>接触印样</strong>。接触印样不仅是挑选底片的历史工具，更代表了胶片时代严谨纯正的暗房仪式感。</p>\n<p>NexFilm 在 <strong>历史胶卷记录→ 胶卷详情</strong> 视图中，提供了一键 <strong>导出接触印样</strong> 功能。软件配备了基于物理真实尺寸拟真的接触印样渲染引擎：</p>\n<h3 id=\"1-135-全画幅物理齿孔与条形码渲染\" class=\"scroll-mt-24\">1. 135 全画幅物理齿孔与条形码渲染</h3>\n<p>对于 135 胶卷，接触印样完全遵循 ISO 1007 国际几何规范排布：</p>\n<ul>\n<li>每行固定排布 6 帧画面，帧与帧之间保持真实的 2 毫米间距；</li>\n<li>上下片边绘制精确且连续的物理齿孔（KS 规约齿孔，严格按 4.75 毫米节距无缝贯穿整条胶卷，跨帧之间节奏完全均匀）；</li>\n<li>在片边精确模拟橙红色银盐字码，包含真实帧号、半格标记以及拟真的片边潜影条形码。</li>\n</ul>\n<h3 id=\"2-120-中画幅多画幅自适应与乳剂字码\" class=\"scroll-mt-24\">2. 120 中画幅多画幅自适应与乳剂字码</h3>\n<p>针对 120 胶卷没有齿孔的物理特性，引擎自动检测其长宽比并智能调整排布网格：</p>\n<ul>\n<li><code>6x4.5</code>（竖向构图）：每行排布 4 帧；</li>\n<li><code>6x6</code>（正方形）：每行排布 4 帧；</li>\n<li><code>6x7</code>：每行排布 3 帧；</li>\n<li><code>6x9</code> 与 <code>6x12</code>：每行排布 2 帧；</li>\n<li><code>6x17</code> 宽幅全景：每行排布 1 帧。</li>\n<li>120 片边上方渲染大写的胶卷型号抬头、帧号以及带有指向箭头的标准方向标记，再现纯正中画幅片边魅力。</li>\n</ul>\n<h3 id=\"3-印样版式-底色与未反相状态标记\" class=\"scroll-mt-24\">3. 印样版式、底色与未反相状态标记</h3>\n<ul>\n<li><strong>画册级版面设计</strong>：整张接触印样以微暖的哑光暗房相纸色（<code>#E9E9E7</code>）为底衬，底片条呈纯黑色，底部以高精度矢量路径绘制官方 <strong>NEXFILM</strong> 品牌锁扣标识，并清晰列明胶卷编号、相机型号、乳剂规格与处理日期。</li>\n<li><strong>未反相画面的优雅处理</strong>：若某卷底片中部分画面尚未在工作台中完成反相调色，引擎在绘制接触印样时，绝不会突兀地将未反相的原始负片绘制上去破坏整版美感，而是在该格子上以沉稳的中性灰底色呈现优雅的 <strong>NOT DEVELOPED</strong> 暗房提示字样，既保证了整张印样的工整雅致，又清晰提示用户尚有底片需要补修。</li>\n</ul>\n<p>生成的接触印样自动以 <code>contact_sheet_{roll_id}_{camera}.jpg</code> 命名保存至指定目录，是向客户展示整卷成片或在社交平台上呈现作品集的绝佳暗房载体。</p>"
+                },
+                {
+                    "id": "batch-export-queue",
+                    "heading": "整卷后台导出与多任务队列保障",
+                    "content": "<p>无论是导出包含几十张 16-bit TIFF 的整卷母带，还是并发生成大幅面接触印样，NexFilm 的导出作业全部由底层的独立并发队列接管：</p>\n<ul>\n<li><strong>导出完整性预检</strong>：点击导出后，系统在启动耗时运算前会执行毫秒级预检：快速验证所有源文件的磁盘可读性，并检查每张画面是否具有合法的反相配方。若检测到脱机文件，系统将立即暂停并弹出明细清单，绝不会在导出数小时后才报错中断。</li>\n<li><strong>后台流式执行与多线程加速</strong>：导出线程池充分调动现代多核 CPU 的计算潜能，同时将文件 I/O 限制在安全带宽内，防止机械硬盘出现磁头剧烈寻道卡顿。导出期间，摄影师可毫无阻碍地继续在工作台精修其他底片。</li>\n<li><strong>暗房试片黄金法则</strong>：在正式执行耗费磁盘空间与时间的整卷母带导出前，<strong>强烈建议先单独勾选一张光影最丰富的代表性画面导出试片</strong>，在目标显示器或校色软件中复核其影调与锐度，确认完全达到预期后再启动整卷批处理。</li>\n</ul>"
+                }
+            ]
+        },
+        {
+            "id": "troubleshooting-and-appendix",
+            "track": "user-manual",
+            "trackTitle": "工作台手册",
+            "trackOrder": 2,
+            "chapterOrder": 7,
+            "kicker": "02 / 工作台手册",
+            "title": "实战故障排查树、全局快捷键、数据备份与开源附录",
+            "subtitle": "系统化排障决断树，全套真实快捷键，跨平台数据存储目录与开源许可致谢",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "troubleshooting",
+                "appendix"
+            ],
+            "sections": [
+                {
+                    "id": "tone-and-color-troubleshooting",
+                    "heading": "影调与色彩异常系统排障树",
+                    "content": "<p>在胶片数字化暗房中，反相异常往往并非软件程序本身的逻辑缺陷，而是由前期光学翻拍、片基采样污染或边界框选失误所致。建立系统化的「表象症状 → 物理根因诊断 → 逐步排除路径」思维模型，能够帮助摄影师在几秒钟内定位问题核心。</p>\n<p>下表系统梳理了最常见的影调与偏色异常排障决断树：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>观察到的异常症状</th><th>物理根因诊断与排查方向</th><th>标准逐步修复路径</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>反相后整张正片发灰、发暗、极度缺乏对比度</strong></td><td>① 胶片范围框入了外围 100% 透射的强光观片灯板；<br>② 片基采样点不慎点选到了已曝光画面区域；<br>③ 底片本身在拍摄冲洗时严重欠曝，缺乏有效银盐密度跨度。</td><td>1. 进入工具栏的<strong>设置胶片范围</strong>，检查四边框线，将白色透光底板与齿孔完全排除在框线外；<br>2. 重新点击<strong>Auto Invert</strong>；<br>3. 在<strong>密度范围</strong>面板中微调 Master D-Min 与 Master D-Max 端点；<br>4. 若画面本身是雾天或夜景，适度的平缓反差属于正常物理现象，无需强行拉爆黑白场。</td></tr>\n        <tr><td><strong>画面出现顽固整体偏色，且白平衡吸管越调越脏</strong></td><td>① 标定片基时选取的片边存在划痕、灰尘或指纹污染；<br>② 翻拍背光源显色指数过低（Ra &lt; 95），光谱连续性不足；<br>③ 扫描仪驱动预先进行了不可逆的非线性自动色阶裁切。</td><td>1. 在胶片边缘寻找纯净、均匀透明的未曝光区域，重新进行<strong>标定片头片基</strong>；<br>2. 检查光源显色性，在<strong>硬件校正</strong>中核对背光光谱分布；<br>3. 在工作台<strong>印片灯光</strong>面板中，参考互补法则微调 Red/Green/Blue 滑块，先拉直基准再吸取中性灰。</td></tr>\n        <tr><td><strong>整卷批处理后，绝大多数正常，唯独个别画面跳色严重</strong></td><td>① 该画面在拍摄时被翻拍架微小位移带偏，导致胶片范围压住了边缘灯板；<br>② 该画面内容为大面积单色主体（如浓绿草地或深蓝大海），触发了单帧通道跨度过度保护；<br>③ 标定用的片头片基帧被误当作普通照片参与了批处理。</td><td>1. 单独选定该跳色画面，重新微调其<strong>胶片范围</strong>并保存；<br>2. 对该画面单独执行<strong>Auto Invert</strong>；<br>3. 若系单色题材，利用<strong>印片灯光</strong>单独补偿该帧的曝光偏移；<br>4. 确认片头参考帧带有标定角标，不参与普通画面渲染。</td></tr>\n        <tr><td><strong>正片暗部反差严重丢失，呈现脏灰发雾感</strong></td><td>① 胶片范围框入了扫描仪片夹或遮光板的死黑物理边缘；<br>② 镜头翻拍时未佩戴遮光罩，产生强烈的机内漫反射与眩光灰雾。</td><td>1. 收紧胶片范围，将片夹完全剔除；<br>2. 在细节面板中适当增加<strong>去朦胧</strong>滑块以压制漫反射灰雾。</td></tr>\n    </tbody>\n</table><div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">真实低反差与算法错误的区别</div>\n    <div class=\"doc-callout-body\"><p>如果拍摄底片本身记录的是清晨大雾、阴雨密云或昏暗室内，画面物理直方图本身就不具备纯白高光或深邃纯黑。NexFilm 的物理管线坚守真实还原，绝不会为了迎合所谓的“通透感”而盲目强行将直方图两端死死顶死。摄影师应当允许真实的低反差存在，在需要艺术强化时再通过“曲线”面板按需调整。</p></div>\n</div>"
+                },
+                {
+                    "id": "decoding-and-performance",
+                    "heading": "文件解码与性能排障",
+                    "content": "<p>针对数字资产导入与实时渲染中可能遇到的技术瓶颈，处理建议如下：</p>\n<h3 id=\"1-相机-raw-或哈苏-fff-文件导入报错或解码失败\" class=\"scroll-mt-24\">1. 相机 RAW 或哈苏 .fff 文件导入报错或解码失败</h3>\n<ul>\n<li><strong>检查扩展名真实性</strong>：某些第三方软件转存的 RAW 可能会伪造扩展名，确保文件由相机或扫描仪原生生成。</li>\n<li><strong>Nikon Z8 / Z9 高效率压缩 NEF 限制</strong>：如前所述，内置 LibRaw 暂不支持 <code>HE</code> 与 <code>HE*</code> 编码。解决途径为在相机机内改用常规无损压缩重新翻拍，或使用官方免费的 Adobe DNG Converter 批量转为标准 DNG。</li>\n<li><strong>哈苏 Flextight <code>.fff</code> 确认</strong>：自 v1.1.0 起已原生支持扫描仪 TIFF 解码管线，无需再行修改设备标识符字符串。若遇报错，检查源文件是否在 FlexColor 中保存为非标准分块格式。</li>\n</ul>\n<h3 id=\"2-超大扫描仪-tiff-数百兆至数-gb-内存占用与卡顿\" class=\"scroll-mt-24\">2. 超大扫描仪 TIFF（数百兆至数 GB）内存占用与卡顿</h3>\n<ul>\n<li>扫描 8×10 大画幅生成的 16-bit TIFF 往往达到数 GB 级别。NexFilm 采用按行流式切片读取技术，在进入工作台时仅加载 2560 px 有界代理。若系统在导入阶段发生偶发卡顿，请确认系统虚拟内存页面文件（Swap/Pagefile）至少预留了 16 GB 磁盘空余空间。</li>\n</ul>\n<h3 id=\"3-工作台预览与最终全尺寸导出存在微小视觉差异的原因\" class=\"scroll-mt-24\">3. 工作台预览与最终全尺寸导出存在微小视觉差异的原因</h3>\n<ul>\n<li><strong>有界代理与全分辨率流式解算的分工</strong>：工作台预览实时运行在长边 <code>2560 px</code> 的高质量有界代理图上，而导出则从磁盘拉取原始高分辨率矩阵进行全图计算。</li>\n<li><strong>锐度与颗粒微观表现</strong>：虽然细节面板的全部锐化与清晰度半径均以长边 2560 px 严格等比换算，但在宏观上保持了完全相同的相对锐度；但在极高倍率放大下，数千万像素原始文件的微观银盐颗粒分布在抗锯齿重采样下会显现出更丰富的细节。正式批量输出前，先导出一张具有代表性的画面进行试片，是暗房操作的标准范式。</li>\n</ul>\n<h3 id=\"4-从-v1-0-2-升级至-v1-1-0-后缩略图变黑或清空\" class=\"scroll-mt-24\">4. 从 v1.0.2 升级至 v1.1.0 后缩略图变黑或清空</h3>\n<ul>\n<li>在 v1.1.0 中，底层物理密度反相模型进行了重构升级。为防止旧版本中依据错误物理公式渲染的陈旧缩略图误导用户，数据库迁移程序在首次启动时会安全清空旧配方缩略图。用户只需进入胶卷，点击一次 <strong>自动反相</strong> 或 <strong>整卷批处理</strong>，系统即可瞬间按全新物理管线重建所有缩略图。</li>\n</ul>"
+                },
+                {
+                    "id": "shortcuts-and-gestures",
+                    "heading": "全局快捷键与鼠标手势全表",
+                    "content": "<p>为保障高强度暗房作业的流畅性，NexFilm 精简并锁定了全局快捷键系统。软件<strong>严格拒绝编造未经实现的虚假热键</strong>，全系统真实受支持的 9 项核心快捷键与手势如下表所示：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>按键与手势组合</th><th>具体触发功能</th><th>物理生效上下文与约束条件</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><kbd>⌘</kbd>+<kbd>Z</kbd>（Windows: <kbd>Ctrl</kbd>+<kbd>Z</kbd>）</td><td><strong>撤销上一步操作</strong></td><td>全局有效。当光标聚焦于文字输入框（如修改备注或输入数值）时，优先响应文本撤销，不拦截系统级编辑。</td></tr>\n        <tr><td><kbd>Shift</kbd>+<kbd>⌘</kbd>+<kbd>Z</kbd>（Windows: <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> 或 <kbd>Ctrl</kbd>+<kbd>Y</kbd>）</td><td><strong>恢复重做上一步操作</strong></td><td>全局有效。在文本框外部时，恢复被撤销的调色或几何改动。</td></tr>\n        <tr><td><kbd>←</kbd> / <kbd>→</kbd> 方向键</td><td><strong>切换上一张 / 下一张底片画面</strong></td><td>在工作台视图中且底片条可见时生效，切帧时保持画布当前缩放倍率不变。</td></tr>\n        <tr><td><kbd>Enter</kbd>（回车键）</td><td><strong>确认裁切或确认数值输入</strong></td><td>在几何裁切编辑状态下确认裁切范围；在滑块数值输入框中确认保存新值。</td></tr>\n        <tr><td><kbd>Esc</kbd>（退出键）</td><td><strong>关闭对话框、取消菜单或退出编辑</strong></td><td>在任何弹窗对话框打开时关闭窗口；在数值输入框中放弃修改恢复原值。</td></tr>\n        <tr><td>按住 <kbd>Space</kbd>（空格键）+ 鼠标拖拽</td><td><strong>平移交互画布</strong></td><td>在工作台主画布区域已载入画面时生效，支持任意方向平滑推移视野。</td></tr>\n        <tr><td>鼠标滚轮（画布区域 / 底片条区域）</td><td><strong>以指针中心无级缩放 / 横向滚动底片条</strong></td><td>指针在主画布上时，以当前光标像素坐标为锚点进行缩放；在底片条上时横向滚动画面序列。</td></tr>\n        <tr><td>鼠标滚轮（检查器滑块微调）</td><td><strong>高精度细步长微调滑块数值</strong></td><td><strong>防误触安全机制</strong>：必须先用鼠标左键单机激活目标滑块，之后滚动滚轮才会微调数值。</td></tr>\n        <tr><td>按住 <kbd>Alt</kbd> 键 + 拖拽锐化滑块</td><td><strong>实时切换灰度信号与二值边缘蒙版</strong></td><td>在细节面板拖动数量/半径/细节时显示纯灰度边缘信号；拖动蒙版时显示黑白遮罩分布。松开按键即刻复原。</td></tr>\n    </tbody>\n</table>"
+                },
+                {
+                    "id": "data-storage-and-backup",
+                    "heading": "跨平台数据存储目录与备份迁移方案",
+                    "content": "<p>理解 NexFilm 在不同操作系统下的持久化存储架构，对于保障长期胶卷资产的安全至关重要：</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>运行平台与版本类型</th><th>绝对数据存储目录物理路径</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>Windows 正式版</strong></td><td><code>%APPDATA%\\NexFilm Engine\\</code>（通常展开为 <code>C:\\Users\\&lt;用户名&gt;\\AppData\\Roaming\\NexFilm Engine\\</code>）</td></tr>\n        <tr><td><strong>macOS 正式版</strong></td><td><code>~/Library/Application Support/NexFilm Engine/</code></td></tr>\n        <tr><td><strong>开发与 Debug 构建</strong></td><td>本地 Git 仓库根目录工作区</td></tr>\n    </tbody>\n</table><h3 id=\"核心数据库与镜像文件职责\" class=\"scroll-mt-24\">核心数据库与镜像文件职责</h3>\n<ul>\n<li><code>nexfilm_user.db</code>：应用的主 SQLite 数据库。存储了全部胶卷元数据、拍摄机身与乳剂字典、画面索引树、历史调色参数栈、输入域色彩科学记录以及长边 2560 px 有界代理缓存。该数据库<strong>不包含完整的原始图片文件副本</strong>，只记录其磁盘物理路径。</li>\n<li><code>rolls.json</code>：用于向后兼容与外部快速索引的镜像文件，在数据库提交时自动同步写入。</li>\n</ul>\n<h3 id=\"黄金备份与迁移准则\" class=\"scroll-mt-24\">黄金备份与迁移准则</h3>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">备份必须遵循“源片 + 数据库”双轨制</div>\n    <div class=\"doc-callout-body\"><p>由于 NexFilm 坚决不复制原始大文件，<strong>仅备份 <code>nexfilm_user.db</code> 无法在原片丢失后恢复图像</strong>；反之，仅备份原图而丢失了数据库，则在重新导入后必须重新手动标定与调色。\n正确的备份策略为：</p>\n<ol>\n<li>定期备份存储原始 RAW/TIFF 的物理磁盘目录；</li>\n<li>同步备份上述平台对应的数据目录（特别是 <code>nexfilm_user.db</code>）。\n在更换电脑迁移数据时，只需将原图与数据目录拷贝至新设备相同路径下即可无缝继续工作。</li>\n</ol></div>\n</div>"
+                },
+                {
+                    "id": "known-limitations",
+                    "heading": "已知限制诚实披露清单",
+                    "content": "<p>作为秉承科学态度研发的开源软件，NexFilm 诚实披露当前版本存在的已知技术边界：</p>\n<ol>\n<li><strong>未购买商业机构代码签名证书</strong>：当前 Windows 安装包与 macOS <code>.dmg</code> 磁盘镜像均由开源社区通过自动化 CI 构建生成，未向商业认证机构付费购买昂贵的企业级代码签名证书，macOS 安装包尚未完成 Apple 官方公证。初次启动需要用户在系统安全设置中单次放行。</li>\n<li><em><em>Nikon Z8 / Z9 HE/HE</em> 高效率压缩 NEF 解码限制</em>*：受限于底层开源解码器支持进度，目前尚无法原生读取高效率压缩格式，需使用 Adobe DNG Converter 转码。</li>\n<li><strong>老旧非主流扫描仪专有格式兼容性</strong>：全球各类中古扫描仪厂商众多，极少数老式专有格式（如某些罕见工业分光仪的专有格式）仍在持续扩展测试适配中。</li>\n<li><strong>暂未提供官方预编译的 Linux GUI 发行版</strong>：虽然核心 Rust 引擎与色彩管线具备完备的跨平台编译能力，但当前阶段官方发布的安装包主要聚焦于 Windows 与 macOS。</li>\n<li><strong>源片只读引用机制下的脱机敏感性</strong>：移动硬盘拔出或文件夹重命名会导致画面暂时脱机，需通过“定位文件”功能重新绑定路径。</li>\n<li><strong>硬件校正工作流的实验性状态</strong>：顶栏中的“硬件校正”模块涉及高难度光谱拟合算法，目前仍定性为实验性功能，其交互与参数模型在未来版本中仍可能持续演进。</li>\n</ol>"
+                },
+                {
+                    "id": "license-feedback-acknowledgments",
+                    "heading": "开源许可、问题反馈与理论致谢",
+                    "content": "<h3 id=\"软件开源许可证\" class=\"scroll-mt-24\">软件开源许可证</h3>\n<p>NexFilm Engine 遵循 <strong>GNU General Public License v3.0 only（GPL-3.0-only）</strong> 自由软件许可证发布。软件的全部前端代码、Rust 核心引擎、暗房着色器以及编译构建脚本均已在 GitHub 开源。用户享有自由运行、研读、修改与再分发的权利，但任何包含或衍生自本软件代码的二次分发作品，必须依据相同许可证开放完整源代码。</p>\n<h3 id=\"规范的问题反馈模板\" class=\"scroll-mt-24\">规范的问题反馈模板</h3>\n<p>如果在实际使用中遇到程序崩溃、解码异常或界面渲染故障，欢迎前往官方 GitHub 仓库提交 Issue。为了使维护者能够迅速复现并修复问题，请务必在提交时包含以下要素：</p>\n<ul>\n<li><strong>运行环境信息</strong>：操作系统版本（如 Windows 11 23H2、macOS Sonoma 14.5 Apple Silicon）以及当前运行的 NexFilm 版本号（如 v1.1.0）；</li>\n<li><strong>设备与素材类型</strong>：拍摄相机型号、翻拍微距镜头、背光光源品牌型号、源文件扩展名与精确像素尺寸；</li>\n<li><strong>清晰确切的复现步骤</strong>：从导入、框选到调色的完整操作流程描述，以及控制台捕获的完整错误日志堆栈。</li>\n<li><strong>隐私保护原则</strong>：请勿在公开 Issue 中上传包含家庭、个人敏感信息的高分辨率原片。如需提供样本排查，可提供翻拍色卡或无敏感人物的局部切片。</li>\n</ul>\n<h3 id=\"理论致谢与社区贡献\" class=\"scroll-mt-24\">理论致谢与社区贡献</h3>\n<p>NexFilm 能够摆脱市面上传统软件对暴利商业预设的依赖，走向坚实的物理与数学可解释暗房，离不开开源社区的无私智慧。开发团队在此郑重致谢：</p>\n<ul>\n<li>感谢知乎学者 <strong>@黄昊Haosky</strong> 与 <strong>@V777</strong> 在彩色负片无损去色罩理论、光谱重叠物理模型与光学密度对数反相领域的原创性学术探索与无私知识共享，他们的理论推导为 NexFilm 的核心管线设计提供了极为宝贵的数理灵感；</li>\n<li>感谢所有为项目提交缺陷报告、跨平台构建脚本以及翻译建议的胶片摄影师与暗房工作者。</li>\n</ul>"
+                }
+            ]
+        },
+        {
+            "id": "three-mathematical-domains",
+            "track": "color-science",
+            "trackTitle": "色彩科学",
+            "trackOrder": 3,
+            "chapterOrder": 1,
+            "kicker": "Color Science 01 / 数学域解耦",
+            "title": "负片反相的三大数学域",
+            "subtitle": "透射率域、光学密度域与正片输出域的严谨物理推导与非线性不可交换性定理。",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "color-science"
+            ],
+            "sections": [
+                {
+                    "id": "transmittance-domain-pre-log",
+                    "heading": "透射率域：对数变换前的光电响应与设备基底",
+                    "content": "<p>在胶片数字化工程中，相机传感器或扫描仪线阵电荷耦合器件接收到的物理量并非密度，而是通过胶片乳剂层后到达感光单元的光子通量。透射率域特指对数变换之前、与物理光强呈正比例关系的线性光域。此阶段的目标是获取具有明确物理意义、严格位于正值区间的相对透射率向量。</p>\n<p>假定入射胶片平面的开场照明强度为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>open</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{open}}(\\lambda)</annotation></semantics></math></span>，穿透显影后底片的光强为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>transmitted</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{transmitted}}(\\lambda)</annotation></semantics></math></span>，传感器内部暗电流与环境杂散光通量为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{dark}}(\\lambda)</annotation></semantics></math></span>，则波长 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>λ</mi></mrow><annotation encoding=\"application/x-tex\">\\lambda</annotation></semantics></math></span> 处的相对透射率定义为：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mi>T</mi><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo><mo>=</mo><mfrac><mrow><msub><mi>I</mi><mtext>transmitted</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo><mo>−</mo><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo></mrow><mrow><msub><mi>I</mi><mtext>open</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo><mo>−</mo><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo></mrow></mfrac></mrow><annotation encoding=\"application/x-tex\">T(\\lambda) = \\frac{I_{\\text{transmitted}}(\\lambda) - I_{\\text{dark}}(\\lambda)}{I_{\\text{open}}(\\lambda) - I_{\\text{dark}}(\\lambda)}</annotation></semantics></math></span></p>\n<p>在离散多通道采集设备中，传感器通道响应是透射光谱与滤光片光谱透过率及传感器量子效率的积分。令设备三通道原生输出为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>device</mtext></msub><mo>=</mo><mo stretchy=\"false\">[</mo><mi>R</mi><mo separator=\"true\">,</mo><mi>G</mi><mo separator=\"true\">,</mo><mi>B</mi><msup><mo stretchy=\"false\">]</mo><mi>T</mi></msup></mrow><annotation encoding=\"application/x-tex\">I_{\\text{device}} = [R, G, B]^T</annotation></semantics></math></span>。在透射率域内，所有物理运算必须严格保持光子通量的线性叠加性：</p>\n<ol>\n<li><strong>暗电平与暗场扣除</strong>：减去传感器读出热噪声与光机腔体内部杂散反射，确保完全无光透射时的物理读数为零。</li>\n<li><strong>平场增益归一化</strong>：通过无底片透光的背光场测量消除透镜边缘余弦四次方照度衰减及灯板各区域色温漂移。</li>\n<li><strong>设备通道分离</strong>：消除相机拜尔滤色片或扫描仪分光棱镜在三原色之间的光谱重叠，使得分离后的通道能够准确衡量底片青色、品红与黄色染料层的光吸收。</li>\n</ol>\n<p>如果采集端未施加硬件级的通道分离校准，则直接进入后续计算会导致各染料层的吸收信息严重混叠。透射率数据必须钳位在微小正实数门限 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>ϵ</mi></mrow><annotation encoding=\"application/x-tex\">\\epsilon</annotation></semantics></math></span> 以上，以防止后续对数运算出现奇异值：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>T</mi><mtext>valid</mtext></msub><mo>=</mo><mi>max</mi><mo>⁡</mo><mo stretchy=\"false\">(</mo><mi>T</mi><mo separator=\"true\">,</mo><mi>ϵ</mi><mo stretchy=\"false\">)</mo><mo separator=\"true\">,</mo><mspace width=\"1em\"/><mi>ϵ</mi><mo>=</mo><mn>1.0</mn><mo>×</mo><msup><mn>10</mn><mrow><mo>−</mo><mn>6</mn></mrow></msup></mrow><annotation encoding=\"application/x-tex\">T_{\\text{valid}} = \\max(T, \\epsilon), \\quad \\epsilon = 1.0 \\times 10^{-6}</annotation></semantics></math></span></p>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">重要</div>\n    <div class=\"doc-callout-body\"><p>透射率域的数据本质是辐射度量学物理量。任何属于显示器特性的伽马编码、非线性对比度曲线或带有感知权重的色调映射，均严禁在此阶段介入。</p></div>\n</div>"
+                },
+                {
+                    "id": "optical-density-domain-post-log",
+                    "heading": "光学密度域：对数变换后的吸收叠加与片基扣除",
+                    "content": "<p>透射率信号经过常用对数变换后，进入光学密度域。根据比尔-朗伯吸收定律，平行单色光穿过均匀吸收介质时，光强呈指数级衰减。取对数运算将乘性衰减转换为加性吸收，从而为胶片三层染料吸收分析提供了线性代数基础。</p>\n<p>未校正的原始采集密度向量 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>raw</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{raw}}</annotation></semantics></math></span> 定义为相对透射率倒数的常用对数：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>D</mi><mtext>raw</mtext></msub><mo>=</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>T</mi><mtext>valid</mtext></msub><mo stretchy=\"false\">)</mo><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>T</mi><mi>R</mi></msub><mo stretchy=\"false\">)</mo></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>T</mi><mi>G</mi></msub><mo stretchy=\"false\">)</mo></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>T</mi><mi>B</mi></msub><mo stretchy=\"false\">)</mo></mrow></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow></mrow><annotation encoding=\"application/x-tex\">D_{\\text{raw}} = -\\log_{10}(T_{\\text{valid}}) = \\begin{bmatrix} -\\log_{10}(T_R) \\ -\\log_{10}(T_G) \\ -\\log_{10}(T_B) \\end{bmatrix}</annotation></semantics></math></span></p>\n<p>在彩色负片工艺中，未经曝光但经过标准 C-41 工艺显影的胶卷边缘存在由未反应的彩色成色剂构成的橙黄色基底，即橙色色罩。该基底引入了显著的恒定偏置。设同卷同批次测得的未曝光片基密度为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>base</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{base}}</annotation></semantics></math></span>，则净光学密度 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>net</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{net}}</annotation></semantics></math></span> 为原始采集密度与片基密度的逐通道代数差：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>D</mi><mtext>net</mtext></msub><mo>=</mo><msub><mi>D</mi><mtext>raw</mtext></msub><mo>−</mo><msub><mi>D</mi><mtext>base</mtext></msub><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msub><mi>D</mi><mrow><mtext>raw</mtext><mo separator=\"true\">,</mo><mi>R</mi></mrow></msub><mo>−</mo><msub><mi>D</mi><mrow><mtext>base</mtext><mo separator=\"true\">,</mo><mi>R</mi></mrow></msub></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msub><mi>D</mi><mrow><mtext>raw</mtext><mo separator=\"true\">,</mo><mi>G</mi></mrow></msub><mo>−</mo><msub><mi>D</mi><mrow><mtext>base</mtext><mo separator=\"true\">,</mo><mi>G</mi></mrow></msub></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msub><mi>D</mi><mrow><mtext>raw</mtext><mo separator=\"true\">,</mo><mi>B</mi></mrow></msub><mo>−</mo><msub><mi>D</mi><mrow><mtext>base</mtext><mo separator=\"true\">,</mo><mi>B</mi></mrow></msub></mrow></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow></mrow><annotation encoding=\"application/x-tex\">D_{\\text{net}} = D_{\\text{raw}} - D_{\\text{base}} = \\begin{bmatrix} D_{\\text{raw}, R} - D_{\\text{base}, R} \\ D_{\\text{raw}, G} - D_{\\text{base}, G} \\ D_{\\text{raw}, B} - D_{\\text{base}, B} \\end{bmatrix}</annotation></semantics></math></span></p>\n<p>在净光学密度域内，负片的显影产物与原始景物曝光量呈现出高度规律的反相响应。若胶片乳剂未进入饱和曝光肩部或严重欠曝趾部，净密度向量与感光卤化银晶体受光量 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>E</mi></mrow><annotation encoding=\"application/x-tex\">E</annotation></semantics></math></span> 的对数满足经典 Hurter-Driffield 关系：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>D</mi><mrow><mtext>net</mtext><mo separator=\"true\">,</mo><mi>c</mi></mrow></msub><mo>≈</mo><msub><mi>γ</mi><mi>c</mi></msub><mo>⋅</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>E</mi><mi>c</mi></msub><mo stretchy=\"false\">)</mo><mo>+</mo><msub><mi>C</mi><mi>c</mi></msub><mo separator=\"true\">,</mo><mspace width=\"1em\"/><mi>c</mi><mo>∈</mo><mo stretchy=\"false\">{</mo><mi>R</mi><mo separator=\"true\">,</mo><mi>G</mi><mo separator=\"true\">,</mo><mi>B</mi><mo stretchy=\"false\">}</mo></mrow><annotation encoding=\"application/x-tex\">D_{\\text{net}, c} \\approx \\gamma_c \\cdot \\log_{10}(E_c) + C_c, \\quad c \\in {R, G, B}</annotation></semantics></math></span></p>\n<p>其中 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>γ</mi><mi>c</mi></msub></mrow><annotation encoding=\"application/x-tex\">\\gamma_c</annotation></semantics></math></span> 为该染料层的显影反差系数。在光学密度域中，暗房工艺的核心操作得以在简单的代数加减法中完成：</p>\n<table class=\"doc-table\">\n<thead>\n<tr>\n<th>密度域核心运算</th>\n<th>对应物理现象与暗房操作</th>\n<th>运算数学表达式</th>\n</tr>\n</thead>\n<tbody><tr>\n<td>片基密度扣除</td>\n<td>消除片基聚酯/三醋酸片基与未曝光橙色色罩吸收</td>\n<td><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>net</mtext></msub><mo>=</mo><msub><mi>D</mi><mtext>raw</mtext></msub><mo>−</mo><msub><mi>D</mi><mtext>base</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{net}} = D_{\\text{raw}} - D_{\\text{base}}</annotation></semantics></math></span></td>\n</tr>\n<tr>\n<td>印片光对数增益</td>\n<td>模拟光学放大机色头红绿蓝加色/减色滤镜调节</td>\n<td><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>graded</mtext></msub><mo>=</mo><msub><mi>D</mi><mtext>net</mtext></msub><mo>+</mo><mi mathvariant=\"normal\">Δ</mi><msub><mi>P</mi><mtext>light</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{graded}} = D_{\\text{net}} + \\Delta P_{\\text{light}}</annotation></semantics></math></span></td>\n</tr>\n<tr>\n<td>密度动态范围缩放</td>\n<td>将胶片记录的高反差密度映射至显示参考窗口</td>\n<td><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>norm</mtext></msub><mo>=</mo><mo stretchy=\"false\">(</mo><msub><mi>D</mi><mtext>high</mtext></msub><mo>−</mo><mi>D</mi><mo stretchy=\"false\">)</mo><mi mathvariant=\"normal\">/</mi><mo stretchy=\"false\">(</mo><msub><mi>D</mi><mtext>high</mtext></msub><mo>−</mo><msub><mi>D</mi><mtext>low</mtext></msub><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">D_{\\text{norm}} = (D_{\\text{high}} - D) / (D_{\\text{high}} - D_{\\text{low}})</annotation></semantics></math></span></td>\n</tr>\n<tr>\n<td>染料串扰去耦合</td>\n<td>校正品红染料副吸收导致的高密度区域偏青发暗</td>\n<td><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>calibrated</mtext></msub><mo>=</mo><msub><mi>M</mi><mtext>crosstalk</mtext></msub><mo>⋅</mo><msub><mi>D</mi><mtext>net</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{calibrated}} = M_{\\text{crosstalk}} \\cdot D_{\\text{net}}</annotation></semantics></math></span></td>\n</tr>\n</tbody></table>"
+                },
+                {
+                    "id": "positive-print-and-output-domain",
+                    "heading": "正片与输出域：从光学密度到工作色域与显示呈现",
+                    "content": "<p>经过片基扣除与印片光调整后的胶片净密度，依然属于物理吸收测量空间，而不是适合人眼观看或进行数字艺术创作的正片图像。正片与输出域的目标，是将经过反相映射后的相对曝光量转换到具有严格色度学定义的线性工作色彩空间，并最终通过色调映射输出给目标设备。</p>\n<p>NexFilm 引擎采用线性 ProPhoto RGB 作为统一的内部正片工作空间。将归一化后的正片光强信号映射到该空间后，系统在此基底上展开后续的调色与交付处理：</p>\n<ol>\n<li><strong>工作空间线性化</strong>：将归一化对数密度转化为正片线性相对曝光 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>E</mi><mtext>pos</mtext></msub><mo>=</mo><msup><mn>10</mn><mrow><mo>−</mo><mi>α</mi><mo>⋅</mo><msub><mi>D</mi><mtext>graded</mtext></msub></mrow></msup></mrow><annotation encoding=\"application/x-tex\">E_{\\text{pos}} = 10^{-\\alpha \\cdot D_{\\text{graded}}}</annotation></semantics></math></span>，使得正片信号具备与真实物理场景一致的辐射线性特性。</li>\n<li><strong>分通道与合成色调曲线</strong>：红、绿、蓝分通道曲线优先作用于各独立色阶，合成 RGB 曲线随后作用于整体亮度，模拟传统暗房相纸的感光反差特性曲线。</li>\n<li><strong>3D 相纸模拟查找表</strong>：导入经过严格光谱拟合的经典彩色印相纸（如 Kodak 2383、Kodak Vision Premier 2393）三维 LUT，赋予数字反相作品深沉的黑色层次与丰富的染料光泽。</li>\n<li><strong>输出色彩空间转换与 OETF 编码</strong>：经由矩阵变换适配目标色彩空间（如 sRGB、Display P3、Adobe RGB 或 ACEScg），并施加目标标准的光电传递函数（OETF）与色域量化裁切。</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">注意</div>\n    <div class=\"doc-callout-body\"><p>在正片输出域中进行的饱和度微调、反差增强以及高光阴影压缩，属于感知色调调整范畴。这些操作绝不应回溯反噬光学密度的测量基底。</p></div>\n</div>"
+                },
+                {
+                    "id": "non-commutative-matrix-proof",
+                    "heading": "非线性不可交换性定理：矩阵作用域的严谨数学证明",
+                    "content": "<p>在负片数字处理管线中，一个致命的架构错误是混淆透射率域矩阵与密度域矩阵。常有经验式软件直接在密度域施加普通显示器色彩空间转换矩阵，声称其等价于硬件分光校准。本节通过严格的泛函代数推导证明该做法在物理和数学上均属谬误。</p>\n<p>设三通道输入透射率向量为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>x</mi><mo>=</mo><mo stretchy=\"false\">[</mo><msub><mi>T</mi><mn>1</mn></msub><mo separator=\"true\">,</mo><msub><mi>T</mi><mn>2</mn></msub><mo separator=\"true\">,</mo><msub><mi>T</mi><mn>3</mn></msub><msup><mo stretchy=\"false\">]</mo><mi>T</mi></msup><mo>∈</mo><msubsup><mi mathvariant=\"double-struck\">R</mi><mrow><mo>&gt;</mo><mn>0</mn></mrow><mn>3</mn></msubsup></mrow><annotation encoding=\"application/x-tex\">x = [T_1, T_2, T_3]^T \\in \\mathbb{R}<em>{&gt;0}^3</annotation></semantics></math></span>。设采集设备的光学通道分离校准矩阵为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>A</mi><mo>∈</mo><msup><mi mathvariant=\"double-struck\">R</mi><mrow><mn>3</mn><mo>×</mo><mn>3</mn></mrow></msup></mrow><annotation encoding=\"application/x-tex\">A \\in \\mathbb{R}^{3 \\times 3}</annotation></semantics></math></span>，其元素为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub></mrow><annotation encoding=\"application/x-tex\">a</em>{ij}</annotation></semantics></math></span>。</p>\n<p>在透射率域，硬件校准矩阵的作用是混合光通量，校正滤镜串扰：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>y</mi><mtext>trans</mtext></msub><mo>=</mo><mi>A</mi><mi>x</mi><mo separator=\"true\">,</mo><mspace width=\"1em\"/><msub><mi>y</mi><mi>i</mi></msub><mo>=</mo><munderover><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></munderover><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub></mrow><annotation encoding=\"application/x-tex\">y_{\\text{trans}} = A x, \\quad y_i = \\sum_{j=1}^3 a_{ij} x_j</annotation></semantics></math></span></p>\n<p>若在此之后施加对数变换进入密度域，所获得的密度响应向量为：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>D</mi><mtext>correct</mtext></msub><mo>=</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>A</mi><mi>x</mi><mo stretchy=\"false\">)</mo><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>1</mn><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>2</mn><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>3</mn><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow></mrow><annotation encoding=\"application/x-tex\">D_{\\text{correct}} = -\\log_{10}(A x) = \\begin{bmatrix} -\\log_{10}\\left(\\sum_{j=1}^3 a_{1j} x_j\\right) \\ -\\log_{10}\\left(\\sum_{j=1}^3 a_{2j} x_j\\right) \\ -\\log_{10}\\left(\\sum_{j=1}^3 a_{3j} x_j\\right) \\end{bmatrix}</annotation></semantics></math></span></p>\n<p>假定某种错误实现将矩阵操作挪移到对数之后，即先计算各通道独立密度 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>raw</mtext></msub><mo>=</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">D_{\\text{raw}} = -\\log_{10}(x)</annotation></semantics></math></span>，再应用矩阵 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>A</mi></mrow><annotation encoding=\"application/x-tex\">A</annotation></semantics></math></span>：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>D</mi><mtext>wrong</mtext></msub><mo>=</mo><mi>A</mi><mo stretchy=\"false\">[</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo stretchy=\"false\">)</mo><mo stretchy=\"false\">]</mo><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>1</mn><mi>j</mi></mrow></msub><mo stretchy=\"false\">[</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>x</mi><mi>j</mi></msub><mo stretchy=\"false\">)</mo><mo stretchy=\"false\">]</mo></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>2</mn><mi>j</mi></mrow></msub><mo stretchy=\"false\">[</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>x</mi><mi>j</mi></msub><mo stretchy=\"false\">)</mo><mo stretchy=\"false\">]</mo></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>3</mn><mi>j</mi></mrow></msub><mo stretchy=\"false\">[</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>x</mi><mi>j</mi></msub><mo stretchy=\"false\">)</mo><mo stretchy=\"false\">]</mo></mrow></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∏</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mn>1</mn><mi>j</mi></mrow></msub></msubsup><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∏</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mn>2</mn><mi>j</mi></mrow></msub></msubsup><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∏</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mn>3</mn><mi>j</mi></mrow></msub></msubsup><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow></mrow><annotation encoding=\"application/x-tex\">D_{\\text{wrong}} = A [-\\log_{10}(x)] = \\begin{bmatrix} \\sum_{j=1}^3 a_{1j} [-\\log_{10}(x_j)] \\ \\sum_{j=1}^3 a_{2j} [-\\log_{10}(x_j)] \\ \\sum_{j=1}^3 a_{3j} [-\\log_{10}(x_j)] \\end{bmatrix} = \\begin{bmatrix} -\\log_{10}\\left(\\prod_{j=1}^3 x_j^{a_{1j}}\\right) \\ -\\log_{10}\\left(\\prod_{j=1}^3 x_j^{a_{2j}}\\right) \\ -\\log_{10}\\left(\\prod_{j=1}^3 x_j^{a_{3j}}\\right) \\end{bmatrix}</annotation></semantics></math></span></p>\n<p>对比两式的真数部分，欲使 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>correct</mtext></msub><mo>≡</mo><msub><mi>D</mi><mtext>wrong</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{correct}} \\equiv D_{\\text{wrong}}</annotation></semantics></math></span> 恒成立，必须对所有定义域内的 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>x</mi></mrow><annotation encoding=\"application/x-tex\">x</annotation></semantics></math></span> 满足：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><munderover><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></munderover><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub><mo>≡</mo><munderover><mo>∏</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></munderover><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub></msubsup><mo separator=\"true\">,</mo><mspace width=\"1em\"/><mi mathvariant=\"normal\">∀</mi><mi>i</mi><mo>∈</mo><mo stretchy=\"false\">{</mo><mn>1</mn><mo separator=\"true\">,</mo><mn>2</mn><mo separator=\"true\">,</mo><mn>3</mn><mo stretchy=\"false\">}</mo></mrow><annotation encoding=\"application/x-tex\">\\sum_{j=1}^3 a_{ij} x_j \\equiv \\prod_{j=1}^3 x_j^{a_{ij}}, \\quad \\forall i \\in {1, 2, 3}</annotation></semantics></math></span></p>\n<p>对该恒等式两端求关于 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>x</mi><mi>k</mi></msub></mrow><annotation encoding=\"application/x-tex\">x_k</annotation></semantics></math></span> 的偏导数：</p>\n<p>左端对 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>x</mi><mi>k</mi></msub></mrow><annotation encoding=\"application/x-tex\">x_k</annotation></semantics></math></span> 的一阶偏导数为常数：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mfrac><mi mathvariant=\"normal\">∂</mi><mrow><mi mathvariant=\"normal\">∂</mi><msub><mi>x</mi><mi>k</mi></msub></mrow></mfrac><mrow><mo fence=\"true\">(</mo><munderover><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></munderover><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub><mo fence=\"true\">)</mo></mrow><mo>=</mo><msub><mi>a</mi><mrow><mi>i</mi><mi>k</mi></mrow></msub></mrow><annotation encoding=\"application/x-tex\">\\frac{\\partial}{\\partial x_k} \\left(\\sum_{j=1}^3 a_{ij} x_j\\right) = a_{ik}</annotation></semantics></math></span></p>\n<p>右端对 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>x</mi><mi>k</mi></msub></mrow><annotation encoding=\"application/x-tex\">x_k</annotation></semantics></math></span> 的一阶偏导数为：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mfrac><mi mathvariant=\"normal\">∂</mi><mrow><mi mathvariant=\"normal\">∂</mi><msub><mi>x</mi><mi>k</mi></msub></mrow></mfrac><mrow><mo fence=\"true\">(</mo><munderover><mo>∏</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></munderover><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub></msubsup><mo fence=\"true\">)</mo></mrow><mo>=</mo><msub><mi>a</mi><mrow><mi>i</mi><mi>k</mi></mrow></msub><msubsup><mi>x</mi><mi>k</mi><mrow><msub><mi>a</mi><mrow><mi>i</mi><mi>k</mi></mrow></msub><mo>−</mo><mn>1</mn></mrow></msubsup><munder><mo>∏</mo><mrow><mi>j</mi><mo mathvariant=\"normal\">≠</mo><mi>k</mi></mrow></munder><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub></msubsup></mrow><annotation encoding=\"application/x-tex\">\\frac{\\partial}{\\partial x_k} \\left(\\prod_{j=1}^3 x_j^{a_{ij}}\\right) = a_{ik} x_k^{a_{ik}-1} \\prod_{j \\neq k} x_j^{a_{ij}}</annotation></semantics></math></span></p>\n<p>若使两端偏导数对所有 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>x</mi><mo>∈</mo><msubsup><mi mathvariant=\"double-struck\">R</mi><mrow><mo>&gt;</mo><mn>0</mn></mrow><mn>3</mn></msubsup></mrow><annotation encoding=\"application/x-tex\">x \\in \\mathbb{R}<em>{&gt;0}^3</annotation></semantics></math></span> 恒等成立，矩阵 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>A</mi></mrow><annotation encoding=\"application/x-tex\">A</annotation></semantics></math></span> 必须且仅能退化为单位矩阵 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>I</mi></mrow><annotation encoding=\"application/x-tex\">I</annotation></semantics></math></span> 或仅包含对角元素的缩放矩阵。一旦矩阵含有非对角互串扰元素（即存在 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>j</mi><mo mathvariant=\"normal\">≠</mo><mi>k</mi></mrow><annotation encoding=\"application/x-tex\">j \\neq k</annotation></semantics></math></span> 使得 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><mo mathvariant=\"normal\">≠</mo><mn>0</mn></mrow><annotation encoding=\"application/x-tex\">a</em>{ij} \\neq 0</annotation></semantics></math></span>），该恒等式必然破裂：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>A</mi><mi>x</mi><mo stretchy=\"false\">)</mo><mo mathvariant=\"normal\">≠</mo><mi>A</mi><mo stretchy=\"false\">[</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo stretchy=\"false\">)</mo><mo stretchy=\"false\">]</mo></mrow><annotation encoding=\"application/x-tex\">-\\log_{10}(A x) \\neq A [-\\log_{10}(x)]</annotation></semantics></math></span></p>\n<p><strong>结论</strong>：光通量的物理线性叠加发生在对数变换之前；染料吸光度的物理代数叠加发生对数变换之后。试图在密度域施加普通色度矩阵来代替透射率域分光校正，不仅无法校正硬件色偏，反而在高光与阴影过渡区域引入严重的伪色与非线性畸变。</p>"
+                },
+                {
+                    "id": "signal-flow-and-physical-boundaries",
+                    "heading": "信号流图与 NexFilm 真实物理能力边界",
+                    "content": "<p>为了让开发者与专业调色师清晰掌握数据在引擎内的生命周期，下图展示了 NexFilm v1.1.0 的端到端信号流图。图中用不同颜色明确标识了三大数学域的分界：</p>\n<svg viewBox=\"0 0 860 380\" width=\"100%\" height=\"auto\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background:#161618; border-radius:12px; border:1px solid #27272a; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;\">\n<rect x=\"20\" y=\"20\" width=\"250\" height=\"340\" rx=\"8\" fill=\"#1c1c1f\" stroke=\"#3f3f46\" stroke-width=\"1.5\"/>\n<text x=\"35\" y=\"48\" fill=\"#e4e4e7\" font-size=\"12\" font-weight=\"bold\">透射率域</text>\n<text x=\"35\" y=\"66\" fill=\"#a1a1aa\" font-size=\"10\">物理光子通量 · 线性辐射度</text>\n<rect x=\"35\" y=\"85\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"47\" y=\"104\" fill=\"#fafafa\" font-size=\"11\">RAW / Scanner RGB</text>\n<text x=\"47\" y=\"118\" fill=\"#a1a1aa\" font-size=\"9\">黑电平解马赛克 / 坏点消除</text>\n<rect x=\"35\" y=\"142\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"47\" y=\"161\" fill=\"#fafafa\" font-size=\"11\">暗场扣除与平场归一化</text>\n<text x=\"47\" y=\"175\" fill=\"#a1a1aa\" font-size=\"9\">T = (I - dark) / (open - dark)</text>\n<rect x=\"35\" y=\"199\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"47\" y=\"218\" fill=\"#fafafa\" font-size=\"11\">Capture Separation 3x3</text>\n<text x=\"47\" y=\"232\" fill=\"#a1a1aa\" font-size=\"9\">相机x背光透射率通道解耦</text>\n<rect x=\"35\" y=\"256\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#3f3f46\" stroke=\"#fbbf24\" stroke-width=\"1.5\"/>\n<text x=\"47\" y=\"275\" fill=\"#fbbf24\" font-size=\"11\" font-weight=\"bold\">对数变换门限钳位</text>\n<text x=\"47\" y=\"289\" fill=\"#fef08a\" font-size=\"9\">D_raw = -log10(max(T, eps))</text>\n<line x1=\"145\" y1=\"127\" x2=\"145\" y2=\"142\" stroke=\"#71717a\" stroke-width=\"1.5\" marker-end=\"url(#arrow)\"/>\n<line x1=\"145\" y1=\"184\" x2=\"145\" y2=\"199\" stroke=\"#71717a\" stroke-width=\"1.5\" marker-end=\"url(#arrow)\"/>\n<line x1=\"145\" y1=\"241\" x2=\"145\" y2=\"256\" stroke=\"#71717a\" stroke-width=\"1.5\" marker-end=\"url(#arrow)\"/>\n<line x1=\"270\" y1=\"277\" x2=\"305\" y2=\"277\" stroke=\"#fbbf24\" stroke-width=\"2\"/>\n<rect x=\"305\" y=\"20\" width=\"250\" height=\"340\" rx=\"8\" fill=\"#1c1c1f\" stroke=\"#3f3f46\" stroke-width=\"1.5\"/>\n<text x=\"320\" y=\"48\" fill=\"#e4e4e7\" font-size=\"12\" font-weight=\"bold\">光学密度域</text>\n<text x=\"320\" y=\"66\" fill=\"#a1a1aa\" font-size=\"10\">比尔-朗伯吸光度 · 加性代数空间</text>\n<rect x=\"320\" y=\"85\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"332\" y=\"104\" fill=\"#fafafa\" font-size=\"11\">片基采样与色罩扣除</text>\n<text x=\"332\" y=\"118\" fill=\"#a1a1aa\" font-size=\"9\">D_net = D_raw - D_base</text>\n<rect x=\"320\" y=\"142\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"332\" y=\"161\" fill=\"#fafafa\" font-size=\"11\">暗房印片光微调</text>\n<text x=\"332\" y=\"175\" fill=\"#a1a1aa\" font-size=\"9\">Printer Lights 对数加减色平移</text>\n<rect x=\"320\" y=\"199\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"332\" y=\"218\" fill=\"#fafafa\" font-size=\"11\">有界通道跨度响应</text>\n<text x=\"332\" y=\"232\" fill=\"#a1a1aa\" font-size=\"9\">1.15x死区 / 1.35x上限 / 3x截断</text>\n<rect x=\"320\" y=\"256\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#3f3f46\" stroke=\"#34d399\" stroke-width=\"1.5\"/>\n<text x=\"332\" y=\"275\" fill=\"#34d399\" font-size=\"11\" font-weight=\"bold\">密度反相与曝光归一化</text>\n<text x=\"332\" y=\"289\" fill=\"#a7f3d0\" font-size=\"9\">E_pos = 10^(-alpha * D)</text>\n<line x1=\"430\" y1=\"127\" x2=\"430\" y2=\"142\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"430\" y1=\"184\" x2=\"430\" y2=\"199\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"430\" y1=\"241\" x2=\"430\" y2=\"256\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"555\" y1=\"277\" x2=\"590\" y2=\"277\" stroke=\"#34d399\" stroke-width=\"2\"/>\n<rect x=\"590\" y=\"20\" width=\"250\" height=\"340\" rx=\"8\" fill=\"#1c1c1f\" stroke=\"#3f3f46\" stroke-width=\"1.5\"/>\n<text x=\"605\" y=\"48\" fill=\"#e4e4e7\" font-size=\"12\" font-weight=\"bold\">正片与输出域 (Print/Output)</text>\n<text x=\"605\" y=\"66\" fill=\"#a1a1aa\" font-size=\"10\">Linear ProPhoto · 色彩空间变换</text>\n<rect x=\"605\" y=\"85\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"617\" y=\"104\" fill=\"#fafafa\" font-size=\"11\">Linear ProPhoto 统一基底</text>\n<text x=\"617\" y=\"118\" fill=\"#a1a1aa\" font-size=\"9\">无损正片线性光强中间表示</text>\n<rect x=\"605\" y=\"142\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"617\" y=\"161\" fill=\"#fafafa\" font-size=\"11\">四通道曲线与印相纸 LUT</text>\n<text x=\"617\" y=\"175\" fill=\"#a1a1aa\" font-size=\"9\">RGB分离曲线与 Kodak 2383 等</text>\n<rect x=\"605\" y=\"199\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"617\" y=\"218\" fill=\"#fafafa\" font-size=\"11\">细节增强与色调压缩</text>\n<text x=\"617\" y=\"232\" fill=\"#a1a1aa\" font-size=\"9\">高反差边缘锐化 / 纹理 / 阴影</text>\n<rect x=\"605\" y=\"256\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"617\" y=\"275\" fill=\"#fafafa\" font-size=\"11\">显示与母带导出</text>\n<text x=\"617\" y=\"289\" fill=\"#a1a1aa\" font-size=\"9\">sRGB / P3 / ACEScg / 16-bit TIFF</text>\n<line x1=\"700\" y1=\"127\" x2=\"700\" y2=\"142\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"700\" y1=\"184\" x2=\"700\" y2=\"199\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"700\" y1=\"241\" x2=\"700\" y2=\"256\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n</svg><p>最后，本白皮书在此郑重界定 NexFilm v1.1.0 已落地能力与未来规划边界，拒绝任何技术浮夸：</p>\n<ol>\n<li><strong>已落地能力</strong>：三大数学域的彻底物理隔离；暗场与开场平场相对透射率归一化；透射色卡采样拟合与条件数安全回退；基于有界通道跨度的抗偏色统一管线；16-bit 线性母带与相机 RAW 原样重封装 DNG 导出。</li>\n<li><strong>当前技术边界</strong>：当前版本未内置物理 Status M 滤光片加权积分测定库，<code>status_m_crosstalk_matrix()</code> 属于历史经验参考；未实现基于具体胶片乳剂批次物理显影参数的非线性 H-D 曲线反演。所有反相计算均基于实测透射率与严密相对密度代数模型。</li>\n</ol>"
+                }
+            ]
+        },
+        {
+            "id": "input-domain-and-unified-pipeline",
+            "track": "color-science",
+            "trackTitle": "色彩科学",
+            "trackOrder": 3,
+            "chapterOrder": 2,
+            "kicker": "Color Science 02 / 统一管线",
+            "title": "五级输入域解析与统一密度管线",
+            "subtitle": "输入格式仅决定输入域，密度数学全局唯一：从片基采样三级优先级到有界通道跨度响应。",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "unified-pipeline-philosophy",
+                    "heading": "统一密度管线设计哲学：格式与数学解耦",
+                    "content": "<p>在传统胶片扫描与反相软件中，常见的架构缺陷是让输入文件格式直接决定后端的密度计算数学。例如，数码相机翻拍的 RAW 文件走一套经验加权算法，哈苏 Flextight 或易迈康扫描仪的 FFF 文件走第二套裁剪逻辑，而普通 TIFF 文件又被分流至第三套未加校正的显示伽马曲线。这种格式与算法强耦合的设计，导致同一卷胶片在不同采集设备下呈现出互不兼容的色彩风格，严重阻碍了色彩科学的严肃复现。</p>\n<p>NexFilm 引擎在 v1.1.0 确立了统一密度管线核心原则：<strong>输入格式仅决定输入域，密度数学全局唯一</strong>。</p>\n<p>无论源文件是数码相机无损压缩 RAW、扫描仪高位深度 LinearRaw DNG、封装专有元数据的 FFF 容器，还是附带专业色彩配置文件的 16-bit TIFF，解码器的工作仅限于识别并解析其物理色彩空间与光电转换特性，将其无损投射至统一的 32 位浮点线性 ProPhoto 工作域。一旦完成输入域线性化，后续的所有光学密度运算——包括片基扣除、印片光调节、有界通道跨度响应与显示映射——对所有文件类型完全同构。</p>\n<pre class=\"doc-code-block\"><code>输入文件（RAW / FFF / TIFF / DNG / JPEG）\n       │\n       ▼\nresolve_input_domain(path, scanner_profile)\n       │  ← 唯一允许分叉的输入解析阶段\n       ▼\n统一工作空间：ProPhoto 线性 f32（杜绝 u16 中转量化损失）\n       │\n       ▼\n统一光学密度变换：D = -log10(max(T, epsilon))\n       │\n       ▼\n逐通道片基扣除：D_net = D_raw - D_base（原点严格共享，零通道偏移）\n       │\n       ▼\n有界通道跨度响应（死区 1.15× / 正常上限 1.35× / 截断上限 3.0×）\n       │\n       ▼\n正片线性化与显示映射：ProPhoto -&gt; 输出色域与目标 LUT</code></pre>\n<p>这种架构消除了早期版本中将解码数据压缩至 16 位整数线性 sRGB 造成的严重色域截断，确保了高动态范围负片无论源自何种设备，均能在完全一致的光学物理基底上展开调色。</p>"
+                },
+                {
+                    "id": "five-tier-input-domain-resolution",
+                    "heading": "五级输入域解析判定链与元数据提取",
+                    "content": "<p>为了准确将各类异构图像文件还原为真实物理透射率，NexFilm 实现了由低到高严格分级的输入域判定链函数 <code>resolve_input_domain</code>。系统依次探测五层元数据依据，每一步均记录明确的数据来源、色度基色、传递函数与置信度标记：</p>\n<ol>\n<li><strong>第一优先级：内嵌 ICC 色彩特性文件</strong><br>若 TIFF 或 JPEG 图像内部包含合法的 ICC Profile（如 Adobe RGB (1998)、Display P3 或扫描仪专用校准配置文件），引擎直接提取其 <code>rXYZ</code>、<code>gXYZ</code>、<code>bXYZ</code> 矩阵与响应曲线标记。该来源具有最高权威性，被判定为经过硬件标定的精准色彩空间。</li>\n<li><strong>第二优先级：扫描仪容器元数据与专有记录（Verified / Estimated）</strong><br>对于哈苏 Flextight / Imacon 扫描仪生成的 <code>.fff</code> 格式，引擎解析其 TIFF 头部嵌入的 XML 属性列表（plist），提取 <code>RGBProfile</code> 字符串与 <code>Gamma</code> 数值。若容器明确声明为 AdobeRGB 或广色域扫描仪配置，则直接应用对应的伽马解扩方程。若属性缺失，则回退为文档标准默认值（Gamma 1.8，标定为 <code>estimated</code> 置信度）。</li>\n<li><strong>第三优先级：RAW / LinearRaw 元数据与传感器标定参数</strong><br>对于相机 RAW 文件（如 CR2、NEF、ARW），引擎读取 LibRaw 解析的相机原生拜尔矩阵元数据与预设矩阵。对于经专业扫描仪输出或第三方软件合成的 DNG 文件，引擎检测其 SubIFD 标签；若检测到 <code>PhotometricInterpretation = 34892 (LinearRaw)</code> 且未压缩，则直接判定为相机原生线性透射数据。</li>\n<li><strong>第四优先级：已建档扫描仪机型默认参数</strong><br>当用户在软件中显式指定了扫描仪型号（如 Nikon Super Coolscan 9000 ED、Minolta Dimage Scan Elite 5400），且输入文件不含内嵌 ICC 时，引擎调取内置的机型基色与透射特性记录进行解析。</li>\n<li><strong>第五优先级：sRGB 兜底与预估标记</strong><br>若上述所有特征均未命中，系统将文件假定为标准 sRGB 空间，但在处理报告中打上 <code>estimated</code> 警告标记，提示用户在检查面板中关注色彩置信度。</li>\n</ol>\n<p>输入域解析结果随帧永久记录于工程数据库的 <code>PipelineProcessingReport::input_domain</code> 结构体中，包含基色坐标、传递函数曲线、归一化电平及详细诊断日志。</p>"
+                },
+                {
+                    "id": "film-base-sampling-priority",
+                    "heading": "片基采样三级优先级与质量门限法则",
+                    "content": "<p>橙色片基的测定精度直接决定了负片反相的整体白平衡基准。传统经验软件往往简单抓取画面最亮像素作为片基，这种做法在遇到齿孔、高光溢出、灯板直射或大面积浅色背景时，会导致片基测量严重失真，进而引发整幅画面发灰或偏色。</p>\n<p>NexFilm 建立了严格的三级片基采样优先级与质量门限过滤机制：</p>\n<table class=\"doc-table\">\n<thead>\n<tr>\n<th>采样优先级</th>\n<th>数据获取物理区域</th>\n<th>判别与安全验证准则</th>\n<th>适用场景与质量保证</th>\n</tr>\n</thead>\n<tbody><tr>\n<td>第一级：窄带片基</td>\n<td>位于 Film Area 几何边缘外部与片门边界之间的色罩窄带</td>\n<td>采样点红绿蓝密度差需符合典型 C-41 色罩特征，且窄带密度不得比尾部更暗超过 0.05 D</td>\n<td>翻拍包含未曝光透明胶片边沿的标准底片，精度极高</td>\n</tr>\n<tr>\n<td>第二级：膜面低密度尾部</td>\n<td>位于 Film Area 有效画幅内部的物理低密度极值采样（2%–5% 分位）</td>\n<td>采样像素必须具备充分的空间聚类分布，且排除单点噪声与坏点</td>\n<td>扫描仪裁切后未保留片边的散张底片</td>\n</tr>\n<tr>\n<td>第三级：画面最亮分位降权</td>\n<td>全幅画面的明度统计极值（降权估算）</td>\n<td>仅在第一与第二级均失效时启用，并设置 0.20 D 内容平移上限抑制</td>\n<td>严重剪裁或全景拼接的无片边特殊文件</td>\n</tr>\n</tbody></table>\n<p>在片基有效性校验中，<code>film_base_band_agrees</code> 函数执行单向严格不等式校验：片基是整张底片物理密度最低的透光区域，画幅内部成像区域不可能比真实片基更为透光。如果测得的片边窄带比膜面尾部更暗超过 0.05 D，系统判定片边受到了灯板漏光或暗房杂散光的污染，自动将片基候选退回至膜面低密度尾部。</p>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">重要</div>\n    <div class=\"doc-callout-body\"><p>跨帧复制设置时，NexFilm 绝不生搬硬套源帧的片基密度绝对数值。通过 <code>choose_pasted_film_base</code> 机制，系统强制在目标帧自己的有效几何范围内重新执行测量。只有当目标帧完全无法检出有效片基时，才有限度引用源帧数值，并在界面中明确标注 <code>inherited_film_base</code>，彻底杜绝不同帧之间由于光照漂移引发的交叉偏色。</p></div>\n</div>"
+                },
+                {
+                    "id": "bounded-channel-span-response",
+                    "heading": "有界通道跨度响应：共享原点与宽色域拼接容错",
+                    "content": "<p>在完成片基扣除后，整幅画面的净光学密度 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>net</mtext></msub><mo>=</mo><msub><mi>D</mi><mtext>raw</mtext></msub><mo>−</mo><msub><mi>D</mi><mtext>base</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{net}} = D_{\\text{raw}} - D_{\\text{base}}</annotation></semantics></math></span> 处于理论原点对齐状态，此时片基在红、绿、蓝三个通道中的显示净密度均为零。</p>\n<p>然而，在处理实际扫描素材时，尤其是多张 RAW 拼接合成的宽色域 TIFF 文件（如 Lightroom 合并全景图 <code>_DSC7569-Pano.tif</code>、<code>_DSC7583-Pano.tif</code>），上游合成算法常导致红通道的有效密度跨度急剧收缩，仅剩绿通道跨度的三分之一甚至四分之一。若强制三个通道共用完全相同的显示窗口跨度，红通道的高光将被严重压制在半程以下，导致整张照片呈现严重的蓝绿伪色或高光死黑。</p>\n<p>早期解决方案尝试在显示端增加逐通道非线性响应曲线，但这种做法无条件篡改了正常底片的影调平衡。NexFilm 独创了<strong>有界通道跨度响应</strong>模型，在数学上实现了三大安全保证：</p>\n<ol>\n<li><strong>共享窗口原点</strong>：有片基时，<code>channel_offsets</code> 在三个通道上恒定为零。这意味着无论跨度如何调整，片基（密度 0）在三个通道中永远映射为完全相等的正片最大白点，绝对不引入底色偏色。</li>\n<li><strong>1.15× 死区保护</strong>：对于正常冲洗与正常翻拍的健康底片（三通道跨度比值在 1.00 至 1.15 之间），跨度增益调整处于死区内，完全不介入运算，三通道维持百分之百同构的窗口分配。</li>\n<li><strong>分级安全增益上限</strong>：通过 <code>measure_content_channel_spans</code> 测定各通道 2% 至 98% 密度的有效跨度。当失衡比超出 1.15 时，按线性斜坡平滑分配窗口宽度：\n<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>g</mi><mi>i</mi></msub><mo>=</mo><mtext>clamp</mtext><mrow><mo fence=\"true\">(</mo><mfrac><msub><mtext>span</mtext><mi>i</mi></msub><mrow><mtext>luma</mtext><mo stretchy=\"false\">(</mo><mtext>span</mtext><mo stretchy=\"false\">)</mo></mrow></mfrac><mo separator=\"true\">,</mo><mfrac><mn>1</mn><msub><mi>g</mi><mtext>max</mtext></msub></mfrac><mo separator=\"true\">,</mo><msub><mi>g</mi><mtext>max</mtext></msub><mo fence=\"true\">)</mo></mrow></mrow><annotation encoding=\"application/x-tex\">g_i = \\text{clamp}\\left(\\frac{\\text{span}<em>i}{\\text{luma}(\\text{span})}, \\frac{1}{g</em>{\\text{max}}}, g_{\\text{max}}\\right)</annotation></semantics></math></span>\n常规素材的增益上限收紧为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>g</mi><mtext>max</mtext></msub><mo>=</mo><mn>1.35</mn></mrow><annotation encoding=\"application/x-tex\">g_{\\text{max}} = 1.35</annotation></semantics></math></span>。仅当通道失衡比极端超过 2.0 时，系统才判定其为上游拼接截断通道，并将增益上限有限放宽至 3.0。</li>\n</ol>\n<p>这种设计坚决摒弃了传统经验软件中破坏真实影调的“灰世界假设”（强行拉平画面 RGB 均值）。它保留了底片自身的冷暖氛围，同时让上游损坏的通道重新恢复完整的动态显示区间。</p>"
+                },
+                {
+                    "id": "quantitative-regression-verification",
+                    "heading": "量化回归数据与真实素材对照验证",
+                    "content": "<p>统一密度管线的可靠性建立在严格的工程回归测试集之上。以下数据摘自 NexFilm 自动化测试套件 <code>density_pipeline_sample_report</code> 在真实底片样本库上的逐像素量化测量结果。表中对比了旧版管线与统一密度管线在渲染后整幅画面的红/绿与蓝/绿通道均值比：</p>\n<table class=\"doc-table\">\n<thead>\n<tr>\n<th>样本文件与物理介质</th>\n<th>输入域解析结果</th>\n<th>片基采样来源</th>\n<th>旧版 R/G · B/G</th>\n<th>统一管线 R/G · B/G</th>\n<th>算法介入与量化改善说明</th>\n</tr>\n</thead>\n<tbody><tr>\n<td><code>哈苏fff/任务 _1233.fff</code></td>\n<td>CameraNative / CameraRaw</td>\n<td>膜面低密度尾部</td>\n<td>0.583 · 1.001</td>\n<td>0.963 · 1.086</td>\n<td>相机 RAW 模式，彻底剔除逐通道额外响应，恢复通透自然的真实影调</td>\n</tr>\n<tr>\n<td><code>哈苏fff/任务 _1343.fff</code></td>\n<td>CameraNative / CameraRaw</td>\n<td>片边橙色窄带</td>\n<td>0.980 · 0.970</td>\n<td>0.991 · 0.969</td>\n<td>画面约 45% 贴顶，死区生效，新旧管线零偏差一致</td>\n</tr>\n<tr>\n<td><code>哈苏fff/无法反相.fff</code></td>\n<td>AdobeRgb1998 / Gamma2.0</td>\n<td>画面最亮分位</td>\n<td>0.894 · 1.037</td>\n<td>0.806 · 1.046</td>\n<td>容器记录驱动精准伽马线性化，成功抑制残留黄绿偏色</td>\n</tr>\n<tr>\n<td><code>lr合并/_DSC7569-Pano.tif</code></td>\n<td>AdobeRgb1998 / Gamma2.2</td>\n<td>片边橙色窄带</td>\n<td>0.848 · 1.907</td>\n<td>0.696 · 1.288</td>\n<td>失衡比 3.35，有界跨度响应生效，红通道零值从 78.8% 大幅恢复至 9.3%</td>\n</tr>\n<tr>\n<td><code>lr合并/_DSC7583-Pano.tif</code></td>\n<td>AdobeRgb1998 / Gamma2.2</td>\n<td>片边橙色窄带</td>\n<td>0.571 · 2.324</td>\n<td>0.557 · 1.249</td>\n<td>失衡比 4.26，红通道增益放宽补偿，天空白云与建筑回归中性基准</td>\n</tr>\n<tr>\n<td><code>尼康扫描仪tiff/5.3-1.tif</code></td>\n<td>AdobeRgb1998 / ICC</td>\n<td>片边橙色窄带</td>\n<td>1.030 · 0.715</td>\n<td>0.999 · 0.951</td>\n<td>消除系统性红移，通道动态分布与参考印片完全吻合</td>\n</tr>\n<tr>\n<td><code>精益黑白/raw0002.dng</code></td>\n<td>Srgb / Linear</td>\n<td>膜面低密度尾部</td>\n<td>1.001 · 1.018</td>\n<td>0.944 · 1.139</td>\n<td>扫描仪原生 LinearRaw DNG 识别，黑白影调过渡极其细腻平滑</td>\n</tr>\n<tr>\n<td><code>尼康nef_raw/_DSC7333.NEF</code></td>\n<td>CameraNative / CameraRaw</td>\n<td>片边橙色窄带</td>\n<td>0.975 · 0.972</td>\n<td>0.826 · 0.944</td>\n<td>相机 RAW 直读，中性灰轴偏差严格控制在 4/65535 容差以内</td>\n</tr>\n</tbody></table>\n<p>测试数据表明，对于健康素材，统一管线输出与理论物理基线完全重合，逐像素差异为零；对于上游缺陷严重的拼接大图，有界跨度响应在不破坏片基中性轴的前提下，实现了显示动态的挽救。</p>"
+                }
+            ]
+        },
+        {
+            "id": "hardware-calibration-guide",
+            "track": "color-science",
+            "trackTitle": "色彩科学",
+            "trackOrder": 3,
+            "chapterOrder": 3,
+            "kicker": "Color Science 03 / 硬件标定",
+            "title": "硬件校准原理与实验性工作流指南",
+            "subtitle": "暗场扣除、平场归一化与透射色卡拟合的三大工作模式与暗房实操规程。",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "hardware-calibration"
+            ],
+            "sections": [
+                {
+                    "id": "three-operational-modes",
+                    "heading": "三大工作模式与采集校准层级界定",
+                    "content": "<p>在胶片数字化实践中，不同用户的硬件条件与精度诉求差异巨大。为了在操作便捷性与严谨物理测量之间取得平衡，NexFilm 将负片采集与校准体系清晰划分为三种工作模式。不同模式在数据处理管线中具有明确的物理意义与适用边界：</p>\n<table class=\"doc-table\">\n<thead>\n<tr>\n<th>工作模式名称</th>\n<th>硬件校准输入要素</th>\n<th>核心算法与数学基底</th>\n<th>适用场景与精度级别</th>\n</tr>\n</thead>\n<tbody><tr>\n<td><code>Smart Auto (ProPhoto Estimate)</code></td>\n<td>仅需底片单张扫描文件，无需校准帧</td>\n<td>启发式片基窄带采样、全幅密度窗口统计与 ProPhoto 线性空间映射</td>\n<td>日常快速反相、无暗房校准条件的散片与普通胶卷</td>\n</tr>\n<tr>\n<td><code>Capture Corrected</code></td>\n<td>暗场帧与平场帧</td>\n<td>逐像素减除暗电流偏置与杂散光，利用无片背光场归一化相对透射率</td>\n<td>高要求翻拍、消除暗角与背光板边缘色温漂移的实验路径</td>\n</tr>\n<tr>\n<td><code>Capture Characterized</code></td>\n<td>暗场帧、平场帧与透射标定色卡</td>\n<td>基于透射参考色块 SVD 奇异值分解，拟合 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>3</mn><mo>×</mo><mn>3</mn></mrow><annotation encoding=\"application/x-tex\">3 \\times 3</annotation></semantics></math></span> 设备通道分离矩阵</td>\n<td>专业暗房翻拍台、需彻底解耦相机滤镜与背光光谱的精准测量</td>\n</tr>\n</tbody></table>\n<p>在 <code>Smart Auto</code> 模式下，系统假定采集设备具有理想的线性响应，主要通过图像自身的物理结构与统计算法完成片基与动态窗口的推导。该模式响应迅速，适合绝大多数数码翻拍与商业扫描仪文件。</p>\n<p>当切入 <code>Capture Corrected</code> 时，系统介入透射率域，通过实际测量的暗场与平场对原始像素光强进行严格的辐射度归一化。而在最高阶的 <code>Capture Characterized</code> 模式下，系统在平场校正的基础上，进一步求解相机拜尔滤色片与特定背光源组合下的通道分离矩阵，将采集硬件对胶片染料吸收的串扰降至物理最低。</p>"
+                },
+                {
+                    "id": "dark-and-flat-field-correction",
+                    "heading": "暗场扣除与平场归一化的物理原理与质量门限",
+                    "content": "<p>在数码翻拍系统中，最终成像并非单纯由胶片透射光决定。图像传感器存在固有的暗电流热噪声与电路偏置，翻拍腔体内部存在杂散光反射；同时，微距镜头在大光圈与近距离对焦下存在余弦四次方照度衰减，背光灯板的漫射亚克力边缘也往往伴随着色温与亮度的非均匀性。</p>\n<p><code>Capture Corrected</code> 模式通过两组校准场消除上述系统误差：</p>\n<ol>\n<li><strong>暗场帧</strong>：在遮蔽所有入射光线的条件下拍摄，记录传感器的固定模式噪声（FPN）、暗电流热噪声以及翻拍暗箱的漏光底数。</li>\n<li><strong>平场开门帧</strong>：在胶片夹内不放置任何底片的条件下拍摄，记录背光板在当前工作曝光下的真实二维照度分布与镜头暗角轮廓。</li>\n</ol>\n<p>设底片实拍帧原始读数为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>sample</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{sample}}(x, y)</annotation></semantics></math></span>，暗场帧读数为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{dark}}(x, y)</annotation></semantics></math></span>，平场开门帧读数为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>open</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{open}}(x, y)</annotation></semantics></math></span>，则校正后的真实相对透射率计算公式为：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mi>T</mi><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo><mo>=</mo><mfrac><mrow><msub><mi>I</mi><mtext>sample</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo><mo>−</mo><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo></mrow><mrow><msub><mi>I</mi><mtext>open</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo><mo>−</mo><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo></mrow></mfrac></mrow><annotation encoding=\"application/x-tex\">T(x, y) = \\frac{I_{\\text{sample}}(x, y) - I_{\\text{dark}}(x, y)}{I_{\\text{open}}(x, y) - I_{\\text{dark}}(x, y)}</annotation></semantics></math></span></p>\n<p>在底层实现（<code>src/raw_backend.rs</code>）中，NexFilm 设置了严密的数值安全检验机制，绝不使用经验极小值掩盖无效数据。系统通过 <code>QualityFlags</code> 位掩码实时诊断并拦截异常样本：</p>\n<ul>\n<li><strong>分母无效（<code>InvalidDenominator</code>）</strong>：当平场读数与暗场读数之差小于安全阈值时判定为除零错误。</li>\n<li><strong>负透射率（<code>NegativeSample</code>）</strong>：采样点光强低于暗场基线，表明存在外部光强测量抖动。</li>\n<li><strong>传感器饱和（<code>SaturatedSample</code> / <code>SaturatedReference</code>）</strong>：采样帧或参考帧达到传感器模数转换饱和上限（如 14-bit RAW 的 16383 截断点）。</li>\n<li><strong>元数据失配（<code>GeometryMismatch</code> / <code>ExposureMismatch</code> / <code>IsoMismatch</code>）</strong>：校准帧与工作帧的画幅尺寸、ISO 感光度、快门速度或色温设置不一致。</li>\n</ul>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">注意</div>\n    <div class=\"doc-callout-body\"><p>平场帧必须在与底片翻拍完全一致的镜头光圈、焦距与对焦距离下拍摄。光圈变动会改变镜头的入瞳位置与渐晕曲线，导致平场补偿过正或欠补偿。</p></div>\n</div>"
+                },
+                {
+                    "id": "capture-characterized-fitting",
+                    "heading": "透射色卡采样与 CaptureSeparation3x3 矩阵拟合",
+                    "content": "<p>在 <code>Capture Characterized</code> 模式下，核心任务是求解采集分离矩阵 <code>CaptureSeparation3x3</code>，使得校正后的三通道透射率与胶片三层染料吸收光谱建立准确对应。该过程在 <code>src/calibration_fit.rs</code> 模块中实现。</p>\n<p>系统采用经过精密光谱仪检定的透射标定板（如 Kodak Q-60 透射靶或专业 IT8.7/1 标定片）。设标定板包含 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>N</mi></mrow><annotation encoding=\"application/x-tex\">N</annotation></semantics></math></span> 个经过测定的透射参考色块，第 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>k</mi></mrow><annotation encoding=\"application/x-tex\">k</annotation></semantics></math></span> 个色块的已知标准透射率向量为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>y</mi><mi>k</mi></msub><mo>∈</mo><msup><mi mathvariant=\"double-struck\">R</mi><mn>3</mn></msup></mrow><annotation encoding=\"application/x-tex\">y_k \\in \\mathbb{R}^3</annotation></semantics></math></span>，在当前翻拍系统中实测测得的相对透射率向量为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>x</mi><mi>k</mi></msub><mo>∈</mo><msup><mi mathvariant=\"double-struck\">R</mi><mn>3</mn></msup></mrow><annotation encoding=\"application/x-tex\">x_k \\in \\mathbb{R}^3</annotation></semantics></math></span>。</p>\n<p>我们寻求一个 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>3</mn><mo>×</mo><mn>3</mn></mrow><annotation encoding=\"application/x-tex\">3 \\times 3</annotation></semantics></math></span> 的通道分离矩阵 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>M</mi></mrow><annotation encoding=\"application/x-tex\">M</annotation></semantics></math></span>，使得对于所有色块，预测透射率与实测透射率的残差平方和最小化，同时引入岭回归正则化项以约束矩阵的条件数：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><munder><mrow><mi>min</mi><mo>⁡</mo></mrow><mi>M</mi></munder><munderover><mo>∑</mo><mrow><mi>k</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><mi mathvariant=\"normal\">∥</mi><msub><mi>y</mi><mi>k</mi></msub><mo>−</mo><mi>M</mi><msub><mi>x</mi><mi>k</mi></msub><msubsup><mi mathvariant=\"normal\">∥</mi><mn>2</mn><mn>2</mn></msubsup><mo>+</mo><mi>λ</mi><mi mathvariant=\"normal\">∥</mi><mi>M</mi><mo>−</mo><mi>I</mi><msubsup><mi mathvariant=\"normal\">∥</mi><mi>F</mi><mn>2</mn></msubsup></mrow><annotation encoding=\"application/x-tex\">\\min_M \\sum_{k=1}^N | y_k - M x_k |_2^2 + \\lambda | M - I |_F^2</annotation></semantics></math></span></p>\n<p>其中 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>I</mi></mrow><annotation encoding=\"application/x-tex\">I</annotation></semantics></math></span> 为 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>3</mn><mo>×</mo><mn>3</mn></mrow><annotation encoding=\"application/x-tex\">3 \\times 3</annotation></semantics></math></span> 单位矩阵，<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>λ</mi></mrow><annotation encoding=\"application/x-tex\">\\lambda</annotation></semantics></math></span> 为正则化系数，保证在色块数据受限时矩阵平滑回退至无损状态。通过奇异值分解（SVD）求解正规方程组：</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mi>X</mi><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><msubsup><mi>x</mi><mn>1</mn><mi>T</mi></msubsup></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mi mathvariant=\"normal\">⋮</mi><mpadded height=\"0em\" voffset=\"0em\"><mspace mathbackground=\"black\" width=\"0em\" height=\"1.5em\"></mspace></mpadded></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><msubsup><mi>x</mi><mi>N</mi><mi>T</mi></msubsup></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow><mo separator=\"true\">,</mo><mspace width=\"1em\"/><mi>Y</mi><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><msubsup><mi>y</mi><mn>1</mn><mi>T</mi></msubsup></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mi mathvariant=\"normal\">⋮</mi><mpadded height=\"0em\" voffset=\"0em\"><mspace mathbackground=\"black\" width=\"0em\" height=\"1.5em\"></mspace></mpadded></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><msubsup><mi>y</mi><mi>N</mi><mi>T</mi></msubsup></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow><mo separator=\"true\">,</mo><mspace width=\"1em\"/><msup><mi>M</mi><mi>T</mi></msup><mo>=</mo><mo stretchy=\"false\">(</mo><msup><mi>X</mi><mi>T</mi></msup><mi>X</mi><mo>+</mo><mi>λ</mi><mi>I</mi><msup><mo stretchy=\"false\">)</mo><mrow><mo>−</mo><mn>1</mn></mrow></msup><msup><mi>X</mi><mi>T</mi></msup><mi>Y</mi></mrow><annotation encoding=\"application/x-tex\">X = \\begin{bmatrix} x_1^T \\ \\vdots \\ x_N^T \\end{bmatrix}, \\quad Y = \\begin{bmatrix} y_1^T \\ \\vdots \\ y_N^T \\end{bmatrix}, \\quad M^T = (X^T X + \\lambda I)^{-1} X^T Y</annotation></semantics></math></span></p>\n<p>为了确保工程落地的安全性，<code>calibration_fit.rs</code> 设置了三大铁律防线：</p>\n<ol>\n<li><strong>最小色块数约束</strong>：有效采样色块数不得少于 4 个（<code>MIN_PATCHES = 4</code>），且色块需覆盖高密度、中密度与低密度区间。</li>\n<li><strong>条件数门限控制</strong>：矩阵 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>X</mi></mrow><annotation encoding=\"application/x-tex\">X</annotation></semantics></math></span> 的条件数 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>κ</mi><mo stretchy=\"false\">(</mo><mi>X</mi><mo stretchy=\"false\">)</mo><mo>=</mo><msub><mi>σ</mi><mtext>max</mtext></msub><mi mathvariant=\"normal\">/</mi><msub><mi>σ</mi><mtext>min</mtext></msub></mrow><annotation encoding=\"application/x-tex\">\\kappa(X) = \\sigma_{\\text{max}} / \\sigma_{\\text{min}}</annotation></semantics></math></span> 必须小于 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>1.0</mn><mo>×</mo><msup><mn>10</mn><mn>5</mn></msup></mrow><annotation encoding=\"application/x-tex\">1.0 \\times 10^5</annotation></semantics></math></span>（<code>MAX_CONDITION_NUMBER</code>）。一旦背光光谱过窄或色块重叠导致矩阵病态，系统立即终止拟合并自动回退至单位矩阵。</li>\n<li><strong>验证残差均方根门限</strong>：留出验证色块的归一化残差均方根（RMSE）必须小于 0.08（<code>MAX_VALIDATION_RMSE</code>）。超出误差范围意味着物理测定受到环境光严重污染，拟合结果被判定为不可信。</li>\n</ol>"
+                },
+                {
+                    "id": "darkroom-calibration-sop",
+                    "heading": "暗房硬件采集标准操作规程",
+                    "content": "<p>为了使校准帧具备真正的测量重现性，操作人员应当严格遵循以下暗房标准操作规程：</p>\n<ol>\n<li><strong>阶段一：光源预热与环境准备</strong><br>提前开启高显指背光板（建议选用 CRI ≥ 95、TLCI ≥ 98 的专业恒流摄影灯板），持续预热至少 20 分钟以使 LED 芯片结温达到热平衡，消除冷机至热机状态下的光谱漂移。彻底关闭翻拍室顶灯与窗帘，防止外部漫射光污染片门。</li>\n<li><strong>阶段二：相机光学系统锁定</strong><br>将相机牢固安装于重型翻拍架上，通过双向水平仪校准传感器平面与片门载物台的严格平行。调整微距镜头光圈至最佳锐度区间（通常为 f/5.6 至 f/8），手动锁定焦点与对焦环，关闭镜头光学防抖与相机机身防抖。</li>\n<li><strong>阶段三：暗场帧采集</strong><br>盖紧镜头前盖，关闭目镜遮光挡片以防止杂散光自取景器漏入传感器。设置相机为原生基准感光度（通常为 ISO 64 或 ISO 100），采用手动曝光模式（M 档），快门速度设置为翻拍底片时的典型曝光时间（如 1/15 秒）。连续拍摄 3 张后取中值，保存为 RAW 格式。</li>\n<li><strong>阶段四：平场开门帧采集</strong><br>取下镜头盖，清理片门。在底片载物台中央不放置任何胶片，保持与暗场完全相同的光圈与对焦设置。调整快门速度或微调灯板亮度，使背光曝光直方图位于右侧 70% 至 85% 区间（向右曝光原则，确保信噪比最高且无任何单通道贴顶截断）。拍摄并保存为 RAW 格式。</li>\n<li><strong>阶段五：透射色卡标定帧采集</strong><br>在片门位置平整放入透射标定靶（如 35mm 或 120 规格 IT8.7/1 透射片）。确保标定色块完全位于均匀光照视场内，使用黑卡遮蔽靶标有效成像区域以外的所有多余透光部分，防止杂散眩光降低对比度。拍摄 RAW 格式入库。</li>\n</ol>\n<p>在 NexFilm 软件中进入 <code>硬件校正</code> 视图，依次导入上述三组 RAW 文件，系统将在数秒内自动计算平场映射表与分离矩阵，并生成带 SHA-256 校验摘要的本地校准配置文件。</p>"
+                },
+                {
+                    "id": "experimental-boundary-disclosure",
+                    "heading": "实验性功能边界与技术诚实披露",
+                    "content": "<p>在计算摄影与胶片数字化领域，严谨的工程态度要求明确区分已验证的科学事实与处于探索阶段的实验假设。NexFilm 研发团队在此向全体开发者与用户诚实披露当前版本的边界：</p>\n<ol>\n<li><strong>相对透射率归一化具有完全物理可信度</strong>：<code>Capture Corrected</code> 路径下的暗场扣除与平场归一化，基于纯粹的经典辐射度量学，已通过全链路严密验证，能够彻底消除镜头暗角与背光照明非均匀性。</li>\n<li><strong>色卡拟合属于设备级透射分离，非胶片染料全反演</strong>：<code>Capture Characterized</code> 拟合的 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>3</mn><mo>×</mo><mn>3</mn></mrow><annotation encoding=\"application/x-tex\">3 \\times 3</annotation></semantics></math></span> 矩阵仅解决了相机传感器滤镜与特定灯板之间的光谱串扰，不等于胶片本身的乳剂特性曲线反演。</li>\n<li><strong>当前版本未内置 Status M 滤镜加权积分测定</strong>：由于不同相机拜尔滤色镜与真实摄影密度计 Status M 响应之间存在复杂的非线性光谱差异，当前内置的 <code>status_m_crosstalk_matrix()</code> 仅作为历史参考保留，系统绝不宣称已实现计量级 Status M 密度计替代。</li>\n<li><strong>校准配置与物理硬件强绑定</strong>：生成的校准配置文件仅在相同的机身型号、镜头型号、工作光圈与背光板序列下严格有效。更换镜头或调整光源色温后，必须重新采集并生成校准文件。</li>\n</ol>"
+                }
+            ]
+        },
+        {
+            "id": "cinema-and-aces-workflow",
+            "track": "color-science",
+            "trackTitle": "色彩科学",
+            "trackOrder": 3,
+            "chapterOrder": 4,
+            "kicker": "Color Science 04 / 院线管线",
+            "title": "16-bit 线性交付与 DaVinci Resolve / ACEScg 专业后期衔接",
+            "subtitle": "无损母带级导出节点截断机制、ACEScg 转换契约与达芬奇专业二级调色实操。",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "linear-mastering-vs-display-rendering",
+                    "heading": "线性母带交付与展示级成品导出的本质分歧",
+                    "content": "<p>在胶片数字化制作中，导出文件的定位直接决定了后期调色的自由度。传统反相工具通常只提供面向最终观看的展示级成品导出，例如 8-bit JPEG 或施加了 sRGB 伽马的普通 TIFF。这类文件在导出前已经固化了软件内部的色调曲线、相纸模拟 3D LUT、高光反差压缩以及显示器光电转换函数（OETF）。当调色师试图在专业调色软件中对这类文件进行较大幅度的曝光提升或阴影提亮时，往往会迅速遇到阶调断层、色相偏移以及噪点异常放大的困境。</p>\n<p>与展示级导出不同，<strong>线性母带级导出</strong>旨在为电影院线与专业后期工业流程提供场景线性级别的中间交付物。其核心思想是将数据流直接截断在光学反相与工作空间映射完成之后、任何感知色调曲线与显示伽马介入之前的纯物理线性阶段。</p>\n<pre class=\"doc-code-block\"><code>NexFilm 核心处理流水线\n┌────────────────────────────────────────────────────────┐\n│  透射率计算 -&gt; 净密度扣除 -&gt; 印片光调节 -&gt; 正片线性反相  │\n└──────────────────────────┬─────────────────────────────┘\n                           │\n                           ▼\n                  [ 线性截断分流节点 ]\n                 /                    \\\n                /                      \\\n        [ 母带级无损导出 ]        [ 显示级渲染管线 ]\n        - 16-bit 线性 TIFF        - 四通道分通道色调曲线\n        - LinearRaw DNG           - 胶片模拟 3D LUT (Kodak 2383 等)\n        - Raw Mosaic DNG          - 空间域反差锐化与色调映射\n        (无伽马/保留全动态)       - sRGB / Display P3 OETF 编码\n                │                 - 8/16-bit TIFF / JPEG 成品\n                ▼\n        达芬奇 / ACEScg 调色台</code></pre>\n<p>经由此截断节点导出的 16-bit 线性 ProPhoto RGB 图像，其各像素数值严格与原始胶片透过的正片光照能量成正比，具有与数字电影摄影机（如 ARRI ALEXA LogC 或 RED Log3G10）完全等价的无损调色宽容度。调色师可以在 DaVinci Resolve 中将其作为广色域场景线性素材进行无损的二级调色与母带制作。</p>"
+                },
+                {
+                    "id": "three-master-export-formats",
+                    "heading": "三大母带级导出格式与精确截断节点剖析",
+                    "content": "<p>为了适配不同的专业后期环境与长期归档需求，NexFilm 在底层（<code>src/dng_writer.rs</code> 与 <code>src/commands.rs</code>）构建了三种无损母带级导出规格：</p>\n<ol>\n<li><strong>16-bit 线性 TIFF（16-bit Linear TIFF）</strong><br>数据在完成光学密度反相与基底扣除后，直接转换为线性 ProPhoto RGB 浮点光强，并在未施加任何伽马矫正的前提下量化为 16-bit 无损 TIFF 格式。文件内部写入了 <code>Gamma = 1.0</code> 与标准 ROMM RGB 原色色度坐标。该格式是进入达芬奇调色系统最直接、兼容性最广泛的工业桥梁。</li>\n<li><strong>线性正片 DNG</strong><br>若后期流程偏好基于 Adobe Camera Raw 或 Lightroom 进行多帧协同管理，用户可选用 LinearRaw DNG。该格式遵循标准 TIFF/EP 规范，在单 IFD 容器中写入 <code>PhotometricInterpretation = 34892 (LinearRaw)</code> 标签，并内嵌 D50 与 D65 标准观察光源校准矩阵。软件读取该文件时会自动将其识别为具备原始传感器级别的 16 位线性正片，支持自由调整白平衡与曝光色温。</li>\n<li><strong>相机马赛克 RAW DNG</strong><br>该格式面向具有极高归档严谨度的档案馆与摄影机构。系统在导出时不进行任何解马赛克、色彩插值或非线性运算，而是将数码相机采集到的拜尔或 X-Trans CFA 原生光电采样点，原汁原味地重封装为标准 DNG 容器（<code>PhotometricInterpretation = 32803</code>）。原始硬件元数据、黑电平与白平衡乘数完整保留，为未来数十年后的算法复现提供不可替代的一手数字底片。</li>\n</ol>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">重要</div>\n    <div class=\"doc-callout-body\"><p>导出 16-bit 线性 TIFF 或 LinearRaw DNG 时，NexFilm 界面中设定的对比度滑块、阴影高光滑块以及相纸 3D LUT 将被自动旁路。导出的图像在普通图像查看器中观察时会呈现极度灰暗与低反差的外观，这属于线性辐射数据的正常物理表现。</p></div>\n</div>"
+                },
+                {
+                    "id": "davinci-resolve-color-management",
+                    "heading": "DaVinci Resolve 色彩管理系统配置全流程",
+                    "content": "<p>将 NexFilm 导出的 16-bit 线性 ProPhoto RGB 母带导入 DaVinci Resolve 进行院线级制作时，推荐采用色彩管理系统规范色彩流向。以下详细介绍两种主流工程配置方案：</p>\n<h3 id=\"方案-a-davinci-yrgb-color-managed-工作流-推荐影视后期团队\" class=\"scroll-mt-24\">方案 A：DaVinci YRGB Color Managed 工作流（推荐影视后期团队）</h3>\n<ol>\n<li>打开 DaVinci Resolve <code>Project Settings (项目设置)</code> -&gt; <code>Color Management (色彩管理)</code>。</li>\n<li>将 <code>Color Science (色彩科学)</code> 设置为 <code>DaVinci YRGB Color Managed</code>。</li>\n<li>取消勾选 <code>Automatic color management (自动色彩管理)</code>，将 <code>Color processing mode (色彩处理模式)</code> 设置为 <code>Custom (自定义)</code>。</li>\n<li><strong>Input Color Space (输入色彩空间)</strong>：设置为 <code>Linear</code> 传递函数，基色选用 <code>ProPhoto RGB</code>（或 <code>ROMM RGB</code>）。</li>\n<li><strong>Timeline Color Space (时间线色彩空间)</strong>：设置为 <code>DaVinci Wide Gamut / Intermediate</code>。此时整个时间线调色节点均运行于高宽容度的对数对数空间内。</li>\n<li><strong>Output Color Space (输出色彩空间)</strong>：根据最终监看设备设定（如 SDR 选用 <code>Rec.709 Gamma 2.4</code>，HDR 交付选用 <code>P3-D65 ST2084 1000 nits</code>）。</li>\n</ol>\n<h3 id=\"方案-b-aces-学院色彩编码系统工作流-推荐院线视效协同\" class=\"scroll-mt-24\">方案 B：ACES 学院色彩编码系统工作流（推荐院线视效协同）</h3>\n<ol>\n<li>在 <code>Project Settings</code> 中将 <code>Color Science</code> 选择为 <code>ACEScc</code> 或 <code>ACEScct</code>（推荐选用具备平滑趾部过渡特性的 <code>ACEScct</code>）。</li>\n<li><strong>ACES Version (ACES 版本)</strong>：选择 <code>ACES 1.3</code>。</li>\n<li><strong>ACES Input Transform (IDT)</strong>：由于 ProPhoto 线性空间不属于 ACES 预设硬件机型列表，在此处将 IDT 设置为 <code>No Input Transform</code>。后续在时间线节点上通过色彩空间转换工具手动加载。</li>\n<li><strong>ACES Output Transform (ODT)</strong>：设置为目标母带监视标准（如 <code>Rec.709</code> 或 <code>DCI-P3 D65</code>）。</li>\n</ol>"
+                },
+                {
+                    "id": "acescg-grading-node-tree",
+                    "heading": "ACEScg 节点树架构与无损二级调色实操",
+                    "content": "<p>在确立色彩管理基底后，调色师即可在节点图中构建专业胶片调色拓扑。标准节点树应当严格遵循从全局光照平衡到局部风格化的逻辑分层：</p>\n<pre class=\"doc-code-block\"><code>[Node 01: CST 输入] -&gt; [Node 02: 曝光平衡] -&gt; [Node 03: 密度曲线]\n                                                    │\n                                                    ▼\n[Node 06: 输出变换] &lt;- [Node 05: 胶片颗粒] &lt;- [Node 04: 二级选色]</code></pre>\n<p>各节点的具体配置与调色实操规范如下：</p>\n<ol>\n<li><strong>节点 1：输入色彩空间转换</strong><br>若采用 ACEScct 工作流，在首节点加载 <code>Color Space Transform (色彩空间转换)</code> OFX 插件。输入色彩空间设置为 <code>ProPhoto RGB</code>，输入 Gamma 设置为 <code>Linear</code>；输出色彩空间设置为 <code>ACEScg</code>，输出 Gamma 设置为 <code>ACEScct</code>。Tone Mapping（色调映射）保持为 <code>None</code>，完成无损数学投射。</li>\n<li><strong>节点 2：印片光曝光与白平衡调节</strong><br>在 ACEScct 对数空间内，使用色轮面板的 <code>Offset (全局平移)</code> 控制轴进行微调。该操作在数学上完全等价于光学暗房中调整放大机加色滤镜的曝光时长，能够以完全线性的方式校正轻微色偏，绝不产生高光畸变。</li>\n<li><strong>节点 3：胶片特性密度曲线</strong><br>使用自定义曲线构建模拟真实胶片洗印相纸的 S 型反差曲线。重点控制高光肩部的平滑滚降与暗部趾部的适度抬升，还原真实银盐照片的浑厚质感。</li>\n<li><strong>节点 4：二级色度选色与肤色保护</strong><br>利用 HSL 选色器或 Magic Mask 精准捕获人物肤色或特定景物，微调其饱和度与色相，消除不同光照环境下的杂色干扰。</li>\n<li><strong>节点 5：光学杂质与颗粒质感重构</strong><br>根据需要加载胶卷颗粒插件或光晕特效，为画面增添符合特定胶片乳剂年代感的有机物理纹理。</li>\n<li><strong>节点 6：最终显示适配与限幅（Output Transform / Limiter）</strong><br>确保所有高光与暗部信号平滑落入输出设备的广播安全色域范围内。</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">注意</div>\n    <div class=\"doc-callout-body\"><p>在 ACEScct 节点树中，所有曝光提升与压暗均应优先在 Node 02 的 Offset 轮上完成。避免直接使用 Primary 调色轮中的 Gain 或 Lift，以免破坏线性物理能量与真实色彩饱和度之间的自然比例关系。</p></div>\n</div>"
+                },
+                {
+                    "id": "export-specification-matrix",
+                    "heading": "规格全景对比：母带与成品导出选型矩阵",
+                    "content": "<p>为了便于不同制作环节的技术决策，下表完整总结了 NexFilm 导出矩阵的核心指标与应用建议：</p>\n<table class=\"doc-table\">\n<thead>\n<tr>\n<th>导出格式与规格</th>\n<th>颜色深度</th>\n<th>色彩空间与 Gamma 传递</th>\n<th>图像处理管线截断节点</th>\n<th>核心用途与下游协同软件</th>\n</tr>\n</thead>\n<tbody><tr>\n<td><strong>16-bit 线性 TIFF</strong></td>\n<td>16-bit 整数</td>\n<td>Linear ProPhoto RGB (Gamma 1.0)</td>\n<td>密度反相完成立即截断，无任何调色曲线</td>\n<td>DaVinci Resolve、Nuke、Flame 等工业级院线合成与调色</td>\n</tr>\n<tr>\n<td><strong>LinearRaw DNG</strong></td>\n<td>16-bit 整数</td>\n<td>LinearRaw 空间，内嵌 D50/D65 标定矩阵</td>\n<td>线性化正片阶段截断，嵌入标准 DNG 标签</td>\n<td>Adobe Lightroom、Photoshop ACR、Capture One 协同调色</td>\n</tr>\n<tr>\n<td><strong>Raw Mosaic DNG</strong></td>\n<td>原生位深 (12/14/16-bit)</td>\n<td>传感器原生 CFA Bayer / X-Trans 矩阵</td>\n<td>仅做文件重封装，完全不介入图像算法</td>\n<td>原始数字底片长期归档、科研测定与独立离线存储</td>\n</tr>\n<tr>\n<td><strong>8/16-bit 展示级 TIFF</strong></td>\n<td>8 或 16-bit</td>\n<td>sRGB / Display P3 / Adobe RGB (含 OETF)</td>\n<td>全管线完整执行，烘焙四通道曲线与相纸 LUT</td>\n<td>艺术微喷高质量打印、展览画册交付与出版物制作</td>\n</tr>\n<tr>\n<td><strong>高质量 JPEG</strong></td>\n<td>8-bit</td>\n<td>标准 sRGB (IEC 61966-2.1)</td>\n<td>全管线完整执行，施加感知色调与质量压缩</td>\n<td>Web 网页展示、社交媒体分享与客户快速审片</td>\n</tr>\n</tbody></table>"
+                }
+            ]
+        }
+    ],
+    "en": [
+        {
+            "id": "overview-and-install",
+            "track": "getting-started",
+            "trackTitle": "Getting Started",
+            "trackOrder": 1,
+            "chapterOrder": 1,
+            "kicker": "01.1 / Getting Started",
+            "title": "Understanding NexFilm and Installation Guide",
+            "subtitle": "A physics-grounded negative film inversion workbench and system setup.",
+            "readingTime": 7,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "quick-start"
+            ],
+            "sections": [
+                {
+                    "id": "core-principles",
+                    "heading": "Physics-grounded Inversion vs Empirical Curves",
+                    "content": "<p>Color negative inversion in general-purpose photographic software has historically relied on empirical curve manipulation in display gamma color spaces. When photographers import camera scans or flatbed scanner acquisitions into conventional editors, the standard workflow typically involves manually flipping RGB tone curve endpoints, tweaking levels sliders, or applying black-box lookup tables to neutralize the orange-brown film base mask. This approach is fundamentally at odds with photographic physics. Camera sensor RAW files capture photons in a linear transmittance domain, whereas light absorption across the dye layers of negative film emulsion follows the Beer-Lambert law, establishing a logarithmic relationship between optical density and transmittance. Inverting pixel values within a non-linear display gamma space distorts the inter-channel mathematical relationships, leading to clipped highlight color shifts, muddy shadows, and chronic color inconsistencies across frames within the same roll.</p>\n<p>NexFilm Engine is built around a unified optical density pipeline. The software converts input sensor transmittance values into optical density (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>D</mi><mo>=</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>T</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">D = -\\log_{10}(T)</annotation></semantics></math></span>) through rigorous mathematical transformations. Density-domain processing enables authentic physical anchoring of both the unexposed film base (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>) and the chemical density ceiling (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>). Within the optical density domain, color balance adjustment corresponds to pure additive shifts across color channels, mirroring the physical behavior of colored enlarger head filtration (Printer Lights) used in traditional photographic darkrooms. NexFilm adheres strictly to verifiable algorithmic principles: the built-in library of over forty film stock names is intended exclusively for archival metadata indexing, EXIF injection, and contact sheet titling. Inversion calculations rely entirely on measured physical base densities rather than non-verifiable black-box film profile presets.</p>\n<p>By establishing clear mathematical boundaries between transmittance, optical density, and output color space, NexFilm provides consistent, repeatable, and non-destructive inversion across single frames and entire rolls. Whether working with 135 formats, 120 medium format roll film, large format sheet film, or uncompressed linear TIFF files from drum scanners, the engine delivers predictable tone reproduction anchored directly in emulsion physics.</p>"
+                },
+                {
+                    "id": "package-selection",
+                    "heading": "Platform Matrix and Installation Packages",
+                    "content": "<p>NexFilm is engineered using Rust and modern Web platform standards, combining low-level systems memory safety with GPU fragment shader parallel processing. The application is distributed as self-contained standalone installers for major desktop operating systems. Verify your system architecture and hardware compatibility prior to installation.</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Platform &amp; Architecture</th><th>Installer Package Pattern</th><th>Target Hardware &amp; OS Minimum</th><th>Backend &amp; Acceleration Profile</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>Windows x64</strong></td>\n            <td><code>NexFilm.Engine_{version}_x64-setup.exe</code></td>\n            <td>Windows 10 / 11 64-bit, GPU supporting WebGL 2.0</td>\n            <td>Multi-threaded LibRaw decoding engine, Direct3D 11 WebGL2 canvas rendering</td>\n        </tr>\n        <tr>\n            <td><strong>macOS Apple Silicon</strong></td>\n            <td><code>NexFilm.Engine_{version}_aarch64.dmg</code></td>\n            <td>Mac computers with Apple M1 / M2 / M3 / M4 processors, macOS 11.0 Big Sur or later</td>\n            <td>Native ARM64 architecture instructions, Metal-accelerated WebKit color rendering</td>\n        </tr>\n        <tr>\n            <td><strong>macOS Intel</strong></td>\n            <td><code>NexFilm.Engine_{version}_x64.dmg</code></td>\n            <td>Mac computers with 64-bit Intel processors, macOS 10.15 Catalina or later</td>\n            <td>Native x86_64 compilation, AVX2 vector SIMD instruction acceleration</td>\n        </tr>\n    </tbody>\n</table><div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Installer Asset Verification</div>\n    <div class=\"doc-callout-body\">When retrieving distribution files from the official GitHub Releases page, select the binary installer corresponding to your platform from the assets table. Do not download the automatically packaged <code>Source code (zip)</code> or <code>Source code (tar.gz)</code> files located at the bottom of the release page. Source code archives do not contain compiled runtime binaries and cannot be launched directly.</div>\n</div><p>For digital image formats, NexFilm natively handles modern digital camera RAW files (including Sony <code>.ARW</code>, Canon <code>.CR2</code> / <code>.CR3</code>, Nikon <code>.NEF</code>, and Fujifilm <code>.RAF</code>), Imacon / Hasselblad Flextight scanner <code>.fff</code> archives, 16-bit linear TIFF files from specialized scanners, and standard 8-bit or 16-bit TIFF and PNG images. Note that due to current decoding limitations in the underlying LibRaw library, Nikon High Efficiency compressed formats (<strong>HE</strong> and <strong>HE*</strong>) generated by bodies such as the Nikon Z8 and Z9 are not supported directly. Users digitizing film with these cameras should record in uncompressed or lossless compressed RAW mode in-camera, or convert files to linear DNG using Adobe DNG Converter prior to ingestion.</p>"
+                },
+                {
+                    "id": "security-clearance",
+                    "heading": "Security Clearances and First Launch",
+                    "content": "<p>NexFilm is open-source software maintained by independent developers. Because the build packages are not currently signed with paid commercial certificates, operating system security frameworks may display warning dialogs during initial launch. These notices are standard operating system behavior for unsigned open-source utilities. NexFilm contains no telemetry tracking, background analytics, or network upload routines. Complete the following standard steps to authorize execution.</p>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">System Integrity and Security Policies</div>\n    <div class=\"doc-callout-body\">When authorizing software on macOS, instructions advising users to disable System Integrity Protection (SIP) via <code>csrutil disable</code> in Recovery Mode represent an unnecessary security hazard. NexFilm requires only standard per-app Gatekeeper authorization. Never disable system-wide security protections to run application software.</div>\n</div><h3 id=\"first-launch-authorization-on-windows\" class=\"scroll-mt-24\">First Launch Authorization on Windows</h3>\n<p>When launching the <code>.exe</code> installer, Microsoft Defender SmartScreen may display a blue dialog stating that Windows protected your PC from an unrecognized app. Follow these steps:</p>\n<ol>\n<li>Click the <strong>More info</strong> text link located within the dialog paragraph.</li>\n<li>The dialog will display the application package name and an unverified publisher status, revealing a button in the bottom right corner labeled <strong>Run anyway</strong>.</li>\n<li>Click <strong>Run anyway</strong> to proceed with the standard installation wizard.</li>\n</ol>\n<h3 id=\"first-launch-authorization-on-macos\" class=\"scroll-mt-24\">First Launch Authorization on macOS</h3>\n<p>Mount the downloaded <code>.dmg</code> disk image and drag the <code>NexFilm Engine.app</code> bundle into your <code>Applications</code> folder. When opening the app for the first time, macOS Gatekeeper may block execution, reporting that the developer cannot be verified. Use either of the following standard methods:</p>\n<ol>\n<li><strong>Finder Context Menu Method (Recommended)</strong>: Open Finder, navigate to the <strong>Applications</strong> folder, and locate <code>NexFilm Engine</code>. Hold the <kbd>Control</kbd> key and click the application icon (or right-click), then choose <strong>Open</strong> from the context menu. A confirmation prompt will appear containing an explicit <strong>Open</strong> button. Click <strong>Open</strong> to clear the quarantine flag and launch the engine.</li>\n<li><strong>System Settings Security Panel Method</strong>: If the initial launch was blocked, open <strong>System Settings</strong> from the Apple menu and navigate to <strong>Privacy &amp; Security</strong>. Scroll down to the Security section, where a notice will state that NexFilm Engine was blocked from opening because it is not from an identified developer. Click <strong>Open Anyway</strong>, authenticate with your macOS user password or Touch ID, and the application will start normally.</li>\n</ol>"
+                },
+                {
+                    "id": "storage-architecture",
+                    "heading": "Storage Architecture and Read-Only Guarantee",
+                    "content": "<p>Protecting original photographic data is a core architectural priority. NexFilm enforces a strict <strong>read-only policy for source scans</strong>. Throughout importing, base measurement, interactive WebGL preview rendering, and export processing, the software performs stream-oriented read operations on original image files. NexFilm never overwrites, renames, alters, or relocates your original RAW or TIFF scan files.</p>\n<p>All archival metadata, frame crop coordinates, photometric base markers, color adjustments, and cached thumbnails are maintained within the standard user application support directory of your operating system.</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Operating System</th><th>Local Database &amp; Configuration Directory</th><th>File Names and Storage Roles</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>Windows</strong></td>\n            <td><code>%APPDATA%\\NexFilm Engine\\</code></td>\n            <td><code>nexfilm_user.db</code> (Primary SQLite database storing library indices and adjustments)<br /><code>rolls.json</code> (Backward-compatible roll catalog snapshot)<br /><code>profiles/</code> (Hardware calibration and flat-field profile repository)</td>\n        </tr>\n        <tr>\n            <td><strong>macOS</strong></td>\n            <td><code>~/Library/Application Support/NexFilm Engine/</code></td>\n            <td><code>nexfilm_user.db</code> (Primary SQLite database containing edits and crop data)<br /><code>rolls.json</code> (Roll synchronization mirror)<br /><code>profiles/</code> (Flat-field and calibration target data)</td>\n        </tr>\n    </tbody>\n</table><p>Because the application references original files via absolute disk paths, moving source image folders, altering parent volume names, or switching external storage drives will cause file paths to become invalid, marked by offline warnings in the library. In this event, your adjustments remain safe in the database. Select <strong>Locate File</strong> in the toolbar, navigate to the updated directory, and NexFilm will automatically reconnect the entire roll using matching filenames.</p>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Thumbnail Refresh Recommendations After Version Upgrades</div>\n    <div class=\"doc-callout-body\">When upgrading from earlier versions such as <code>v1.0.2</code> to <code>v1.1.0</code> or later, changes to the density pipeline weighting and channel span algorithms may cause older cached thumbnails to appear darker than expected. Open existing rolls in the Develop workspace and trigger <strong>Auto Invert</strong> once to re-render the thumbnail and refresh stored recipe parameters. Before processing large archival collections, verify your complete workflow by running a small test batch of two or three frames from import to export.</div>\n</div>"
+                },
+                {
+                    "id": "interface-layout",
+                    "heading": "Four Core Workspace Regions at a Glance",
+                    "content": "<p>The NexFilm user interface is structured around darkroom ergonomics, prioritizing canvas visibility and responsive parameter control. The main application window is partitioned into four functional regions:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Interface Region</th><th>Physical Location &amp; Components</th><th>Core Functional Responsibilities</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>Menu Bar</strong></td>\n            <td>Top-left corner displaying the <code>NEXFILM</code> branding, <strong>setting</strong>, <strong>View</strong>, and <strong>Help</strong> menus</td>\n            <td>Manages application preferences. Access <strong>setting</strong> to toggle between English and Chinese (zh-CN) or switch between dark and light interface themes. Use <strong>View</strong> for rapid module navigation, and <strong>Help</strong> to review version details.</td>\n        </tr>\n        <tr>\n            <td><strong>Top Header &amp; Action Bar</strong></td>\n            <td>Centered view navigation tabs flanked by global action buttons on the right</td>\n            <td>Provides access to five primary views: <strong>Library</strong>, <strong>Develop</strong>, <strong>Rolls</strong>, <strong>Hardware Calibration</strong>, and <strong>Documentation</strong>. The permanent global action buttons—<strong>Export Roll</strong>, <strong>Import Roll</strong>, and <strong>Export</strong>—remain accessible across all views.</td>\n        </tr>\n        <tr>\n            <td><strong>Main Workspace</strong></td>\n            <td>Central viewport dynamically adapting to the active view selection</td>\n            <td>In <strong>Library</strong>, presents thumbnail grids with roll metadata headers. In <strong>Develop</strong>, hosts the WebGL 2.0 preview canvas on the left with responsive zoom and pan, paired with the inspector controls on the right (Histogram, Waveform, Film Area, Calibration, Printer Lights, and Curves). In <strong>Rolls</strong>, displays archived contact histories.</td>\n        </tr>\n        <tr>\n            <td><strong>Filmstrip</strong></td>\n            <td>Horizontal scrolling filmstrip docked at the bottom of the Develop view</td>\n            <td>Displays chronological thumbnails of all exposures in the current roll. When visible, scroll horizontally with the mouse wheel or navigate frames using the <kbd>←</kbd> and <kbd>→</kbd> keyboard arrows.</td>\n        </tr>\n    </tbody>\n</table><p>Understanding the physical separation of these workspaces allows for swift darkroom throughput. In the next chapter, we examine the optical requirements for film digitization to ensure your hardware setup provides optimal image data.</p>"
+                }
+            ]
+        },
+        {
+            "id": "scanning-best-practices",
+            "track": "getting-started",
+            "trackTitle": "Getting Started",
+            "trackOrder": 1,
+            "chapterOrder": 2,
+            "kicker": "01.2 / Getting Started",
+            "title": "Camera Scanning and Digitization Best Practices",
+            "subtitle": "Physical requirements for backlight CRI, exposure rules, and unexposed film base.",
+            "readingTime": 8,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "optical-illumination",
+                    "heading": "Backlight Color Rendering and Spectral Continuity",
+                    "content": "<p>During camera scanning of color negative film, the digital image sensor does not capture reflected light from physical objects. Instead, it measures transmitted light passing through three distinct emulsion dye layers. The recorded light intensity at the sensor plane represents the product of the light source emission spectrum and the spectral transmittance of each dye layer. If the backlight exhibits significant spectral troughs, emission spikes, or discontinuous wavelength gaps, the resulting channel transmittance records will suffer from physical cross-talk that cannot be resolved computationally. Digital inversion algorithms cannot recreate spectral energy that was never registered by the camera sensor. Therefore, the optical quality of your backlight dictates the mathematical ceiling for color accuracy and orange mask subtraction.</p>\n<p>Negative emulsion relies on yellow, magenta, and cyan dye couplers. To isolate the absorption characteristics of each layer, the illuminating backlight must offer continuous spectral distribution across the visible spectrum.</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Backlight Source Category</th><th>Typical Color Rendering Metrics</th><th>Spectral Profile Characteristics</th><th>Impact on Negative Film Inversion</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>Full-Spectrum Photographic Light Panel / Flash</strong></td>\n            <td>CRI ≥ 95 / TLCI ≥ 98 / TM-30 <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>R</mi><mi>f</mi></msub><mo>≥</mo><mn>95</mn></mrow><annotation encoding=\"application/x-tex\">R_f \\ge 95</annotation></semantics></math></span></td>\n            <td>Continuous spectral distribution from 400nm to 700nm without severe troughs</td>\n            <td>Recommended benchmark. Ample photon collection across all color channels, crisp layer separation, and clean base neutralization</td>\n        </tr>\n        <tr>\n            <td><strong>Commercial Household LED Panels</strong></td>\n            <td>CRI ~80, TLCI &lt; 70</td>\n            <td>Narrow blue phosphor pump peak at 450nm with steep deficits in cyan-green and deep red</td>\n            <td>Distorts cyan dye layer calculations. Inversions exhibit persistent magenta-cyan casts and noisy shadow separation</td>\n        </tr>\n        <tr>\n            <td><strong>Consumer OLED / LCD Screens (Smartphones / Tablets)</strong></td>\n            <td>Unsuitable for scientific digitization</td>\n            <td>Narrow tri-band line emissions with near-zero energy between peaks, prone to subpixel moiré artifacts</td>\n            <td>Strictly prohibited. Narrow emission bands fail to correspond to wide emulsion absorption bands, producing severe non-linear crosstalk</td>\n        </tr>\n    </tbody>\n</table><p>Backlight color temperature should ideally remain in the balanced daylight range between 5000K and 5600K. Very warm sources below 3500K starve the digital camera blue channel of photons, introducing heavy shot noise into the densest dye readings. Conversely, overly cool sources diminish red channel exposure, allowing dense negative highlight records to drop near the sensor noise floor. High-CRI continuous LED panels or shoe-mount camera strobes equipped with neutral diffusion boxes provide predictable illumination.</p>"
+                },
+                {
+                    "id": "stray-light-control",
+                    "heading": "Stray Light Suppression and Masking Standards",
+                    "content": "<p>Negative digitization is macro photographic transmission reproduction and is sensitive to ambient stray light and film carrier light leakage. In a photographic negative, clear emulsion areas represent deep shadow tones, whereas dense, dark orange-brown regions correspond to bright scene highlights. This inverted physical relationship means that even faint stray light contamination causes inverted tonal damage.</p>\n<p>When unmasked light from the backlight escapes around the perimeter of the film carrier, or when overhead room lighting is left illuminated, stray photons enter the macro lens. These non-imaging rays reflect off internal lens elements and barrel walls. Diffuse flare strikes the sensor precisely where the negative is densest and transmits the least light—the scene highlights. This unwanted photon contamination elevates the minimum measured transmittance baseline, mathematically introducing a spurious fog level:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>T</mi><mtext>measured</mtext></msub><mo>=</mo><msub><mi>T</mi><mtext>actual</mtext></msub><mo>+</mo><msub><mi>T</mi><mtext>stray</mtext></msub></mrow><annotation encoding=\"application/x-tex\">T_{\\text{measured}} = T_{\\text{actual}} + T_{\\text{stray}}</annotation></semantics></math></span></p>\n<p>Following logarithmic inversion, this spurious fog value compresses the upper densities, causing sky tones, specular reflections, and bright highlights to appear dull and covered in veil-like haze.</p>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Physical Masking Standards</div>\n    <div class=\"doc-callout-body\">When assembling a camera scanning rig, use opaque matte black card stock or dedicated carrier masking plates to cover all illuminated areas around the film strip. Gaps between the film edge and carrier masks should remain under one millimeter. Turn off all overhead room illumination and block window sunlight to prevent reflections from the front of the film emulsion.</div>\n</div>"
+                },
+                {
+                    "id": "camera-parameters",
+                    "heading": "Camera Capture Settings and ETTR Principles",
+                    "content": "<p>Camera exposure settings during film digitization must focus on capturing the full dynamic range of the negative emulsion without clipping any sensor channels. Internal camera post-processing routines or non-linear dynamic range optimizations must be disabled to preserve linear raw data.</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Optical &amp; Exposure Setting</th><th>Recommended Configuration</th><th>Physical Mechanism &amp; Technical Objective</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>Sensitivity (ISO)</strong></td>\n            <td>Base native ISO (typically ISO 64 or ISO 100)</td>\n            <td>Maximizes dynamic range and full well capacity, minimizing sensor readout noise in the dense negative highlights</td>\n        </tr>\n        <tr>\n            <td><strong>Aperture</strong></td>\n            <td>f/5.6 to f/8</td>\n            <td>Represents the optical sweet spot for dedicated macro lenses, offering optimal field flatness while avoiding diffraction softening past f/11</td>\n        </tr>\n        <tr>\n            <td><strong>Shutter Speed</strong></td>\n            <td>Determined by ETTR exposure metering (use stable copy stands and shutter delays)</td>\n            <td>Eliminates camera shake on static copy stands. For flash setups, select the camera native sync speed (typically 1/160s to 1/250s)</td>\n        </tr>\n        <tr>\n            <td><strong>In-Camera Processing</strong></td>\n            <td>Disable all dynamic range expansion (turn off D-Lighting, DRO, Picture Styles)</td>\n            <td>Prevents non-linear tone curves from being baked into the raw metadata or preliminary demosaicing pipeline</td>\n        </tr>\n    </tbody>\n</table><p>The fundamental rule of camera scanning exposure is <strong>Exposure to the Right (ETTR)</strong> based on real-time RGB histograms. Monitor three-channel histograms in live view and shift the histogram curve as far to the right as possible without clipping the red, green, or blue channels. Because the unexposed orange film base represents the most translucent region across the entire negative, the rightmost peak on the histogram will correspond to this clear film base. Keeping this base peak roughly one-third to one-half stop below full digital saturation guarantees that the dense negative highlights receive maximum photon volume, suppressing shadow noise in the final positive image.</p>"
+                },
+                {
+                    "id": "film-base-retention",
+                    "heading": "The Fundamental Rule of Unexposed Film Base Retention",
+                    "content": "<p>A common error among photographers new to digital scanning is framing the camera crop tightly against the exposed image area, trimming away the surrounding border and sprocket gaps. This framing eliminates the primary physical anchor required for optical density calibration.</p>\n<p>In 135 film, the margins containing the sprocket holes and the rebate between consecutive frames receive no light during exposure in the camera. Similarly, in 120 roll film, the clear rebate along the top and bottom borders consists of pure, unexposed film base. This unexposed zone contains only the physical support material (cellulose acetate or polyester) and the residual chemical dye mask remaining after development and fixing.</p>\n<p>NexFilm requires sampling the optical density of this unexposed rebate to establish the baseline minimum density (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>). By subtracting this measured base density logarithmically across channels, the engine strips away the orange mask without guess-work. If a scan contains no unexposed rebate, the software loses its primary physical anchor and must estimate the mask using the brightest image pixels, which introduces potential white balance drift.</p>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">The Non-Negotiable Framing Rule</div>\n    <div class=\"doc-callout-body\">When composing each camera scan, keep one to two millimeters of unexposed clear film rebate or a sprocket hole edge visible within the camera frame. Never crop the digital capture tightly to the active exposure area in-camera. The RAW file must record both the image content and the unexposed mask to allow NexFilm to measure authentic emulsion characteristics.</div>\n</div><p>Retaining the rebate during camera capture is intended solely for base density measurement. Once the file is opened in the <strong>Develop</strong> workspace, users will isolate the exposed frame and exclude the borders using the <strong>Set Film Area</strong> crop handles.</p>"
+                },
+                {
+                    "id": "scanner-linear-capture",
+                    "heading": "Flatbed and Dedicated Scanner 16-Bit Linear Ingestion",
+                    "content": "<p>When digitizing film using flatbed scanners (such as the Epson Perfection V850 Pro) or dedicated film scanners (such as the Plustek OpticFilm, Nikon Coolscan, or Hasselblad / Imacon Flextight), the primary objective is bypassing the scanner driver proprietary inversion and automated tone algorithms.</p>\n<p>Traditional scanning packages (including Epson Scan, SilverFast, and VueScan) default to active negative conversion, automatic clipping, and aggressive S-curve contrast adjustments designed for immediate consumer viewing. These internal transformations warp the linear transmittance data, making accurate density-domain reconstruction impossible.</p>\n<p>Configure your scanning software as follows:</p>\n<ol>\n<li><strong>Epson Scan</strong>: In Professional Mode, select <strong>16-bit Grayscale</strong> or <strong>48-bit Color</strong>. Choose <strong>Color Negative Film</strong> or <strong>Color Positive</strong> to ensure untampered linear transmission. In the adjustments panel, disable Auto Exposure, Unsharp Mask, and Color Restoration, exporting uncompressed 16-bit TIFF files.</li>\n<li><strong>SilverFast</strong>: Use the <strong>Archive Suite</strong> workflow to capture 48-bit RAW files. This mode records direct charge values from the sensor array and bypasses SilverFast NegaFix lookup tables, providing raw density gradients directly to NexFilm.</li>\n<li><strong>VueScan</strong>: Under the Input tab, set the media type to <strong>Image</strong> or configure output to <strong>Raw file</strong> with 48-bit RGB color depth. In the Filter and Color tabs, disable all automated balance algorithms by selecting <strong>None</strong>, saving uncorrected 16-bit TIFF records.</li>\n</ol>\n<p>Treating your scanner as a high-bit-depth optical densitometer ensures that raw transmission data arrives in NexFilm without non-linear alterations, allowing the software to reconstruct the full tonal gradation of the original film emulsion.</p>"
+                }
+            ]
+        },
+        {
+            "id": "first-roll-in-five-minutes",
+            "track": "getting-started",
+            "trackTitle": "Getting Started",
+            "trackOrder": 1,
+            "chapterOrder": 3,
+            "kicker": "01.3 / Getting Started",
+            "title": "Five Minutes to Your First Inverted Roll",
+            "subtitle": "End-to-end practical walkthrough from import and film area selection to printer lights and export.",
+            "readingTime": 8,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "import-workflow",
+                    "heading": "Step 1: Selecting Import Mode and Registering Metadata",
+                    "content": "<p>When launching NexFilm, the application displays the darkroom-inspired <strong>Library</strong> workspace by default. The first step in processing a roll is cataloging your digitized scans into the local engine environment. Click the <strong>Import Roll</strong> button in the top-right header to summon the import configuration modal. NexFilm provides two ingestion methods tailored to different scanning styles:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Import Mode Option</th><th>Target Negative Ingestion Scenario</th><th>Metadata Registration &amp; Engine Actions</th><th>Recommended Utilization Profile</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>Import by Roll</strong></td>\n            <td>Complete rolls photographed consecutively (for example, 36 exposures of 135 or 12 frames of 120)</td>\n            <td>Prompts for roll identifier, film stock (chosen from the built-in library of over forty stocks), capture format (135, 6x4.5, 6x6, 6x7), camera body, and shoot date. Creates an isolated archival catalog roll.</td>\n            <td>Standard recommendation. Enables whole-roll batch calibration, shared white-point synchronization, and structured contact sheet rendering</td>\n        </tr>\n        <tr>\n            <td><strong>Loose Import</strong></td>\n            <td>Individual proof captures, loose historic test files, or mixed-aspect frame collections</td>\n            <td>Eliminates catalog header requirements, allowing direct drag-and-drop of multiple RAW or TIFF files directly into the central viewport.</td>\n            <td>Rapid testing. Keeps frames in a transient session list that can later be converted into a structured archival roll</td>\n        </tr>\n    </tbody>\n</table><p>When choosing <strong>Import by Roll</strong>, click the browse button to select the target directory containing your digitized frames. Specify the film stock name (such as <code>Kodak Portra 400</code>) and the capture format (such as <code>135</code>). Click <strong>Confirm Import</strong>, and NexFilm will catalog the files inside the local SQLite database (<code>nexfilm_user.db</code>). The import step generates only lightweight thumbnail previews and indexes physical metadata. The original image files remain strictly read-only on your disk and are never altered, moved, or duplicated.</p>"
+                },
+                {
+                    "id": "proxy-generation",
+                    "heading": "Step 2: Entering Develop and On-Demand Proxy Generation",
+                    "content": "<p>In the <strong>Library</strong> thumbnail grid, double-click any representative frame, or select a frame and click the <strong>Develop</strong> tab in the centered view switcher. The application transitions smoothly into the GPU-accelerated grading workbench.</p>\n<p>During your initial entry into Develop, a brief loading sequence appears on the central canvas. This indicates that NexFilm is initializing its <strong>on-demand 16-bit linear proxy generation pipeline</strong>. Traditional photo editing software attempts full debayering and decoding of every high-resolution RAW file across an entire roll upon import, consuming gigabytes of system memory and stalling disk I/O. NexFilm uses an asynchronous, demand-driven architecture:</p>\n<ol>\n<li><strong>Zero Full-Resolution Decoding on Ingestion</strong>: The Library reads embedded container previews to achieve immediate thumbnail rendering across dozens of rolls.</li>\n<li><strong>On-Demand 16-bit Floating-Point Proxy Processing</strong>: Only when an exposure is opened in Develop does the background Rust engine invoke LibRaw or the high-throughput TIFF parser, transforming Bayer sensor data into an unclipped 16-bit linear transmittance texture uploaded to WebGL 2.0 texture units.</li>\n<li><strong>Real-Time GPU Shader Pipeline</strong>: The main viewport relies on custom WebGL2 fragment shaders to calculate logarithmic optical density conversions, printer light color additions, and tone curves in parallel, updating the display at a sustained 60 frames per second during parameter interaction.</li>\n</ol>\n<p>For viewport interaction, use the mouse wheel over the canvas to zoom smoothly in and out centered on the cursor position. Hold down the keyboard spacebar <kbd>Space</kbd> and drag the mouse to pan across the negative, examining emulsion silver grain structure and optical focus. Double-clicking any empty canvas area resets the view to fit the full frame.</p>"
+                },
+                {
+                    "id": "film-area-definition",
+                    "heading": "Step 3: Defining Valid Film Area and Excluding Border Highlights",
+                    "content": "<p>Within the Develop workspace, the most influential step governing inversion quality is establishing the <strong>Film Area</strong>. In the right-hand inspector panel, expand the &quot;Geometry and Area&quot; panel and select the <strong>Set Film Area</strong> button. Four corner handles and bounding border lines will appear over the negative preview.</p>\n<p>Click <strong>Auto Area</strong> in the toolbar. The edge-detection algorithm scans the frame boundaries and fits an initial rectangular crop against the dark rebate. Human visual confirmation is essential at this juncture.</p>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">The Optical Consequence of Including Light Panels and Sprockets</div>\n    <div class=\"doc-callout-body\">A backlight panel transmits raw, unobstructed light that is often many times brighter than the clear film base. If unmasked light panel areas or transparent 135 sprocket hole cutouts are accidentally enclosed inside the film area, the inversion algorithm will identify the pure light source as the brightest pixel in the exposure. In subsequent logarithmic normalization, the genuine photographic exposure range is forced downward, causing the final positive image to look muddy, dark, and flat across all midtones.</div>\n</div><table class=\"doc-table\">\n    <thead>\n        <tr><th>Inspection Checkpoint</th><th>Acceptable Crop Criteria</th><th>Defective Crop Behavior</th><th>Corrective Adjustment Procedure</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>Surrounding Light Panel</strong></td>\n            <td>The interior of the box contains 100% film emulsion with zero raw backlight leakage</td>\n            <td>Crop box is positioned too wide, showing illuminated light panel along the edges</td>\n            <td>Drag the border handles inward until all external white light is eliminated from the active area</td>\n        </tr>\n        <tr>\n            <td><strong>135 Sprocket Holes</strong></td>\n            <td>Sprocket cutouts are excluded completely outside the crop line</td>\n            <td>The crop rectangle includes the interior of sprocket holes</td>\n            <td>Pull the upper and lower crop borders inward. If the film is tilted, level the frame first using the angle slider</td>\n        </tr>\n        <tr>\n            <td><strong>Clear Film Base Rebate</strong></td>\n            <td>Allows a hairline gap of unexposed rebate along the edges, with active imagery occupying 98% of the box</td>\n            <td>Thick swaths of orange unexposed rebate occupy prominent portions of the active frame</td>\n            <td>Tighten crop boundaries against the exposed scene content so histogram calculations reflect actual imagery</td>\n        </tr>\n    </tbody>\n</table><p>Once the boundary rectangle is confirmed to hug the exposed image area, click <strong>Save Area</strong> in the inspector. NexFilm stores the crop coordinates in the database and hides the interactive handles.</p>"
+                },
+                {
+                    "id": "auto-invert-and-batch",
+                    "heading": "Step 4: Executing Auto Invert and Batch Applying Area",
+                    "content": "<p>With the film area confirmed, click the <strong>Auto Invert</strong> button in the inspector. NexFilm processes the frame in milliseconds:</p>\n<ol>\n<li>The engine samples the unexposed orange base rebate located outside the crop line (or from pre-calibrated base markers) to calculate the negative base density vector <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mo stretchy=\"false\">(</mo><msubsup><mi>D</mi><mi>min</mi><mo>⁡</mo><mi>R</mi></msubsup><mo separator=\"true\">,</mo><msubsup><mi>D</mi><mi>min</mi><mo>⁡</mo><mi>G</mi></msubsup><mo separator=\"true\">,</mo><msubsup><mi>D</mi><mi>min</mi><mo>⁡</mo><mi>B</mi></msubsup><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">(D_{\\min}^R, D_{\\min}^G, D_{\\min}^B)</annotation></semantics></math></span>.</li>\n<li>It executes logarithmic transformation and matrix density subtraction across all pixels enclosed within the crop boundary, mapping the image into calibrated optical density space.</li>\n<li>The bounded channel span response model calculates initial highlight-shadow contrast and color balance, presenting an authentic, natural positive image on the canvas.</li>\n</ol>\n<p>If your roll was captured on a static copy stand with a fixed negative carrier, frame placement remains identical across exposures. In this case, there is no need to adjust the crop box individually for every exposure. On the calibrated first frame, click <strong>Batch Apply</strong> in the inspector panel. Check the option for <strong>Film Area &amp; Geometry</strong>, and click <strong>Apply to Roll</strong>. NexFilm broadcasts the exact crop coordinates to every frame in the current roll.</p>"
+                },
+                {
+                    "id": "printer-lights-tuning",
+                    "heading": "Step 5: Refining Density with Printer Lights and Non-Destructive Edits",
+                    "content": "<p>Auto Invert provides a physically sound photographic baseline, but individual lighting situations and artistic intentions require fine-tuning. In classical darkroom printing, color technicians adjust exposure by inserting red, green, and blue optical filters into the enlarger head, known as Printer Lights.</p>\n<p>NexFilm reproduces this darkroom methodology in the <strong>Printer Lights</strong> inspector panel. Operating in the logarithmic density domain, adjustments follow additive and subtractive color filtration rules:</p>\n<ol>\n<li><strong>Red Light</strong>: Moving the slider right increases red light, warming the positive and removing cyan coldness from shadow areas. Moving left decreases red, shifting the image toward Cyan.</li>\n<li><strong>Green Light</strong>: Moving the slider right warms the tone toward green. Moving left decreases green, eliminating yellow-green casts and steering the palette toward Magenta.</li>\n<li><strong>Blue Light</strong>: Moving right warms the palette toward yellow. Moving left cools the image toward Blue, ideal for neutralizing warm tungsten indoor lighting.</li>\n</ol>\n<p>To prevent accidental parameter shifts, slider interaction includes intentional focus requirements: scrolling the mouse wheel over a slider produces no change until you <strong>click the slider once with the left mouse button to give it focus</strong>. Once focused, the mouse wheel steps values with precision. When evaluating sharpening, holding down the keyboard <kbd>Alt</kbd> key while adjusting <strong>Amount</strong>, <strong>Radius</strong>, or <strong>Detail</strong> temporarily renders a high-contrast grayscale edge mask on the canvas, reverting to full-color preview when released.</p>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Non-Destructive History and Universal Shortcuts</div>\n    <div class=\"doc-callout-body\">Every adjustment in NexFilm is recorded non-destructively in local memory. Press <kbd>Ctrl</kbd>+<kbd>Z</kbd> (<kbd>⌘</kbd>+<kbd>Z</kbd> on macOS) to undo the previous parameter modification. Press <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> or <kbd>Ctrl</kbd>+<kbd>Y</kbd> to redo changes. While the filmstrip is visible, press the horizontal arrow keys <kbd>←</kbd> and <kbd>→</kbd> to jump between adjacent exposures. All adjustments are committed to the local database in the background without modal save prompts.</div>\n</div>"
+                },
+                {
+                    "id": "export-and-verification",
+                    "heading": "Step 6: Single-Frame Proof Export and Full-Roll Output",
+                    "content": "<p>After refining your adjustments, standard darkroom procedure requires exporting a single high-resolution proof before committing to a full-roll batch export.</p>\n<p>Click the <strong>Export</strong> button in the top-right header to display the single-frame export modal:</p>\n<ol>\n<li><strong>Export Format Selection</strong>: For online publishing and client previews, select high-quality <strong>JPEG</strong> (quality factor 95 to 100). For downstream grading in Adobe Photoshop, Lightroom, or DaVinci Resolve, select uncompressed <strong>16-bit TIFF</strong>.</li>\n<li><strong>Color Space Assignment</strong>: For standard displays and web deployment, choose <strong>sRGB</strong>. For wide-gamut monitors such as the Apple Studio Display or hardware-calibrated printing monitors, select <strong>Display P3</strong> or <strong>Adobe RGB</strong>.</li>\n<li><strong>Color Profile Embedding</strong>: Confirm that <strong>Embed ICC Color Profile</strong> is enabled to guarantee consistent color reproduction across operating systems and web browsers.</li>\n</ol>\n<p>Click <strong>Confirm Export</strong>. The background Rust engine decodes the full-resolution RAW data and performs full-bit-depth rendering, writing the positive file to disk in seconds. Open the resulting TIFF or JPEG in your system image viewer, zoom to 100%, and verify shadow noise levels, skin tone gradation, and highlight texture.</p>\n<p>When the proof matches your quality expectations, click <strong>Export Roll</strong> in the header. The roll export dialog allows configuring output filename tokens (such as <code>{Roll}_{Seq}_{Film}</code>) and setting worker thread concurrency. Click export to process the entire roll sequentially, delivering a complete set of color-consistent digital positives in minutes.</p>"
+                }
+            ]
+        },
+        {
+            "id": "roll-vs-loose-workflows",
+            "track": "getting-started",
+            "trackTitle": "Getting Started",
+            "trackOrder": 1,
+            "chapterOrder": 4,
+            "kicker": "01.4 / Getting Started",
+            "title": "Roll Physical Calibration versus Loose Frames Workflow",
+            "subtitle": "Whole-roll calibration, shared white point anti-divergence, and 120 format fallback.",
+            "readingTime": 8,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "workflow-decision-matrix",
+                    "heading": "Workflow Selection and Decision Matrix",
+                    "content": "<p>In film digitization practice, photographers encounter diverse negative materials and capture configurations: sometimes a complete, unbroken 135 roll developed under uniform chemistry with leader intact; other times, individual proof frames, 120 medium format strips lacking leader tabs, or test shots from disparate sources. To support these distinct engineering inputs, NexFilm provides two primary operating workflows: the <strong>Roll Physical Calibration Workflow</strong> and the <strong>Loose Frames Fast Workflow</strong>.</p>\n<p>Evaluating the underlying mechanisms and trade-offs of each workflow ensures consistent darkroom output and optimal processing efficiency.</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Core Evaluation Dimension</th><th>Roll Physical Calibration Workflow</th><th>Loose Frames Fast Workflow</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>Target Emulsion Material</strong></td>\n            <td>Complete rolls with consecutive exposures (135 whole rolls, 120 connected strips) sharing uniform processing</td>\n            <td>Individual proof frames, large format sheet film, isolated test frames, or mixed laboratory batches</td>\n        </tr>\n        <tr>\n            <td><strong>Mask Physical Calibration</strong></td>\n            <td>Dual anchor calibration in Library sampling unexposed base (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>) and exposed leader (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>), shared across the roll</td>\n            <td>Per-frame estimation using local unexposed rebate or frame highlight density distribution</td>\n        </tr>\n        <tr>\n            <td><strong>Inter-Frame Consistency</strong></td>\n            <td>Maximum consistency. Completely eliminates color casts and tonal divergence across frames within the same scene</td>\n            <td>Independent per frame. Requires visual fine-tuning or manual propagation using Copy Settings</td>\n        </tr>\n        <tr>\n            <td><strong>Batch Automation</strong></td>\n            <td>Enables one-click <strong>Auto Invert Roll</strong>, scanning the roll-wide peak white point to invert all frames sequentially</td>\n            <td>Requires frame-by-frame processing or selective broadcasting using <strong>Batch Apply</strong></td>\n        </tr>\n        <tr>\n            <td><strong>Archival Management</strong></td>\n            <td>Recorded as structured rolls in the SQLite database, accessible in <strong>Rolls</strong> for contact sheets and batch export</td>\n            <td>Maintained in transient session lists, with the option to convert frames into a permanent archival roll</td>\n        </tr>\n    </tbody>\n</table><p>For cohesive documentary, portrait, or commercial projects photographed across complete rolls, the Roll Physical Calibration Workflow is the standard recommendation. For quick inspection or ad-hoc adjustments, the Loose Frames Workflow offers immediate setup.</p>"
+                },
+                {
+                    "id": "physical-calibration-anchors",
+                    "heading": "Dual Anchor Calibration: Measuring D-Min and D-Max",
+                    "content": "<p>The inter-frame color consistency delivered by the roll workflow relies on establishing two empirical physical boundary anchors on the chemical emulsion: the <strong>unexposed clear base (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>)</strong> and the <strong>fully exposed, maximum density leader (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>)</strong>.</p>\n<p>When loading 135 film, the leader tongue pulled from the cassette is exposed to daylight and achieves maximum silver and dye density upon development, representing the chemical saturation ceiling (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>). In contrast, the unexposed emulsion inside the cassette throat or the spacing between frames receives zero light exposure, recording only the optical density of the polyester or acetate support and the residual orange dye couplers (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>). Together, these two measurements define the physical dynamic range of the emulsion under specific development chemistry.</p>\n<p>Calibration is executed directly within the <strong>Library</strong> view:</p>\n<ol>\n<li>Import the complete roll, ensuring digitized frames include the unexposed rebate and the black leader frame.</li>\n<li>In the Library toolbar, select <strong>Calibrate Film</strong> to launch the guided calibration sequence.</li>\n<li>Follow the onscreen prompt to click an area of pure, unexposed film base, confirming red, green, and blue base density vectors. Next, navigate to the black leader frame and sample the darkest area to measure maximum density.</li>\n<li>Click <strong>Confirm Calibration</strong>. NexFilm locks the global <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mo stretchy=\"false\">(</mo><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub><mo separator=\"true\">,</mo><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">(D_{\\min}, D_{\\max})</annotation></semantics></math></span> density span for the entire roll.</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Automated Calibration Frame Exclusion</div>\n    <div class=\"doc-callout-body\">Frames designated as leader or base calibration samples serve purely photometric measurement functions and contain no active photographic imagery. NexFilm flags these exposures as <strong>Calibration Frames</strong> in the database. When editing in <strong>Develop</strong>, launching <strong>Auto Invert Roll</strong>, or performing <strong>Export Roll</strong>, the engine automatically bypasses these reference frames, preventing black leader frames from cluttering your final export queue.</div>\n</div>"
+                },
+                {
+                    "id": "whole-roll-batch-processing",
+                    "heading": "Whole Roll Processing and Shared White Point Anti-Divergence",
+                    "content": "<p>When batch processing film in conventional photo editing software, photographers encounter color jumping across consecutive shots. In a backlit sequence of three shots—one wide angle showing sky, one close-up of dark shadows, and one portrait—independent automatic levels tools stretch each histogram separately based on local pixel energy. This causes the wide shot to appear cyan, the shadow shot to appear magenta and over-exposed, and skin tones in the portrait to drift yellow.</p>\n<p>NexFilm solves this problem with its <strong>Auto Invert Roll</strong> batch architecture:</p>\n<ol>\n<li><strong>Unified Base Mask Subtraction</strong>: Every frame across the roll is stripped of its orange mask using the calibrated global <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span> density vector, eliminating base-induced frame variances.</li>\n<li><strong>Roll-Wide Photometric Analysis</strong>: Prior to inverting individual frames, the batch routine scans the optical density of all saved film areas across the roll, identifying the single brightest genuine highlight across the entire sequence.</li>\n<li><strong>Global Shared White Point Synchronization</strong>: The software establishes this roll-wide highlight density as the shared white point anchor for every exposure in the roll.</li>\n</ol>\n<p>Because all frames reference identical black and white density mapping constants, bright sky areas do not cause midtones to collapse, and dark shadows do not trigger spurious brightening. Contrast and color balance reflect the actual scene lighting observed during exposure, preserving color coherence across consecutive frames.</p>"
+                },
+                {
+                    "id": "120-and-headless-fallback",
+                    "heading": "120 Medium Format and Headless Negative Fallback Pipeline",
+                    "content": "<p>Photographers frequently digitize 120 medium format roll film (which features paper backing and produces no fogged leader upon processing) or 135 strips whose leader tabs were discarded by the processing laboratory. In such situations, physical <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span> leader sampling is impossible.</p>\n<p>To address this condition, NexFilm incorporates a <strong>Bounded Channel Span Response</strong> fallback model:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Response Interval</th><th>Maximum Channel Span Ratio</th><th>Mathematical Control Function</th><th>Tonal Preservation Objective</th></tr>\n    </thead>\n    <tbody>\n        <tr>\n            <td><strong>Dead Zone</strong></td>\n            <td>Ratio <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mo>≤</mo><mn>1.15</mn><mo>×</mo></mrow><annotation encoding=\"application/x-tex\">\\le 1.15\\times</annotation></semantics></math></span></td>\n            <td>Zero channel span stretching; retains natural logarithmic density ratios</td>\n            <td>Prevents monochromatic scenes (such as clear blue skies or green foliage) from being forcibly neutralized by balance algorithms</td>\n        </tr>\n        <tr>\n            <td><strong>Active Range</strong></td>\n            <td><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>1.15</mn><mo>×</mo><mo>&lt;</mo><mtext>Ratio</mtext><mo>≤</mo><mn>1.35</mn><mo>×</mo></mrow><annotation encoding=\"application/x-tex\">1.15\\times &lt; \\text{Ratio} \\le 1.35\\times</annotation></semantics></math></span></td>\n            <td>Smooth non-linear bounded convergence weighting across active channels</td>\n            <td>In the absence of a physical leader anchor, dynamically extends highlight contrast within safe bounds, preserving organic tonal rolloff</td>\n        </tr>\n        <tr>\n            <td><strong>Hard Cap Ceiling</strong></td>\n            <td>Ratio <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mo>≥</mo><mn>3.0</mn><mo>×</mo></mrow><annotation encoding=\"application/x-tex\">\\ge 3.0\\times</annotation></semantics></math></span></td>\n            <td>Strict clipping limit forbidding any channel from stretching beyond 3x the master channel</td>\n            <td>Completely eliminates gray-world clipping, color banding, and blown highlight artifacts in extreme contrast exposures</td>\n        </tr>\n    </tbody>\n</table><p>When working with headless negatives, users do not need to sample a leader in the Library. Open the frame in Develop and select <strong>Auto Invert</strong>. The bounded span model evaluates the local rebate base density and dynamically anchors highlight limits within the <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>1.15</mn><mo>×</mo></mrow><annotation encoding=\"application/x-tex\">1.15\\times</annotation></semantics></math></span> to <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>1.35</mn><mo>×</mo></mrow><annotation encoding=\"application/x-tex\">1.35\\times</annotation></semantics></math></span> safety window, delivering crisp, natural contrast without breaking emulsion physics.</p>"
+                },
+                {
+                    "id": "loose-import-to-archive",
+                    "heading": "Managing Loose Imports and Archival Roll Association",
+                    "content": "<p>The Loose Import workflow provides instant access for single-frame adjustments. Dragging RAW or TIFF files directly into the window allows immediate grading without catalog registration.</p>\n<p>However, leaving assets in loose status long-term complicates retrieval and precludes contact sheet compilation. NexFilm bridges transient sessions with permanent roll archives in the <strong>Rolls</strong> view:</p>\n<ol>\n<li><strong>Reviewing Loose Sessions</strong>: Open the <strong>Rolls</strong> view in the top header. The left sidebar displays permanent catalog rolls alongside a dedicated <strong>Loose Imports Archive</strong> container.</li>\n<li><strong>Multi-Frame Selection</strong>: In the loose frames list, hold the <kbd>Shift</kbd> key to select frames belonging to a common photographic set.</li>\n<li><strong>Consolidation into Permanent Rolls</strong>: Click <strong>Convert to New Roll</strong> at the bottom of the list. A roll metadata dialog prompts for name, film stock, and camera details. Confirming the conversion updates the foreign key records in the SQLite database, grouping the selected frames into a permanent archival roll.</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Relocating Source Scans for Loose Imports</div>\n    <div class=\"doc-callout-body\">Loose frames strictly observe the same read-only storage commitments as structured rolls. If source scan files are moved to another drive or directory, click <strong>Locate File</strong> in the toolbar to reconnect the missing paths. All adjustment parameters, crop data, and snapshots are preserved in the local database.</div>\n</div><p>Combining structured roll calibration with rapid loose frame grading allows photographers to adhere to rigorous scientific standards while maintaining flexibility across diverse digitization projects.</p>"
+                }
+            ]
+        },
+        {
+            "id": "workspace-and-views",
+            "track": "user-manual",
+            "trackTitle": "User Manual",
+            "trackOrder": 2,
+            "chapterOrder": 1,
+            "kicker": "02 / User Manual",
+            "title": "Interface Overview, Five Core Views, and Interaction Guidelines",
+            "subtitle": "A detailed breakdown of menu bars, view routing, the filmstrip, inspector groups, and non-destructive interaction paradigms.",
+            "readingTime": 8,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "interface-basics"
+            ],
+            "sections": [
+                {
+                    "id": "menu-and-global-actions",
+                    "heading": "Menu Bar and Global Asynchronous Operations",
+                    "content": "<p>NexFilm Engine is built around a unified, darkroom-centric single-window interface designed to balance high-throughput batch roll processing with pixel-level precision on individual frames. The top of the window integrates the application menu bar, a central view navigation switcher, and persistent background action triggers.</p>\n<p>The application menu bar handles system-wide environment preferences and diagnostic tools:</p>\n<ul>\n<li><strong>Preferences</strong>: Allows instant, on-the-fly switching between interface languages (Simplified Chinese <code>zh-CN</code> and English <code>en</code>) as well as between Darkroom Dark and Light UI themes. Theme and language switches take effect immediately without requiring an engine restart, preserving all active slider positions, curve control points, and canvas viewport coordinates.</li>\n<li><strong>View</strong>: Offers direct routing commands across the five core application views alongside native full-screen toggles for immersive darkroom grading sessions.</li>\n<li><strong>Help</strong>: Provides direct access to the built-in offline technical handbook, open-source licensing disclosures, and runtime diagnostic system details.</li>\n</ul>\n<p>Anchored to the right side of the primary header, three global asynchronous task triggers remain permanently accessible across all application screens:</p>\n<ol>\n<li><strong>Import Roll</strong>: Opens the multi-format ingestion modal to import new camera RAW capture folders or scanner directories into the project catalog.</li>\n<li><strong>Export</strong>: Displays a real-time badge count of currently selected frames in the active working roll. Clicking this button opens the batch export dialogue to process the selected frames into high-resolution deliverables.</li>\n<li><strong>Export Roll</strong>: Triggers a full-roll background export of all frames in the current active roll without requiring manual selection inside the library grid.</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Asynchronous Threading and Non-Blocking UI</div>\n    <div class=\"doc-callout-body\"><p>NexFilm Engine leverages a high-concurrency Rust core. All demanding computing tasks—including Bayer debayering, bounded proxy computation, streaming full-resolution color transformations, and uncompressed TIFF serialization—execute entirely within detached background thread pools. Whether ingesting hundreds of 50-megapixel RAW frames or exporting 16-bit linear masters, the user interface remains at a consistent 60 frames per second. Users can navigate across views or grade other frames without latency.</p></div>\n</div>"
+                },
+                {
+                    "id": "five-core-views",
+                    "heading": "Five Core Views and State Transitions",
+                    "content": "<p>The core capabilities of the software are segmented into five orthogonal views. Users transition between these views via the central tab selector in the header. The architectural responsibilities and data flow between views are summarized below:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>View Name</th><th>Identifier</th><th>Primary Responsibilities and Data Flow</th><th>Typical Darkroom Usage</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>Library</strong></td><td>Library</td><td>Displays the thumbnail grid of the active working roll. Supports multi-selection, frame deletion, and launching <strong>Calibrate Film Base / Leader</strong>.</td><td>Initial inspection after import, pruning unexposed frames, selecting calibration frames for roll-wide physical anchoring.</td></tr>\n        <tr><td><strong>Develop</strong></td><td>Develop</td><td>The primary high-precision grading workspace. Houses the central canvas, geometry toolbar, interactive filmstrip, and ten inspector modules.</td><td>Fine-tuning film bounds, correcting camera perspective, balancing printer lights, drawing tone curves, and applying detail sharpening.</td></tr>\n        <tr><td><strong>Rolls</strong></td><td>Rolls</td><td>The persistent local film catalog. Features multi-dimensional faceted filtering across formats, cameras, and dates, with roll info editing and contact sheet generation.</td><td>Searching historical projects, appending lab notes, re-linking offline source scans, and generating printable contact sheets.</td></tr>\n        <tr><td><strong>Hardware Calibration</strong></td><td>Hardware Calibration</td><td>Reprographic capture rig profiling. Calibrates sensor spectral separation, backlight spectral power distribution (SPD), and lens vignetting falloff.</td><td>Setting up new camera bodies, upgrading high-CRI light sources, or switching reprographic macro reproduction lenses.</td></tr>\n        <tr><td><strong>Documentation</strong></td><td>Documentation</td><td>The built-in offline technical manual and color science reference, covering all optical models, printer light color tables, and troubleshooting decision trees.</td><td>Offline field reference during scanning sessions, verifying parameter definitions, or reviewing color math formulations.</td></tr>\n    </tbody>\n</table><p>State transitions between views operate with instantaneous reactive synchronisation. Double-clicking any thumbnail in the Library opens the Develop view focused directly on that frame. Conversely, any printer light tweak, curve modification, or crop adjustment made in the Develop view is committed immediately to the local database and reflected in the thumbnail displays across the Library and Filmstrip.</p>"
+                },
+                {
+                    "id": "filmstrip-navigation",
+                    "heading": "Filmstrip Architecture and Multi-Frame Comparison",
+                    "content": "<p>Located directly beneath the main canvas in the Develop view, the Filmstrip displays every continuous frame belonging to the active roll. It functions as the critical navigation and visual parity hub during grading:</p>\n<ul>\n<li><strong>Sequential Frame Ribbon</strong>: Every frame in the filmstrip features its chronological frame sequence number and source file stem. The active editing target is distinctly highlighted with an illuminated accent border.</li>\n<li><strong>Smooth Horizontal Navigation</strong>: Hovering over the filmstrip allows horizontal scrolling via the mouse wheel. Pressing the keyboard directional keys <kbd>←</kbd> and <kbd>→</kbd> instantly navigates to the preceding or succeeding frame. During frame transitions, the canvas maintains the exact current zoom ratio and pan position, facilitating rapid comparative checks between adjacent frames.</li>\n<li><strong>Live Synchronised Thumbnails</strong>: Filmstrip previews are dynamic rendering targets rather than static file icons. When you adjust printer lights or apply a film print 3D LUT in the right inspector, the corresponding filmstrip thumbnail regenerates within milliseconds via GPU shader passes. Examining the entire filmstrip allows you to detect subtle density inconsistencies or tint shifts across a series of exposures immediately.</li>\n<li><strong>Physical Calibration Frame Badges</strong>: Frames flagged as unexposed film base or fully saturated film leaders display dedicated geometric corner badges, preventing them from being mistakenly exported as standard photographic frames.</li>\n</ul>"
+                },
+                {
+                    "id": "inspector-controls-and-gestures",
+                    "heading": "Inspector Architecture and Precision Input Controls",
+                    "content": "<p>The inspector situated on the right side of the Develop view serves as the control hub for all density transformations and darkroom print parameters. The panels are organized top-to-bottom following the physical image reconstruction pipeline across ten collapsible modules:</p>\n<ol>\n<li><strong>Scopes</strong>: Real-time signal analysis toggling between Histogram and Waveform modes, displaying composite RGB, individual Red/Green/Blue channels, or Luminance Y, equipped with clipping warning overlays.</li>\n<li><strong>Actions</strong>: Houses the single-frame Auto Invert routine, the physically anchored Auto Invert Roll batch processor, and the color Reset trigger.</li>\n<li><strong>Mode</strong>: Switches seamlessly between Color (three-channel subtractive dye coupling) and B&amp;W (pure single-channel optical density conversion).</li>\n<li><strong>Density Limits</strong>: Direct controls for Master D-Min (shadow density anchor) and Master D-Max (highlight density anchor) to govern contrast span.</li>\n<li><strong>Printer Lights</strong>: Logarithmic exposure controls for Red (Cyan/Red), Green (Magenta/Green), and Blue (Yellow/Blue) channels alongside an optical neutral grey balance dropper.</li>\n<li><strong>Tone Curve</strong>: Four-channel control point spline editor (composite RGB plus independent R, G, and B curves) backed by live histogram displays.</li>\n<li><strong>Look</strong>: Broad aesthetic grading controls including Exposure, Gamma, Contrast, Highlights, Shadows, Saturation, Temperature, and Tint.</li>\n<li><strong>Detail</strong>: Spatial frequency sharpening (Amount, Radius, Detail, Masking) and local contrast adjustments (Texture, Clarity, Dehaze).</li>\n<li><strong>Sprocket</strong>: Interactive sprocket hole color sampling, detection tolerance bounds, and transition edge feathering.</li>\n<li><strong>Print Emulation</strong>: 14 built-in physical silver halide paper and motion picture print film 3D LUTs with variable opacity blending.</li>\n</ol>\n<p>To guarantee surgical precision and eliminate accidental parameter changes, the inspector incorporates four core interaction principles:</p>\n<ul>\n<li><strong>Section Navigation Dots</strong>: A vertical rail of miniature indicator dots sits on the left edge of the inspector. Clicking any dot instantly scrolls the inspector to that specific module.</li>\n<li><strong>Persistent Panel Collapsing</strong>: Clicking the chevron toggle on any panel header collapses that module to maximize screen space. Collapse states persist across application sessions in your local profile.</li>\n<li><strong>Activation Lock on Sliders</strong>: Scrolling the mouse wheel over empty inspector space scrolls the panel list vertically. To adjust a numeric slider using the mouse wheel, the slider handle must first be clicked directly. This explicit activation lock prevents inadvertent modifications while browsing long panels.</li>\n<li><strong>Direct Numeric Editing</strong>: Every slider value readout can be clicked to engage keyboard entry. Users can type precise floating-point values, pressing <kbd>Enter</kbd> to confirm or <kbd>Esc</kbd> to dismiss and restore the prior setting.</li>\n</ul>\n<p>The main canvas supports panning by holding <kbd>Space</kbd> while dragging with the mouse. Scrolling the wheel directly on the canvas performs smooth, continuous zooming centered precisely at the cursor location. The application maintains an exhaustive non-destructive undo stack: outside of text fields, pressing <kbd>⌘</kbd>+<kbd>Z</kbd> (<kbd>Ctrl</kbd>+<kbd>Z</kbd> on Windows) reverts actions, while <kbd>Shift</kbd>+<kbd>⌘</kbd>+<kbd>Z</kbd> (<kbd>Ctrl</kbd>+<kbd>Y</kbd> on Windows) reapplies them.</p>"
+                },
+                {
+                    "id": "terminology-glossary",
+                    "heading": "Complete Darkroom and Engine Terminology",
+                    "content": "<p>To foster precise communication and consistency with classical darkroom physics, the table below documents the core concepts and operational terminology utilized across NexFilm Engine:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Standard Term</th><th>English Nomenclature</th><th>Physical Meaning and Engine Definition</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>Roll</strong></td><td>Roll</td><td>A cataloged collection of frames captured or scanned under a common production run, possessing shared camera, emulsion, capture date, and processing notes.</td></tr>\n        <tr><td><strong>Frame</strong></td><td>Frame</td><td>A single photographic negative image entity within a roll, acting as the smallest discrete unit for grading adjustments, history tracking, and high-resolution export.</td></tr>\n        <tr><td><strong>Film Area</strong></td><td>Film Area</td><td>The bounding polygon delineating the active image area on the negative scan. Excludes perforations, film borders, and raw light table backlighting to focus optical density analysis strictly on valid emulsion.</td></tr>\n        <tr><td><strong>Film Base</strong></td><td>Film Base</td><td>The unexposed clear polyester or triacetate carrier material. On color negative film, this area contains the orange masking dyes, establishing the physical zero point for mask subtraction.</td></tr>\n        <tr><td><strong>Film Leader</strong></td><td>Film Leader</td><td>The heavily exposed and fully developed head of the film strip, possessing the absolute maximum optical silver/dye density (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>) achievable by that specific roll emulsion.</td></tr>\n        <tr><td><strong>Optical Density</strong></td><td>Optical Density (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>D</mi></mrow><annotation encoding=\"application/x-tex\">D</annotation></semantics></math></span>)</td><td>The logarithmic measure of light obstruction through a photographic medium, defined mathematically as <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>D</mi><mo>=</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>T</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">D = -\\log_{10}(T)</annotation></semantics></math></span>, where <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>T</mi></mrow><annotation encoding=\"application/x-tex\">T</annotation></semantics></math></span> is optical transmittance. All NexFilm inversions occur in this linear density domain.</td></tr>\n        <tr><td><strong>D-Min / D-Max</strong></td><td>Density Limits</td><td>The physical endpoints calibrated in the inspector. D-Min sets the deepest printable black foundation, whereas D-Max sets the shoulder highlight boundary, defining overall image contrast.</td></tr>\n        <tr><td><strong>Printer Lights</strong></td><td>Printer Lights</td><td>Emulation of darkroom optical enlarger dichroic color heads, introducing logarithmic exposure shifts across Red, Green, and Blue spectral bands to neutralize color casts.</td></tr>\n        <tr><td><strong>Orange Mask</strong></td><td>Film Mask</td><td>The inherent orange coloration generated by color coupler byproducts in color negative emulsions. Mask neutralization deducts this baseline optical density across all channels.</td></tr>\n        <tr><td><strong>Contact Sheet</strong></td><td>Contact Sheet</td><td>A scaled, sequential darkroom index print generated by exposing negative strips directly against photographic paper. NexFilm reproduces authentic perforations and frame edge codes.</td></tr>\n        <tr><td><strong>Input Domain</strong></td><td>Input Domain</td><td>The mathematical and physical representation of raw pixel values upon decoding (such as camera linear sensor RAW, scanner transmittance space, or display gamma spaces).</td></tr>\n    </tbody>\n</table><div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Non-Destructive Source File Guarantee</div>\n    <div class=\"doc-callout-body\"><p>NexFilm Engine operates strictly under a read-only architecture for all raw capture assets. Adjusting film boundaries, rotating geometry, applying logarithmic inversions, or applying custom 3D LUTs will never alter or overwrite source camera RAW files or scanner TIFFs. All grading formulas and metadata entries persist exclusively inside the local application database, allowing full reversibility at any time.</p></div>\n</div>"
+                }
+            ]
+        },
+        {
+            "id": "import-formats-and-library",
+            "track": "user-manual",
+            "trackTitle": "User Manual",
+            "trackOrder": 2,
+            "chapterOrder": 2,
+            "kicker": "02 / User Manual",
+            "title": "Format Support Matrix, Tri-State Import, and Roll Archive Management",
+            "subtitle": "A comprehensive format support matrix across camera RAW, Flextight .fff, and scanned TIFF, coupled with tri-state import workflows and missing file relinking.",
+            "readingTime": 9,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "import-and-rolls"
+            ],
+            "sections": [
+                {
+                    "id": "format-matrix",
+                    "heading": "Input Format Support Matrix and Decoder Specifications",
+                    "content": "<p>NexFilm Engine is architected to unify the fragmented landscape of negative digitization, bridging the gap between high-resolution camera scanning workflows and classic drum/flatbed scanner outputs. Built with an optimized Rust image ingestion pipeline, the software directly parses uncompressed digital captures from modern digital sensors as well as industrial scanning systems.</p>\n<p>The matrix below provides complete specifications for all supported input file formats:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Format Class</th><th>File Extensions</th><th>Color Space and Bit Depth</th><th>Decoding Characteristics and Practical Advice</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>Camera RAW</strong></td><td><code>.dng</code>, <code>.nef</code>, <code>.cr2</code>, <code>.cr3</code>, <code>.arw</code>, <code>.raf</code>, <code>.rw2</code>, <code>.orf</code>, <code>.pef</code>, <code>.3fr</code>, <code>.iiq</code>, etc.</td><td>12-bit, 14-bit, or 16-bit linear sensor Bayer mosaic data</td><td>The premier input format for camera scanning. Bypasses in-camera white balance and tone curves, retaining the full linear sensor dynamic range for surgical base mask subtraction.</td></tr>\n        <tr><td><strong>Hasselblad Flextight / Imacon</strong></td><td><code>.fff</code></td><td>16-bit linear optical scanner transmission data</td><td>As of <strong>v1.1.0</strong>, the engine natively decodes <code>.fff</code> files as scanner transmission data without relying on legacy FlexColor hardware ID strings, preventing misidentification as camera RAWs.</td></tr>\n        <tr><td><strong>Production Scanner TIFF</strong></td><td><code>.tif</code>, <code>.tiff</code></td><td>16-bit or 8-bit uncompressed or LZW compressed</td><td>Natively handles single-channel monochrome and three-channel positive TIFFs from Noritsu, Frontier, Epson, and Plustek units. Streams large multi-gigabyte files with stable memory usage.</td></tr>\n        <tr><td><strong>Standard Bitmap Files</strong></td><td><code>.png</code>, <code>.jpg</code>, <code>.jpeg</code></td><td>8-bit or 16-bit sRGB or Display P3 encodings</td><td>Ideal for rapid composition checks. Because 8-bit JPEGs feature non-linear tone curves and clipped base data, automatic color precision cannot match RAW captures.</td></tr>\n    </tbody>\n</table><div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Nikon Z8 / Z9 High-Efficiency NEF Restrictions</div>\n    <div class=\"doc-callout-body\"><p>The integrated LibRaw decoder does not currently support high-efficiency <code>HE</code> or <code>HE*</code> compressed NEF files produced by the Nikon Z8 and Z9. When digitizing negatives with these cameras, set the camera RAW recording format to conventional Lossless Compressed RAW, or convert captures to linear DNG using the free Adobe DNG Converter utility prior to import.</p></div>\n</div><p>With 8-bit JPEG scans, non-linear gamma curves and harsh black/white clipping applied by scanning software often crush subtle shadow transitions and blur the distinction between orange mask dyes and dark details. When working with JPEGs, if the automatic inversion produces an unexpected color cast, use the Printer Lights panel to manually balance the RGB exposure offsets.</p>"
+                },
+                {
+                    "id": "bounded-proxy-architecture",
+                    "heading": "Bounded Proxy Architecture and Low-Memory Indexing",
+                    "content": "<p>When processing a full roll of 36 high-resolution 60-megapixel camera RAW files or massive 4×5 drum scans, traditional raw converters routinely launch full-resolution decoding on import. This causes massive memory spikes, sustained high CPU loads, and sluggish responsiveness.</p>\n<p>NexFilm overcomes this performance bottleneck through a <strong>Two-Stage Bounded Proxy Architecture</strong>:</p>\n<ol>\n<li><strong>Stage 1: Instantaneous Metadata Ingestion and Preview Extraction</strong>\nWhen a folder is selected for import, the engine reads only the file headers to extract pre-existing embedded JPEG previews and Exif camera metadata. An entire roll of several dozen frames is cataloged into the local database in two to three seconds. The application footprint during this stage remains under 200 MB of system RAM.</li>\n<li><strong>Stage 2: On-Demand Bounded Proxy Generation</strong>\nFull decoding occurs strictly on demand when a user double-clicks a frame to open the Develop workspace. The engine renders a high-fidelity bounded proxy constrained to a long edge of <code>2560 px</code>. This resolution provides crisp rendering across 4K and 5K displays while capping active GPU texture memory consumption.</li>\n</ol>\n<p>When final exports are requested, the engine bypasses the proxy entirely, streaming full-resolution source scan data from disk through the physical color pipeline at maximum bit depth.</p>"
+                },
+                {
+                    "id": "tri-state-import",
+                    "heading": "Tri-State Ingestion and Metadata Enrollment",
+                    "content": "<p>To accommodate distinct shooting and scanning routines, NexFilm provides three complementary ingestion workflows that establish proper darkroom cataloging at the point of entry:</p>\n<h3 id=\"1-import-as-roll\" class=\"scroll-mt-24\">1. Import as Roll</h3>\n<p>The primary workflow for cataloging whole rolls captured or scanned in unified batches:</p>\n<ul>\n<li>Open the import dialogue and choose &quot;Import as Roll&quot;.</li>\n<li><strong>Format Hierarchy Selection</strong>: Select from standard analog format presets:<ul>\n<li>135 Full Frame (35mm), 135 Half-frame, APS;</li>\n<li>120 Medium Format range: <code>120 (645)</code>, <code>120 (6x6)</code>, <code>120 (6x7)</code>, <code>120 (6x9)</code>, <code>120 (6x12)</code>, <code>120 (6x17)</code>;</li>\n<li>Large Format Sheet Film: <code>4x5</code>, <code>5x7</code>, <code>8x10</code>.</li>\n</ul>\n</li>\n<li><strong>Hardware and Emulation Data</strong>: Assign or enter the camera body (e.g., Leica M6, Pentax 67) and emulsion profile (including Kodak Portra, Gold 200, Fujifilm C200, Ilford HP5 Plus, and Kodak Vision3 cinema stocks).</li>\n<li><strong>Date and Roll Notes</strong>: Record capture dates and freeform context notes (e.g., &quot;Roll 03, E100 pushed +1 stop, studio session&quot;). These attributes feed batch file renaming templates and output Exif fields.</li>\n</ul>\n<h3 id=\"2-loose-import\" class=\"scroll-mt-24\">2. Loose Import</h3>\n<p>Intended for single-frame test shots, scanner calibration targets, or isolated frames not tied to a specific roll:</p>\n<ul>\n<li>Select &quot;Loose Import&quot; in the dialogue or simply drag and drop image files directly onto the main application window.</li>\n<li>Loose frames appear in the Library as standalone items with full inversion capabilities, but they do not participate in roll-wide physical calibrations.</li>\n<li>Duplicate detection is automatic: if an imported file already exists within the active project, the engine skips it to avoid duplicate records.</li>\n</ul>\n<h3 id=\"3-append-to-existing-roll\" class=\"scroll-mt-24\">3. Append to Existing Roll</h3>\n<p>If additional frames from a previously cataloged roll are digitized later, navigate to the Rolls view, select the roll, click &quot;Continue Editing Roll&quot;, and trigger &quot;Import Roll&quot;. The newly scanned frames will be appended directly to the end of the existing filmstrip, automatically inheriting the roll camera and emulsion metadata.</p>"
+                },
+                {
+                    "id": "rolls-management",
+                    "heading": "Rolls Archive Management and Multi-Dimensional Filtering",
+                    "content": "<p>Switching to the Rolls view opens your persistent digital negative archive. Over time, this section serves as an organized catalog of all historical film projects processed through the engine.</p>\n<p>Key management tools within the Rolls view include:</p>\n<ul>\n<li><strong>Multi-Dimensional Faceted Filtering</strong>: The left panel offers interactive filtering across film formats, camera hardware, and capture dates. The header reflects the exact count of matching rolls and total frames in real time, with a <strong>Clear</strong> button to reset filters.</li>\n<li><strong>Roll Card Catalog Grid</strong>: The central canvas displays visual roll cards highlighting cover thumbnails, frame counts, format badges, camera gear, emulsion types, and creation dates.</li>\n<li><strong>Roll Management Hub</strong>: Entering a specific roll card reveals its complete thumbnail sequence and unlocks critical actions:<ol>\n<li><strong>Promote to Library</strong>: Loads the entire archive roll into the primary Library workspace for renewed grading sessions.</li>\n<li><strong>Edit Info</strong>: Allows updating camera names, film stocks, dates, and roll notes. Modifications automatically synchronize with subsequent export operations.</li>\n<li><strong>Export Contact Sheet</strong>: Generates an index sheet featuring authentic sprockets, frame numbering, and clean metadata headers.</li>\n<li><strong>Delete Roll</strong>: Offers two protective options: unregistering the roll metadata from the local database, or simultaneously sending the underlying source files to the operating system trash. If source files are referenced by other projects, they are safely preserved.</li>\n</ol>\n</li>\n</ul>"
+                },
+                {
+                    "id": "locate-missing-files",
+                    "heading": "Offline Source Files and Broken Link Recovery",
+                    "content": "<p>NexFilm Engine adheres to a strict non-destructive, reference-based asset architecture: <strong>the application never duplicates or moves your raw capture files</strong>. The local database <code>nexfilm_user.db</code> stores only absolute filesystem path references to your source assets.</p>\n<p>If folders are renamed, rearranged, or disconnected on external storage drives, the associated frames transition into an offline state:</p>\n<ul>\n<li>An offline indicator icon appears on the frame thumbnail, noting that the source file could not be resolved at its recorded path.</li>\n<li>Thanks to local cached proxies, thumbnails remain viewable, but full-resolution exports and new inversions are temporarily disabled.</li>\n</ul>\n<p><strong>Broken Link Recovery Procedure (Locate File)</strong>:</p>\n<ol>\n<li>Select the offline frame and click the <strong>Locate File</strong> button on the interface.</li>\n<li>In the native system file picker, browse to the new location of the file and select it.</li>\n<li>NexFilm updates the file path reference and scans the directory for other offline frames belonging to the same roll. If relative paths and filenames match, the engine automatically reconnects the entire roll in a single step.</li>\n</ol>\n<p>With robust format decoding, lightweight proxy memory management, and secure asset cataloging, NexFilm provides a dependable foundation for serious analog archival workflows.</p>"
+                }
+            ]
+        },
+        {
+            "id": "film-area-and-geometry",
+            "track": "user-manual",
+            "trackTitle": "User Manual",
+            "trackOrder": 2,
+            "chapterOrder": 3,
+            "kicker": "02 / User Manual",
+            "title": "Film Area Definition, Geometric Transformations, and Sprocket Management",
+            "subtitle": "Separating optical analysis bounds from composition crop, correcting reprographic perspective and distortion, and fine-tuning sprocket hole sampling.",
+            "readingTime": 8,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "film-area-vs-crop",
+                    "heading": "Core Differences Between Film Area and Composition Crop",
+                    "content": "<p>In conventional digital photo editing software, &quot;cropping&quot; is typically viewed merely as a composition and aspect ratio formatting tool. In NexFilm&#39;s physical darkroom architecture, however, geometry is split into two functionally distinct operations positioned at opposite ends of the rendering pipeline: <strong>Film Area</strong> and <strong>Composition Crop</strong>. Understanding this boundary is essential for achieving accurate optical inversion.</p>\n<p>The core distinctions and pipeline roles are defined as follows:</p>\n<ul>\n<li><strong>Film Area establishes the optical analysis domain</strong>: It defines the bounding polygon encompassing valid, light-sensitive emulsion on the negative scan. The engine analyzes strictly the pixels bounded by this area to calculate minimum optical density (D-Min / unexposed film base), maximum optical density (D-Max / film leader), and channel dynamic spans. Even if your final artistic composition requires a tighter crop, the Film Area should enclose the entire valid image area so the inversion solver possesses maximum dynamic range samples.</li>\n<li><strong>Composition Crop determines the final deliverable framing</strong>: Operating downstream of physical inversion and tone curve adjustments, crop defines the exported aspect ratio (e.g., 3:2, 1:1, or freeform). Composition cropping never alters or discards the optical density statistics harvested by the Film Area. Consequently, tightening or altering your crop after inversion causes zero tone drift or color shift.</li>\n</ul>\n<p>Both tools share a unified canvas coordinate system. However, in execution order, Film Area bounding always precedes density calculations, while Composition Crop is applied at the tail end of rendering.</p>"
+                },
+                {
+                    "id": "framing-pitfalls",
+                    "heading": "Framing Pitfalls and Optical Mechanisms",
+                    "content": "<p>When digitizing negatives via camera scanning or flatbeds, frames are often surrounded by intense raw backlight, opaque film holder borders, or continuous 35mm sprocket holes. Imprecise film boundary bounding severely corrupts the statistical engine during automatic inversion.</p>\n<p>The table below outlines the three most frequent framing mistakes and their optical failure modes:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Framing Mistake</th><th>Spurious Pixels Included in Analysis</th><th>Internal Algorithm Miscalculation</th><th>Resulting Image Defect</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>Enclosing Raw Light Table Backlight</strong></td><td>Unobstructed light table illumination outside the negative strip (pure white light at ~100% transmission).</td><td>The engine interprets the extreme brightness of the light source as the minimum film density (D-Min base), depressing all genuine negative highlight and shadow densities downward.</td><td>The inverted positive appears heavily flattened, dark, and muddy, exhibiting crushed dynamic range with blocked shadows and suppressed highlights.</td></tr>\n        <tr><td><strong>Enclosing Opaque Film Holder Borders</strong></td><td>Completely opaque black plastic or metal borders from scanning masks and film carrier edges.</td><td>The engine interprets pure physical occlusion (near-zero transmission) as full film exposure (D-Max leader), artificially pushing the black point baseline upward.</td><td>Shadow contrast is completely lost; deep blacks lift unnaturally into a milky, washed-out grey haze.</td></tr>\n        <tr><td><strong>Enclosing 135 Perforation Sprocket Holes</strong></td><td>Unfiltered backlight shining through 35mm sprocket perforations and associated flare halos.</td><td>Intense light unattenuated by negative dye couplers corrupts three-channel transmission ratios, triggering channel-span protection guards incorrectly.</td><td>Severe, stubborn color casts (frequently cyan, magenta, or yellow) dominate frame edges or whole images, resisting standard white balance dropper adjustments.</td></tr>\n    </tbody>\n</table><div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Never Enclose Raw Backlight Inside the Film Area</div>\n    <div class=\"doc-callout-body\"><p>Whether working with a high-key daylight landscape or a low-key night exposure, the four corners of your Film Area must align snugly against valid image emulsion, strictly excluding external backlight. If you desire artistic black borders or rebate borders in your final image, use the Sprocket module or dedicated border emulations rather than expanding the Film Area.</p></div>\n</div>"
+                },
+                {
+                    "id": "auto-area-workflow",
+                    "heading": "Auto Area Detection and Manual Polygon Adjustment",
+                    "content": "<p>Upon entering the Develop workspace, the toolbar above the main canvas presents the complete suite of boundary adjustment controls:</p>\n<ol>\n<li><strong>Entering Boundary Edit Mode</strong>: Click the <strong>Set Film Area</strong> button on the toolbar. The canvas switches into boundary mode: regions outside the active polygon dim with a semi-transparent dark mask, and an interactive polygon with four corner pins and edge handles appears.</li>\n<li><strong>Auto Area Detection</strong>: Click <strong>Auto Area</strong>. The background engine executes an edge gradient detection pass over the cached thumbnail, locating the contrast boundary between the film frame and the rebate border. This routine typically resolves the boundary within 200 milliseconds.</li>\n<li><strong>Manual Fine-Tuning</strong>: Because images with low-contrast skies or dark shadow edges may confuse edge detection, inspect the bounding polygon. Drag any corner pin independently or pull an edge center handle to align the bounding box with the emulsion edge. If you wish to utilize unexposed film borders for base color estimation, leave approximately 1 millimeter of clean unexposed film rebate along one edge, ensuring no raw backlight is exposed.</li>\n<li><strong>Saving Boundary Changes</strong>: Once adjusted, click the green <strong>Save Area</strong> button on the toolbar. Navigating away via the filmstrip without saving will discard boundary edits.</li>\n<li><strong>Batch Application on Copy Stands (Batch Apply)</strong>: When shooting a full roll on a rigid copy stand where negative positioning remains identical across frames, calibrate the Film Area on your initial frame and save it. Then click <strong>Batch Apply</strong> in the toolbar to broadcast the boundary to all remaining frames in the roll. Target frames inherit the geometry while independently re-measuring localized film base values to compensate for minor light table falloff.</li>\n</ol>"
+                },
+                {
+                    "id": "geometry-and-perspective",
+                    "heading": "Geometric Transformations: Rotation, Perspective, and Distortion Correction",
+                    "content": "<p>Even with bubble levels on reprographic copy stands, subtle tilt or camera pitch misalignments can occur between the camera sensor plane and the film plane. Furthermore, macro lenses at 1:1 reproduction ratios can introduce minor geometric distortion. NexFilm provides comprehensive geometric alignment tools:</p>\n<ul>\n<li><strong>Orthogonal Rotation and Mirroring</strong>:<ul>\n<li>Rotate 90° clockwise or counter-clockwise via the canvas toolbar to quickly orient vertical frames.</li>\n<li><strong>Flip Horizontal (Flip H)</strong> and <strong>Flip Vertical (Flip V)</strong>: If a negative strip is inadvertently loaded upside down with emulsion facing backward, click Flip H to restore proper reading orientation without physical rescanning.</li>\n</ul>\n</li>\n<li><strong>Straighten</strong>: An angle rotation slider calibrated to 0.1° increments (spanning -45° to +45°) paired with an on-canvas overlay grid enables rapid leveling of tilted horizons.</li>\n<li><strong>Perspective Correction</strong>: Found in the inspector Geometry panel, providing <strong>Vertical Perspective</strong> and <strong>Horizontal Perspective</strong> sliders. Dual-axis adjustments counteract keystone distortion caused by sensor-to-film tilt, restoring rectangular geometry to skewed negatives.</li>\n<li><strong>Aspect and Scale Governance</strong>: <strong>Perspective Aspect</strong> fine-tunes horizontal-to-vertical dimensional proportions following keystone correction, while <strong>Perspective Scale</strong> and <strong>Constrain Crop</strong> prevent dark canvas borders from intruding into the active composition.</li>\n<li><strong>Lens Distortion Compensation</strong>: Compensates for barrel or pincushion distortion inherent to close-focus macro reproduction optics, straightening curved film frame lines.</li>\n<li><strong>Aspect Ratio Locking</strong>: Supports standard aspect ratio constraints including Free, Original, 1:1 (square medium format), 2:3 (135 full frame), 3:4, 4:5 (large format sheets), and 16:9 widescreen crops.</li>\n</ul>"
+                },
+                {
+                    "id": "sprocket-control",
+                    "heading": "Sprocket Hole Sampling and Edge Feathering Control",
+                    "content": "<p>For creative projects utilizing 35mm sprocket hole photography or whenever an uncropped film rebate aesthetic is desired, the inspector provides a dedicated <strong>Sprocket</strong> module:</p>\n<ul>\n<li><strong>Sample Sprocket Hole</strong>: Activates a precision eyedropper tool. Clicking within an exposed perforation hole samples the unattenuated backlight color and intensity directly from that frame.</li>\n<li><strong>Tolerance</strong>: Adjusts the detection window around the sampled perforation brightness. Increasing tolerance ensures that flare halos and optical dispersion along perforation edges are effectively neutralized, preventing color contamination across adjacent emulsion.</li>\n<li><strong>Feather</strong>: Regulates the transition radius between raw perforations and active negative emulsion. Proper feathering yields smooth, organic transitions, preventing digital stair-stepping or artificial edge fringing.</li>\n</ul>\n<p>By pairing rigorous optical boundary definition with comprehensive perspective correction, NexFilm ensures every negative enters the density inversion stage on an authentic, calibrated physical foundation.</p>"
+                }
+            ]
+        },
+        {
+            "id": "density-grading-and-curves",
+            "track": "user-manual",
+            "trackTitle": "User Manual",
+            "trackOrder": 2,
+            "chapterOrder": 4,
+            "kicker": "02 / User Manual",
+            "title": "Density Limits, Darkroom Printer Lights, Tone Curves, and Detail Enhancement",
+            "subtitle": "Mastering D-Min/D-Max physical density bounds, logarithmic printer light principles, monotonic spline curves, and high-frequency detail preservation.",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "develop-workspace"
+            ],
+            "sections": [
+                {
+                    "id": "mode-invert-and-batch",
+                    "heading": "Film Modes, Auto Inversion, and Whole-Roll Batch Inversion",
+                    "content": "<p>NexFilm&#39;s darkroom inversion engine physically decouples the unique chemistry of monochrome emulsions from multi-layer color couplers. Upon entering the Develop workspace, the mode selector and inversion controls at the top of the inspector govern how raw negative transmission data maps into positive print tones:</p>\n<ul>\n<li><strong>Color Mode</strong>:\nEngineered specifically for chromogenic color negative films featuring integral orange dye couplers. The engine engages a three-channel logarithmic decoupling pipeline: it calculates unexposed film base density, shifts this reference value to zero density, and reconstructs the positive image using spectral dye uncoupling matrices.</li>\n<li><strong>B&amp;W Mode</strong>:\nSwitching to B&amp;W collapses three-channel RGB data into a unified, single-channel optical density representation, disabling color mask subtraction routines. Designed for authentic silver gelatin emulsions such as Ilford HP5 Plus, Kodak Tri-X, and Fomapan, this mode eliminates chromatic fringing and color staining on monochrome negatives.</li>\n</ul>\n<p>The Actions panel provides three primary triggers:</p>\n<ol>\n<li><strong>Auto Invert</strong>:\nTargets the active individual frame. The solver analyzes density distributions strictly within the designated Film Area, measures localized film base offsets, calculates optimal density boundaries, and commits all resulting color and curve parameters to the frame history.</li>\n<li><strong>Auto Invert Roll</strong>:\nThis option remains hidden or disabled by default. <strong>It unlocks exclusively after completing Calibrate Film Base / Leader within the Library grid</strong>. Because the active roll possesses authentic physical anchors for both the unexposed base and the exposed leader, Auto Invert Roll measures the brightest frame across the entire roll as a unified highlight anchor. It then processes all remaining frames under identical physical baselines, skipping calibration references to prevent intra-roll density shifts.</li>\n<li><strong>Reset</strong>:\nClears all color balancing, printer light offsets, tone curves, and detail parameters on the active frame, returning the preview to its raw negative state. Reset alters only color pipeline parameters, leaving your custom Film Area polygon and perspective crop untouched.</li>\n</ol>"
+                },
+                {
+                    "id": "density-limits",
+                    "heading": "Density Limits (D-Min / D-Max) Physical Meaning and Calibration",
+                    "content": "<p>In classical sensitometry, optical density (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>D</mi></mrow><annotation encoding=\"application/x-tex\">D</annotation></semantics></math></span>) measures the logarithmic light-stopping power of an emulsion layer:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mi>D</mi><mo>=</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>T</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">D = -\\log_{10}(T)</annotation></semantics></math></span></p>\n<p>where <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>T</mi></mrow><annotation encoding=\"application/x-tex\">T</annotation></semantics></math></span> represents optical transmittance. Clear, unexposed negative film base permits maximum light passage, defining minimum optical density (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span>). Conversely, heavily exposed and fully developed silver or dye clouds absorb substantial light, establishing maximum optical density (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>). Inverted into a positive image, <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>min</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\min}</annotation></semantics></math></span> governs deep shadow foundation density, while <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span> defines the highlight ceiling.</p>\n<p>The <strong>Density Limits</strong> module provides direct control over these physical endpoints:</p>\n<ul>\n<li><strong>Master D-Min (Range: -0.50 to +0.50)</strong>:\nControls the threshold of printable positive black. Advancing Master D-Min toward positive values shifts shadow density thresholds deeper into rich, solid blacks. Moving toward negative values lifts shadow compression, recovering subtle shadow details and analog texture.</li>\n<li><strong>Master D-Max (Range: -0.50 to +0.50)</strong>:\nRegulates the highlight shoulder compression. Moving positive extends highlight dynamic capacity, safeguarding bright cloud textures from digital clipping. Compressing Master D-Max negative tightens overall print contrast, producing punchier tones.</li>\n<li><strong>Three-Channel Density Readouts</strong>:\nThe digital indicators below the sliders display the actual measured physical densities across Red, Green, and Blue channels. Disparities among channel spans highlight emulsion aging or underexposure, allowing targeted per-channel endpoint corrections.</li>\n</ul>"
+                },
+                {
+                    "id": "printer-lights-laws",
+                    "heading": "Darkroom Printer Lights Logarithmic Color Balance Laws",
+                    "content": "<p>In an optical darkroom, color printing utilizes dichroic filters inside an enlarger head—Cyan, Magenta, and Yellow—to modulate the color quality of light striking photographic paper. The <strong>Printer Lights</strong> module in NexFilm mathematically models this physical enlarger behavior within the digital density domain.</p>\n<p>Unlike standard RGB linear gain sliders found in general photo editors, NexFilm&#39;s printer lights operate logarithmically on optical density. Adjusting printer lights mimics changing the exposure duration and filtration balance through dichroic glass filters.</p>\n<p>The lookup table below outlines color cast diagnostics and printer light correction pathways:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Observed Positive Color Cast</th><th>Underlying Physical Imbalance</th><th>Recommended Printer Light Action</th><th>Darkroom Enlarger Equivalent</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>Overall Cyan Tint</strong></td><td>Insufficient red channel transmission density; red wavelength deficiency.</td><td><strong>Increase Red Printer Light (+)</strong></td><td>Reduce cyan filtration in enlarger head to admit more red light.</td></tr>\n        <tr><td><strong>Overall Red Tint</strong></td><td>Excessive red transmission; inadequate cyan absorption.</td><td><strong>Decrease Red Printer Light (-)</strong></td><td>Increase cyan filtration to absorb excess red wavelengths.</td></tr>\n        <tr><td><strong>Overall Magenta Tint</strong></td><td>Green transmission obstructed; excess magenta couplers.</td><td><strong>Increase Green Printer Light (+)</strong></td><td>Reduce magenta filtration to inject more penetrating green exposure.</td></tr>\n        <tr><td><strong>Overall Green Tint</strong></td><td>Excess green transmission; magenta dye overcompensation.</td><td><strong>Decrease Green Printer Light (-)</strong></td><td>Increase magenta filtration to absorb surplus green light.</td></tr>\n        <tr><td><strong>Overall Yellow Tint</strong></td><td>Blue transmission attenuated; excess yellow dye baseline.</td><td><strong>Increase Blue Printer Light (+)</strong></td><td>Reduce yellow filtration to allow more blue exposure onto paper.</td></tr>\n        <tr><td><strong>Overall Blue Tint</strong></td><td>Surplus blue transmission; yellow component washed out.</td><td><strong>Decrease Blue Printer Light (-)</strong></td><td>Increase yellow filtration to absorb excess blue, warming the image.</td></tr>\n    </tbody>\n</table><p>The upper right corner houses the <strong>WB Dropper</strong> tool. Activating the dropper and clicking an area representing neutral grey (such as unshaded asphalt, weathered concrete, or neutral fabric) calculates the spectral deviation from neutrality. The engine converts this delta into exact logarithmic exposure offsets across Red, Green, and Blue channels, adjusting the printer light sliders without altering base calibration data.</p>"
+                },
+                {
+                    "id": "curve-and-detail",
+                    "heading": "Tone Curves and Detail Enhancement",
+                    "content": "<p>In the rendering sequence, <strong>Tone Curves</strong> and <strong>Detail</strong> occupy precise positions: curves operate downstream of printer lights and before global look adjustments, while detail enhancement operates at the end of the chain before final export serialization. Neither affects raw density calculations.</p>\n<h3 id=\"1-four-channel-monotonic-spline-curves\" class=\"scroll-mt-24\">1. Four-Channel Monotonic Spline Curves</h3>\n<p>NexFilm features a complete four-channel curve editor consisting of a composite <strong>RGB Master Curve</strong> alongside independent <strong>Red, Green, and Blue Channel Curves</strong>.</p>\n<ul>\n<li><strong>Monotonic Spline Interpolation</strong>: Curves use monotonic cubic Hermite splines. Regardless of how close control points are placed, the curve remains strictly monotonic, eliminating artificial ripple artifacts, highlight dips, or out-of-gamut oscillations outside the 0.0 to 1.0 range.</li>\n<li><strong>Interaction Guidelines</strong>:<ul>\n<li>Click on empty curve space to insert a control point (up to 16 points per channel);</li>\n<li>Right-click any control point to delete it;</li>\n<li>Boundary endpoints are locked horizontally at 0 and 1, moving vertically to lift black points or compress highlight white points;</li>\n<li>Dragging an endpoint horizontally across a threshold pulls out a new mobile intermediate control point;</li>\n<li>The &quot;Reset Channel&quot; button restores the active channel to a linear diagonal;</li>\n<li>A real-time histogram renders behind the curve grid to guide tone adjustments.</li>\n</ul>\n</li>\n</ul>\n<h3 id=\"2-aesthetic-look-adjustments\" class=\"scroll-mt-24\">2. Aesthetic Look Adjustments</h3>\n<p>Provides standard creative adjustments:</p>\n<ul>\n<li><strong>Exposure</strong>: Shifts midtone brightness logarithmically across stops (EV);</li>\n<li><strong>Gamma &amp; Contrast</strong>: Modulates midtone tone contrast while anchoring endpoints;</li>\n<li><strong>Highlights &amp; Shadows</strong>: Mitigates specular highlight clipping and recovers dense shadow detail;</li>\n<li><strong>Saturation</strong>: Enhances color purity within a perceptually uniform color space to avoid clipping;</li>\n<li><strong>Temperature &amp; Tint</strong>: Offers subtle warm-cool Kelvin balancing adjustments.</li>\n</ul>\n<h3 id=\"3-detail-and-spatial-frequency-sharpening\" class=\"scroll-mt-24\">3. Detail and Spatial Frequency Sharpening</h3>\n<p>The detail module features sharpening and local contrast controls:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Control Parameter</th><th>Functional Description and Mathematical Formulation</th><th>Adjustable Value Range</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>Amount</strong></td><td>Total sharpening intensity. At 0, the sharpening pass is completely bypassed at the hardware level, passing raw pixels unsharpened.</td><td>0 – 150 (Default: 40)</td></tr>\n        <tr><td><strong>Radius</strong></td><td>Spatial convolution kernel footprint. Controls edge transition width; smaller values enhance fine textures, while larger values delineate broad contours.</td><td>0.5 – 3.0 px (Default: 1.0)</td></tr>\n        <tr><td><strong>Detail</strong></td><td>Frequency weighting between micro-textures and primary edges. Low values confine sharpening to pronounced edges; high values emphasize film grain.</td><td>0 – 100 (Default: 25)</td></tr>\n        <tr><td><strong>Masking</strong></td><td>Edge detection threshold. At 0, sharpening applies uniformly. At higher values, smooth skies and out-of-focus backgrounds are excluded to avoid magnifying scanner noise.</td><td>0 – 100 (Default: 0)</td></tr>\n        <tr><td><strong>Texture</strong></td><td>Mid-frequency local contrast adjustment, ideal for rendering fabrics, foliage, and skin textures.</td><td>-100 – +100</td></tr>\n        <tr><td><strong>Clarity</strong></td><td>Broad-scale local contrast enhancement weighted toward midtones, avoiding shadow crushing.</td><td>-100 – +100</td></tr>\n        <tr><td><strong>Dehaze</strong></td><td>Dark-channel prior physical model estimating optical transmission to cut through lens flare and atmospheric haze.</td><td>-100 – +100</td></tr>\n    </tbody>\n</table><div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Live Grayscale Masking via the Alt Key</div>\n    <div class=\"doc-callout-body\"><p>Holding the <kbd>Alt</kbd> key while dragging sharpening sliders transforms the canvas into an analytical diagnostic view:</p>\n<ul>\n<li>Dragging <strong>Amount</strong>, <strong>Radius</strong>, or <strong>Detail</strong> displays the isolated high-frequency edge signal on a neutral grey field;</li>\n<li>Dragging <strong>Masking</strong> displays the binary edge detection mask (black areas receive no sharpening; white lines indicate protected sharpened edges).\nReleasing the key returns the canvas to standard color rendering without interrupting scopes or thumbnail caches.</li>\n</ul></div>\n</div><p>All sharpening, texture, and clarity parameters standardize their physical convolution radii to an image long edge of <code>2560 px</code>. Consequently, the sharpening balance viewed on the 2560 preview proxy translates with total pixel parity to multi-megapixel master exports.</p>"
+                },
+                {
+                    "id": "scopes-and-clipping",
+                    "heading": "Scopes System and Highlight / Shadow Clipping Alerts",
+                    "content": "<p>The scopes in the upper right corner provide real-time objective monitoring:</p>\n<ul>\n<li><strong>Histogram Mode</strong>: Shows pixel tone distribution from pure black (0) to white (255), illustrating channel overlaps;</li>\n<li><strong>Waveform Mode</strong>: Displays vertical luminance distribution across the horizontal image plane, pinpointing localized specular hotspots;</li>\n<li><strong>Channel Filters</strong>: Toggles between composite RGB, individual Red/Green/Blue channels, and pure Luminance Y;</li>\n<li><strong>Clipping Warning Handles</strong>: Exclamation point threshold handles illuminate when pixels exceed dynamic range boundaries, alerting you to highlight burnout or crushed blacks.</li>\n</ul>"
+                },
+                {
+                    "id": "copy-paste-vs-batch",
+                    "heading": "Copy Settings, Paste Settings, and Batch Apply Boundaries",
+                    "content": "<p>Managing color across dozens of roll captures requires clear operational boundaries between parameter replication tools:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Dimension</th><th>Batch Apply</th><th>Copy Settings / Paste Settings</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>Interface Location</strong></td><td>Top canvas geometry toolbar.</td><td>Top of the right inspector.</td></tr>\n        <tr><td><strong>Parameters Transferred</strong></td><td>Film Area polygon coordinates and sprocket hole positions.</td><td>Selected grading parameters: density, printer lights, curves, look, and detail.</td></tr>\n        <tr><td><strong>Target Frame Calibration</strong></td><td><strong>Re-measures localized film base and light table transmission independently</strong>.</td><td>Applies values directly <strong>without altering target film boundaries or base readings</strong>.</td></tr>\n        <tr><td><strong>Ideal Use Case</strong></td><td>Rigid copy stand capture runs where negative positioning remains fixed across frames.</td><td>Different exposures sharing identical lighting conditions requiring uniform print aesthetics.</td></tr>\n    </tbody>\n</table><p>Clicking <strong>Copy Settings</strong> loads all current parameters into the memory clipboard. When selecting <strong>Paste Settings</strong> on target frames, a selective paste dialog appears:</p>\n<ul>\n<li>Quick presets include:<ol>\n<li><strong>All available settings</strong>: Commits all parameters across the board;</li>\n<li><strong>Tone and color (Default)</strong>: Synchronizes density limits, printer lights, look, and tone curves, excluding crop and detail sharpening;</li>\n<li><strong>Geometry only</strong>: Applies rotation, flipping, straighten, and perspective corrections.</li>\n</ol>\n</li>\n<li>Users can selectively toggle 27 individual settings (including <code>filmMode</code>, <code>printerLights</code>, <code>curve</code>, <code>sharpen</code>, and <code>lut</code>) for precise control.</li>\n</ul>\n<p>Avoid using Batch Apply across frames captured under varying lighting. For consistent lighting conditions, selective Paste Settings provides the most reliable darkroom results.</p>"
+                }
+            ]
+        },
+        {
+            "id": "print-film-emulation",
+            "track": "user-manual",
+            "trackTitle": "User Manual",
+            "trackOrder": 2,
+            "chapterOrder": 5,
+            "kicker": "02 / User Manual",
+            "title": "Print Film and Paper Emulation (3D LUTs) and B&W Silver Halide Workflows",
+            "subtitle": "A two-stage physical print mapping model, detailed analyses of all 14 built-in .cube LUTs, and darkroom variable contrast grade workflows.",
+            "readingTime": 9,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "two-stage-physics",
+                    "heading": "Two-Stage Physical Print Mapping Model",
+                    "content": "<p>Across more than a century of darkroom tradition, a developed negative was never regarded as the finished artistic print. The negative frame exposed in-camera merely documents scene optical density within silver halide crystals or dye couplers, operating as an intermediate linear medium. In an authentic optical darkroom, the creation of a finished photograph requires two distinct physical stages:</p>\n<ol>\n<li><strong>Stage 1: Negative Development and Density Inversion (Scene Reconstruction)</strong>\nThe orange film base mask is neutralized, and transmission density ratios are inverted according to the spectral sensitivity of the emulsion layers. This stage focuses on objective, uncolored physical scene reconstruction, preserving complete dynamic range from shadows to highlights.</li>\n<li><strong>Stage 2: Secondary Paper and Print Film Exposure (Print Medium Mapping)</strong>\nInverted positive light from the enlarger lens projects onto photographic paper or motion picture print film. The characteristic sensitometric curve (H&amp;D curve) of the print emulsion, its shoulder highlight rolloff, maximum reflective silver density (<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mi>max</mi><mo>⁡</mo></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\max}</annotation></semantics></math></span>), and unique spectral dye absorption impart the distinctive organic texture and aesthetic character associated with analog film.</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Avoiding Destructive One-Step Curves</div>\n    <div class=\"doc-callout-body\"><p>Many digital presets attempt to simulate film by forcing harsh S-curves across RGB channels in a single step. This destructive approach crushes delicate shadow textures, clips specular highlights, and causes unnatural hue splits. NexFilm enforces a physical two-stage pipeline: the core engine first accomplishes balanced density inversion, followed by high-precision three-dimensional lookup tables (3D LUTs) that map positive tones into authentic sensitometric print spaces.</p></div>\n</div>"
+                },
+                {
+                    "id": "builtin-luts-matrix",
+                    "heading": "Built-in 14 Official .cube LUT Emulation Matrix",
+                    "content": "<p>NexFilm natively distributes 14 production-grade <code>.cube</code> 3D LUT profiles. Measured using laboratory spectrophotometers and sensitometric step wedges, these profiles represent authentic physical media rather than subjective commercial filters.</p>\n<p>The matrix below provides complete specifications for all 14 built-in LUT profiles:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Exact LUT Filename</th><th>Physical Medium Classification</th><th>Sensitometric Curve and Spectral Response</th><th>Recommended Negative Stocks and Creative Applications</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><code>Kodak 2383.cube</code></td><td>35mm color motion picture print stock</td><td>The benchmark of Hollywood theatrical releases. Smooth, luminous highlight rolloff, deep cool-toned shadows, rich midtone density, and excellent skin tone separation.</td><td>Kodak Vision3 500T/250D motion picture negatives, cinematic street photography, and atmospheric night work.</td></tr>\n        <tr><td><code>Kodak 2393.cube</code></td><td>High-contrast color motion picture print stock</td><td>Offers deeper, punchier black density and higher overall contrast than 2383, delivering vivid saturation and dramatic separation.</td><td>Low-key night scenes, high-contrast theatrical lighting, neon urban vistas, and bold compositions.</td></tr>\n        <tr><td><code>Kodak Portra Endura.cube</code></td><td>Professional portrait silver halide paper</td><td>The traditional standard for portraiture. Ultra-smooth highlight transitions, open shadow detail, and accurate reproduction of delicate skin tones.</td><td>Kodak Portra 160/400/800, natural light portraiture, weddings, and documentary projects.</td></tr>\n        <tr><td><code>Kodak Endura Premier.cube</code></td><td>Modern professional silver halide paper</td><td>The premier standard for contemporary commercial display. Features rich saturation, crisp clean whites, and high optical acuity.</td><td>Commercial still life, modern architectural interiors, editorial fashion, and vivid street scenes.</td></tr>\n        <tr><td><code>Kodak Supra Endura.cube</code></td><td>All-round professional color paper</td><td>A balanced classic paper stock. Moderate contrast, vibrant color reproduction, and high archival stability.</td><td>Kodak Gold 200, ColorPlus 200, travel documentation, environmental portraits, and general photography.</td></tr>\n        <tr><td><code>Kodak Ultra Endura.cube</code></td><td>Ultra-high saturation and contrast paper</td><td>Maximum visual impact. Dramatic separation between shadows and highlights, intense primary colors, and dense blacks.</td><td>Kodak Ektar 100, sweeping natural landscapes, autumn foliage, and bold graphic compositions.</td></tr>\n        <tr><td><code>Kodak Ektacolor Edge.cube</code></td><td>Classic consumer snapshot color paper</td><td>Evokes family photo albums of the 1980s and 1990s. Gentle warm-yellow tint, relaxed midtone contrast, and nostalgic character.</td><td>Expired color films, everyday snapshots, candid street photography, and vintage-themed work.</td></tr>\n        <tr><td><code>Ilford MGFB 00.cube</code></td><td>Variable contrast fiber-base paper (Grade 00)</td><td>Extremely flat, soft tone curve with maximum latitude. Compresses harsh highlights and deep shadows into a printable scale.</td><td>Extreme direct sunlight, backlit negatives, and overdeveloped contrasty frames.</td></tr>\n        <tr><td><code>Ilford MGFB 0.cube</code></td><td>Variable contrast fiber paper (Grade 0)</td><td>Soft contrast delivery preserving delicate gradations in both deep shadows and subtle highlights.</td><td>Diffused indoor portraits, misty mornings, and negatives requiring shadow detail retention.</td></tr>\n        <tr><td><code>Ilford MGFB 1.cube</code></td><td>Variable contrast fiber paper (Grade 1)</td><td>Mildly soft paper grade suited for smoothing out negatives developed with excessive gamma.</td><td>Direct sunlight street work, high-contrast architecture, and harsh ambient lighting.</td></tr>\n        <tr><td><code>Ilford MGFB 2.cube</code></td><td>Variable contrast fiber paper (Grade 2 Normal)</td><td>The universal darkroom standard. Balanced tonal distribution across blacks, grays, and whites following classical monochrome aesthetics.</td><td>Ilford HP5 Plus, Kodak Tri-X 400, and general black-and-white photography under balanced lighting.</td></tr>\n        <tr><td><code>Ilford MGFB 3.cube</code></td><td>Variable contrast fiber paper (Grade 3)</td><td>Moderate contrast boost separating subtle gray tones and adding punch to flat negatives.</td><td>Overcast skies, low-contrast vintage lenses, and flat lighting captures.</td></tr>\n        <tr><td><code>Ilford MGFB 4.cube</code></td><td>Variable contrast fiber paper (Grade 4)</td><td>Hard contrast rendering that deepens midtones and accentuates strong geometric silhouettes.</td><td>High-contrast street photography in the Daido Moriyama tradition, gritty night scenes, and graphic abstracts.</td></tr>\n        <tr><td><code>Ilford MGFB 5.cube</code></td><td>Variable contrast fiber paper (Grade 5)</td><td>Ultra-hard contrast with heavily compressed midtones, creating stark, graphic black-and-white images.</td><td>Graphic silhouettes, stark chiaroscuro studies, high-impact monochrome compositions, and experimental prints.</td></tr>\n    </tbody>\n</table>"
+                },
+                {
+                    "id": "opacity-and-custom-luts",
+                    "heading": "Opacity Blending and Custom 3D LUT Specifications",
+                    "content": "<p>The <strong>Print Emulation</strong> module provides flexible controls for fine-tuning medium characteristics:</p>\n<ul>\n<li><strong>Opacity Blending (0% – 100%)</strong>:\nDefaults to 100% for full paper emulation. The linear slider allows continuous mixing. Dialing opacity to 60%–80% retains the natural density of the base inversion while introducing the highlight rolloff and tonal weight of authentic photographic paper. Selecting &quot;No Built-in LUT&quot; completely bypasses the shader pass.</li>\n<li><strong>Custom Third-Party <code>.cube</code> Loading</strong>:\nClicking &quot;Load Custom LUT&quot; opens the native file picker to import custom lookup tables. NexFilm supports standard Adobe <code>.cube</code> files across grid resolutions of 17×17×17, 33×33×33, and 65×65×65, evaluated via hardware trilinear interpolation.</li>\n</ul>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Never Apply Digital Cinema Camera Log LUTs</div>\n    <div class=\"doc-callout-body\"><p>The 3D LUT engine operates downstream of negative inversion on positive display-referred data. Never apply Log-to-Rec709 conversion LUTs designed for digital cinema cameras (such as ARRI LogC or Sony S-Log3), as this will introduce severe saturation clipping and color distortions.</p></div>\n</div>"
+                },
+                {
+                    "id": "bw-darkroom-workflow",
+                    "heading": "Pure Silver Halide Monochrome Darkroom Workflow",
+                    "content": "<p>For black-and-white photographers, NexFilm offers an authentic digital equivalent of working with traditional Multigrade Variable Contrast paper under an enlarger:</p>\n<ol>\n<li><strong>Switch to B&amp;W Mode</strong>:\nEngage <strong>B&amp;W</strong> in the inspector mode switcher. The pipeline consolidates three color channels into a single optical density channel, eliminating color dye masks while the histogram adapts to monochrome luminance.</li>\n<li><strong>Define Boundaries and Run Auto Invert</strong>:\nFrame the active negative area and trigger <strong>Auto Invert</strong>. The engine measures the minimum and maximum silver densities to construct a balanced positive.</li>\n<li><strong>Select an Ilford MGFB Paper Grade</strong>:\nIn the Print Emulation dropdown, simulate changing dichroic enlarger filters:<ul>\n<li>For flat, overcast scenes, apply <code>Ilford MGFB 3</code> or <code>4</code> to tighten midtones and clean up highlights;</li>\n<li>For harsh direct sunlight negatives with dense highlights, apply <code>Ilford MGFB 0</code> or <code>00</code> to expand shadow separation.</li>\n</ul>\n</li>\n<li><strong>Preserve Authentic Silver Grain</strong>:\nIn the Detail panel, advance Masking to 40 or higher. This protects the grain structure of the emulsion while focusing contrast adjustments strictly along primary image edges.</li>\n</ol>"
+                },
+                {
+                    "id": "downstream-interop",
+                    "heading": "Emulation Boundaries and Downstream Workflow Parity",
+                    "content": "<p>Understanding how print emulation interfaces with downstream post-production tools ensures seamless integration into professional pipelines:</p>\n<ul>\n<li><strong>Standalone Delivery within NexFilm</strong>:\nWhen preparing images for digital publication, social sharing, client handoff, or fine art giclée printing, apply the desired paper or film print LUT directly within the Develop workspace. Export as 16-bit TIFF or sRGB JPEG to complete your workflow in one pass.</li>\n<li><strong>DaVinci Resolve Cinema Workflows</strong>:\nIf negative captures are destined for DaVinci Resolve alongside digital cinema footage, <strong>set Print Emulation to No Built-in LUT and export as 16-bit Linear TIFF or Linear DNG</strong>. Delivering uncompressed linear positives allows the colorist to apply Kodak 2383 or proprietary print profiles within Resolve&#39;s ACES or DaVinci Wide Gamut environment, preserving pipeline integrity.</li>\n</ul>"
+                }
+            ]
+        },
+        {
+            "id": "export-and-contact-sheets",
+            "track": "user-manual",
+            "trackTitle": "User Manual",
+            "trackOrder": 2,
+            "chapterOrder": 6,
+            "kicker": "02 / User Manual",
+            "title": "Master-Grade Exports, Color Space Management, and Contact Sheets",
+            "subtitle": "A six-format decision matrix, seven output ICC color spaces, tokenized batch renaming, and authentic physical contact sheets.",
+            "readingTime": 13,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "format-decision-matrix",
+                    "heading": "Six Export Formats Decision Matrix and Selection Guidelines",
+                    "content": "<p>In an authentic darkroom workflow, export represents the final serialization step where non-destructive grading adjustments, geometric transformations, and tone curves are permanently rendered into concrete raster assets. NexFilm rejects simplistic, one-size-fits-all output pipelines. To serve web publication, fine-art printing, archival preservation, and motion picture post-production, the engine provides an extensive export matrix spanning six distinct formats across deliverable and master classifications.</p>\n<p>The technical specifications, data linearity models, and target applications for each format are detailed below:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Export Format</th><th>Bit Depth and Encoding</th><th>Data Linearity</th><th>Embedded Adjustments</th><th>Recommended Downstream Workflow</th><th>Storage and Fidelity Tradeoffs</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>JPEG · 8-bit</strong></td><td>8-bit integer, lossy DCT compression</td><td>Non-linear display space (gamma encoded)</td><td>Yes (includes printer lights, curves, detail, and print LUTs)</td><td>Web browsers, mobile devices, social platforms, and instant sharing.</td><td>Compact footprint (typically 2–8 MB). Quality slider spans 40 to 100 (default 92). Ideal for rapid proofs.</td></tr>\n        <tr><td><strong>PNG · 16-bit</strong></td><td>16-bit integer, lossless compression</td><td>Non-linear display space</td><td>Yes (complete positive grading baked in)</td><td>High-fidelity image viewers, digital archives, and publishing layouts.</td><td>Moderate footprint (~30–70 MB). Preserves 65,536 tonal levels per channel with zero lossy compression artifacts.</td></tr>\n        <tr><td><strong>TIFF · 8-bit</strong></td><td>8-bit integer, lossless compression</td><td>Non-linear display space</td><td>Yes (complete positive grading baked in)</td><td>Legacy prepress workflows, desktop publishing, and raster prepress tools.</td><td>Moderate footprint. Engineered specifically for legacy prepress environments requiring TIFF containers under memory constraints.</td></tr>\n        <tr><td><strong>TIFF · 16-bit</strong></td><td>16-bit integer, lossless compression</td><td>Non-linear display space</td><td>Yes (complete positive grading baked in)</td><td>Adobe Photoshop, Lightroom, Capture One, and fine-art giclée printing.</td><td>Substantial footprint (80–180 MB). The industry benchmark for master retouching, offering maximum headroom for layered color adjustments.</td></tr>\n        <tr><td><strong>TIFF · 16-bit linear</strong></td><td>16-bit integer, lossless compression</td><td><strong>Pure linear optical space</strong> (display gamma omitted)</td><td>Yes (includes inversion and printer lights, but strips display curves)</td><td>DaVinci Resolve, Autodesk Flame, and Nuke visual effects pipelines.</td><td>Cinema delivery format. Embeds a linear ICC profile, where pixel values scale proportionally to scene transmission for wide-gamut grading.</td></tr>\n        <tr><td><strong>DNG · linear</strong></td><td>16-bit linear integer/floating-point DNG</td><td><strong>Pure linear optical space</strong></td><td>Yes (serialized as an Adobe LinearRaw DNG container)</td><td>Adobe Camera Raw, Lightroom Classic, and Photoshop.</td><td>Packs the inverted positive into an Adobe LinearRaw container, allowing Lightroom to manipulate highlights and shadows natively.</td></tr>\n        <tr><td><strong>DNG · camera RAW</strong></td><td>Raw sensor Bayer mosaic</td><td>Raw camera sensor linear data</td><td><strong>No (contains zero grading or inversion parameters)</strong></td><td>Any RAW processing utility supporting standard Adobe DNG.</td><td><strong>Pure archival data encapsulation</strong>. Repacks unmodified camera Bayer pixels directly into DNG for offsite negative preservation.</td></tr>\n    </tbody>\n</table><div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Distinguishing Linear DNG from Camera RAW DNG</div>\n    <div class=\"doc-callout-body\"><p><strong>Linear DNG represents a fully processed positive master</strong>: inversion, printer lights, and perspective corrections are completely rendered, while retaining linear dynamic range. <strong>Camera RAW DNG is strictly an unmodified archival container</strong>: it contains zero color corrections, inversions, or crops. Output color spaces and output sharpening are entirely bypassed for Camera RAW DNG, and this option is available exclusively when the source file is a native camera RAW (scanner TIFFs cannot be exported as Camera RAW DNG).</p></div>\n</div>"
+                },
+                {
+                    "id": "color-spaces-and-icc",
+                    "heading": "Seven Output ICC Color Spaces and Gamut Mapping",
+                    "content": "<p>Color spaces govern how exported pixel values translate into visible spectral wavelengths on physical monitors or printing inks. NexFilm integrates seven standardized output color spaces spanning consumer displays to cinema archival standards, automatically embedding matching ICC profiles into file headers:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Color Space Designation</th><th>Official Standard and Gamut Coverage</th><th>Target Delivery Medium</th><th>Operational Guidelines and Core Restrictions</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>sRGB</strong></td><td>sRGB IEC 61966-2.1 (standard web gamut)</td><td>Internet publishing, web galleries, mobile displays, and standard office monitors.</td><td>The safest, most universally compatible color space. Devices lacking color management assume sRGB, preventing unexpected shifts.</td></tr>\n        <tr><td><strong>Display P3</strong></td><td>Apple Display P3 (DCI-P3 gamut paired with D65 white point)</td><td>MacBook Pro, iPhone, iPad, and wide-gamut OLED/Mini-LED displays.</td><td>Renders substantially richer reds and greens than sRGB, ideal for viewing high-fidelity digital portfolios across the Apple ecosystem.</td></tr>\n        <tr><td><strong>Adobe RGB (1998)</strong></td><td>Adobe RGB (1998) (wide photography gamut)</td><td>Fine-art giclée printing, high-end book publishing, and professional photography displays.</td><td>Encompasses nearly all cyan and green printing ink pigments, representing the traditional gold standard for print prepress.</td></tr>\n        <tr><td><strong>ITU-R BT.2020</strong></td><td>Rec.2020 (ultra-wide broadcast gamut)</td><td>4K/8K UHD television production, HDR workflows, and next-generation wide-gamut displays.</td><td>Extremely wide color envelope aligned with contemporary and future digital broadcast standards.</td></tr>\n        <tr><td><strong>ProPhoto RGB</strong></td><td>ProPhoto RGB / ROMM RGB (ultra-wide master space)</td><td>16-bit archival masters, preservation of extreme negative dye saturation, and deep Photoshop retouching.</td><td>Covers over 90% of visible spectrum colors, easily accommodating intense emulsion dye saturation. <strong>Never use with 8-bit JPEG</strong>.</td></tr>\n        <tr><td><strong>ACEScg</strong></td><td>ACEScg (AP1 color space, D60 white point)</td><td>Computer-generated imagery (CGI), visual effects compositing, and digital intermediate grading.</td><td>The global film industry interchange standard, facilitating handoffs into DaVinci Resolve color suites.</td></tr>\n        <tr><td><strong>ACES2065-1</strong></td><td>ACES2065-1 (AP0 ultra-wide space, D60 white point)</td><td>The Academy of Motion Picture Arts and Sciences (AMPAS) archival and data exchange master.</td><td>Fully encompasses the entire visible spectrum and beyond, designated for long-term institutional preservation.</td></tr>\n    </tbody>\n</table><div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Never Apply Wide-Gamut Profiles to 8-Bit JPEGs</div>\n    <div class=\"doc-callout-body\"><p>When exporting 8-bit JPEGs, color information is restricted to 256 discrete levels per channel. Applying ultra-wide gamuts such as ProPhoto RGB or ACES to an 8-bit file stretches these scarce quantization steps over vast color distances. This inevitably causes severe <strong>color banding and posterization</strong> across smooth skies and subtle skin tones. When exporting 8-bit JPEGs, restrict your color space strictly to <strong>sRGB</strong> or <strong>Display P3</strong>.</p></div>\n</div>"
+                },
+                {
+                    "id": "dimensions-and-sharpening",
+                    "heading": "Resizing Strategies, Quality Protection, and Output Sharpening",
+                    "content": "<p>Within the Dimensions section of the export dialogue, photographers can configure precise geometric scaling tailored to specific downstream destinations:</p>\n<h3 id=\"1-original-dimensions\" class=\"scroll-mt-24\">1. Original Dimensions</h3>\n<p>Renders the complete sensor or scanner matrix at full resolution without resampling, providing the foundation for archival masters and large-format exhibition prints.</p>\n<h3 id=\"2-set-long-edge\" class=\"scroll-mt-24\">2. Set Long Edge</h3>\n<p>Specifies a custom maximum long-edge dimension spanning <strong><code>256</code> to <code>32768</code> pixels</strong>. The panel provides one-click quick presets for 1024, 2048, 4096, and 8192 pixels (with 2048 px representing the universal standard for high-density social web delivery). Scaling maintains exact aspect ratios to prevent image distortion.</p>\n<h3 id=\"3-upscaling-protection-allow-upscaling-off-by-default\" class=\"scroll-mt-24\">3. Upscaling Protection (Allow Upscaling Off by Default)</h3>\n<p>The interface features an &quot;Allow Upscaling&quot; checkbox, <strong>which remains strictly unselected by default</strong>. When an original capture possesses long-edge dimensions smaller than the specified target, the engine maintains the native file size rather than performing synthetic interpolation. This policy protects native silver grain from being softened by interpolation blur.</p>\n<h3 id=\"4-four-tier-output-sharpening-matrix\" class=\"scroll-mt-24\">4. Four-Tier Output Sharpening Matrix</h3>\n<p>Operating independently from the creative sharpening controls in the Develop workspace, output sharpening specifically counteracts resampling blur introduced during resolution scaling:</p>\n<ul>\n<li><strong>None</strong>: Bypasses secondary sharpening entirely, preserving raw analog grain for specialized prepress workflows.</li>\n<li><strong>Low</strong>: Mildly restores edge acuity for high-density Retina and OLED displays.</li>\n<li><strong>Standard (Default Recommendation)</strong>: An optimized balance that delivers crisp, natural micro-contrast suitable for both screen viewing and photographic inkjets.</li>\n<li><strong>High</strong>: Enhances edge transitions specifically for downsampled thumbnail indices below 1024 px.</li>\n</ul>"
+                },
+                {
+                    "id": "naming-tokens-and-conflicts",
+                    "heading": "Batch Token Renaming Engine and Conflict Resolution",
+                    "content": "<p>When exporting dozens of frames, consistent file naming is essential for catalog integrity. NexFilm integrates a token-based file naming engine that supports six core dynamic variables:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Naming Token</th><th>Extracted Metadata Source</th><th>Example Output</th><th>Archival Utility</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><code>{Roll}</code></td><td>Unique roll identifier or assigned roll name.</td><td><code>Roll01</code>, <code>2024_Hokkaido</code></td><td>Locks the frame firmly to its source roll catalog.</td></tr>\n        <tr><td><code>{Camera}</code></td><td>Camera body specified in the roll metadata.</td><td><code>LeicaM6</code>, <code>Hasselblad503CW</code></td><td>Organizes images by physical capture hardware.</td></tr>\n        <tr><td><code>{Film}</code></td><td>Film emulsion type specified in the roll metadata.</td><td><code>Portra400</code>, <code>Tri-X400</code></td><td>Differentiates emulsion character across projects.</td></tr>\n        <tr><td><code>{Date}</code></td><td>Capture or digitization date recorded at import.</td><td><code>2024-11-05</code>, <code>Undated</code></td><td>Establishes chronological image archives.</td></tr>\n        <tr><td><code>{Original}</code></td><td>Original raw scan filename on disk.</td><td><code>DSC_0428</code>, <code>scan_frame01</code></td><td>Maintains provenance back to original raw scans.</td></tr>\n        <tr><td><code>{Seq}</code></td><td>Three-digit zero-padded sequence index.</td><td><code>001</code>, <code>002</code>, <code>036</code></td><td>Ensures alphabetical sorting matches exposure sequence.</td></tr>\n    </tbody>\n</table><p><strong>Practical Template Combinations</strong>:</p>\n<ul>\n<li><code>{Roll}_{Seq}</code> → Resolves to <code>Roll01_001.jpg</code> (standard clean template, default);</li>\n<li><code>{Date}_{Film}_{Camera}_{Seq}</code> → Resolves to <code>2024-11-05_Portra400_LeicaM6_001.tif</code> (exhaustive archival template);</li>\n<li><code>{Roll}_{Original}_{Seq}</code> → Resolves to <code>2024_Tokyo_DSC_1024_001.png</code> (source provenance template).</li>\n</ul>\n<p><strong>Filename Sanitization</strong>:\nThe template engine automatically sanitizes invalid filesystem characters (<code>&lt; &gt; : &quot; / \\ | ? *</code>) and control codes, converting them into clean underscores. It also detects Windows reserved filenames (<code>CON</code>, <code>PRN</code>, <code>AUX</code>, <code>NUL</code>, <code>COM1</code>–<code>COM9</code>, <code>LPT1</code>–<code>LPT9</code>), prefixing an underscore to guarantee cross-platform file write operations.</p>\n<p><strong>Conflict Resolution Policies</strong>:\nIf identically named files already occupy the target directory, the engine provides three deterministic options:</p>\n<ol>\n<li><strong>Keep both · add a suffix (Default)</strong>: Automatically appends <code>_1</code>, <code>_2</code> suffixes to prevent data loss;</li>\n<li><strong>Replace existing file</strong>: Overwrites prior files, useful when regenerating revised deliverables;</li>\n<li><strong>Skip existing file</strong>: Bypasses existing filenames, exporting only newly added frames.</li>\n</ol>\n<p>Enabling <strong>Write film, camera, and date to EXIF</strong> injects roll metadata into standard Exif and IPTC fields, ensuring digital assets permanently retain analog provenance.</p>"
+                },
+                {
+                    "id": "contact-sheet-generation",
+                    "heading": "Contact Sheet Physical Emulation and Generation Mechanics",
+                    "content": "<p>In traditional darkrooms, contact sheets were made by placing cut negative strips directly emulsion-to-emulsion against an 8×10-inch sheet of photographic paper under an enlarger, exposing it briefly to produce a 1:1 index print. Contact sheets remain both a critical sorting tool and an enduring symbol of analog photographic practice.</p>\n<p>Under <strong>Rolls view → Roll Contents</strong>, clicking <strong>Export Contact Sheet</strong> activates a digital contact sheet engine that renders physical negative geometry with historical precision:</p>\n<h3 id=\"1-135-full-frame-perforations-and-edge-barcodes\" class=\"scroll-mt-24\">1. 135 Full Frame Perforations and Edge Barcodes</h3>\n<p>For 35mm film, layout geometry adheres strictly to the ISO 1007 standard:</p>\n<ul>\n<li>Six frames per row with realistic 2mm inter-frame gaps;</li>\n<li>Authentic KS perforation holes along top and bottom borders, following a continuous 4.75mm pitch across frame boundaries;</li>\n<li>Rendered amber latent-image edge codes featuring frame numbers, half-frame indicators, and machine-readable barcodes.</li>\n</ul>\n<h3 id=\"2-120-medium-format-adaptive-multi-aspect-layout\" class=\"scroll-mt-24\">2. 120 Medium Format Adaptive Multi-Aspect Layout</h3>\n<p>Because 120 film lacks perforations, the engine identifies frame dimensions and dynamically scales grid columns:</p>\n<ul>\n<li><code>6x4.5</code> (vertical orientation): 4 frames per row;</li>\n<li><code>6x6</code> (square format): 4 frames per row;</li>\n<li><code>6x7</code>: 3 frames per row;</li>\n<li><code>6x9</code> and <code>6x12</code>: 2 frames per row;</li>\n<li><code>6x17</code> panoramic: 1 frame per row.</li>\n<li>Top and bottom borders render capitalized film stock labels, sequential frame numbers, and directional orientation triangles.</li>\n</ul>\n<h3 id=\"3-layout-aesthetics-and-unprocessed-frame-handling\" class=\"scroll-mt-24\">3. Layout Aesthetics and Unprocessed Frame Handling</h3>\n<ul>\n<li><strong>Darkroom Presentation</strong>: Contact sheets sit on a warm matte photographic paper ground (<code>#E9E9E7</code>) with pure black negative strips. The footer displays a clean vector lockup of the <strong>NEXFILM</strong> logo alongside Roll ID, Camera, Film Stock, and Date headers.</li>\n<li><strong>Handling Uninverted Frames</strong>: If certain frames within a roll have not yet been graded in the Develop workspace, the engine avoids rendering raw negative scans. Instead, it fills the frame slot with an elegant neutral grey tone labeled with a understated <strong>NOT DEVELOPED</strong> indicator, maintaining sheet presentation while signaling remaining work.</li>\n</ul>\n<p>Generated contact sheets save automatically as <code>contact_sheet_{roll_id}_{camera}.jpg</code> in your destination folder.</p>"
+                },
+                {
+                    "id": "batch-export-queue",
+                    "heading": "Full-Roll Background Export Queue and Integrity Safeguards",
+                    "content": "<p>Whether exporting dozens of 16-bit master TIFFs or generating large-format contact sheets, export operations are managed by a dedicated background concurrency queue:</p>\n<ul>\n<li><strong>Pre-Flight Integrity Check</strong>: Before launching processing, the engine performs a pre-flight scan: it verifies source file availability on disk and validates inversion parameter integrity. If missing files are detected, the system pauses immediately and presents an itemized dialog, preventing wasted processing time.</li>\n<li><strong>Asynchronous Execution</strong>: The worker pool utilizes multi-core hardware while regulating disk I/O to avoid head thrashing on mechanical drives. Photographers can continue refining other images in the Develop workspace while background exports proceed.</li>\n<li><strong>The Darkroom Test Print Rule</strong>: Before launching a large-scale master export, <strong>always select a single frame with rich tonal contrast to export as a test proof</strong>. Inspecting this proof on a calibrated monitor verifies colors, sharpness, and dimensions before processing an entire roll.</li>\n</ul>"
+                }
+            ]
+        },
+        {
+            "id": "troubleshooting-and-appendix",
+            "track": "user-manual",
+            "trackTitle": "User Manual",
+            "trackOrder": 2,
+            "chapterOrder": 7,
+            "kicker": "02 / User Manual",
+            "title": "Troubleshooting Guide, Shortcuts, Backup Strategies, and Open-Source Appendix",
+            "subtitle": "A systematic symptom-cause troubleshooting tree, complete verified shortcut tables, cross-platform data storage, and the open-source appendix.",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "troubleshooting",
+                "appendix"
+            ],
+            "sections": [
+                {
+                    "id": "tone-and-color-troubleshooting",
+                    "heading": "Tone and Color Discrepancy Troubleshooting Tree",
+                    "content": "<p>In an optical digital darkroom, inversion anomalies rarely stem from internal algorithmic faults. Instead, they typically arise from reprographic illumination discrepancies, contaminated film base samples, or incorrect framing boundaries. Adopting a structured &quot;Observed Symptom → Root Physical Cause → Step-by-Step Resolution&quot; diagnostic framework allows photographers to pinpoint issues immediately.</p>\n<p>The decision matrix below summarizes the most common tone and color discrepancies encountered during inversion:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Observed Anomaly</th><th>Root Physical Cause and Diagnostic Focus</th><th>Step-by-Step Resolution Pathway</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>Inverted positive appears flat, dark, and severely lacking contrast</strong></td><td>1. Film Area encloses raw 100% transmission backlight from the light table.<br>2. Base sampling sampled an exposed image area instead of unexposed rebate.<br>3. Negative frame was severely underexposed during capture.</td><td>1. Click <strong>Set Film Area</strong> in the toolbar and adjust all edges to exclude raw backlight and perforations.<br>2. Click <strong>Auto Invert</strong> to recompute density limits.<br>3. Adjust Master D-Min and Master D-Max in the Density Limits panel.<br>4. If the scene depicts heavy fog or twilight, natural low contrast is physically correct and should not be forced into harsh digital clipping.</td></tr>\n        <tr><td><strong>Image exhibits a stubborn overall color cast resistant to white balance adjustment</strong></td><td>1. Base calibration sampled scratches, dust, or dye fading on the rebate.<br>2. Reprographic light source possesses an inadequate Color Rendering Index (Ra &lt; 95).<br>3. Scanner driver applied irreversible non-linear contrast clipping.</td><td>1. Find a clean, scratch-free unexposed border area and rerun <strong>Calibrate Film Base / Leader</strong>.<br>2. Verify light source spectral continuity in the <strong>Hardware Calibration</strong> module.<br>3. Use the Printer Lights panel to manually balance Red/Green/Blue sliders before clicking the neutral grey dropper.</td></tr>\n        <tr><td><strong>Batch processing succeeds across the roll except on isolated frames with severe color jumps</strong></td><td>1. Minor copy stand vibration shifted negative placement, causing boundaries to clip backlight.<br>2. Frame contains a dominant monochromatic subject (e.g., dense forest or ocean), triggering channel-span protection.<br>3. Leader calibration frames were accidentally included in the batch.</td><td>1. Select the affected frame and readjust its <strong>Film Area</strong> individually.<br>2. Run <strong>Auto Invert</strong> on that specific frame.<br>3. Compensate for dominant monochromatic scenes using the Printer Lights panel.<br>4. Confirm that calibration frames carry geometric badges and are excluded from normal batch outputs.</td></tr>\n        <tr><td><strong>Deep shadow contrast is lost, displaying a milky, washed-out haze</strong></td><td>1. Film Area enclosed opaque black film holder borders.<br>2. Lens flare or camera internal reflections caused veiling glare during capture.</td><td>1. Tighten the Film Area to eliminate opaque mask borders.<br>2. Advance the <strong>Dehaze</strong> slider in the Detail panel to cut through veiling glare.</td></tr>\n    </tbody>\n</table><div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Natural Low Contrast vs Algorithmic Errors</div>\n    <div class=\"doc-callout-body\"><p>When a negative records early morning fog, rainy overcast landscapes, or dim interior ambient light, physical scene radiances naturally lack bright specular highlights or deep black shadows. NexFilm&#39;s sensitometric pipeline preserves authentic scene dynamics, refusing to stretch the histogram ends to artificial extremes. Photographers should welcome genuine low contrast, utilizing the Tone Curve module when artistic punch is intentionally desired.</p></div>\n</div>"
+                },
+                {
+                    "id": "decoding-and-performance",
+                    "heading": "File Decoding, Ingestion, and Rendering Performance",
+                    "content": "<p>When troubleshooting asset ingestion, raw parsing, and rendering performance, apply the following diagnostic guidelines:</p>\n<h3 id=\"1-camera-raw-or-flextight-fff-ingestion-failures\" class=\"scroll-mt-24\">1. Camera RAW or Flextight .fff Ingestion Failures</h3>\n<ul>\n<li><strong>Verify File Extension Authenticity</strong>: Third-party utilities may alter raw file extensions. Ensure files originate directly from camera media or scanner exports.</li>\n<li><strong>Nikon Z8 / Z9 High-Efficiency NEF Restrictions</strong>: As documented, embedded LibRaw routines do not currently decode <code>HE</code> or <code>HE*</code> formats. Switch camera recording formats to standard Lossless Compressed RAW or convert files using the free Adobe DNG Converter.</li>\n<li><strong>Hasselblad Flextight <code>.fff</code> Files</strong>: As of v1.1.0, files decode natively as scanner transmission TIFFs without requiring modified hardware model strings. If parsing fails, verify that FlexColor did not export the file with non-standard proprietary tiling.</li>\n</ul>\n<h3 id=\"2-large-scanner-tiffs-multi-gigabyte-files-and-system-ram\" class=\"scroll-mt-24\">2. Large Scanner TIFFs (Multi-Gigabyte Files) and System RAM</h3>\n<ul>\n<li>Digitizing 8×10 sheet film at high optical resolutions produces 16-bit TIFFs exceeding several gigabytes. NexFilm utilizes scanline-streaming routines, loading bounded 2560 px proxies into active display memory. If imports lag on older machines, verify that your system drive maintains at least 16 GB of available virtual memory swap space.</li>\n</ul>\n<h3 id=\"3-visual-parity-between-develop-preview-and-full-scale-master-exports\" class=\"scroll-mt-24\">3. Visual Parity Between Develop Preview and Full-Scale Master Exports</h3>\n<ul>\n<li><strong>Bounded Proxy versus Full Master Rendering</strong>: The Develop canvas operates in real time on a dedicated long-edge <code>2560 px</code> bounded proxy, whereas exports process uncompressed native capture rasters from disk.</li>\n<li><strong>Micro-Grain Texture and Acuity</strong>: While sharpening and clarity convolution kernels scale proportionally to a 2560 px baseline, ultra-high-resolution files viewed at 100% display finer analog silver halide grain structures due to anti-aliasing downsampling filters. Generating a single test proof before batch processing full rolls is standard darkroom practice.</li>\n</ul>\n<h3 id=\"4-blank-or-dark-thumbnails-when-upgrading-from-v1-0-2-to-v1-1-0\" class=\"scroll-mt-24\">4. Blank or Dark Thumbnails When Upgrading from v1.0.2 to v1.1.0</h3>\n<ul>\n<li>Version 1.1.0 introduced an overhauled optical density inversion engine. To prevent legacy thumbnails rendered with older formulas from misrepresenting active projects, the database migration clears outdated thumbnail caches on initial launch. Open the affected roll and trigger <strong>Auto Invert</strong> or <strong>Auto Invert Roll</strong> once to regenerate all previews with current color physics.</li>\n</ul>"
+                },
+                {
+                    "id": "shortcuts-and-gestures",
+                    "heading": "Verified Global Shortcuts and Canvas Gestures",
+                    "content": "<p>To facilitate rapid, fatigue-free darkroom grading, NexFilm standardizes keyboard shortcuts across the application. The system strictly avoids fabricating unimplemented hotkeys. The complete list of verified shortcuts and mouse gestures is detailed below:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Shortcut or Mouse Gesture</th><th>Operational Function</th><th>Context and Execution Boundaries</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><kbd>⌘</kbd>+<kbd>Z</kbd> (<kbd>Ctrl</kbd>+<kbd>Z</kbd> on Windows)</td><td><strong>Undo previous action</strong></td><td>Global scope. When an input text box is focused (such as entering metadata or numeric slider values), native text undo takes priority.</td></tr>\n        <tr><td><kbd>Shift</kbd>+<kbd>⌘</kbd>+<kbd>Z</kbd> (<kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> or <kbd>Ctrl</kbd>+<kbd>Y</kbd>)</td><td><strong>Redo previous action</strong></td><td>Global scope outside active text fields. Reapplies reverted color corrections or geometric adjustments.</td></tr>\n        <tr><td><kbd>←</kbd> / <kbd>→</kbd> Arrow Keys</td><td><strong>Navigate to previous / next frame</strong></td><td>Operates in the Develop view when the filmstrip is visible, maintaining current canvas zoom and pan positions.</td></tr>\n        <tr><td><kbd>Enter</kbd></td><td><strong>Confirm crop or numeric entry</strong></td><td>Commits on-screen composition crop boundaries or validates direct numeric entry in slider text fields.</td></tr>\n        <tr><td><kbd>Esc</kbd></td><td><strong>Dismiss modal, menu, or cancel input</strong></td><td>Closes active dialog windows, exits popover menus, or cancels active numeric editing to revert previous values.</td></tr>\n        <tr><td>Hold <kbd>Space</kbd> + Mouse Drag</td><td><strong>Pan canvas viewport</strong></td><td>Engaged across the Develop canvas whenever an image is loaded, enabling smooth navigation at high zoom levels.</td></tr>\n        <tr><td>Mouse Wheel (Canvas / Filmstrip)</td><td><strong>Continuous zoom / Horizontal scroll</strong></td><td>Zooms continuously centered on the mouse cursor over the canvas; scrolls the frame sequence horizontally over the filmstrip.</td></tr>\n        <tr><td>Mouse Wheel (Inspector Sliders)</td><td><strong>Precision fine-step slider adjustment</strong></td><td><strong>Safety Lock Mechanism</strong>: Sliders must first be clicked directly with the left mouse button before the wheel adjusts values.</td></tr>\n        <tr><td>Hold <kbd>Alt</kbd> + Drag Sharpening Slider</td><td><strong>Engage live grayscale diagnostic mask</strong></td><td>Dragging Amount, Radius, or Detail reveals isolated edge signals; dragging Masking displays the binary edge detection mask.</td></tr>\n    </tbody>\n</table>"
+                },
+                {
+                    "id": "data-storage-and-backup",
+                    "heading": "Cross-Platform Data Storage and Backup Protocols",
+                    "content": "<p>Understanding the persistent file architecture across operating systems is essential for safeguarding film archives over years of production:</p>\n<table class=\"doc-table\">\n    <thead>\n        <tr><th>Operating System Platform</th><th>Absolute Physical Application Data Path</th></tr>\n    </thead>\n    <tbody>\n        <tr><td><strong>Windows Production Release</strong></td><td><code>%APPDATA%\\NexFilm Engine\\</code> (typically resolves to <code>C:\\Users\\&lt;Username&gt;\\AppData\\Roaming\\NexFilm Engine\\</code>)</td></tr>\n        <tr><td><strong>macOS Production Release</strong></td><td><code>~/Library/Application Support/NexFilm Engine/</code></td></tr>\n        <tr><td><strong>Development / Debug Builds</strong></td><td>Root directory of the local cloned repository workspace</td></tr>\n    </tbody>\n</table><h3 id=\"database-structure-and-integrity-files\" class=\"scroll-mt-24\">Database Structure and Integrity Files</h3>\n<ul>\n<li><code>nexfilm_user.db</code>: The core SQLite database. Stores all catalog metadata, camera profiles, emulsion dictionaries, frame index trees, complete grading history stacks, and bounded 2560 px thumbnail caches. It <strong>does not store copies of your raw image files</strong>, recording only absolute filesystem path references.</li>\n<li><code>rolls.json</code>: An auxiliary mirror file maintained for backwards compatibility and rapid external inspection, committed in sync with database transactions.</li>\n</ul>\n<h3 id=\"backup-and-migration-rules\" class=\"scroll-mt-24\">Backup and Migration Rules</h3>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Dual-Track Backup Policy</div>\n    <div class=\"doc-callout-body\"><p>Because NexFilm operates as a reference-based system, <strong>backing up only <code>nexfilm_user.db</code> will not recover your project if raw capture files are lost</strong>. Conversely, backing up raw files without the database requires manually re-entering all grading parameters upon re-import.\nFollow this two-track backup routine:</p>\n<ol>\n<li>Regularly back up external storage drives containing your original camera RAW or scanner TIFF files;</li>\n<li>Simultaneously back up the application data directory containing <code>nexfilm_user.db</code>.\nWhen migrating to a new workstation, copy your raw captures and data directory to the new machine to resume work seamlessly.</li>\n</ol></div>\n</div>"
+                },
+                {
+                    "id": "known-limitations",
+                    "heading": "Known Limitations and Technical Boundaries",
+                    "content": "<p>In accordance with scientific and open-source principles, NexFilm transparently discloses known operational boundaries:</p>\n<ol>\n<li><strong>Unsigned Package Certificates</strong>: Current Windows packages and macOS <code>.dmg</code> disk images are built via open-source automated CI workflows without commercial enterprise code signing certificates. The macOS disk image has not undergone Apple notarization, requiring manual first-launch authorization via system settings.</li>\n<li><strong>Nikon Z8 / Z9 High-Efficiency NEF Restrictions</strong>: Due to decoder limitations, high-efficiency compressed NEF formats are not natively decoded. Convert captures to DNG prior to ingestion.</li>\n<li><strong>Legacy Proprietary Scanner Formats</strong>: Given the variety of legacy flatbed and drum scanning software, rare proprietary scanner formats continue to be tested for ongoing compatibility.</li>\n<li><strong>No Precompiled Linux GUI Releases</strong>: While the underlying Rust core compiles cleanly across Unix environments, official distributed installers focus on Windows and macOS.</li>\n<li><strong>Path Dependency in Non-Destructive Storage</strong>: Moving folders or unmounting external drives transitions frames into an offline state, requiring the Locate File tool to reconnect paths.</li>\n<li><strong>Experimental Hardware Calibration</strong>: The Hardware Calibration view involves complex spectral fitting routines and is classified as experimental, subject to future development.</li>\n</ol>"
+                },
+                {
+                    "id": "license-feedback-acknowledgments",
+                    "heading": "Open-Source Licensing, Issue Reporting, and Acknowledgments",
+                    "content": "<h3 id=\"open-source-licensing\" class=\"scroll-mt-24\">Open-Source Licensing</h3>\n<p>NexFilm Engine is distributed under the <strong>GNU General Public License v3.0 only (GPL-3.0-only)</strong>. All frontend application code, Rust engine components, darkroom shaders, and compilation scripts are available publicly on GitHub. Users are free to run, study, modify, and redistribute the software under the condition that all derivative works remain fully open-source under identical terms.</p>\n<h3 id=\"structured-issue-reporting-guidelines\" class=\"scroll-mt-24\">Structured Issue Reporting Guidelines</h3>\n<p>If you encounter crashes, decoding anomalies, or UI rendering glitches, open an issue on the official GitHub repository. To facilitate rapid diagnosis and patch deployment, please provide the following technical details:</p>\n<ul>\n<li><strong>Environment Diagnostics</strong>: Operating system version (e.g., Windows 11 23H2 or macOS Sonoma 14.5 Apple Silicon) and the exact installed NexFilm Engine version (e.g., v1.1.0);</li>\n<li><strong>Hardware and Capture Details</strong>: Camera body, reprographic lens, light source manufacturer, file extension, and pixel dimensions;</li>\n<li><strong>Step-by-Step Reproduction Log</strong>: Detailed steps leading to the anomaly, accompanied by relevant console error logs and stack traces;</li>\n<li><strong>Privacy Guidelines</strong>: Never upload images containing private personal information to public issues. Test charts or non-sensitive photographic crops are preferred for diagnostic investigations.</li>\n</ul>\n<h3 id=\"theoretical-foundations-and-community-acknowledgments\" class=\"scroll-mt-24\">Theoretical Foundations and Community Acknowledgments</h3>\n<p>NexFilm&#39;s physically interpretable, math-driven darkroom models have been shaped by valuable open-source contributions. The development team extends sincere gratitude:</p>\n<ul>\n<li>To Zhihu researchers <strong>@黄昊Haosky</strong> and <strong>@V777</strong> for their foundational theoretical investigations into lossless negative mask uncoupling, spectral dye overlap physics, and logarithmic optical density inversion, which provided critical inspiration for NexFilm&#39;s core architecture;</li>\n<li>To all analog photographers, darkroom technicians, and beta testers who have contributed defect reports, translation reviews, and reprographic test samples to the project.</li>\n</ul>"
+                }
+            ]
+        },
+        {
+            "id": "three-mathematical-domains",
+            "track": "color-science",
+            "trackTitle": "Color Science",
+            "trackOrder": 3,
+            "chapterOrder": 1,
+            "kicker": "Color Science 01 / Domain Decoupling",
+            "title": "The Three Mathematical Domains of Negative Inversion",
+            "subtitle": "Rigorous physical derivations and the non-commutative theorem across transmittance, optical density, and print output domains.",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "color-science"
+            ],
+            "sections": [
+                {
+                    "id": "transmittance-domain-pre-log",
+                    "heading": "Transmittance Domain: Pre-Log Optical Response & Device Basis",
+                    "content": "<p>In negative film digitization, the physical quantity recorded by an area-array CMOS sensor or a linear CCD scanner is not optical density. Rather, the sensor integrates the radiant photon flux that traverses the developed photographic emulsion and reaches each photosite. The transmittance domain refers explicitly to the linear-light space prior to logarithmic transformation, where measurements remain strictly proportional to incident physical irradiance. The objective of this domain is to obtain a physically meaningful, bounded, positive relative transmittance vector.</p>\n<p>Let <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>open</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{open}}(\\lambda)</annotation></semantics></math></span> represent the spectral radiant power incident across the scanning gate without film, let <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>transmitted</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{transmitted}}(\\lambda)</annotation></semantics></math></span> denote the transmitted flux through the developed negative, and let <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{dark}}(\\lambda)</annotation></semantics></math></span> quantify the combined contributions of sensor thermal dark current and internal optical flare within the scanning chamber. The spectral relative transmittance <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>T</mi><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">T(\\lambda)</annotation></semantics></math></span> is defined as:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mi>T</mi><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo><mo>=</mo><mfrac><mrow><msub><mi>I</mi><mtext>transmitted</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo><mo>−</mo><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo></mrow><mrow><msub><mi>I</mi><mtext>open</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo><mo>−</mo><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>λ</mi><mo stretchy=\"false\">)</mo></mrow></mfrac></mrow><annotation encoding=\"application/x-tex\">T(\\lambda) = \\frac{I_{\\text{transmitted}}(\\lambda) - I_{\\text{dark}}(\\lambda)}{I_{\\text{open}}(\\lambda) - I_{\\text{dark}}(\\lambda)}</annotation></semantics></math></span></p>\n<p>For a discrete trichromatic imaging system, channel responses correspond to integrals of the transmitted spectrum weighted by color filter array transmissions and sensor quantum efficiencies. Denoting the raw digitized device vector as <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>device</mtext></msub><mo>=</mo><mo stretchy=\"false\">[</mo><mi>R</mi><mo separator=\"true\">,</mo><mi>G</mi><mo separator=\"true\">,</mo><mi>B</mi><msup><mo stretchy=\"false\">]</mo><mi>T</mi></msup></mrow><annotation encoding=\"application/x-tex\">I_{\\text{device}} = [R, G, B]^T</annotation></semantics></math></span>, all operations performed within the transmittance domain must preserve radiant linearity:</p>\n<ol>\n<li><strong>Dark Level and Stray Light Subtraction</strong>: Removing thermal dark current and internal housing reflections ensures that zero transmitted light yields a true physical zero reading.</li>\n<li><strong>Flat-Field Gain Normalization</strong>: Compensating for lens cosine-fourth illumination falloff and backlight spatial chromaticity nonuniformity across the field of view.</li>\n<li><strong>Capture Separation Matrix</strong>: Decoupling the overlapping spectral bands of camera Bayer dyes or scanner beam splitters, aligning the channels with the actual optical absorption bands of the cyan, magenta, and yellow film dyes.</li>\n</ol>\n<p>If channel separation is omitted at the capture stage, dye absorption signals remain entangled throughout all downstream operations. To prevent mathematical singularities during logarithmic mapping, the evaluated transmittance is clamped to a tiny positive threshold <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>ϵ</mi></mrow><annotation encoding=\"application/x-tex\">\\epsilon</annotation></semantics></math></span>:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>T</mi><mtext>valid</mtext></msub><mo>=</mo><mi>max</mi><mo>⁡</mo><mo stretchy=\"false\">(</mo><mi>T</mi><mo separator=\"true\">,</mo><mi>ϵ</mi><mo stretchy=\"false\">)</mo><mo separator=\"true\">,</mo><mspace width=\"1em\"/><mi>ϵ</mi><mo>=</mo><mn>1.0</mn><mo>×</mo><msup><mn>10</mn><mrow><mo>−</mo><mn>6</mn></mrow></msup></mrow><annotation encoding=\"application/x-tex\">T_{\\text{valid}} = \\max(T, \\epsilon), \\quad \\epsilon = 1.0 \\times 10^{-6}</annotation></semantics></math></span></p>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Important</div>\n    <div class=\"doc-callout-body\"><p>Values within the transmittance domain represent radiometric physical quantities. Any display-referred nonlinearities, monitor gamma curves, or perceptual contrast adjustments are strictly prohibited within this initial stage.</p></div>\n</div>"
+                },
+                {
+                    "id": "optical-density-domain-post-log",
+                    "heading": "Optical Density Domain: Post-Log Additive Absorption & Base Subtraction",
+                    "content": "<p>Following logarithmic transformation, the signal transitions from the transmittance domain into the optical density domain. Under the Beer-Lambert absorption law, the attenuation of monochromatic light traversing a homogeneous absorbing medium follows an exponential decay. Evaluating the negative base-10 logarithm transforms multiplicative transmission attenuation into linear additive absorbance, establishing a tractable framework for dye layer decomposition.</p>\n<p>The raw acquired optical density vector <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>raw</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{raw}}</annotation></semantics></math></span> is defined as the common logarithm of the reciprocal of valid relative transmittance:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>D</mi><mtext>raw</mtext></msub><mo>=</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>T</mi><mtext>valid</mtext></msub><mo stretchy=\"false\">)</mo><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>T</mi><mi>R</mi></msub><mo stretchy=\"false\">)</mo></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>T</mi><mi>G</mi></msub><mo stretchy=\"false\">)</mo></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>T</mi><mi>B</mi></msub><mo stretchy=\"false\">)</mo></mrow></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow></mrow><annotation encoding=\"application/x-tex\">D_{\\text{raw}} = -\\log_{10}(T_{\\text{valid}}) = \\begin{bmatrix} -\\log_{10}(T_R) \\ -\\log_{10}(T_G) \\ -\\log_{10}(T_B) \\end{bmatrix}</annotation></semantics></math></span></p>\n<p>In chromogenic color negatives processed under standard C-41 chemistry, the unexposed film rebates contain residual unreacted color couplers forming an orange cast. This unexposed substrate introduces a substantial constant additive baseline. Designating the measured unexposed film base density under identical scanning conditions as <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>base</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{base}}</annotation></semantics></math></span>, the net optical density <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>net</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{net}}</annotation></semantics></math></span> is obtained through channel-wise subtraction:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>D</mi><mtext>net</mtext></msub><mo>=</mo><msub><mi>D</mi><mtext>raw</mtext></msub><mo>−</mo><msub><mi>D</mi><mtext>base</mtext></msub><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msub><mi>D</mi><mrow><mtext>raw</mtext><mo separator=\"true\">,</mo><mi>R</mi></mrow></msub><mo>−</mo><msub><mi>D</mi><mrow><mtext>base</mtext><mo separator=\"true\">,</mo><mi>R</mi></mrow></msub></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msub><mi>D</mi><mrow><mtext>raw</mtext><mo separator=\"true\">,</mo><mi>G</mi></mrow></msub><mo>−</mo><msub><mi>D</mi><mrow><mtext>base</mtext><mo separator=\"true\">,</mo><mi>G</mi></mrow></msub></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msub><mi>D</mi><mrow><mtext>raw</mtext><mo separator=\"true\">,</mo><mi>B</mi></mrow></msub><mo>−</mo><msub><mi>D</mi><mrow><mtext>base</mtext><mo separator=\"true\">,</mo><mi>B</mi></mrow></msub></mrow></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow></mrow><annotation encoding=\"application/x-tex\">D_{\\text{net}} = D_{\\text{raw}} - D_{\\text{base}} = \\begin{bmatrix} D_{\\text{raw}, R} - D_{\\text{base}, R} \\ D_{\\text{raw}, G} - D_{\\text{base}, G} \\ D_{\\text{raw}, B} - D_{\\text{base}, B} \\end{bmatrix}</annotation></semantics></math></span></p>\n<p>Within the net optical density space, the developed dye mass exhibits a predictable inverse relationship with original scene exposure. Provided the photographic emulsion operates between the toe underexposure threshold and the shoulder saturation plateau, net density adheres closely to the classic Hurter-Driffield sensitometric formulation:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>D</mi><mrow><mtext>net</mtext><mo separator=\"true\">,</mo><mi>c</mi></mrow></msub><mo>≈</mo><msub><mi>γ</mi><mi>c</mi></msub><mo>⋅</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>E</mi><mi>c</mi></msub><mo stretchy=\"false\">)</mo><mo>+</mo><msub><mi>C</mi><mi>c</mi></msub><mo separator=\"true\">,</mo><mspace width=\"1em\"/><mi>c</mi><mo>∈</mo><mo stretchy=\"false\">{</mo><mi>R</mi><mo separator=\"true\">,</mo><mi>G</mi><mo separator=\"true\">,</mo><mi>B</mi><mo stretchy=\"false\">}</mo></mrow><annotation encoding=\"application/x-tex\">D_{\\text{net}, c} \\approx \\gamma_c \\cdot \\log_{10}(E_c) + C_c, \\quad c \\in {R, G, B}</annotation></semantics></math></span></p>\n<p>where <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>γ</mi><mi>c</mi></msub></mrow><annotation encoding=\"application/x-tex\">\\gamma_c</annotation></semantics></math></span> denotes the photographic development contrast factor for dye layer <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>c</mi></mrow><annotation encoding=\"application/x-tex\">c</annotation></semantics></math></span>. Within this optical density domain, essential darkroom operations reduce to elementary linear algebra:</p>\n<table class=\"doc-table\">\n<thead>\n<tr>\n<th>Density Operation</th>\n<th>Physical Analog &amp; Darkroom Practice</th>\n<th>Governing Mathematical Formulation</th>\n</tr>\n</thead>\n<tbody><tr>\n<td>Film Base Subtraction</td>\n<td>Eliminating polyester support and unexposed orange coupler absorption</td>\n<td><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>net</mtext></msub><mo>=</mo><msub><mi>D</mi><mtext>raw</mtext></msub><mo>−</mo><msub><mi>D</mi><mtext>base</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{net}} = D_{\\text{raw}} - D_{\\text{base}}</annotation></semantics></math></span></td>\n</tr>\n<tr>\n<td>Printer Lights Grading</td>\n<td>Emulating red, green, and blue additive/subtractive optical enlarger head filtration</td>\n<td><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>graded</mtext></msub><mo>=</mo><msub><mi>D</mi><mtext>net</mtext></msub><mo>+</mo><mi mathvariant=\"normal\">Δ</mi><msub><mi>P</mi><mtext>light</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{graded}} = D_{\\text{net}} + \\Delta P_{\\text{light}}</annotation></semantics></math></span></td>\n</tr>\n<tr>\n<td>Density Window Normalization</td>\n<td>Mapping scene negative density span to target display luminance bounds</td>\n<td><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>norm</mtext></msub><mo>=</mo><mo stretchy=\"false\">(</mo><msub><mi>D</mi><mtext>high</mtext></msub><mo>−</mo><mi>D</mi><mo stretchy=\"false\">)</mo><mi mathvariant=\"normal\">/</mi><mo stretchy=\"false\">(</mo><msub><mi>D</mi><mtext>high</mtext></msub><mo>−</mo><msub><mi>D</mi><mtext>low</mtext></msub><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">D_{\\text{norm}} = (D_{\\text{high}} - D) / (D_{\\text{high}} - D_{\\text{low}})</annotation></semantics></math></span></td>\n</tr>\n<tr>\n<td>Spectral Crosstalk Decoupling</td>\n<td>Correcting magenta secondary absorption in high-density regions</td>\n<td><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>calibrated</mtext></msub><mo>=</mo><msub><mi>M</mi><mtext>crosstalk</mtext></msub><mo>⋅</mo><msub><mi>D</mi><mtext>net</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{calibrated}} = M_{\\text{crosstalk}} \\cdot D_{\\text{net}}</annotation></semantics></math></span></td>\n</tr>\n</tbody></table>"
+                },
+                {
+                    "id": "positive-print-and-output-domain",
+                    "heading": "Positive Print & Output Domain: Linear ProPhoto to Display Rendering",
+                    "content": "<p>Even after film base subtraction and printer lights balance, the net density vector represents an analytical measurement of physical absorption rather than a displayable positive image. The positive print and output domain is responsible for mapping inverted relative exposures into a standardized, colorimetrically defined linear workspace, followed by aesthetic tone reproduction and display-referred encoding.</p>\n<p>The NexFilm Engine utilizes Linear ProPhoto RGB (ROMM RGB with an identity linear transfer function) as its universal internal positive working space. Once inverted relative exposures are placed within this wide-gamut linear framework, subsequent grading and mastering proceed systematically:</p>\n<ol>\n<li><strong>Working Space Linearization</strong>: Converting normalized logarithmic density into linear positive exposure <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>E</mi><mtext>pos</mtext></msub><mo>=</mo><msup><mn>10</mn><mrow><mo>−</mo><mi>α</mi><mo>⋅</mo><msub><mi>D</mi><mtext>graded</mtext></msub></mrow></msup></mrow><annotation encoding=\"application/x-tex\">E_{\\text{pos}} = 10^{-\\alpha \\cdot D_{\\text{graded}}}</annotation></semantics></math></span>, restoring radiant proportionality to the positive scene estimate.</li>\n<li><strong>Per-Channel and Master Tone Curves</strong>: Applying discrete red, green, and blue tone curves to shape shadow and highlight color balance, followed by a composite luminance curve modeling traditional print paper D-log-H characteristics.</li>\n<li><strong>Print Film Emulation 3D LUTs</strong>: Evaluating verified three-dimensional lookup tables calibrated against motion picture print stocks (such as Kodak 2383 or Vision Premier 2393), conferring characteristic deep shadow d-max and rich dye separation.</li>\n<li><strong>Target Color Space Transform &amp; OETF Encoding</strong>: Projecting positive color coordinates into target output profiles (sRGB, Display P3, Adobe RGB, or ACEScg) and applying corresponding optical-electro transfer functions.</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Note</div>\n    <div class=\"doc-callout-body\"><p>Contrast adjustments, shadow recovery, and saturation balancing conducted in the positive print domain reflect perceptual aesthetics. Under no circumstances should these display-referred transforms be allowed to perturb optical density measurements.</p></div>\n</div>"
+                },
+                {
+                    "id": "non-commutative-matrix-proof",
+                    "heading": "Non-Commutative Matrix Proof: The Invalidation of Density Color Space Transforms",
+                    "content": "<p>A widespread architectural defect in legacy film inversion software is the confusion between transmittance-domain matrices and density-domain matrices. Several heuristic implementations attempt to apply standard monitor color space matrices directly to logarithmic density vectors, asserting that this approximates optical calibration. This section presents a formal proof demonstrating why such operations are mathematically invalid.</p>\n<p>Let <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>x</mi><mo>=</mo><mo stretchy=\"false\">[</mo><msub><mi>T</mi><mn>1</mn></msub><mo separator=\"true\">,</mo><msub><mi>T</mi><mn>2</mn></msub><mo separator=\"true\">,</mo><msub><mi>T</mi><mn>3</mn></msub><msup><mo stretchy=\"false\">]</mo><mi>T</mi></msup><mo>∈</mo><msubsup><mi mathvariant=\"double-struck\">R</mi><mrow><mo>&gt;</mo><mn>0</mn></mrow><mn>3</mn></msubsup></mrow><annotation encoding=\"application/x-tex\">x = [T_1, T_2, T_3]^T \\in \\mathbb{R}<em>{&gt;0}^3</annotation></semantics></math></span> represent a strictly positive trichromatic transmittance vector. Let <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>A</mi><mo>∈</mo><msup><mi mathvariant=\"double-struck\">R</mi><mrow><mn>3</mn><mo>×</mo><mn>3</mn></mrow></msup></mrow><annotation encoding=\"application/x-tex\">A \\in \\mathbb{R}^{3 \\times 3}</annotation></semantics></math></span> denote an optical sensor channel separation matrix with coefficients <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub></mrow><annotation encoding=\"application/x-tex\">a</em>{ij}</annotation></semantics></math></span>.</p>\n<p>In the physical transmittance domain, matrix <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>A</mi></mrow><annotation encoding=\"application/x-tex\">A</annotation></semantics></math></span> acts as a linear operator over radiant flux, decoupling optical channel crosstalk:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>y</mi><mtext>trans</mtext></msub><mo>=</mo><mi>A</mi><mi>x</mi><mo separator=\"true\">,</mo><mspace width=\"1em\"/><msub><mi>y</mi><mi>i</mi></msub><mo>=</mo><munderover><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></munderover><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub></mrow><annotation encoding=\"application/x-tex\">y_{\\text{trans}} = A x, \\quad y_i = \\sum_{j=1}^3 a_{ij} x_j</annotation></semantics></math></span></p>\n<p>Mapping this physically corrected transmittance vector into the optical density domain yields the true density vector:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>D</mi><mtext>correct</mtext></msub><mo>=</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>A</mi><mi>x</mi><mo stretchy=\"false\">)</mo><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>1</mn><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>2</mn><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>3</mn><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow></mrow><annotation encoding=\"application/x-tex\">D_{\\text{correct}} = -\\log_{10}(A x) = \\begin{bmatrix} -\\log_{10}\\left(\\sum_{j=1}^3 a_{1j} x_j\\right) \\ -\\log_{10}\\left(\\sum_{j=1}^3 a_{2j} x_j\\right) \\ -\\log_{10}\\left(\\sum_{j=1}^3 a_{3j} x_j\\right) \\end{bmatrix}</annotation></semantics></math></span></p>\n<p>Now consider the flawed implementation that applies matrix <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>A</mi></mrow><annotation encoding=\"application/x-tex\">A</annotation></semantics></math></span> after the logarithmic transformation, multiplying raw densities <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>raw</mtext></msub><mo>=</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">D_{\\text{raw}} = -\\log_{10}(x)</annotation></semantics></math></span> by <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>A</mi></mrow><annotation encoding=\"application/x-tex\">A</annotation></semantics></math></span>:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>D</mi><mtext>wrong</mtext></msub><mo>=</mo><mi>A</mi><mo stretchy=\"false\">[</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo stretchy=\"false\">)</mo><mo stretchy=\"false\">]</mo><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>1</mn><mi>j</mi></mrow></msub><mo stretchy=\"false\">[</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>x</mi><mi>j</mi></msub><mo stretchy=\"false\">)</mo><mo stretchy=\"false\">]</mo></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>2</mn><mi>j</mi></mrow></msub><mo stretchy=\"false\">[</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>x</mi><mi>j</mi></msub><mo stretchy=\"false\">)</mo><mo stretchy=\"false\">]</mo></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><msubsup><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msub><mi>a</mi><mrow><mn>3</mn><mi>j</mi></mrow></msub><mo stretchy=\"false\">[</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><msub><mi>x</mi><mi>j</mi></msub><mo stretchy=\"false\">)</mo><mo stretchy=\"false\">]</mo></mrow></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow><mo>=</mo><mrow><mo fence=\"true\">[</mo><mtable rowspacing=\"0.16em\" columnalign=\"center\" columnspacing=\"1em\"><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∏</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mn>1</mn><mi>j</mi></mrow></msub></msubsup><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∏</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mn>2</mn><mi>j</mi></mrow></msub></msubsup><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel=\"0\" displaystyle=\"false\"><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mrow><mo fence=\"true\">(</mo><msubsup><mo>∏</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></msubsup><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mn>3</mn><mi>j</mi></mrow></msub></msubsup><mo fence=\"true\">)</mo></mrow></mrow></mstyle></mtd></mtr></mtable><mo fence=\"true\">]</mo></mrow></mrow><annotation encoding=\"application/x-tex\">D_{\\text{wrong}} = A [-\\log_{10}(x)] = \\begin{bmatrix} \\sum_{j=1}^3 a_{1j} [-\\log_{10}(x_j)] \\ \\sum_{j=1}^3 a_{2j} [-\\log_{10}(x_j)] \\ \\sum_{j=1}^3 a_{3j} [-\\log_{10}(x_j)] \\end{bmatrix} = \\begin{bmatrix} -\\log_{10}\\left(\\prod_{j=1}^3 x_j^{a_{1j}}\\right) \\ -\\log_{10}\\left(\\prod_{j=1}^3 x_j^{a_{2j}}\\right) \\ -\\log_{10}\\left(\\prod_{j=1}^3 x_j^{a_{3j}}\\right) \\end{bmatrix}</annotation></semantics></math></span></p>\n<p>For <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>correct</mtext></msub><mo>≡</mo><msub><mi>D</mi><mtext>wrong</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{correct}} \\equiv D_{\\text{wrong}}</annotation></semantics></math></span> to hold identically across all valid inputs <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>x</mi></mrow><annotation encoding=\"application/x-tex\">x</annotation></semantics></math></span>, the arguments of the logarithms must satisfy:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><munderover><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></munderover><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub><mo>≡</mo><munderover><mo>∏</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></munderover><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub></msubsup><mo separator=\"true\">,</mo><mspace width=\"1em\"/><mi mathvariant=\"normal\">∀</mi><mi>i</mi><mo>∈</mo><mo stretchy=\"false\">{</mo><mn>1</mn><mo separator=\"true\">,</mo><mn>2</mn><mo separator=\"true\">,</mo><mn>3</mn><mo stretchy=\"false\">}</mo></mrow><annotation encoding=\"application/x-tex\">\\sum_{j=1}^3 a_{ij} x_j \\equiv \\prod_{j=1}^3 x_j^{a_{ij}}, \\quad \\forall i \\in {1, 2, 3}</annotation></semantics></math></span></p>\n<p>Taking the partial derivative of both sides with respect to arbitrary component <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>x</mi><mi>k</mi></msub></mrow><annotation encoding=\"application/x-tex\">x_k</annotation></semantics></math></span>:</p>\n<p>The partial derivative of the left-hand summation evaluates to a constant:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mfrac><mi mathvariant=\"normal\">∂</mi><mrow><mi mathvariant=\"normal\">∂</mi><msub><mi>x</mi><mi>k</mi></msub></mrow></mfrac><mrow><mo fence=\"true\">(</mo><munderover><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></munderover><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><msub><mi>x</mi><mi>j</mi></msub><mo fence=\"true\">)</mo></mrow><mo>=</mo><msub><mi>a</mi><mrow><mi>i</mi><mi>k</mi></mrow></msub></mrow><annotation encoding=\"application/x-tex\">\\frac{\\partial}{\\partial x_k} \\left(\\sum_{j=1}^3 a_{ij} x_j\\right) = a_{ik}</annotation></semantics></math></span></p>\n<p>The partial derivative of the right-hand product yields:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mfrac><mi mathvariant=\"normal\">∂</mi><mrow><mi mathvariant=\"normal\">∂</mi><msub><mi>x</mi><mi>k</mi></msub></mrow></mfrac><mrow><mo fence=\"true\">(</mo><munderover><mo>∏</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mn>3</mn></munderover><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub></msubsup><mo fence=\"true\">)</mo></mrow><mo>=</mo><msub><mi>a</mi><mrow><mi>i</mi><mi>k</mi></mrow></msub><msubsup><mi>x</mi><mi>k</mi><mrow><msub><mi>a</mi><mrow><mi>i</mi><mi>k</mi></mrow></msub><mo>−</mo><mn>1</mn></mrow></msubsup><munder><mo>∏</mo><mrow><mi>j</mi><mo mathvariant=\"normal\">≠</mo><mi>k</mi></mrow></munder><msubsup><mi>x</mi><mi>j</mi><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub></msubsup></mrow><annotation encoding=\"application/x-tex\">\\frac{\\partial}{\\partial x_k} \\left(\\prod_{j=1}^3 x_j^{a_{ij}}\\right) = a_{ik} x_k^{a_{ik}-1} \\prod_{j \\neq k} x_j^{a_{ij}}</annotation></semantics></math></span></p>\n<p>Equating these partial derivatives across all <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>x</mi><mo>∈</mo><msubsup><mi mathvariant=\"double-struck\">R</mi><mrow><mo>&gt;</mo><mn>0</mn></mrow><mn>3</mn></msubsup></mrow><annotation encoding=\"application/x-tex\">x \\in \\mathbb{R}<em>{&gt;0}^3</annotation></semantics></math></span> requires that matrix <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>A</mi></mrow><annotation encoding=\"application/x-tex\">A</annotation></semantics></math></span> degrade strictly to the identity matrix <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>I</mi></mrow><annotation encoding=\"application/x-tex\">I</annotation></semantics></math></span> or a purely diagonal scaling matrix. Whenever matrix <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>A</mi></mrow><annotation encoding=\"application/x-tex\">A</annotation></semantics></math></span> incorporates off-diagonal cross-coupling terms (where <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><mo mathvariant=\"normal\">≠</mo><mn>0</mn></mrow><annotation encoding=\"application/x-tex\">a</em>{ij} \\neq 0</annotation></semantics></math></span> for <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>j</mi><mo mathvariant=\"normal\">≠</mo><mi>k</mi></mrow><annotation encoding=\"application/x-tex\">j \\neq k</annotation></semantics></math></span>), this identity collapses:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>A</mi><mi>x</mi><mo stretchy=\"false\">)</mo><mo mathvariant=\"normal\">≠</mo><mi>A</mi><mo stretchy=\"false\">[</mo><mo>−</mo><msub><mrow><mi>log</mi><mo>⁡</mo></mrow><mn>10</mn></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo stretchy=\"false\">)</mo><mo stretchy=\"false\">]</mo></mrow><annotation encoding=\"application/x-tex\">-\\log_{10}(A x) \\neq A [-\\log_{10}(x)]</annotation></semantics></math></span></p>\n<p><strong>Conclusion</strong>: Physical radiant flux sums linearly before the logarithm, whereas dye optical absorbance sums algebraically after the logarithm. Attempting to apply a standard chromaticity matrix in the density domain fails to decouple capture hardware variations and introduces severe chromatic distortion across highlight roll-offs and deep shadow transitions.</p>"
+                },
+                {
+                    "id": "signal-flow-and-physical-boundaries",
+                    "heading": "Signal Flow Diagram & Concrete Technical Boundaries",
+                    "content": "<p>To assist engineers and technical colorists in tracing data flow throughout the codebase, the diagram below outlines the NexFilm v1.1.0 signal pipeline across all three mathematical domains:</p>\n<svg viewBox=\"0 0 860 380\" width=\"100%\" height=\"auto\" xmlns=\"http://www.w3.org/2000/svg\" style=\"background:#161618; border-radius:12px; border:1px solid #27272a; font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;\">\n<rect x=\"20\" y=\"20\" width=\"250\" height=\"340\" rx=\"8\" fill=\"#1c1c1f\" stroke=\"#3f3f46\" stroke-width=\"1.5\"/>\n<text x=\"35\" y=\"48\" fill=\"#e4e4e7\" font-size=\"12\" font-weight=\"bold\">Transmittance Domain (Pre-Log)</text>\n<text x=\"35\" y=\"66\" fill=\"#a1a1aa\" font-size=\"10\">Radiant Photon Flux · Linear Light</text>\n<rect x=\"35\" y=\"85\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"47\" y=\"104\" fill=\"#fafafa\" font-size=\"11\">RAW / Scanner RGB</text>\n<text x=\"47\" y=\"118\" fill=\"#a1a1aa\" font-size=\"9\">Black level, demosaic, bad pixels</text>\n<rect x=\"35\" y=\"142\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"47\" y=\"161\" fill=\"#fafafa\" font-size=\"11\">Dark Subtraction &amp; Flat Field</text>\n<text x=\"47\" y=\"175\" fill=\"#a1a1aa\" font-size=\"9\">T = (I - dark) / (open - dark)</text>\n<rect x=\"35\" y=\"199\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"47\" y=\"218\" fill=\"#fafafa\" font-size=\"11\">Capture Separation 3x3</text>\n<text x=\"47\" y=\"232\" fill=\"#a1a1aa\" font-size=\"9\">Sensor x backlight decoupling</text>\n<rect x=\"35\" y=\"256\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#3f3f46\" stroke=\"#fbbf24\" stroke-width=\"1.5\"/>\n<text x=\"47\" y=\"275\" fill=\"#fbbf24\" font-size=\"11\" font-weight=\"bold\">Log Transform with Epsilon</text>\n<text x=\"47\" y=\"289\" fill=\"#fef08a\" font-size=\"9\">D_raw = -log10(max(T, eps))</text>\n<line x1=\"145\" y1=\"127\" x2=\"145\" y2=\"142\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"145\" y1=\"184\" x2=\"145\" y2=\"199\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"145\" y1=\"241\" x2=\"145\" y2=\"256\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"270\" y1=\"277\" x2=\"305\" y2=\"277\" stroke=\"#fbbf24\" stroke-width=\"2\"/>\n<rect x=\"305\" y=\"20\" width=\"250\" height=\"340\" rx=\"8\" fill=\"#1c1c1f\" stroke=\"#3f3f46\" stroke-width=\"1.5\"/>\n<text x=\"320\" y=\"48\" fill=\"#e4e4e7\" font-size=\"12\" font-weight=\"bold\">Density Domain (Post-Log)</text>\n<text x=\"320\" y=\"66\" fill=\"#a1a1aa\" font-size=\"10\">Beer-Lambert Absorbance Space</text>\n<rect x=\"320\" y=\"85\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"332\" y=\"104\" fill=\"#fafafa\" font-size=\"11\">Base Sampling &amp; Subtraction</text>\n<text x=\"332\" y=\"118\" fill=\"#a1a1aa\" font-size=\"9\">D_net = D_raw - D_base</text>\n<rect x=\"320\" y=\"142\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"332\" y=\"161\" fill=\"#fafafa\" font-size=\"11\">Printer Lights Grading</text>\n<text x=\"332\" y=\"175\" fill=\"#a1a1aa\" font-size=\"9\">Logarithmic additive color shift</text>\n<rect x=\"320\" y=\"199\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"332\" y=\"218\" fill=\"#fafafa\" font-size=\"11\">Bounded Channel Span Response</text>\n<text x=\"332\" y=\"232\" fill=\"#a1a1aa\" font-size=\"9\">1.15x deadzone, 1.35x / 3x caps</text>\n<rect x=\"320\" y=\"256\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#3f3f46\" stroke=\"#34d399\" stroke-width=\"1.5\"/>\n<text x=\"332\" y=\"275\" fill=\"#34d399\" font-size=\"11\" font-weight=\"bold\">Inversion &amp; Positive Exposure</text>\n<text x=\"332\" y=\"289\" fill=\"#a7f3d0\" font-size=\"9\">E_pos = 10^(-alpha * D)</text>\n<line x1=\"430\" y1=\"127\" x2=\"430\" y2=\"142\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"430\" y1=\"184\" x2=\"430\" y2=\"199\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"430\" y1=\"241\" x2=\"430\" y2=\"256\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"555\" y1=\"277\" x2=\"590\" y2=\"277\" stroke=\"#34d399\" stroke-width=\"2\"/>\n<rect x=\"590\" y=\"20\" width=\"250\" height=\"340\" rx=\"8\" fill=\"#1c1c1f\" stroke=\"#3f3f46\" stroke-width=\"1.5\"/>\n<text x=\"605\" y=\"48\" fill=\"#e4e4e7\" font-size=\"12\" font-weight=\"bold\">Positive &amp; Output Domain</text>\n<text x=\"605\" y=\"66\" fill=\"#a1a1aa\" font-size=\"10\">Linear ProPhoto · Color Transform</text>\n<rect x=\"605\" y=\"85\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"617\" y=\"104\" fill=\"#fafafa\" font-size=\"11\">Linear ProPhoto Working Space</text>\n<text x=\"617\" y=\"118\" fill=\"#a1a1aa\" font-size=\"9\">Universal linear-light positive buffer</text>\n<rect x=\"605\" y=\"142\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"617\" y=\"161\" fill=\"#fafafa\" font-size=\"11\">Four-Channel Curves &amp; LUTs</text>\n<text x=\"617\" y=\"175\" fill=\"#a1a1aa\" font-size=\"9\">RGB curves and Kodak 2383</text>\n<rect x=\"605\" y=\"199\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"617\" y=\"218\" fill=\"#fafafa\" font-size=\"11\">Spatial Spatial Enhancements</text>\n<text x=\"617\" y=\"232\" fill=\"#a1a1aa\" font-size=\"9\">High-pass mask sharpening, shadows</text>\n<rect x=\"605\" y=\"256\" width=\"220\" height=\"42\" rx=\"6\" fill=\"#27272a\" stroke=\"#52525b\" stroke-width=\"1\"/>\n<text x=\"617\" y=\"275\" fill=\"#fafafa\" font-size=\"11\">Display &amp; Master Delivery</text>\n<text x=\"617\" y=\"289\" fill=\"#a1a1aa\" font-size=\"9\">sRGB / P3 / ACEScg / 16-bit TIFF</text>\n<line x1=\"700\" y1=\"127\" x2=\"700\" y2=\"142\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"700\" y1=\"184\" x2=\"700\" y2=\"199\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n<line x1=\"700\" y1=\"241\" x2=\"700\" y2=\"256\" stroke=\"#71717a\" stroke-width=\"1.5\"/>\n</svg><p>NexFilm v1.1.0 maintains an explicit, verifiable boundary regarding implemented capabilities versus ongoing research:</p>\n<ol>\n<li><strong>Implemented Capabilities</strong>: Strict mathematical isolation of the three operational domains; dark frame subtraction and open-gate flat-field relative transmittance normalization; transmission target patch fitting with SVD condition number safety guards; bounded channel span response for cross-platform color stability; and 16-bit linear mastering alongside CFA camera RAW DNG encapsulation.</li>\n<li><strong>Current Technical Boundaries</strong>: The v1.1.0 release does not incorporate an optical Status M spectral integration library, and historical matrix estimates are retained solely for legacy backward compatibility; furthermore, batch-specific nonlinear photographic H-D emulsion curves are not inverted. Inversion relies entirely on verifiable relative transmittance and rigorous logarithmic density algebra.</li>\n</ol>"
+                }
+            ]
+        },
+        {
+            "id": "input-domain-and-unified-pipeline",
+            "track": "color-science",
+            "trackTitle": "Color Science",
+            "trackOrder": 3,
+            "chapterOrder": 2,
+            "kicker": "Color Science 02 / Unified Pipeline",
+            "title": "Five-Tier Input Domain Resolution & Unified Density Pipeline",
+            "subtitle": "Input formats resolve input domains while density math remains universal: from film base priority to bounded channel span.",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "unified-pipeline-philosophy",
+                    "heading": "Unified Density Pipeline Philosophy: Decoupling Container from Math",
+                    "content": "<p>A recurring design flaw across legacy film scanning and negative inversion software is allowing the input file container to dictate downstream optical density mathematics. Under such fragmented architectures, digital camera RAW captures undergo heuristic exposure weighting, Hasselblad Flextight or Imacon FFF files follow proprietary cropping logic, and standard TIFF files are routed through uncalibrated display gamma curves. This tight coupling between file formats and inversion algorithms introduces inconsistent color renditions across different digitizers, undermining the reproducibility of photographic color science.</p>\n<p>In version 1.1.0, the NexFilm Engine establishes an architectural principle: <strong>the input file format determines only the input domain, while the underlying density mathematics remains globally unified</strong>.</p>\n<p>Whether the incoming source is a camera lossless RAW file, a high-bit-depth LinearRaw scanner DNG, an FFF container embedding proprietary metadata, or a 16-bit TIFF with an embedded color management profile, the decoder responsibility is strictly confined to identifying chromatic primaries and electro-optical transfer characteristics. The decoded data is projected losslessly into a standardized 32-bit floating-point Linear ProPhoto workspace. Once linearized, all subsequent optical density operations—including film base subtraction, printer lights trimming, bounded channel span response, and display mapping—execute through identical mathematical pathways.</p>\n<pre class=\"doc-code-block\"><code>Input File (RAW / FFF / TIFF / DNG / JPEG)\n       │\n       ▼\nresolve_input_domain(path, scanner_profile)\n       │  ← The sole permissible branching point\n       ▼\nUnified Workspace: Linear ProPhoto f32 (eliminating u16 quantization loss)\n       │\n       ▼\nUnified Density Transform: D = -log10(max(T, epsilon))\n       │\n       ▼\nChannel-Wise Base Subtraction: D_net = D_raw - D_base (shared origin, zero offset)\n       │\n       ▼\nBounded Channel Span Response (1.15x deadzone / 1.35x cap / 3.0x truncated cap)\n       │\n       ▼\nPositive Linearization &amp; Display Mapping: ProPhoto -&gt; Output Gamut &amp; Target LUT</code></pre>\n<p>This clean decoupling eliminates the gamut clipping and precision loss caused by legacy intermediate quantizations into 16-bit unsigned sRGB, ensuring that wide-latitude film negatives maintain radiometric consistency across all capture hardware.</p>"
+                },
+                {
+                    "id": "five-tier-input-domain-resolution",
+                    "heading": "Five-Tier Input Domain Resolution & Metadata Extraction",
+                    "content": "<p>To translate heterogeneous image captures into physical relative transmittance, NexFilm implements a prioritized resolution chain encapsulated in the <code>resolve_input_domain</code> function. The engine evaluates five tiers of metadata evidence in sequence, attaching provenance records, color primaries, transfer functions, and confidence flags to each processed frame:</p>\n<ol>\n<li><strong>Tier 1: Embedded ICC Color Profile (Verified)</strong><br>If a TIFF or JPEG image embeds a valid ICC profile (such as Adobe RGB (1998), Display P3, or custom scanner calibration profiles), the engine extracts chromaticity matrices (<code>rXYZ</code>, <code>gXYZ</code>, <code>bXYZ</code>) and parametric tone reproduction curves. This profile is designated as Verified and carries the highest authority.</li>\n<li><strong>Tier 2: Scanner Container Metadata &amp; Property Lists (Verified / Estimated)</strong><br>For Hasselblad Flextight / Imacon <code>.fff</code> files, the decoder inspects the TIFF header for embedded XML property lists (plist), extracting <code>RGBProfile</code> descriptors and <code>Gamma</code> coefficients. If the container explicitly designates AdobeRGB or scanner-calibrated profiles, the declared gamma expansion applies directly. When container properties are absent, the engine falls back to documented scanner standards (Gamma 1.8, sRGB primaries, tagged as <code>estimated</code>).</li>\n<li><strong>Tier 3: RAW / LinearRaw Metadata &amp; Sensor Matrices (Declared)</strong><br>For camera RAW files (such as CR2, NEF, ARW), the engine parses camera native color filter arrays and white balance multipliers through LibRaw. For DNG scans produced by specialized film scanners, the parser evaluates SubIFD tags; if <code>PhotometricInterpretation = 34892 (LinearRaw)</code> is identified without lossy compression, the samples are treated as unscaled linear transmittance.</li>\n<li><strong>Tier 4: Documented Scanner Model Defaults (Documented Default)</strong><br>When a user explicitly selects a hardware scanner profile (such as Nikon Super Coolscan 9000 ED or Minolta Dimage Scan Elite 5400) and the file lacks embedded ICC tags, the engine applies documented spectral primaries and transmission characteristics calibrated for that model.</li>\n<li><strong>Tier 5: sRGB Fallback with Diagnostic Warning (Estimated Fallback)</strong><br>If all preceding criteria fail to match, the image data is interpreted under standard sRGB assumptions. The processing pipeline marks the record with an <code>estimated</code> diagnostic flag, alerting the user to review color accuracy in the inspection panel.</li>\n</ol>\n<p>Resolution outcomes are permanently recorded in the project SQLite database under <code>PipelineProcessingReport::input_domain</code>, detailing primary coordinates, transfer functions, and diagnostic logs.</p>"
+                },
+                {
+                    "id": "film-base-sampling-priority",
+                    "heading": "Film Base Sampling Priority & Quality Validation Thresholds",
+                    "content": "<p>The measurement accuracy of the unexposed orange film base establishes the white balance anchor for the entire negative inversion. Heuristic software often locates the brightest overall pixel in the image and designates it as the base reference. When applied to scans containing perforations, backlight direct glare, or expansive light-colored backgrounds, this simplistic assumption introduces significant color contamination and flat contrast.</p>\n<p>NexFilm implements a three-tier base sampling hierarchy governed by strict physical validation thresholds:</p>\n<table class=\"doc-table\">\n<thead>\n<tr>\n<th>Sampling Priority</th>\n<th>Geometric Region</th>\n<th>Verification Criteria &amp; Rejection Gates</th>\n<th>Operational Guarantee</th>\n</tr>\n</thead>\n<tbody><tr>\n<td>Tier 1: Border Narrow Band</td>\n<td>Unexposed clear mask between outer film rebate and Film Area</td>\n<td>RGB density spread must match C-41 coupler characteristics; band density cannot be darker than tail by &gt; 0.05 D</td>\n<td>Camera scans retaining unexposed clear film border; highest precision</td>\n</tr>\n<tr>\n<td>Tier 2: Emulsion Low-Density Tail</td>\n<td>Low-density statistical percentile (2% to 5%) inside active Film Area</td>\n<td>Sample pixels must exhibit spatial clustering, filtering isolated sensor noise or dust</td>\n<td>Pre-cropped scanner frames lacking unexposed border</td>\n</tr>\n<tr>\n<td>Tier 3: Global Brightest Percentile</td>\n<td>Downweighted statistical percentile across full frame</td>\n<td>Activated only when Tiers 1 and 2 fail; restricted by a 0.20 D content alignment shift cap</td>\n<td>Tightly cropped architectural or panoramic stitched frames</td>\n</tr>\n</tbody></table>\n<p>During candidate validation, the <code>film_base_band_agrees</code> routine enforces a unidirectional physical inequality: because the unexposed film base represents the maximum possible optical transmittance of the film strip, image-forming areas within the frame cannot physically transmit more light than the base itself. If the measured border narrow band is darker than the emulsion tail by more than 0.05 D, the engine concludes that the border is contaminated by flare or lighting falloff and automatically falls back to the internal low-density tail.</p>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Important</div>\n    <div class=\"doc-callout-body\"><p>When copying grading parameters between frames, NexFilm never copies the absolute base density value. Through the <code>choose_pasted_film_base</code> mechanism, the engine recalculates the base within the target frame own geometry. Only if the target frame completely lacks valid base candidates is an inherited value used as a fallback, marked explicitly in the interface as <code>inherited_film_base</code>.</p></div>\n</div>"
+                },
+                {
+                    "id": "bounded-channel-span-response",
+                    "heading": "Bounded Channel Span Response: Preserving the Neutral Axis",
+                    "content": "<p>After deducting the measured base density, the net optical density <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>D</mi><mtext>net</mtext></msub><mo>=</mo><msub><mi>D</mi><mtext>raw</mtext></msub><mo>−</mo><msub><mi>D</mi><mtext>base</mtext></msub></mrow><annotation encoding=\"application/x-tex\">D_{\\text{net}} = D_{\\text{raw}} - D_{\\text{base}}</annotation></semantics></math></span> aligns to an analytical origin where the base density in red, green, and blue evaluates identically to zero.</p>\n<p>However, in complex digitization workflows—particularly panoramic stitched TIFF files generated from multiple RAW captures (such as Lightroom panoramas <code>_DSC7569-Pano.tif</code> and <code>_DSC7583-Pano.tif</code>)—upstream merging operations often compress the red channel density span down to one-third or one-fourth of the green channel span. If a shared display window width is applied uniformly across all three channels, the compressed red channel is forced into the lower luminance register, causing cyan-green casts or blocked highlights.</p>\n<p>While earlier experiments introduced per-channel display curves, that approach distorted the color balance of healthy negatives. NexFilm introduces the <strong>Bounded Channel Span Response</strong> model, establishing three mathematical safeguards:</p>\n<ol>\n<li><strong>Shared Window Origin</strong>: Whenever a valid film base is present, <code>channel_offsets</code> remains fixed at zero across all three channels. Consequently, regardless of span scaling, density zero (the clear film base) always maps to identical positive display white, preventing baseline color contamination.</li>\n<li><strong>1.15x Deadzone Threshold</strong>: For standard negatives processed and scanned under balanced lighting (where channel span ratios remain between 1.00 and 1.15), channel gain adjustments remain in the deadzone, preserving identical three-channel window allocation.</li>\n<li><strong>Bounded Gain Ceilings</strong>: Using <code>measure_content_channel_spans</code>, the system measures effective density spans between the 2nd and 98th percentiles per channel. When imbalance exceeds 1.15, window widths are scaled via a smooth linear ramp:\n<span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msub><mi>g</mi><mi>i</mi></msub><mo>=</mo><mtext>clamp</mtext><mrow><mo fence=\"true\">(</mo><mfrac><msub><mtext>span</mtext><mi>i</mi></msub><mrow><mtext>luma</mtext><mo stretchy=\"false\">(</mo><mtext>span</mtext><mo stretchy=\"false\">)</mo></mrow></mfrac><mo separator=\"true\">,</mo><mfrac><mn>1</mn><msub><mi>g</mi><mtext>max</mtext></msub></mfrac><mo separator=\"true\">,</mo><msub><mi>g</mi><mtext>max</mtext></msub><mo fence=\"true\">)</mo></mrow></mrow><annotation encoding=\"application/x-tex\">g_i = \\text{clamp}\\left(\\frac{\\text{span}<em>i}{\\text{luma}(\\text{span})}, \\frac{1}{g</em>{\\text{max}}}, g_{\\text{max}}\\right)</annotation></semantics></math></span>\nFor conventional scans, the gain ceiling is capped at <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>g</mi><mtext>max</mtext></msub><mo>=</mo><mn>1.35</mn></mrow><annotation encoding=\"application/x-tex\">g_{\\text{max}} = 1.35</annotation></semantics></math></span>. Only when severe channel collapse exceeds a 2.0 span ratio does the engine identify an upstream truncated channel, moderately relaxing the ceiling to 3.0.</li>\n</ol>\n<p>This formulation rejects the arbitrary color leveling of the traditional gray-world hypothesis (which forces average scene RGB to neutral gray). It preserves the natural atmospheric palette of the scene while recovering dynamic range for damaged channels.</p>"
+                },
+                {
+                    "id": "quantitative-regression-verification",
+                    "heading": "Quantitative Regression Verification & Diagnostic Benchmark Data",
+                    "content": "<p>The stability of the unified density pipeline is verified through automated regression suites. The table below compiles pixel-level measurements executed via <code>density_pipeline_sample_report</code> across standardized real-world film captures, comparing whole-image red-to-green and blue-to-green channel ratios between legacy v1.0.2 processing and the unified pipeline:</p>\n<table class=\"doc-table\">\n<thead>\n<tr>\n<th>Test Sample &amp; Capture Origin</th>\n<th>Input Domain Resolution</th>\n<th>Base Sampling Source</th>\n<th>Legacy R/G · B/G</th>\n<th>Unified R/G · B/G</th>\n<th>Diagnostic Observations &amp; Corrections</th>\n</tr>\n</thead>\n<tbody><tr>\n<td><code>Hasselblad fff/Task _1233.fff</code></td>\n<td>CameraNative / CameraRaw</td>\n<td>Emulsion low-density tail</td>\n<td>0.583 · 1.001</td>\n<td>0.963 · 1.086</td>\n<td>Camera RAW capture; extra channel curves removed, restoring transparent and balanced highlights</td>\n</tr>\n<tr>\n<td><code>Hasselblad fff/Task _1343.fff</code></td>\n<td>CameraNative / CameraRaw</td>\n<td>Film border narrow band</td>\n<td>0.980 · 0.970</td>\n<td>0.991 · 0.969</td>\n<td>Highlight clipping at 45%; deadzone active; identical outputs across legacy and unified pipelines</td>\n</tr>\n<tr>\n<td><code>Hasselblad fff/Unable_to_invert.fff</code></td>\n<td>AdobeRgb1998 / Gamma2.0</td>\n<td>Full frame brightest percentile</td>\n<td>0.894 · 1.037</td>\n<td>0.806 · 1.046</td>\n<td>Container metadata guides accurate gamma linearization; residual yellow-green cast suppressed</td>\n</tr>\n<tr>\n<td><code>Lightroom Pano/_DSC7569-Pano.tif</code></td>\n<td>AdobeRgb1998 / Gamma2.2</td>\n<td>Film border narrow band</td>\n<td>0.848 · 1.907</td>\n<td>0.696 · 1.288</td>\n<td>Imbalance ratio 3.35; bounded span response active; red channel zero-clipping reduced from 78.8% to 9.3%</td>\n</tr>\n<tr>\n<td><code>Lightroom Pano/_DSC7583-Pano.tif</code></td>\n<td>AdobeRgb1998 / Gamma2.2</td>\n<td>Film border narrow band</td>\n<td>0.571 · 2.324</td>\n<td>0.557 · 1.249</td>\n<td>Imbalance ratio 4.26; relaxed red channel compensation recovers neutral sky clouds and concrete textures</td>\n</tr>\n<tr>\n<td><code>Nikon Scanner tiff/5.3-1.tif</code></td>\n<td>AdobeRgb1998 / ICC</td>\n<td>Film border narrow band</td>\n<td>1.030 · 0.715</td>\n<td>0.999 · 0.951</td>\n<td>Eliminates systematic red bias; density distribution matches verified optical reference prints</td>\n</tr>\n<tr>\n<td><code>Plustek BW/raw0002.dng</code></td>\n<td>Srgb / Linear</td>\n<td>Emulsion low-density tail</td>\n<td>1.001 · 1.018</td>\n<td>0.944 · 1.139</td>\n<td>Scanner LinearRaw DNG recognized; smooth tonal transitions throughout monochrome midtones</td>\n</tr>\n<tr>\n<td><code>Nikon NEF/_DSC7333.NEF</code></td>\n<td>CameraNative / CameraRaw</td>\n<td>Film border narrow band</td>\n<td>0.975 · 0.972</td>\n<td>0.826 · 0.944</td>\n<td>Camera RAW direct decode; neutral axis variation strictly held within 4/65535 tolerance</td>\n</tr>\n</tbody></table>\n<p>These benchmark measurements confirm that for healthy captures, the unified pipeline matches the theoretical physical baseline with zero pixel divergence. For severely compressed panoramic composites, the bounded span response restores usable dynamic range without compromising the neutral film base.</p>"
+                }
+            ]
+        },
+        {
+            "id": "hardware-calibration-guide",
+            "track": "color-science",
+            "trackTitle": "Color Science",
+            "trackOrder": 3,
+            "chapterOrder": 3,
+            "kicker": "Color Science 03 / Hardware Calibration",
+            "title": "Hardware Calibration Principles & Experimental Workflow Guide",
+            "subtitle": "Dark frame subtraction, flat-field normalization, and target fitting across three operational modes.",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [
+                "hardware-calibration"
+            ],
+            "sections": [
+                {
+                    "id": "three-operational-modes",
+                    "heading": "Three Operational Modes & Calibration Hierarchy",
+                    "content": "<p>In film scanning and camera digitization, hardware environments and precision requirements vary significantly across users. To balance operational convenience with radiometric rigor, NexFilm categorizes its digitization workflows into three distinct operational tiers. Each mode carries explicit physical meaning and defined operational boundaries within the processing pipeline:</p>\n<table class=\"doc-table\">\n<thead>\n<tr>\n<th>Operating Tier</th>\n<th>Calibration Prerequisites</th>\n<th>Algorithmic Basis &amp; Mathematics</th>\n<th>Intended Application &amp; Accuracy</th>\n</tr>\n</thead>\n<tbody><tr>\n<td><code>Smart Auto (ProPhoto Estimate)</code></td>\n<td>Single film capture; zero reference frames required</td>\n<td>Heuristic film base sampling, global density window analysis, and Linear ProPhoto projection</td>\n<td>Rapid daily inversion, uncalibrated loose frames, and commercial scanner files</td>\n</tr>\n<tr>\n<td><code>Capture Corrected</code></td>\n<td>Dark Frame and Open Gate Flat Field</td>\n<td>Per-pixel thermal dark bias subtraction and open-gate radiant transmittance normalization</td>\n<td>Advanced camera scanning; eliminates vignetting and backlight chromaticity drift</td>\n</tr>\n<tr>\n<td><code>Capture Characterized</code></td>\n<td>Dark Frame, Flat Field, and Transmission Target</td>\n<td>SVD pseudo-inverse fitting of a regularized <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>3</mn><mo>×</mo><mn>3</mn></mrow><annotation encoding=\"application/x-tex\">3 \\times 3</annotation></semantics></math></span> capture separation matrix</td>\n<td>Laboratory scanning rigs requiring formal decoupling of sensor dyes and illumination</td>\n</tr>\n</tbody></table>\n<p>Under <code>Smart Auto</code>, the pipeline assumes an ideal linear sensor response and derives the clear base density and dynamic range window directly from statistical cues within the frame. This path requires minimal setup and satisfies general photography needs.</p>\n<p>When switched to <code>Capture Corrected</code>, the pipeline operates strictly in the pre-log transmittance domain. By measuring dark current and the bare illumination field, it executes per-pixel radiometric normalization. In the highest tier, <code>Capture Characterized</code>, the system builds upon flat-field normalization to calculate a capture separation matrix tailored to the specific sensor color filter array and backlight spectral power distribution.</p>"
+                },
+                {
+                    "id": "dark-and-flat-field-correction",
+                    "heading": "Physics of Dark and Flat-Field Correction & Quality Gates",
+                    "content": "<p>In camera scanning systems, raw sensor readings rarely represent pure optical transmittance through the film emulsion. Solid-state sensors contribute fixed pattern noise, thermal dark current, and read bias. Internal lens barrels and scanning hoods reflect stray flare. Furthermore, macro optics suffer from cosine-fourth cos4 illumination falloff and optical vignetting, while diffused acrylic light panels often display measurable spatial non-uniformity in luminance and correlated color temperature.</p>\n<p>The <code>Capture Corrected</code> pathway removes these systematic capture artifacts through two empirical reference acquisitions:</p>\n<ol>\n<li><strong>Dark Frame</strong>: Recorded with all incident illumination blocked, isolating sensor dark current, thermal noise, readout bias, and potential light leaks within the camera chamber.</li>\n<li><strong>Open Gate Flat Field</strong>: Recorded with the film carrier completely empty under identical scanning exposure, mapping the two-dimensional spatial irradiance of the backlight and the geometric falloff of the lens.</li>\n</ol>\n<p>Denoting raw sample readings as <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>sample</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{sample}}(x, y)</annotation></semantics></math></span>, dark frame values as <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{dark}}(x, y)</annotation></semantics></math></span>, and open-gate readings as <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>I</mi><mtext>open</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo></mrow><annotation encoding=\"application/x-tex\">I_{\\text{open}}(x, y)</annotation></semantics></math></span>, the normalized relative transmittance is evaluated per pixel:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><mi>T</mi><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo><mo>=</mo><mfrac><mrow><msub><mi>I</mi><mtext>sample</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo><mo>−</mo><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo></mrow><mrow><msub><mi>I</mi><mtext>open</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo><mo>−</mo><msub><mi>I</mi><mtext>dark</mtext></msub><mo stretchy=\"false\">(</mo><mi>x</mi><mo separator=\"true\">,</mo><mi>y</mi><mo stretchy=\"false\">)</mo></mrow></mfrac></mrow><annotation encoding=\"application/x-tex\">T(x, y) = \\frac{I_{\\text{sample}}(x, y) - I_{\\text{dark}}(x, y)}{I_{\\text{open}}(x, y) - I_{\\text{dark}}(x, y)}</annotation></semantics></math></span></p>\n<p>In the low-level processing core (<code>src/raw_backend.rs</code>), NexFilm implements rigorous numerical safety inspections. The engine rejects arbitrary epsilon offsets that conceal corrupt data, diagnosing samples via explicit <code>QualityFlags</code> bitmasks:</p>\n<ul>\n<li><strong>Invalid Denominator (<code>InvalidDenominator</code>)</strong>: Flagged when open-gate irradiance minus dark bias falls below the numerical safety threshold, avoiding divide-by-zero errors.</li>\n<li><strong>Negative Sample (<code>NegativeSample</code>)</strong>: Triggered when recorded sample irradiance falls below the dark baseline, indicating lighting fluctuations or camera movement.</li>\n<li><strong>Sensor Saturation (<code>SaturatedSample</code> / <code>SaturatedReference</code>)</strong>: Identified when sample or reference values reach the analog-to-digital converter saturation threshold (such as 16383 for 14-bit converters).</li>\n<li><strong>Metadata Mismatch (<code>GeometryMismatch</code> / <code>ExposureMismatch</code> / <code>IsoMismatch</code>)</strong>: Detected when calibration frames differ in dimensions, ISO sensitivity, exposure time, or white balance from the active negative capture.</li>\n</ul>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Note</div>\n    <div class=\"doc-callout-body\"><p>The open-gate flat field must be acquired at the identical lens aperture, focal length, and reproduction ratio as the negative scans. Changing the aperture diaphragm shifts the entrance pupil and alters vignetting profiles, compromising field correction.</p></div>\n</div>"
+                },
+                {
+                    "id": "capture-characterized-fitting",
+                    "heading": "Transmission Target Sampling & CaptureSeparation3x3 Fitting",
+                    "content": "<p>In <code>Capture Characterized</code> mode, the objective is solving the <code>CaptureSeparation3x3</code> matrix to align digitized RGB transmittance with the physical absorption bands of the cyan, magenta, and yellow dye couplers. This mathematical fitting is conducted within the <code>src/calibration_fit.rs</code> module.</p>\n<p>The system utilizes an optically certified transmission calibration target (such as an IT8.7/1 transmission target or Kodak Q-60 film step wedge). Suppose the target contains <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>N</mi></mrow><annotation encoding=\"application/x-tex\">N</annotation></semantics></math></span> measured transmission patches, where <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>y</mi><mi>k</mi></msub><mo>∈</mo><msup><mi mathvariant=\"double-struck\">R</mi><mn>3</mn></msup></mrow><annotation encoding=\"application/x-tex\">y_k \\in \\mathbb{R}^3</annotation></semantics></math></span> denotes the calibrated spectrophotometric transmittance vector of the <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>k</mi></mrow><annotation encoding=\"application/x-tex\">k</annotation></semantics></math></span>-th patch, and <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><msub><mi>x</mi><mi>k</mi></msub><mo>∈</mo><msup><mi mathvariant=\"double-struck\">R</mi><mn>3</mn></msup></mrow><annotation encoding=\"application/x-tex\">x_k \\in \\mathbb{R}^3</annotation></semantics></math></span> represents the digitized relative transmittance recorded by the scanning system.</p>\n<p>We seek an optimal <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>3</mn><mo>×</mo><mn>3</mn></mrow><annotation encoding=\"application/x-tex\">3 \\times 3</annotation></semantics></math></span> channel separation operator <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>M</mi></mrow><annotation encoding=\"application/x-tex\">M</annotation></semantics></math></span> that minimizes the sum of squared residuals while incorporating a ridge regression penalty to maintain well-conditioned matrix behavior:</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><munder><mrow><mi>min</mi><mo>⁡</mo></mrow><mi>M</mi></munder><munderover><mo>∑</mo><mrow><mi>k</mi><mo>=</mo><mn>1</mn></mrow><mi>N</mi></munderover><mi mathvariant=\"normal\">∥</mi><msub><mi>y</mi><mi>k</mi></msub><mo>−</mo><mi>M</mi><msub><mi>x</mi><mi>k</mi></msub><msubsup><mi mathvariant=\"normal\">∥</mi><mn>2</mn><mn>2</mn></msubsup><mo>+</mo><mi>λ</mi><mi mathvariant=\"normal\">∥</mi><mi>M</mi><mo>−</mo><mi>I</mi><msubsup><mi mathvariant=\"normal\">∥</mi><mi>F</mi><mn>2</mn></msubsup></mrow><annotation encoding=\"application/x-tex\">\\min_M \\sum_{k=1}^N | y_k - M x_k |_2^2 + \\lambda | M - I |_F^2</annotation></semantics></math></span></p>\n<p>where <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>I</mi></mrow><annotation encoding=\"application/x-tex\">I</annotation></semantics></math></span> denotes the <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>3</mn><mo>×</mo><mn>3</mn></mrow><annotation encoding=\"application/x-tex\">3 \\times 3</annotation></semantics></math></span> identity matrix and <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>λ</mi></mrow><annotation encoding=\"application/x-tex\">\\lambda</annotation></semantics></math></span> represents the Tikhonov regularization scalar. Setting up the data matrices <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>X</mi><mo>∈</mo><msup><mi mathvariant=\"double-struck\">R</mi><mrow><mi>N</mi><mo>×</mo><mn>3</mn></mrow></msup></mrow><annotation encoding=\"application/x-tex\">X \\in \\mathbb{R}^{N \\times 3}</annotation></semantics></math></span> and <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>Y</mi><mo>∈</mo><msup><mi mathvariant=\"double-struck\">R</mi><mrow><mi>N</mi><mo>×</mo><mn>3</mn></mrow></msup></mrow><annotation encoding=\"application/x-tex\">Y \\in \\mathbb{R}^{N \\times 3}</annotation></semantics></math></span>, the regularized normal equations are solved via Singular Value Decomposition (SVD):</p>\n<p><span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\" display=\"block\"><semantics><mrow><msup><mi>M</mi><mi>T</mi></msup><mo>=</mo><mo stretchy=\"false\">(</mo><msup><mi>X</mi><mi>T</mi></msup><mi>X</mi><mo>+</mo><mi>λ</mi><mi>I</mi><msup><mo stretchy=\"false\">)</mo><mrow><mo>−</mo><mn>1</mn></mrow></msup><msup><mi>X</mi><mi>T</mi></msup><mi>Y</mi></mrow><annotation encoding=\"application/x-tex\">M^T = (X^T X + \\lambda I)^{-1} X^T Y</annotation></semantics></math></span></p>\n<p>To maintain stability across varied hardware setups, <code>calibration_fit.rs</code> enforces three defensive gates:</p>\n<ol>\n<li><strong>Minimum Patch Count</strong>: A valid measurement set requires at least 4 independent patches (<code>MIN_PATCHES = 4</code>) spanning low, medium, and high optical densities.</li>\n<li><strong>Condition Number Guard</strong>: The spectral condition number <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mi>κ</mi><mo stretchy=\"false\">(</mo><mi>X</mi><mo stretchy=\"false\">)</mo><mo>=</mo><msub><mi>σ</mi><mtext>max</mtext></msub><mi mathvariant=\"normal\">/</mi><msub><mi>σ</mi><mtext>min</mtext></msub></mrow><annotation encoding=\"application/x-tex\">\\kappa(X) = \\sigma_{\\text{max}} / \\sigma_{\\text{min}}</annotation></semantics></math></span> must remain below <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>1.0</mn><mo>×</mo><msup><mn>10</mn><mn>5</mn></msup></mrow><annotation encoding=\"application/x-tex\">1.0 \\times 10^5</annotation></semantics></math></span> (<code>MAX_CONDITION_NUMBER</code>). If narrow-band illumination or collinear patches induce an ill-conditioned system, the optimizer aborts and reverts safely to the identity transform.</li>\n<li><strong>Validation Residual Ceiling</strong>: The root-mean-square error (RMSE) evaluated across withheld validation patches must not exceed 0.08 (<code>MAX_VALIDATION_RMSE</code>). Discrepancies above this limit indicate external stray light contamination or patch misalignment, rendering the calibration untrustworthy.</li>\n</ol>"
+                },
+                {
+                    "id": "darkroom-calibration-sop",
+                    "heading": "Darkroom Digitization Standard Operating Procedure (SOP)",
+                    "content": "<p>To ensure that calibration assets deliver repeatable accuracy across entire scanning sessions, technicians should observe the following standard darkroom procedure:</p>\n<ol>\n<li><strong>Phase 1: Illumination Thermal Stabilization</strong><br>Energize the high-CRI backlight panel (recommended CRI ≥ 95, TLCI ≥ 98) at least 20 minutes prior to calibration. This warmup period allows the LED emitter junctions to achieve thermal equilibrium, preventing correlated color temperature and luminance drift during scanning. Darken the room completely to eliminate ambient flare.</li>\n<li><strong>Phase 2: Mechanical Alignment &amp; Optical Lock</strong><br>Secure the digitizing camera to a rigid copy stand. Using a two-axis spirit level or mirror reflection target, confirm that the camera sensor plane is parallel to the film carrier stage. Set the macro lens to its optimum aperture range (typically f/5.6 to f/8). Lock the focus barrel and disable optical and sensor stabilization systems.</li>\n<li><strong>Phase 3: Dark Frame Acquisition</strong><br>Fasten the opaque lens cap and shield the camera optical viewfinder to prevent rear light ingress. Set the camera to base sensitivity (ISO 64 or ISO 100) and manual exposure mode (M), matching the shutter speed anticipated for the negatives (such as 1/15 s). Record three consecutive frames, average them to reduce random noise, and store the result in raw format.</li>\n<li><strong>Phase 4: Open Gate Flat-Field Acquisition</strong><br>Remove the lens cap and clean the carrier glass or mask. With the film holder empty, preserve identical optical focus and aperture settings. Adjust shutter speed or backlight intensity so that the illumination histogram sits comfortably between 70% and 85% of maximum scale (ETTR without clipping any channel). Capture and archive the raw file.</li>\n<li><strong>Phase 5: Transmission Target Acquisition</strong><br>Position the transmission calibration target (such as a 35mm or 120 format IT8.7/1 slide) within the carrier. Verify that all target patches lie within the uniform field of view. Mask off all exposed light panel areas surrounding the target frame with black cardstock to eliminate veiling glare. Record the capture in raw format.</li>\n</ol>\n<p>Within the NexFilm interface, navigate to the <code>Hardware Calibration</code> workspace. Import the three raw acquisitions in sequence. The engine processes the flat-field map and calculates the separation matrix within seconds, generating a verified profile stamped with an internal SHA-256 integrity hash.</p>"
+                },
+                {
+                    "id": "experimental-boundary-disclosure",
+                    "heading": "Experimental Boundaries & Technical Disclosures",
+                    "content": "<p>Scientific integrity requires distinguishing between verified physical implementations and exploratory models. The NexFilm engineering team maintains full transparency regarding current capabilities:</p>\n<ol>\n<li><strong>Radiometric Transmittance Normalization is Verified</strong>: Dark subtraction and open-gate field normalization under <code>Capture Corrected</code> rest upon classical radiometric optics. These steps have undergone end-to-end regression testing and eliminate illumination non-uniformity.</li>\n<li><strong>Target Fitting Separates Capture Hardware, Not Film Couplers</strong>: The regularized <span class=\"katex\"><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mrow><mn>3</mn><mo>×</mo><mn>3</mn></mrow><annotation encoding=\"application/x-tex\">3 \\times 3</annotation></semantics></math></span> matrix calculated under <code>Capture Characterized</code> isolates sensor filter overlaps and backlight spectral features. It does not invert the chemical sensitometric response of photographic emulsions.</li>\n<li><strong>No Embedded Status M Filter Integration Library</strong>: Because commercial camera filter arrays differ substantially from physical Status M densitometer response curves, the internal <code>status_m_crosstalk_matrix()</code> is retained solely as an empirical reference for legacy sessions. NexFilm does not claim to function as a certified laboratory densitometer.</li>\n<li><strong>Hardware Profiles are Setup-Specific</strong>: Generated calibration profiles remain valid only for the exact camera body, lens, working aperture, and illumination panel used during acquisition. Modifying the reproduction ratio or changing backlight color temperature requires recalculating the profile.</li>\n</ol>"
+                }
+            ]
+        },
+        {
+            "id": "cinema-and-aces-workflow",
+            "track": "color-science",
+            "trackTitle": "Color Science",
+            "trackOrder": 3,
+            "chapterOrder": 4,
+            "kicker": "Color Science 04 / Cinema & ACES Pipeline",
+            "title": "16-bit Linear Mastering & DaVinci Resolve / ACEScg Cinema Workflow",
+            "subtitle": "Lossless mastering export truncation nodes, ACEScg transformation contracts, and DaVinci Resolve grade tree configuration.",
+            "readingTime": 14,
+            "sinceVersion": "v1.1.0",
+            "aliases": [],
+            "sections": [
+                {
+                    "id": "linear-mastering-vs-display-rendering",
+                    "heading": "Linear Mastering Delivery vs Display-Referred Rendering",
+                    "content": "<p>In professional film digitization, the designated role of an export format dictates the degree of creative latitude available during downstream color grading. Conventional inversion utilities typically produce display-referred finished deliverables, such as 8-bit JPEG files or standard TIFFs encoded with sRGB display transfer functions. Prior to export, these files bake in internal tone curves, print film emulation lookup tables, highlight rolloff compression, and monitor electro-optical transfer functions (OETFs). When a colorist subsequently attempts substantial exposure adjustments or shadow recovery, the image degrades rapidly with tonal posterization, hue shifts, and amplified sensor noise.</p>\n<p>In contrast, <strong>Linear Mastering Delivery</strong> provides scene-referred intermediate deliverables tailored for theatrical post-production pipelines. The core mechanism involves tapping the data stream immediately following optical inversion and primary working space projection, prior to the application of any display curves or perceptual color grading.</p>\n<pre class=\"doc-code-block\"><code>NexFilm Core Processing Pipeline\n┌────────────────────────────────────────────────────────┐\n│  Transmittance -&gt; Net Density -&gt; Printer Lights -&gt; Inversion │\n└──────────────────────────┬─────────────────────────────┘\n                           │\n                           ▼\n               [ Linear Truncation Tap ]\n              /                         \\\n             /                           \\\n     [ Lossless Master Exports ]      [ Display Render Pipeline ]\n     - 16-bit Linear TIFF             - Four-channel tone curves\n     - LinearRaw DNG                  - Print film LUTs (Kodak 2383)\n     - Raw Mosaic DNG                 - Spatial sharpening &amp; tone mapping\n     (Linear gamma / full range)      - sRGB / Display P3 OETF encoding\n             │                        - 8/16-bit TIFF / JPEG delivery\n             ▼\n     DaVinci Resolve / ACEScg</code></pre>\n<p>Exported through this linear truncation point, a 16-bit Linear ProPhoto RGB raster maintains pixel values that remain strictly proportional to original positive scene irradiance. This representation yields grading latitude equivalent to digital cinema camera raw footage (such as ARRI ALEXA LogC or RED Log3G10). In DaVinci Resolve, colorists can grade these wide-gamut, uncompressed positive rasters with full secondary control and color management fidelity.</p>"
+                },
+                {
+                    "id": "three-master-export-formats",
+                    "heading": "Three Master Export Formats & Truncation Architectures",
+                    "content": "<p>To satisfy diverse post-production requirements and long-term archival standards, the NexFilm backend (<code>src/dng_writer.rs</code> and <code>src/commands.rs</code>) implements three lossless mastering configurations:</p>\n<ol>\n<li><strong>16-bit Linear TIFF</strong>:<br>Upon completing net optical density inversion and base subtraction, the raster transforms into Linear ProPhoto RGB floating-point radiance and quantizes directly to uncompressed 16-bit integer TIFF. The file records an identity gamma of 1.0 alongside standard ROMM RGB chromaticity coordinates. This format provides the cleanest interchange standard for immediate ingestion into DaVinci Resolve, Nuke, or Baselight.</li>\n<li><strong>LinearRaw DNG</strong>:<br>For workflows coordinated through Adobe Camera Raw or Lightroom, users can export as LinearRaw DNG. Structured as a TIFF/EP container, the file writes <code>PhotometricInterpretation = 34892 (LinearRaw)</code> and embeds calibrated D50 and D65 color matrix tags. Third-party raw developers recognize the file as an un-demosaiced linear raw capture, allowing flexible adjustments of color temperature, white balance, and chromatic lens corrections.</li>\n<li><strong>Raw Mosaic DNG</strong>:<br>Tailored for archival institutions requiring strict preservation of original digitizer sensor data. Rather than performing demosaicing or non-linear adjustments, the engine re-wraps raw Bayer or X-Trans color filter array photosite samples directly into a compliant DNG container (<code>PhotometricInterpretation = 32803 (CFA)</code>). Hardware metadata, black levels, and white balance multipliers are preserved verbatim, guaranteeing uncompromised re-processing in future decades.</li>\n</ol>\n<div class=\"doc-callout doc-callout-warn\">\n    <div class=\"doc-callout-title\">Important</div>\n    <div class=\"doc-callout-body\"><p>When exporting 16-bit Linear TIFF or LinearRaw DNG files, active contrast sliders, shadow curves, and 3D print film LUTs within the NexFilm interface are automatically bypassed. In standard desktop image viewers, these files appear flat and dark, reflecting linear radiant energy distribution.</p></div>\n</div>"
+                },
+                {
+                    "id": "davinci-resolve-color-management",
+                    "heading": "DaVinci Resolve Color Management Configuration Guide",
+                    "content": "<p>When importing NexFilm 16-bit Linear ProPhoto RGB masters into DaVinci Resolve, technical colorists should utilize color-managed pipelines to maintain consistent color rendering:</p>\n<h3 id=\"approach-a-davinci-yrgb-color-managed-pipeline-recommended-for-commercial-facilities\" class=\"scroll-mt-24\">Approach A: DaVinci YRGB Color Managed Pipeline (Recommended for Commercial Facilities)</h3>\n<ol>\n<li>Navigate to DaVinci Resolve <code>Project Settings</code> -&gt; <code>Color Management</code>.</li>\n<li>Configure <code>Color Science</code> to <code>DaVinci YRGB Color Managed</code>.</li>\n<li>Clear the <code>Automatic color management</code> checkbox and select <code>Custom</code> for the <code>Color processing mode</code>.</li>\n<li><strong>Input Color Space</strong>: Set to <code>Linear</code> transfer function with <code>ProPhoto RGB</code> (or <code>ROMM RGB</code>) chromatic primaries.</li>\n<li><strong>Timeline Color Space</strong>: Configure as <code>DaVinci Wide Gamut / Intermediate</code>. All grading operations throughout the node tree will execute within this high-dynamic-range logarithmic space.</li>\n<li><strong>Output Color Space</strong>: Select according to the mastering monitor target (e.g., <code>Rec.709 Gamma 2.4</code> for SDR broadcasting, or <code>P3-D65 ST2084 1000 nits</code> for HDR mastering).</li>\n</ol>\n<h3 id=\"approach-b-academy-color-encoding-system-aces-pipeline-recommended-for-cinema-post\" class=\"scroll-mt-24\">Approach B: Academy Color Encoding System (ACES) Pipeline (Recommended for Cinema Post)</h3>\n<ol>\n<li>In <code>Project Settings</code>, select <code>Color Science</code> as <code>ACEScc</code> or <code>ACEScct</code> (with <code>ACEScct</code> preferred for its smooth, photographic toe behavior in deep shadows).</li>\n<li><strong>ACES Version</strong>: Specify <code>ACES 1.3</code>.</li>\n<li><strong>ACES Input Transform (IDT)</strong>: Because Linear ProPhoto is not an embedded camera profile, set the global IDT to <code>No Input Transform</code>. Input transformation is applied explicitly via node-based Color Space Transform plugins.</li>\n<li><strong>ACES Output Transform (ODT)</strong>: Set to match the calibrated theatrical projection or mastering monitor standard (such as <code>Rec.709</code> or <code>DCI-P3 D65</code>).</li>\n</ol>"
+                },
+                {
+                    "id": "acescg-grading-node-tree",
+                    "heading": "ACEScg Grading Node Tree & Secondary Grading Execution",
+                    "content": "<p>With the color management baseline established, colorists can construct a structured node graph. The recommended node structure separates primary balancing from localized creative stylization:</p>\n<pre class=\"doc-code-block\"><code>[Node 01: CST Input] -&gt; [Node 02: Exposure Offset] -&gt; [Node 03: Contrast Curve]\n                                                            │\n                                                            ▼\n[Node 06: Output Transform] &lt;- [Node 05: Film Grain] &lt;- [Node 04: Secondaries]</code></pre>\n<p>Detailed operational guidelines for each node:</p>\n<ol>\n<li><strong>Node 01: Input Color Space Transform (CST)</strong><br>Under an ACEScct project setup, load the <code>Color Space Transform</code> OFX plugin on the primary node. Set Input Color Space to <code>ProPhoto RGB</code> and Input Gamma to <code>Linear</code>. Set Output Color Space to <code>ACEScg</code> and Output Gamma to <code>ACEScct</code>. Ensure Tone Mapping is set to <code>None</code> to prevent uncalibrated compression.</li>\n<li><strong>Node 02: Logarithmic Exposure &amp; Printer Lights Balancing (Offset Wheel)</strong><br>Within ACEScct log space, adjustments made on the <code>Offset</code> color wheel correspond to additive optical filtration changes on a traditional motion picture contact printer. This control shifts the exposure linearly without introducing saturation distortion or highlight clipping.</li>\n<li><strong>Node 03: Film Emulsion Contrast Curve (Custom Curves)</strong><br>Construct an S-shaped sensitometric curve emulating photographic print paper characteristics. Refine the highlight shoulder roll-off and shadow toe threshold to build optical negative depth.</li>\n<li><strong>Node 04: Secondary Qualification &amp; Skin Tone Isolation</strong><br>Utilize HSL qualifiers or 3D volumetric isolation masks to isolate subject skin tones or atmospheric sky values, purifying subtle tonal imbalances without affecting background neutrals.</li>\n<li><strong>Node 05: Organic Texture &amp; Halation Modeling</strong><br>Apply photochemically calibrated film grain or optical halation plugins to introduce physical silver halide grain texture and dye dispersion.</li>\n<li><strong>Node 06: Output Limiting &amp; Gamut Clamping</strong><br>Verify that all luminance signals conform to broadcast or theatrical delivery specifications without out-of-gamut clipping.</li>\n</ol>\n<div class=\"doc-callout\">\n    <div class=\"doc-callout-title\">Note</div>\n    <div class=\"doc-callout-body\"><p>In ACEScct node operations, exposure trimming should be executed using the global Offset trackball on Node 02. Avoid using Gain or Lift wheels for primary exposure corrections, as they disrupt the proportionality between physical irradiance and color saturation.</p></div>\n</div>"
+                },
+                {
+                    "id": "export-specification-matrix",
+                    "heading": "Master & Display Export Specification Matrix",
+                    "content": "<p>To assist post-production supervisors in selecting appropriate export formats, the table below outlines the core parameters and intended applications across the NexFilm export matrix:</p>\n<table class=\"doc-table\">\n<thead>\n<tr>\n<th>Export Specification</th>\n<th>Bit Depth</th>\n<th>Color Space &amp; Gamma Transfer</th>\n<th>Pipeline Truncation Point</th>\n<th>Intended Production Application</th>\n</tr>\n</thead>\n<tbody><tr>\n<td><strong>16-bit Linear TIFF</strong></td>\n<td>16-bit integer</td>\n<td>Linear ProPhoto RGB (Gamma 1.0)</td>\n<td>Immediately following net density inversion; uncalibrated</td>\n<td>DaVinci Resolve, Nuke, Flame cinema compositing and grading</td>\n</tr>\n<tr>\n<td><strong>LinearRaw DNG</strong></td>\n<td>16-bit integer</td>\n<td>LinearRaw space; embedded D50/D65 matrices</td>\n<td>Linear positive stage with standard DNG tag encapsulation</td>\n<td>Adobe Lightroom, Photoshop Camera Raw, Capture One workflows</td>\n</tr>\n<tr>\n<td><strong>Raw Mosaic DNG</strong></td>\n<td>Native (12/14/16-bit)</td>\n<td>Camera native CFA Bayer / X-Trans matrix</td>\n<td>File encapsulation only; raw samples unaltered</td>\n<td>Long-term digital negative archiving and academic analysis</td>\n</tr>\n<tr>\n<td><strong>8/16-bit Display TIFF</strong></td>\n<td>8 or 16-bit</td>\n<td>sRGB / Display P3 / Adobe RGB with OETF</td>\n<td>Full processing pipeline with tone curves and 3D LUTs</td>\n<td>Fine art giclee printing, gallery catalogs, and publication</td>\n</tr>\n<tr>\n<td><strong>High-Quality JPEG</strong></td>\n<td>8-bit integer</td>\n<td>Standard sRGB (IEC 61966-2.1)</td>\n<td>Full pipeline with perceptual tone compression</td>\n<td>Web portfolios, editorial sharing, and client review</td>\n</tr>\n</tbody></table>"
+                }
+            ]
+        }
+    ]
+};
 
     const LOCALES = ['zh-CN', 'en'];
 
@@ -1821,7 +1291,7 @@
     }
 
     function getChapterById(id, locale) {
-        return getChapters(locale).find(chapter => chapter.id === id) || null;
+        return getChapters(locale).find(chapter => chapter.id === id || (chapter.aliases || []).includes(id)) || null;
     }
 
     function getFallbackChapter(locale) {
@@ -1835,4 +1305,4 @@
         getChapterById: getChapterById,
         getFallbackChapter: getFallbackChapter
     };
-})(window);
+})(typeof window !== 'undefined' ? window : globalThis);
