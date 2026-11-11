@@ -329,7 +329,9 @@ assert.doesNotMatch(
 // Batch export is read-only and renders the persisted base and render mapping
 // exactly as the canvas shows them. Re-measuring the film on the full
 // resolution decode drifted the window away from the preview and wrote the
-// new base back to the database.
+// new base back to the database. The one exception is an inherited placeholder:
+// it is measured at the canvas proxy scale for this render only, never at full
+// resolution and never written back.
 const batchExportBody =
     commandSource.match(/pub async fn batch_export_images\([\s\S]*?\n\}\n/)?.[0] || '';
 assert.ok(batchExportBody.length > 200, 'batch_export_images body was not found');
@@ -337,6 +339,24 @@ assert.doesNotMatch(
     batchExportBody,
     /inherited_film_base_measurement|detect_frame_base_density|detect_frame_highlight_fraction|roll_density_mapping_with_frame_base|persist_base_and_pipeline/,
     'batch export must render the persisted state, not re-measure the film',
+);
+const inheritedExportBody =
+    commandSource.match(/fn inherited_export_base_color\([\s\S]*?\n\}\n/)?.[0] || '';
+assert.ok(inheritedExportBody.length > 200, 'the inherited export-base fallback was not found');
+assert.match(
+    inheritedExportBody,
+    /decode_scanner_profiled_estimate_image_buffer\([\s\S]*?DecodeMode::DevelopProxy/,
+    'an inherited base must be measured from a proxy decode',
+);
+assert.match(
+    inheritedExportBody,
+    /target_long_edge = PROXY_LONG_EDGE as u32/,
+    'the inherited base measurement must use the canvas proxy scale',
+);
+assert.doesNotMatch(
+    inheritedExportBody,
+    /persist_base|persist_base_and_pipeline/,
+    'the export-time inherited base measurement must not be written back',
 );
 
 // The Auto Invert analysis returns the base it persisted so the canvas can

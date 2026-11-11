@@ -4772,11 +4772,13 @@ pub(crate) fn decode_route_for_diagnostic(path: &str) -> &'static str {
 
 /// Production decode entry for the routes that bypass the RAW backend
 /// (success/failure and dimensions only; RAW-routed samples are measured by
-/// the raw-backend harness itself). `ExportFull` exercises the whole file —
-/// this is what proved the streaming scanner-FFF decode handles the samples
-/// that once overflowed the old non-streaming TIFF path.
+/// the raw-backend harness itself). This follows the export source decoder,
+/// which is also what `prepare_proxy` uses for the scanner FFF page: the
+/// row-streaming TIFF reader. Calling `decode_image_buffer` here instead would
+/// exercise the generic tiff crate page decoder and its 512 MB strip limit,
+/// which is not the path the application takes for these scans.
 pub(crate) fn decode_routed_for_diagnostic(path: &str) -> Result<(u32, u32), String> {
-    decode_image_buffer(path, DecodeMode::ExportFull).map(|image| (image.width(), image.height()))
+    decode_export_source(path).map(|image| (image.width(), image.height()))
 }
 
 /// Decode the Smart Auto ProPhoto Estimate. Camera/sRGB values are first fit
@@ -11659,6 +11661,52 @@ fn export_render_inputs_from_snapshot(snapshot: &ExportItemSnapshot) -> ExportRe
     }
 }
 
+/// Measure an inherited film base on the same 2560 px proxy scale
+/// `prepare_proxy` uses, for this export only. The inherited figure is a
+/// placeholder copied from another frame; printing it would subtract the wrong
+/// clear-film density (and therefore tint the whole frame). The measurement is
+/// deliberately not persisted: batch export stays a read-only operation, and
+/// the frame will measure its own base the next time Develop opens it.
+///
+/// `None` means the frame is not inherited, has no confirmed Film Area to
+/// measure, or the proxy measurement was unusable; callers keep the persisted
+/// colour in that case, matching the prepare_proxy fallback.
+fn inherited_export_base_color(snapshot: &ExportItemSnapshot) -> Option<BaseColor> {
+    if snapshot.pipeline_state.processing_report.base_source
+        != crate::pipeline::INHERITED_FILM_BASE_SOURCE
+        || snapshot.geom.calibration_points.is_none()
+    {
+        return None;
+    }
+
+    let target_long_edge = PROXY_LONG_EDGE as u32;
+    let mut proxy = decode_scanner_profiled_estimate_image_buffer(
+        &snapshot.file_path,
+        DecodeMode::DevelopProxy,
+        snapshot.scanner_profile.as_ref(),
+        target_long_edge,
+    )
+    .ok()?;
+    let (width, height) = proxy.dimensions();
+    let ratio = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
+    if ratio < 0.999 {
+        proxy = image::imageops::resize(
+            &proxy,
+            (width as f32 * ratio).max(1.0) as u32,
+            (height as f32 * ratio).max(1.0) as u32,
+            FilterType::Lanczos3,
+        );
+    }
+    inherited_film_base_measurement(&snapshot.pipeline_state, &snapshot.geom, &proxy)
+        .map(|estimate| base_color_from_density(estimate.density))
+}
+
+/// The base colour this export actually renders with. Only an inherited base
+/// is measured here; every other frame uses its persisted state verbatim.
+fn export_base_color_from_snapshot(snapshot: &ExportItemSnapshot) -> BaseColor {
+    inherited_export_base_color(snapshot).unwrap_or_else(|| snapshot.base_color.clone())
+}
+
 #[tauri::command]
 pub async fn batch_export_images(
     export_ids: Vec<String>,
@@ -11962,7 +12010,20 @@ pub async fn batch_export_images(
             let inputs = export_render_inputs_from_snapshot(snapshot);
             let params_owned = inputs.params;
             let geom_owned = inputs.geom;
-            let base_color_owned = inputs.base_color;
+            let base_color_owned = if snapshot.pipeline_state.processing_report.base_source
+                == crate::pipeline::INHERITED_FILM_BASE_SOURCE
+            {
+                let measured = export_base_color_from_snapshot(snapshot);
+                if measured != snapshot.base_color {
+                    eprintln!(
+                        "[Export] inherited film base measured on the {} px proxy for {} (render-only)",
+                        PROXY_LONG_EDGE as u32, snapshot.file_path
+                    );
+                }
+                measured
+            } else {
+                inputs.base_color
+            };
             let persisted_pipeline_state = inputs.render_pipeline_state;
             let decoded = if snapshot.pipeline_state.contract == ProcessingContract::LegacyV1
                 || is_smart_auto_compatibility(&snapshot.pipeline_state)
@@ -15643,8 +15704,8 @@ mod import_contract_tests {
         PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN, PROXY_LONG_EDGE,
     };
     use super::{
-        export_render_inputs_from_snapshot, ExportItemSnapshot, PipelineImageKind,
-        PipelineResolverInput, RAW_DECODE_VERSION,
+        export_base_color_from_snapshot, export_render_inputs_from_snapshot, ExportItemSnapshot,
+        PipelineImageKind, PipelineResolverInput, RAW_DECODE_VERSION,
     };
     use crate::app_state::{
         BaseColor, DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorProvenance,
@@ -18654,6 +18715,9 @@ mod import_contract_tests {
             export_metadata: None,
         };
         let export_inputs = export_render_inputs_from_snapshot(&parity_snapshot);
+        // The export's own base: the persisted snapshot value, except for an
+        // inherited placeholder, which export measures on the proxy (F6).
+        let export_base_color = export_base_color_from_snapshot(&parity_snapshot);
         assert_eq!(
             export_inputs.base_color, canvas_base_color,
             "export must use the persisted base colour verbatim"
@@ -18671,7 +18735,7 @@ mod import_contract_tests {
             )
         };
         let (canvas_rg, canvas_bg) = base_ratio(&canvas_base_color);
-        let (export_rg, export_bg) = base_ratio(&export_inputs.base_color);
+        let (export_rg, export_bg) = base_ratio(&export_base_color);
         let mapping_delta = canvas_mapping
             .density_low
             .iter()
@@ -18696,9 +18760,9 @@ mod import_contract_tests {
         );
         println!(
             "[PARITY]   export base rgb=({}, {}, {}) R/G={:.5} B/G={:.5}",
-            export_inputs.base_color.base_r,
-            export_inputs.base_color.base_g,
-            export_inputs.base_color.base_b,
+            export_base_color.base_r,
+            export_base_color.base_g,
+            export_base_color.base_b,
             export_rg,
             export_bg
         );
@@ -18865,7 +18929,7 @@ mod import_contract_tests {
                 None,
                 params,
                 &geom,
-                &canvas_base_color,
+                &export_base_color,
                 &export_inputs.render_pipeline_state,
                 None,
             );
@@ -18939,7 +19003,7 @@ mod import_contract_tests {
             );
             (canvas_render, export_render, delta_rg, delta_bg)
         };
-        let (neutral_canvas, neutral_export, _, _) = render_pair(&neutral, "neutral");
+        let (_, neutral_export, _, _) = render_pair(&neutral, "neutral");
         let mut graded = neutral.clone();
         graded.tone.temperature = -0.30;
         graded.tone.shadows = 0.20;
@@ -24850,10 +24914,10 @@ mod repro_unknown_camera_tests {
 mod export_readonly_contract_tests {
     use super::{
         clear_retired_legacy_domain, decode_scanner_profiled_estimate_image_buffer,
-        encode_export_output, export_render_inputs_from_snapshot, load_image_state_from_connection,
-        pipeline_resolver_input, resolve_pipeline, state_from_resolution, write_export_output,
-        DecodeMode, ExportFormat, ExportItemSnapshot, PipelineImageKind, PipelineResolverInput,
-        RAW_DECODE_VERSION,
+        encode_export_output, export_base_color_from_snapshot, export_render_inputs_from_snapshot,
+        load_image_state_from_connection, pipeline_resolver_input, resolve_pipeline,
+        state_from_resolution, write_export_output, DecodeMode, ExportFormat, ExportItemSnapshot,
+        PipelineImageKind, PipelineResolverInput, RAW_DECODE_VERSION,
     };
     use crate::app_state::{
         BaseColor, GeometryState, PipelineState, ProcessingContract, RenderMapping, RenderMode,
@@ -24931,6 +24995,63 @@ mod export_readonly_contract_tests {
             snapshot.params.exposure.exposure
         );
         assert_eq!(inputs.geom.angle, snapshot.geom.angle);
+    }
+
+    /// Phase 3.1 F6 option (b): a frame whose base was inherited through the
+    /// batch settings copy is measured on an export-time proxy at the same
+    /// 2560 px scale `prepare_proxy` uses. The measurement is render-only: the
+    /// snapshot it came from is not modified.
+    #[test]
+    fn export_measures_an_inherited_film_base_on_the_proxy_without_writing() {
+        let temp = std::env::temp_dir().join(format!(
+            "nexfilm-export-inherited-base-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp).unwrap();
+        let frame_path = temp.join("inherited-base.tif");
+        let mut source = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(96, 96);
+        for pixel in source.pixels_mut() {
+            *pixel = Rgb([19660, 13107, 6553]);
+        }
+        source.save(&frame_path).unwrap();
+
+        let (mut snapshot, _, _) = distinct_snapshot();
+        let placeholder = BaseColor {
+            base_r: 60000,
+            base_g: 1000,
+            base_b: 500,
+        };
+        snapshot.file_path = frame_path.to_string_lossy().to_string();
+        snapshot.base_color = placeholder.clone();
+        snapshot.pipeline_state.processing_report.base_source =
+            crate::pipeline::INHERITED_FILM_BASE_SOURCE.to_string();
+        snapshot.geom.calibration_points =
+            Some([[0.05, 0.05], [0.95, 0.05], [0.95, 0.95], [0.05, 0.95]]);
+
+        let measured = export_base_color_from_snapshot(&snapshot);
+        assert_ne!(
+            measured, placeholder,
+            "export must replace the copied base with this frame's own measurement"
+        );
+        assert!(
+            (1000..=40000).contains(&measured.base_g),
+            "measured base should come from the proxy's clear-film samples, got {measured:?}"
+        );
+        assert_eq!(
+            snapshot.base_color, placeholder,
+            "the export-time measurement must not be written back"
+        );
+        assert_eq!(
+            snapshot.pipeline_state.processing_report.base_source,
+            crate::pipeline::INHERITED_FILM_BASE_SOURCE,
+            "the persisted provenance must stay inherited until Develop re-measures it"
+        );
+
+        std::fs::remove_dir_all(&temp).ok();
     }
 
     /// Phase 3.1 export-read-only contract on a temp library: run the v1.1
