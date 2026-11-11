@@ -8094,6 +8094,14 @@ pub async fn apply_film_base(
 ) -> Result<AppliedFilmBase, String> {
     let epoch = claim_development_generation(&state, &id, generation)?;
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
+    {
+        let item = read_lock(&item_arc);
+        state.film_border_cache.remove(&format!(
+            "{}::{}",
+            item.roll_id,
+            normalize_path(&item.file_path)
+        ));
+    }
     tokio::task::spawn_blocking(move || {
         ensure_current_development_generation(&epoch, generation)?;
         let mut item = write_lock(&item_arc);
