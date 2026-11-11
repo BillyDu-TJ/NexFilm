@@ -14,6 +14,7 @@ const MAX_SIDE_RATIO: f64 = 6.0;
 const MAX_DIAGONAL_RATIO: f64 = 3.0;
 const MIN_GRADIENT_PROMINENCE: f64 = 1.22;
 const MAX_ANALYSIS_EDGE: u32 = 640;
+const WORKING_EDGE: u32 = 1024;
 const AUTO_DETECTION_INSET: f32 = 0.01;
 const STANDARD_FRAME_ASPECTS: [f64; 6] =
     [3.0 / 2.0, 1.0, 4.0 / 3.0, 6.0 / 7.0, 6.0 / 9.0, 65.0 / 24.0];
@@ -148,7 +149,7 @@ pub fn detect_film_border_with_format(
     if let Some(points) = detect_from_gradient_projections(&blurred) {
         let aspect_score = candidate_aspect_score(&points, preferred_aspect);
         return detected_result(
-            refine_to_gate(thumbnail, points),
+            refine_to_gate(thumbnail, points, width, height),
             width,
             height,
             "detected_gradient",
@@ -170,7 +171,7 @@ pub fn detect_film_border_with_format(
     };
 
     detected_result(
-        refine_to_gate(thumbnail, points),
+        refine_to_gate(thumbnail, points, width, height),
         width,
         height,
         "detected_contour",
@@ -291,12 +292,23 @@ fn apply_roll_prior(
 /// distance between lines parallel to the edge and the boundary band's own
 /// colour, and stops the edge at the first sustained deviation: the gate.
 /// Everything is sampled from the colour thumbnail; no RAW decode happens.
-fn refine_to_gate(thumbnail: &DynamicImage, points: [Point<i32>; 4]) -> [Point<i32>; 4] {
+fn refine_to_gate(
+    thumbnail: &DynamicImage,
+    points: [Point<i32>; 4],
+    analysis_width: u32,
+    analysis_height: u32,
+) -> [Point<i32>; 4] {
     let Some(rgb) = working_rgb(thumbnail) else {
         return points;
     };
 
-    let corners: [[f32; 2]; 4] = points.map(|point| [point.x as f32, point.y as f32]);
+    // Detection runs on the 640-edge analysis image, while the rebate walk uses
+    // the fixed 1024-edge colour image. Convert into the walk's coordinate space
+    // and back so a high-resolution preview cannot scale the result twice.
+    let scale_x = rgb.width() as f32 / analysis_width.max(1) as f32;
+    let scale_y = rgb.height() as f32 / analysis_height.max(1) as f32;
+    let corners: [[f32; 2]; 4] =
+        points.map(|point| [point.x as f32 * scale_x, point.y as f32 * scale_y]);
     // Per-edge inward insets. A genuine rebate band surrounds the picture on
     // every side, so a trustworthy refinement trims at least three edges; one
     // or two trims mean the walk found a uniform picture border and must not
@@ -361,7 +373,7 @@ fn refine_to_gate(thumbnail: &DynamicImage, points: [Point<i32>; 4]) -> [Point<i
         return points;
     }
 
-    clamped.map(|[x, y]| Point::new(x.round() as i32, y.round() as i32))
+    clamped.map(|[x, y]| Point::new((x / scale_x).round() as i32, (y / scale_y).round() as i32))
 }
 
 /// Inward inset of one edge to its frame gate, or `None` when the walk finds no
@@ -597,8 +609,8 @@ fn working_rgb(thumbnail: &DynamicImage) -> Option<image::RgbImage> {
     if longest < 16 {
         return None;
     }
-    let working = if longest > 1024 {
-        let scale = 1024.0 / longest as f64;
+    let working = if longest != WORKING_EDGE {
+        let scale = WORKING_EDGE as f64 / longest as f64;
         thumbnail.resize_exact(
             ((width as f64 * scale).round() as u32).max(16),
             ((height as f64 * scale).round() as u32).max(16),
@@ -1485,7 +1497,7 @@ mod tests {
             Point::new(40, 229),
         ];
 
-        let refined = refine_to_gate(&thumbnail, boundary);
+        let refined = refine_to_gate(&thumbnail, boundary, 400, 260);
 
         // The gate sits 20 px inside the film boundary on every side.
         let expected_corners = [
@@ -1521,7 +1533,7 @@ mod tests {
             Point::new(60, 209),
         ];
 
-        let refined = refine_to_gate(&thumbnail, gate);
+        let refined = refine_to_gate(&thumbnail, gate, 400, 260);
 
         assert_eq!(refined, gate);
     }
