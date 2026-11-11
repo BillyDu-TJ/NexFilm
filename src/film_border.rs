@@ -1,4 +1,4 @@
-use image::{imageops::colorops::grayscale, DynamicImage, GenericImageView, GrayImage, Pixel};
+use image::{DynamicImage, GenericImageView, GrayImage};
 use imageproc::contours::find_contours_with_threshold;
 use imageproc::contrast::{otsu_level, threshold};
 use imageproc::edges::canny;
@@ -14,7 +14,7 @@ const MAX_AREA_RATIO: f64 = 0.98;
 const MAX_SIDE_RATIO: f64 = 6.0;
 const MAX_DIAGONAL_RATIO: f64 = 3.0;
 const MIN_GRADIENT_PROMINENCE: f64 = 1.22;
-const MAX_ANALYSIS_EDGE: u32 = 320;
+const MAX_ANALYSIS_EDGE: u32 = 640;
 
 /// Gate refinement: how far inward (as a fraction of the edge's own span) a
 /// rebate walk may travel before it is declared a misdetection.
@@ -465,23 +465,42 @@ fn polygon_area_f32(points: &[[f32; 2]; 4]) -> f32 {
 }
 
 fn analysis_grayscale(thumbnail: &DynamicImage) -> GrayImage {
+    let source = thumbnail.to_luma8();
     let (width, height) = thumbnail.dimensions();
     let longest_edge = width.max(height);
     if longest_edge <= MAX_ANALYSIS_EDGE {
-        return grayscale(thumbnail);
+        return source;
     }
 
     let scale = MAX_ANALYSIS_EDGE as f64 / longest_edge as f64;
     let analysis_width = (width as f64 * scale).round().max(16.0) as u32;
     let analysis_height = (height as f64 * scale).round().max(16.0) as u32;
     let mut gray = GrayImage::new(analysis_width, analysis_height);
+    let mut sums = vec![0u64; analysis_width as usize];
     for y in 0..analysis_height {
-        let source_y = (((y as u64 * 2 + 1) * height as u64) / (analysis_height as u64 * 2))
-            .min(height.saturating_sub(1) as u64) as u32;
+        let source_y0 = y * height / analysis_height;
+        let source_y1 = ((y + 1) * height / analysis_height)
+            .max(source_y0 + 1)
+            .min(height);
+        sums.fill(0);
         for x in 0..analysis_width {
-            let source_x = (((x as u64 * 2 + 1) * width as u64) / (analysis_width as u64 * 2))
-                .min(width.saturating_sub(1) as u64) as u32;
-            gray.put_pixel(x, y, thumbnail.get_pixel(source_x, source_y).to_luma());
+            let source_x0 = x * width / analysis_width;
+            let source_x1 = ((x + 1) * width / analysis_width)
+                .max(source_x0 + 1)
+                .min(width);
+            for source_y in source_y0..source_y1 {
+                for source_x in source_x0..source_x1 {
+                    sums[x as usize] += u64::from(source.get_pixel(source_x, source_y)[0]);
+                }
+            }
+        }
+        for x in 0..analysis_width {
+            let source_x0 = x * width / analysis_width;
+            let source_x1 = ((x + 1) * width / analysis_width)
+                .max(source_x0 + 1)
+                .min(width);
+            let count = u64::from(source_y1 - source_y0) * u64::from(source_x1 - source_x0);
+            gray.put_pixel(x, y, image::Luma([(sums[x as usize] / count) as u8]));
         }
     }
     gray
@@ -1006,7 +1025,7 @@ mod tests {
         let dynamic = DynamicImage::ImageLuma8(large);
         let analysis = analysis_grayscale(&dynamic);
 
-        assert_eq!(analysis.dimensions(), (320, 210));
+        assert_eq!(analysis.dimensions(), (640, 420));
 
         let result = detect_film_border(&dynamic);
         assert_eq!(result.confidence, DetectionConfidence::High);
@@ -1015,6 +1034,23 @@ mod tests {
         assert!((result.points[0][1] - 38.0 / 209.0).abs() < 0.03);
         assert!((result.points[2][0] - 274.0 / 319.0).abs() < 0.03);
         assert!((result.points[2][1] - 174.0 / 209.0).abs() < 0.03);
+    }
+
+    #[test]
+    fn analysis_downsampling_averages_source_area_instead_of_point_sampling() {
+        let mut image = GrayImage::from_pixel(1280, 640, Luma([0]));
+        for y in 0..640 {
+            for x in (0..1280).step_by(2) {
+                image.put_pixel(x, y, Luma([255]));
+            }
+        }
+
+        let analysis = analysis_grayscale(&DynamicImage::ImageLuma8(image));
+
+        assert_eq!(analysis.dimensions(), (640, 320));
+        assert!(analysis
+            .pixels()
+            .all(|pixel| (pixel[0] as i32 - 128).abs() <= 1));
     }
 
     /// A synthetic scan: open light panel outside the film body, a uniform
