@@ -8,7 +8,6 @@ use imageproc::gradients::{horizontal_sobel, vertical_sobel};
 use imageproc::point::Point;
 use serde::Serialize;
 
-const DEFAULT_INSET: f32 = 0.0;
 const MIN_AREA_RATIO: f64 = 0.025;
 const MAX_AREA_RATIO: f64 = 0.98;
 const MAX_SIDE_RATIO: f64 = 6.0;
@@ -84,16 +83,39 @@ pub struct FilmAreaPriorSample {
 
 impl FilmBorderDetection {
     pub fn fallback() -> Self {
-        Self {
-            points: [
-                [DEFAULT_INSET, DEFAULT_INSET],
-                [1.0 - DEFAULT_INSET, DEFAULT_INSET],
-                [1.0 - DEFAULT_INSET, 1.0 - DEFAULT_INSET],
-                [DEFAULT_INSET, 1.0 - DEFAULT_INSET],
-            ],
-            confidence: DetectionConfidence::Low,
-            status: "fallback",
-        }
+        fallback_frame(16, 16, None)
+    }
+
+    fn fallback_for_frame(width: u32, height: u32, roll_format: Option<&str>) -> Self {
+        fallback_frame(width, height, roll_format)
+    }
+}
+
+fn fallback_frame(width: u32, height: u32, roll_format: Option<&str>) -> FilmBorderDetection {
+    let recorded_aspect = roll_format.and_then(expected_frame_aspect);
+    let frame_aspect = recorded_aspect
+        .map(|aspect| {
+            let aspect = aspect as f32;
+            if width >= height {
+                aspect.max(1.0 / aspect)
+            } else {
+                aspect.min(1.0 / aspect)
+            }
+        })
+        .unwrap_or(1.5);
+    let (frame_width, frame_height) = if frame_aspect >= 1.0 {
+        (0.8, 0.8 / frame_aspect)
+    } else {
+        (0.8 * frame_aspect, 0.8)
+    };
+    let left = (1.0 - frame_width) * 0.5;
+    let top = (1.0 - frame_height) * 0.5;
+    let right = left + frame_width;
+    let bottom = top + frame_height;
+    FilmBorderDetection {
+        points: [[left, top], [right, top], [right, bottom], [left, bottom]],
+        confidence: DetectionConfidence::Low,
+        status: "fallback_safe",
     }
 }
 
@@ -112,7 +134,7 @@ pub fn detect_film_border_with_format(
 ) -> FilmBorderDetection {
     let (width, height) = thumbnail.dimensions();
     if width < 16 || height < 16 {
-        return FilmBorderDetection::fallback();
+        return FilmBorderDetection::fallback_for_frame(width, height, roll_format);
     }
     let preferred_aspect = roll_format.and_then(expected_frame_aspect);
 
@@ -144,7 +166,7 @@ pub fn detect_film_border_with_format(
         .max_by(|left, right| left.1.total_cmp(&right.1));
 
     let Some((points, _, aspect_score)) = best else {
-        return FilmBorderDetection::fallback();
+        return FilmBorderDetection::fallback_for_frame(width, height, roll_format);
     };
 
     detected_result(
@@ -1201,12 +1223,29 @@ mod tests {
     }
 
     #[test]
-    fn blank_thumbnail_fallback_keeps_the_full_frame() {
+    fn blank_thumbnail_falls_back_to_a_centered_safe_frame() {
         let image = DynamicImage::ImageLuma8(GrayImage::from_pixel(320, 200, Luma([16])));
         let result = detect_film_border(&image);
 
         assert_eq!(result.confidence, DetectionConfidence::Low);
+        assert_eq!(result.status, "fallback_safe");
         assert_eq!(result.points, FilmBorderDetection::fallback().points);
+    }
+
+    #[test]
+    fn fallback_uses_the_roll_aspect_and_keeps_an_80_percent_center() {
+        let square = FilmBorderDetection::fallback_for_frame(600, 600, Some("120 (6x6)"));
+        assert_eq!(square.status, "fallback_safe");
+        assert!((square.points[0][0] - 0.1).abs() < 1.0e-5);
+        assert!((square.points[0][1] - 0.1).abs() < 1.0e-5);
+        assert!((square.points[2][0] - 0.9).abs() < 1.0e-5);
+        assert!((square.points[2][1] - 0.9).abs() < 1.0e-5);
+
+        let portrait = FilmBorderDetection::fallback_for_frame(400, 600, Some("120 (6x7)"));
+        assert!((portrait.points[0][0] - 0.15714286).abs() < 1.0e-5);
+        assert!((portrait.points[0][1] - 0.1).abs() < 1.0e-5);
+        assert!((portrait.points[2][0] - 0.84285714).abs() < 1.0e-5);
+        assert!((portrait.points[2][1] - 0.9).abs() < 1.0e-5);
     }
 
     #[test]
