@@ -498,6 +498,20 @@ setTimeout(async () => {
     }
     document.title = 'PREVIEWPROBE' + JSON.stringify(results) + 'END';
 }, 2400);
+
+if (window.__uiShotMode && window.__uiShotFilmArea) {
+    setTimeout(() => {
+        try {
+            switchView('develop');
+            enterCalibrationMode();
+            calibrationPoints = [[0.10, 0.13], [0.90, 0.12], [0.90, 0.83], [0.10, 0.82]];
+            setFilmAreaAspectLock('3:2', false);
+            updateCalibrationPolygon();
+        } catch (error) {
+            window.__uiErrors.push('film-area screenshot: ' + String(error));
+        }
+    }, 20000);
+}
 </script>`;
 
 const chromeCandidates = [
@@ -521,6 +535,7 @@ fs.writeFileSync(
             '<script src="geometry.js"></script>',
             `<script>window.__uiShotMode = ${Boolean(shotPath)};` +
                 `window.__uiShotAnchor = ${JSON.stringify(process.env.NEXFILM_UI_SHOT_ANCHOR || '')};` +
+                `window.__uiShotFilmArea = ${Boolean(process.env.NEXFILM_UI_SHOT_FILM_AREA)};` +
                 `${shotPath ? `localStorage.setItem('nexfilm-theme', ${JSON.stringify(shotTheme)});` : ''}` +
                 `${shotPath && shotLanguage ? `localStorage.setItem('nexfilm-language', ${JSON.stringify(shotLanguage)});` : ''}</script>\n` +
                 `${stub}\n    <script src="geometry.js"></script>`

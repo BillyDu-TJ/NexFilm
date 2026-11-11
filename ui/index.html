@@ -504,6 +504,15 @@
                 <div id="right-panel-blocker" class="absolute inset-0 z-50 bg-[#1C1C1E]/80 backdrop-blur-[4px] hidden flex flex-col items-center justify-center p-6 text-center">
                     <h3 class="text-sm font-bold uppercase tracking-widest mb-3 text-orange-400">Film Area</h3>
                     <p class="film-area-description" data-i18n="develop.filmAreaDescription">范围可以包含片基；请将尺孔、胶片边缘外露的白色底板或其他高光区域排除在框外。</p>
+                    <div class="film-area-aspect" role="group" aria-label="Film area aspect ratio" data-i18n-aria-label="develop.filmAreaAspect">
+                        <span data-i18n="develop.filmAreaAspect">Aspect</span>
+                        <div class="film-area-aspect-options">
+                            <button type="button" class="film-area-aspect-button" data-film-aspect="3:2" aria-pressed="false">3:2</button>
+                            <button type="button" class="film-area-aspect-button" data-film-aspect="1:1" aria-pressed="false">1:1</button>
+                            <button type="button" class="film-area-aspect-button" data-film-aspect="6:7" aria-pressed="false">6:7</button>
+                            <button type="button" class="film-area-aspect-button is-active" data-film-aspect="free" aria-pressed="true" data-i18n="develop.filmAreaAspectFree">Free</button>
+                        </div>
+                    </div>
                     <div class="film-area-actions">
                         <button id="btn-auto-area" class="film-area-action film-area-action-secondary" title="Detect film area from cached thumbnail" data-i18n-title="develop.autoArea" disabled>Auto Area</button>
                         <button id="btn-confirm-calibration" class="film-area-action film-area-action-primary" data-i18n="develop.saveArea">Save Area</button>

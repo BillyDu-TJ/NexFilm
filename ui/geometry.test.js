@@ -3,6 +3,14 @@ const geometry = require('./geometry.js');
 
 const square = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]];
 
+function assertPointsClose(actual, expected) {
+    assert.equal(actual.length, expected.length);
+    actual.forEach((point, index) => {
+        assert.ok(Math.abs(point[0] - expected[index][0]) < 1e-12, `point ${index} x`);
+        assert.ok(Math.abs(point[1] - expected[index][1]) < 1e-12, `point ${index} y`);
+    });
+}
+
 assert.deepEqual(geometry.calibrationEdgeIndices, [[0, 1], [1, 2], [2, 3], [3, 0]]);
 
 const movedTop = geometry.translateCalibrationEdge(square, 0, [0, 50], [1000, 500]);
@@ -16,6 +24,25 @@ assert.deepEqual(movedBottom, [[0.1, 0.1], [0.9, 0.1], [0.9, 0.8], [0.1, 0.8]]);
 
 const movedLeft = geometry.translateCalibrationEdge(square, 3, [100, 0], [1000, 500]);
 assert.deepEqual(movedLeft, [[0.2, 0.1], [0.9, 0.1], [0.9, 0.9], [0.2, 0.9]]);
+
+const movedQuad = geometry.translateCalibrationQuad(square, [100, 50], [1000, 500]);
+assertPointsClose(movedQuad, [[0.2, 0.2], [1, 0.2], [1, 1], [0.2, 1]]);
+
+const squareLock = geometry.aspectLockedCalibrationQuad(square, 1, [1000, 500]);
+assertPointsClose(squareLock, [[0.3, 0.1], [0.7, 0.1], [0.7, 0.9], [0.3, 0.9]]);
+
+const threeByTwoLock = geometry.aspectLockedCalibrationQuad(square, 3 / 2, [1000, 500]);
+assertPointsClose(threeByTwoLock, [[0.2, 0.1], [0.8, 0.1], [0.8, 0.9], [0.2, 0.9]]);
+
+const cornerLock = geometry.resizeCalibrationCornerLocked(
+    square, 2, [0.8, 0.6], [1000, 1000], 1
+);
+assertPointsClose(cornerLock, [[0.1, 0.1], [0.6, 0.1], [0.6, 0.6], [0.1, 0.6]]);
+
+const topEdgeLock = geometry.resizeCalibrationEdgeLocked(
+    square, 0, [0, 100], [1000, 1000], 1
+);
+assertPointsClose(topEdgeLock, [[0.15, 0.2], [0.85, 0.2], [0.85, 0.9], [0.15, 0.9]]);
 
 assert.equal(geometry.isValidCalibrationQuad(square), true);
 assert.equal(geometry.isValidCalibrationQuad([[0.1, 0.1], [0.9, 0.9], [0.9, 0.1], [0.1, 0.9]]), false);

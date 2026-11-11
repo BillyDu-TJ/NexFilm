@@ -745,6 +745,7 @@ let selectedRollIds = new Set();
 let isCalibrationMode = false;
 let calibrationDragState = null;
 let calibrationPoints = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+let filmAreaAspectLock = 'free';
 const calibrationEdgeIndices = NexFilmGeometry.calibrationEdgeIndices;
 let calibrationRevision = 0;
 const filmAreaDetectionPromises = new Map();
@@ -8891,6 +8892,7 @@ function enterCalibrationMode() {
     setDevelopInspectorCalibrationLocked(true);
     setBatchApplyDisabled(false);
     calibrationPoints = NexFilmGeometry.getFilmAreaCalibrationDraft(current_geom);
+    setFilmAreaAspectLock('free', false);
     updateCanvasTransform();
     requestAnimationFrame(updateCalibrationPolygon);
     if (activeProxyIsFull) requestRender();
@@ -10129,6 +10131,44 @@ function cloneCalibrationPoints(points = calibrationPoints) {
     return points.map(point => [Number(point[0]), Number(point[1])]);
 }
 
+function filmAreaAspectValue() {
+    const [width, height] = filmAreaAspectLock.split(':').map(Number);
+    return Number.isFinite(width) && Number.isFinite(height) && height > 0
+        ? width / height
+        : null;
+}
+
+function updateFilmAreaAspectButtons() {
+    document.querySelectorAll('[data-film-aspect]').forEach(button => {
+        const active = button.dataset.filmAspect === filmAreaAspectLock;
+        button.classList.toggle('is-active', active);
+        button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+}
+
+function setFilmAreaAspectLock(value, snap = true) {
+    filmAreaAspectLock = ['3:2', '1:1', '6:7'].includes(value) ? value : 'free';
+    updateFilmAreaAspectButtons();
+    const targetAspect = filmAreaAspectValue();
+    if (!snap || !targetAspect || !isCalibrationMode) return;
+    const svg = document.getElementById('calibration-svg');
+    const locked = NexFilmGeometry.aspectLockedCalibrationQuad(
+        calibrationPoints,
+        targetAspect,
+        [svg.clientWidth, svg.clientHeight]
+    );
+    if (locked) setCalibrationDraft(locked);
+}
+
+document.querySelectorAll('[data-film-aspect]').forEach(button => {
+    button.addEventListener('click', () => {
+        if (!isCalibrationMode) return;
+        calibrationRevision++;
+        pushUndoState();
+        setFilmAreaAspectLock(button.dataset.filmAspect, true);
+    });
+});
+
 function setCalibrationDraft(points) {
     if (!NexFilmGeometry.isValidCalibrationQuad(points)) return false;
     calibrationPoints = cloneCalibrationPoints(points);
@@ -10146,7 +10186,10 @@ function setCalibrationDraft(points) {
 document.getElementById('calibration-svg').addEventListener('pointerdown', (e) => {
     if (!isCalibrationMode) return;
     const target = e.target;
-    if (!target.classList.contains('calib-handle') && !target.classList.contains('calib-edge-handle')) {
+    const isCorner = target.classList.contains('calib-handle');
+    const isEdge = target.classList.contains('calib-edge-handle');
+    const isBody = target.id === 'calibration-polygon';
+    if (!isCorner && !isEdge && !isBody) {
         return;
     }
 
@@ -10155,10 +10198,10 @@ document.getElementById('calibration-svg').addEventListener('pointerdown', (e) =
     e.stopPropagation();
     if (target.setPointerCapture) target.setPointerCapture(e.pointerId);
     calibrationDragState = {
-        type: target.classList.contains('calib-handle') ? 'corner' : 'edge',
-        index: target.classList.contains('calib-handle')
+        type: isCorner ? 'corner' : (isEdge ? 'edge' : 'move'),
+        index: isCorner
             ? Number(target.dataset.idx)
-            : Number(target.dataset.edge),
+            : (isEdge ? Number(target.dataset.edge) : -1),
         pointerId: e.pointerId,
         target,
         startClient: [e.clientX, e.clientY],
@@ -10178,11 +10221,40 @@ window.addEventListener('pointermove', (e) => {
     const displayFrame = currentDisplayFrame();
     const toOriented = point => NexFilmGeometry.displayPointToOriented(point, displayFrame);
 
+    if (drag.type === 'move') {
+        const displayPoints = drag.startPoints.map(point =>
+            NexFilmGeometry.orientedPointToDisplay(point, displayFrame)
+        );
+        const moved = NexFilmGeometry.translateCalibrationQuad(
+            displayPoints,
+            [e.clientX - drag.startClient[0], e.clientY - drag.startClient[1]],
+            [svgRect.width, svgRect.height]
+        );
+        if (moved) setCalibrationDraft(moved.map(toOriented));
+        return;
+    }
+
+    const targetAspect = filmAreaAspectValue();
     if (drag.type === 'corner') {
-        candidate[drag.index] = toOriented([
+        const pointer = [
             Math.max(0, Math.min(1, (e.clientX - svgRect.left) / svgRect.width)),
             Math.max(0, Math.min(1, (e.clientY - svgRect.top) / svgRect.height))
-        ]);
+        ];
+        if (targetAspect) {
+            const displayPoints = drag.startPoints.map(point =>
+                NexFilmGeometry.orientedPointToDisplay(point, displayFrame)
+            );
+            const resized = NexFilmGeometry.resizeCalibrationCornerLocked(
+                displayPoints,
+                drag.index,
+                pointer,
+                [svgRect.width, svgRect.height],
+                targetAspect
+            );
+            if (resized) setCalibrationDraft(resized.map(toOriented));
+            return;
+        }
+        candidate[drag.index] = toOriented(pointer);
         setCalibrationDraft(candidate);
         return;
     }
@@ -10194,12 +10266,20 @@ window.addEventListener('pointermove', (e) => {
     const displayPoints = drag.startPoints.map(point =>
         NexFilmGeometry.orientedPointToDisplay(point, displayFrame)
     );
-    const translated = NexFilmGeometry.translateCalibrationEdge(
-        displayPoints,
-        drag.index,
-        [pointerDeltaX, pointerDeltaY],
-        [svgRect.width, svgRect.height]
-    );
+    const translated = targetAspect
+        ? NexFilmGeometry.resizeCalibrationEdgeLocked(
+            displayPoints,
+            drag.index,
+            [pointerDeltaX, pointerDeltaY],
+            [svgRect.width, svgRect.height],
+            targetAspect
+        )
+        : NexFilmGeometry.translateCalibrationEdge(
+            displayPoints,
+            drag.index,
+            [pointerDeltaX, pointerDeltaY],
+            [svgRect.width, svgRect.height]
+        );
     if (translated) setCalibrationDraft(translated.map(toOriented));
 });
 

@@ -560,6 +560,157 @@
         return isValidCalibrationQuad(candidate) ? candidate : null;
     }
 
+    function calibrationBounds(points) {
+        const xs = points.map(point => Number(point[0]));
+        const ys = points.map(point => Number(point[1]));
+        return {
+            left: Math.min(...xs),
+            right: Math.max(...xs),
+            top: Math.min(...ys),
+            bottom: Math.max(...ys),
+        };
+    }
+
+    function translateCalibrationQuad(points, pointerDelta, viewport) {
+        if (!isValidCalibrationQuad(points)) return null;
+        const viewportWidth = Math.max(1, numberOrZero(viewport && viewport[0]));
+        const viewportHeight = Math.max(1, numberOrZero(viewport && viewport[1]));
+        const bounds = calibrationBounds(points);
+        let deltaX = numberOrZero(pointerDelta && pointerDelta[0]) / viewportWidth;
+        let deltaY = numberOrZero(pointerDelta && pointerDelta[1]) / viewportHeight;
+        deltaX = Math.max(-bounds.left, Math.min(1 - bounds.right, deltaX));
+        deltaY = Math.max(-bounds.top, Math.min(1 - bounds.bottom, deltaY));
+        const candidate = points.map(point => [
+            Number(point[0]) + deltaX,
+            Number(point[1]) + deltaY,
+        ]);
+        return isValidCalibrationQuad(candidate) ? candidate : null;
+    }
+
+    function orientedAspectForLock(targetAspect, points, viewport) {
+        const target = Number(targetAspect);
+        if (!Number.isFinite(target) || target <= 0) return null;
+        const viewportWidth = Math.max(1, numberOrZero(viewport && viewport[0]));
+        const viewportHeight = Math.max(1, numberOrZero(viewport && viewport[1]));
+        const bounds = calibrationBounds(points);
+        const current = (bounds.right - bounds.left) * viewportWidth
+            / Math.max(1e-9, (bounds.bottom - bounds.top) * viewportHeight);
+        const orientedTarget = (target >= 1) === (current >= 1) ? target : 1 / target;
+        return {
+            physical: orientedTarget,
+            normalized: orientedTarget * viewportHeight / viewportWidth,
+        };
+    }
+
+    function calibrationBox(left, top, right, bottom) {
+        const candidate = [[left, top], [right, top], [right, bottom], [left, bottom]];
+        return isValidCalibrationQuad(candidate) ? candidate : null;
+    }
+
+    function fitCenteredAspectBox(centerX, centerY, width, height, normalizedAspect) {
+        const minSize = 0.04;
+        width = Math.max(minSize, width);
+        height = Math.max(minSize, height);
+        const maxWidth = Math.max(minSize, 2 * Math.min(centerX, 1 - centerX));
+        const maxHeight = Math.max(minSize, 2 * Math.min(centerY, 1 - centerY));
+        if (width / height > normalizedAspect) width = height * normalizedAspect;
+        else height = width / normalizedAspect;
+        if (width > maxWidth) {
+            width = maxWidth;
+            height = width / normalizedAspect;
+        }
+        if (height > maxHeight) {
+            height = maxHeight;
+            width = height * normalizedAspect;
+        }
+        if (width > 1 || height > 1) return null;
+        return calibrationBox(
+            centerX - width / 2,
+            centerY - height / 2,
+            centerX + width / 2,
+            centerY + height / 2
+        );
+    }
+
+    function aspectLockedCalibrationQuad(points, targetAspect, viewport) {
+        if (!isValidCalibrationQuad(points)) return null;
+        const aspect = orientedAspectForLock(targetAspect, points, viewport);
+        if (!aspect) return null;
+        const bounds = calibrationBounds(points);
+        const centerX = (bounds.left + bounds.right) / 2;
+        const centerY = (bounds.top + bounds.bottom) / 2;
+        return fitCenteredAspectBox(
+            centerX,
+            centerY,
+            bounds.right - bounds.left,
+            bounds.bottom - bounds.top,
+            aspect.normalized
+        );
+    }
+
+    function resizeCalibrationCornerLocked(points, cornerIndex, pointer, viewport, targetAspect) {
+        if (!isValidCalibrationQuad(points) || cornerIndex < 0 || cornerIndex > 3) return null;
+        const aspect = orientedAspectForLock(targetAspect, points, viewport);
+        if (!aspect) return null;
+        const anchor = points[(cornerIndex + 2) % 4].map(Number);
+        const moving = [numberOrZero(pointer && pointer[0]), numberOrZero(pointer && pointer[1])];
+        const growsLeft = cornerIndex === 0 || cornerIndex === 3;
+        const growsUp = cornerIndex === 0 || cornerIndex === 1;
+        let width = Math.abs(moving[0] - anchor[0]);
+        let height = Math.abs(moving[1] - anchor[1]);
+        if (width / Math.max(1e-9, height) > aspect.normalized) width = height * aspect.normalized;
+        else height = width / aspect.normalized;
+        const maxWidth = growsLeft ? anchor[0] : 1 - anchor[0];
+        const maxHeight = growsUp ? anchor[1] : 1 - anchor[1];
+        const scale = Math.min(1, maxWidth / Math.max(1e-9, width), maxHeight / Math.max(1e-9, height));
+        width *= Math.max(0, scale);
+        height *= Math.max(0, scale);
+        if (width < 0.04 || height < 0.04) return null;
+        const left = growsLeft ? anchor[0] - width : anchor[0];
+        const right = growsLeft ? anchor[0] : anchor[0] + width;
+        const top = growsUp ? anchor[1] - height : anchor[1];
+        const bottom = growsUp ? anchor[1] : anchor[1] + height;
+        return calibrationBox(left, top, right, bottom);
+    }
+
+    function resizeCalibrationEdgeLocked(points, edgeIndex, pointerDelta, viewport, targetAspect) {
+        if (!isValidCalibrationQuad(points) || edgeIndex < 0 || edgeIndex > 3) return null;
+        const aspect = orientedAspectForLock(targetAspect, points, viewport);
+        if (!aspect) return null;
+        const viewportWidth = Math.max(1, numberOrZero(viewport && viewport[0]));
+        const viewportHeight = Math.max(1, numberOrZero(viewport && viewport[1]));
+        const deltaX = numberOrZero(pointerDelta && pointerDelta[0]) / viewportWidth;
+        const deltaY = numberOrZero(pointerDelta && pointerDelta[1]) / viewportHeight;
+        const bounds = calibrationBounds(points);
+        const centerX = (bounds.left + bounds.right) / 2;
+        const centerY = (bounds.top + bounds.bottom) / 2;
+        const minSize = 0.04;
+        if (edgeIndex === 0 || edgeIndex === 2) {
+            let top = bounds.top;
+            let bottom = bounds.bottom;
+            if (edgeIndex === 0) top = Math.min(bottom - minSize, Math.max(0, top + deltaY));
+            else bottom = Math.max(top + minSize, Math.min(1, bottom + deltaY));
+            return fitCenteredAspectBox(
+                centerX,
+                (top + bottom) / 2,
+                (bottom - top) * aspect.normalized,
+                bottom - top,
+                aspect.normalized
+            );
+        }
+        let left = bounds.left;
+        let right = bounds.right;
+        if (edgeIndex === 1) right = Math.max(left + minSize, Math.min(1, right + deltaX));
+        else left = Math.min(right - minSize, Math.max(0, left + deltaX));
+        return fitCenteredAspectBox(
+            (left + right) / 2,
+            centerY,
+            right - left,
+            (right - left) / aspect.normalized,
+            aspect.normalized
+        );
+    }
+
     function transformGeometryForQuarterTurn(geom, clockwise) {
         const flipH = !!geom.flip_h;
         const flipV = !!geom.flip_v;
@@ -606,6 +757,10 @@
         calibrationEdgeIndices,
         isValidCalibrationQuad,
         translateCalibrationEdge,
+        translateCalibrationQuad,
+        aspectLockedCalibrationQuad,
+        resizeCalibrationCornerLocked,
+        resizeCalibrationEdgeLocked,
         transformGeometryForQuarterTurn,
         transformGeometryForFlip,
     };

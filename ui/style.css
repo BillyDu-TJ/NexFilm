@@ -691,6 +691,44 @@ body > header > div:last-child button:hover { background: var(--control) !import
     font-size: 12px;
     line-height: 1.65;
 }
+.film-area-aspect {
+    display: grid;
+    width: min(100%, 290px);
+    gap: 7px;
+    margin: -8px 0 18px;
+    text-align: left;
+}
+.film-area-aspect > span {
+    color: var(--subtle);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+}
+.film-area-aspect-options {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+}
+.film-area-aspect-button {
+    min-height: 30px;
+    padding: 0 5px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--control);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+}
+.film-area-aspect-button:hover {
+    border-color: var(--line-strong);
+    color: var(--text);
+}
+.film-area-aspect-button.is-active {
+    border-color: var(--accent);
+    background: var(--accent-soft);
+    color: var(--text);
+}
 .film-area-actions {
     display: grid;
     width: min(100%, 290px);
@@ -1648,6 +1686,7 @@ body > header > div:last-child button:hover { transform: translateY(-1px); }
 .calib-edge-dot { stroke: var(--accent) !important; }
 .calib-dot { fill: var(--accent) !important; }
 #calibration-polygon { fill: var(--accent-soft) !important; stroke: var(--accent) !important; }
+#calibration-polygon { cursor: move; }
 #calibration-grid { stroke: color-mix(in srgb, var(--accent) 52%, transparent) !important; }
 
 /* Inputs, notices and modal surfaces use the same blue focus language. */
