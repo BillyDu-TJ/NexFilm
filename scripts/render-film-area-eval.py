@@ -8,6 +8,7 @@ This tool is for local review only and writes under target/film-area-eval.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -56,6 +57,7 @@ def main() -> None:
     parser.add_argument("--result", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--worst", type=int, default=0)
+    parser.add_argument("--ids-from", default="")
     args = parser.parse_args()
 
     root = Path(args.root)
@@ -73,11 +75,16 @@ def main() -> None:
             ),
             reverse=True,
         )[: args.worst]
+    if args.ids_from:
+        selected = {frame["id"] for frame in load(root / args.ids_from)["worst_frames"]}
+        frames = [frame for frame in frames if frame["id"] in selected]
+        frames.sort(key=lambda frame: frame["id"])
     for index, frame in enumerate(frames):
         source = frame["id"].split("::")[-1]
         safe_source = re.sub(r'[<>:"/\\|?*]+', "_", source)
+        digest = hashlib.sha1(frame["id"].encode("utf-8")).hexdigest()[:8]
         status = frame.get("prior_status", frame["status"])
-        name = f"{index:04d}-{status}-{safe_source}.jpg"
+        name = f"{index:04d}-{digest}-{status}-{safe_source}.jpg"
         render_one(root, dataset, frame, output / name[:180])
     print(f"Rendered {len(frames)} overlays to {output}")
 
