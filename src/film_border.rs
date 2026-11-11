@@ -21,7 +21,7 @@ const STANDARD_FRAME_ASPECTS: [f64; 6] =
 const ASPECT_SCORE_SIGMA: f64 = 0.20;
 const ROLL_PRIOR_WINDOW: f32 = 0.05;
 const ROLL_PRIOR_INSET: f32 = 0.03;
-const SOURCE_PRIOR_INSET: f32 = 0.03;
+const SOURCE_PRIOR_INSET: f32 = 0.01;
 
 /// Gate refinement: how far inward (as a fraction of the edge's own span) a
 /// rebate walk may travel before it is declared a misdetection.

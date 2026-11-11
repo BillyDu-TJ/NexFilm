@@ -114,6 +114,12 @@ def pick_image(
 def export(database: Path, output: Path) -> None:
     connection = sqlite3.connect(database)
     connection.row_factory = sqlite3.Row
+    canonical_rolls = {}
+    for roll in connection.execute(
+        "SELECT roll_id, roll_format, image_paths FROM rolls WHERE lower(roll_format) <> 'loose'"
+    ):
+        for path in json.loads(roll["image_paths"]):
+            canonical_rolls[path] = (roll["roll_id"], roll["roll_format"])
     rows = connection.execute(
         """
         SELECT ge.roll_id, ge.file_path, ge.geom,
@@ -141,18 +147,29 @@ def export(database: Path, output: Path) -> None:
         filename = f"frame_{index:04d}.jpg"
         (images / filename).write_bytes(payload)
 
-        roll_format = row["roll_format"] or ""
+        stored_roll_format = row["roll_format"] or ""
+        canonical = (
+            canonical_rolls.get(row["file_path"])
+            if stored_roll_format.casefold() == "loose"
+            else None
+        )
+        roll_format = canonical[1] if canonical else stored_roll_format
         category = classify_source(row["file_path"], roll_format)
+        eval_group = (
+            canonical[0]
+            if canonical
+            else evaluation_group(row["roll_id"], roll_format, category, row["file_path"])
+        )
         frames.append(
             {
                 "id": f"{row['roll_id']}::{row['file_path']}",
                 "roll_id": row["roll_id"],
+                "canonical_roll_id": canonical[0] if canonical else None,
                 "roll_format": roll_format,
+                "stored_roll_format": stored_roll_format,
                 "camera": row["camera"] or "",
                 "category": category,
-                "eval_group": evaluation_group(
-                    row["roll_id"], roll_format, category, row["file_path"]
-                ),
+                "eval_group": eval_group,
                 "source_path": row["file_path"],
                 "image": f"images/{filename}",
                 "image_source": source_kind,

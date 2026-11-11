@@ -9335,10 +9335,19 @@ pub async fn auto_detect_film_border_batch(
             }
             crate::film_border::film_area_prior_from_common_area(&family_samples)
         };
+        let confirmed_roll_prior = crate::film_border::film_area_prior_from_common_area(
+            &samples
+                .iter()
+                .filter(|sample| sample.confirmed)
+                .copied()
+                .collect::<Vec<_>>(),
+        );
 
         let mut results = Vec::with_capacity(file_paths.len());
         for file_path in file_paths {
-            let mut prior = crate::film_border::film_area_prior_from_samples(&samples);
+            let mut prior = confirmed_roll_prior
+                .clone()
+                .or_else(|| crate::film_border::film_area_prior_from_samples(&samples));
             if prior.is_none() {
                 let mut source_statement = connection
                     .prepare(

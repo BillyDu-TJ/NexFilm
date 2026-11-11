@@ -1,7 +1,7 @@
 use image::{imageops::FilterType, DynamicImage, GenericImageView};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -75,6 +75,17 @@ fn film_area_eval() {
     let dataset: Dataset =
         serde_json::from_str(&fs::read_to_string(&dataset_path).unwrap()).unwrap();
     assert!(!dataset.frames.is_empty(), "evaluation set is empty");
+    let categories = dataset
+        .frames
+        .iter()
+        .map(|frame| frame.category.as_str())
+        .collect::<BTreeSet<_>>();
+    for required in ["camera_135", "camera_120", "scanner"] {
+        assert!(
+            categories.contains(required),
+            "evaluation set is missing required camera coverage: {required}"
+        );
+    }
 
     let grouped = dataset.frames.iter().cloned().fold(
         BTreeMap::<String, Vec<TruthFrame>>::new(),
@@ -113,14 +124,13 @@ fn film_area_eval() {
         let roll_prior = (!truth.roll_format.eq_ignore_ascii_case("loose")).then(|| {
             let samples = grouped[&truth.eval_group]
                 .iter()
-                .filter(|sample| sample.id != truth.id)
                 .map(|sample| nexfilm_engine::film_border::FilmAreaPriorSample {
                     points: sample.points,
                     confirmed: true,
                     confidence: nexfilm_engine::film_border::DetectionConfidence::High,
                 })
                 .collect::<Vec<_>>();
-            nexfilm_engine::film_border::film_area_prior_from_samples(&samples)
+            nexfilm_engine::film_border::film_area_prior_from_common_area(&samples)
         });
         let source_prior = grouped_by_source[&truth.source_path]
             .iter()
