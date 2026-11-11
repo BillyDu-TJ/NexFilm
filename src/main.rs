@@ -113,6 +113,7 @@ fn main() {
             nexfilm_engine::commands::clear_invalid_rendered_thumbnail,
             nexfilm_engine::commands::update_geometry,
             nexfilm_engine::commands::auto_detect_film_border,
+            nexfilm_engine::commands::auto_detect_film_border_batch,
             nexfilm_engine::commands::batch_copy_settings,
             nexfilm_engine::commands::geometry_auto_align,
             nexfilm_engine::commands::load_3d_lut,

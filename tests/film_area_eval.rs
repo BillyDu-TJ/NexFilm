@@ -12,7 +12,7 @@ struct Dataset {
     frames: Vec<TruthFrame>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct TruthFrame {
     id: String,
     roll_id: String,
@@ -32,9 +32,15 @@ struct FrameResult {
     detection: nexfilm_engine::film_border::FilmBorderDetection,
     corner_error: f64,
     leak_area: f64,
+    prior_detection: nexfilm_engine::film_border::FilmBorderDetection,
+    prior_corner_error: f64,
+    prior_leak_area: f64,
+    prior_enabled: bool,
+    prior_sample_count: usize,
     variants: Vec<VariantResult>,
     size_max_error: f64,
     size_mean_error: f64,
+    prior_size_max_error: f64,
 }
 
 #[derive(Debug)]
@@ -43,6 +49,9 @@ struct VariantResult {
     detection: nexfilm_engine::film_border::FilmBorderDetection,
     corner_error: f64,
     leak_area: f64,
+    prior_detection: nexfilm_engine::film_border::FilmBorderDetection,
+    prior_corner_error: f64,
+    prior_leak_area: f64,
 }
 
 #[test]
@@ -63,8 +72,32 @@ fn film_area_eval() {
         serde_json::from_str(&fs::read_to_string(&dataset_path).unwrap()).unwrap();
     assert!(!dataset.frames.is_empty(), "evaluation set is empty");
 
+    let grouped = dataset.frames.iter().cloned().fold(
+        BTreeMap::<String, Vec<TruthFrame>>::new(),
+        |mut groups, frame| {
+            groups
+                .entry(frame.eval_group.clone())
+                .or_default()
+                .push(frame);
+            groups
+        },
+    );
     let mut results = Vec::with_capacity(dataset.frames.len());
-    for truth in dataset.frames {
+    for truth in &dataset.frames {
+        let prior = (!truth.roll_format.eq_ignore_ascii_case("loose"))
+            .then(|| {
+                let samples = grouped[&truth.eval_group]
+                    .iter()
+                    .filter(|sample| sample.id != truth.id)
+                    .map(|sample| nexfilm_engine::film_border::FilmAreaPriorSample {
+                        points: sample.points,
+                        confirmed: true,
+                        confidence: nexfilm_engine::film_border::DetectionConfidence::High,
+                    })
+                    .collect::<Vec<_>>();
+                nexfilm_engine::film_border::film_area_prior_from_samples(&samples)
+            })
+            .flatten();
         let image_path = root.join(&truth.image);
         let original = image::open(&image_path)
             .unwrap_or_else(|error| panic!("cannot open {}: {error}", image_path.display()));
@@ -75,10 +108,18 @@ fn film_area_eval() {
                 &sized,
                 Some(&truth.roll_format),
             );
+            let prior_detection = nexfilm_engine::film_border::detect_film_border_with_prior(
+                &sized,
+                Some(&truth.roll_format),
+                prior.as_ref(),
+            );
             variants.push(VariantResult {
                 size,
                 corner_error: corner_error(&detection.points, &truth.points),
                 leak_area: leakage_area(&detection.points, &truth.points),
+                prior_corner_error: corner_error(&prior_detection.points, &truth.points),
+                prior_leak_area: leakage_area(&prior_detection.points, &truth.points),
+                prior_detection,
                 detection,
             });
         }
@@ -89,21 +130,36 @@ fn film_area_eval() {
         let detection = primary.detection.clone();
         let primary_corner_error = primary.corner_error;
         let leak_area = primary.leak_area;
+        let prior_detection = primary.prior_detection.clone();
+        let prior_corner_error = primary.prior_corner_error;
+        let prior_leak_area = primary.prior_leak_area;
         let mut size_errors = Vec::new();
+        let mut prior_size_errors = Vec::new();
         for variant in &variants {
             size_errors.push(corner_error(&variant.detection.points, &detection.points));
+            prior_size_errors.push(corner_error(
+                &variant.prior_detection.points,
+                &prior_detection.points,
+            ));
         }
         let size_max_error = size_errors.iter().copied().fold(0.0, f64::max);
         let size_mean_error = size_errors.iter().sum::<f64>() / size_errors.len().max(1) as f64;
+        let prior_size_max_error = prior_size_errors.iter().copied().fold(0.0, f64::max);
 
         results.push(FrameResult {
-            truth,
+            truth: truth.clone(),
             detection,
             corner_error: primary_corner_error,
             leak_area,
+            prior_detection,
+            prior_corner_error,
+            prior_leak_area,
+            prior_enabled: prior.is_some(),
+            prior_sample_count: prior.as_ref().map_or(0, |prior| prior.sample_count),
             variants,
             size_max_error,
             size_mean_error,
+            prior_size_max_error,
         });
     }
 
@@ -111,9 +167,9 @@ fn film_area_eval() {
     let mut worst = results.iter().collect::<Vec<_>>();
     worst.sort_by(|left, right| {
         right
-            .leak_area
-            .total_cmp(&left.leak_area)
-            .then_with(|| right.corner_error.total_cmp(&left.corner_error))
+            .prior_leak_area
+            .total_cmp(&left.prior_leak_area)
+            .then_with(|| right.prior_corner_error.total_cmp(&left.prior_corner_error))
     });
     let worst = worst
         .into_iter()
@@ -128,16 +184,31 @@ fn film_area_eval() {
                 "image": result.truth.image,
                 "truth": result.truth.points,
                 "detected": result.detection.points,
+                "prior_detected": result.prior_detection.points,
                 "corner_error": result.corner_error,
                 "leak_area": result.leak_area,
+                "prior_corner_error": result.prior_corner_error,
+                "prior_leak_area": result.prior_leak_area,
+                "prior_enabled": result.prior_enabled,
+                "prior_sample_count": result.prior_sample_count,
                 "confidence": result.detection.confidence,
                 "status": result.detection.status,
+                "prior_confidence": result.prior_detection.confidence,
+                "prior_status": result.prior_detection.status,
             })
         })
         .collect::<Vec<_>>();
 
     let leaking_frames = results.iter().filter(|r| r.leak_area > 1.0e-6).count();
     let size_passing_frames = results.iter().filter(|r| r.size_max_error < 0.005).count();
+    let prior_leaking_frames = results
+        .iter()
+        .filter(|result| result.prior_leak_area > 1.0e-6)
+        .count();
+    let prior_size_passing_frames = results
+        .iter()
+        .filter(|result| result.prior_size_max_error < 0.005)
+        .count();
     let summary = json!({
         "label": label,
         "source_database": dataset.source_database,
@@ -154,6 +225,27 @@ fn film_area_eval() {
         "size_frames_under_0_5_percent": size_passing_frames,
         "size_frames_under_0_5_percent_ratio":
             size_passing_frames as f64 / results.len().max(1) as f64,
+        "prior_enabled_frames": results.iter().filter(|result| result.prior_enabled).count(),
+        "prior_corner_error_mean": mean(results.iter().map(|result| result.prior_corner_error)),
+        "prior_corner_error_p95": percentile(
+            results.iter().map(|result| result.prior_corner_error),
+            0.95,
+        ),
+        "prior_corner_error_max": results
+            .iter()
+            .map(|result| result.prior_corner_error)
+            .fold(0.0, f64::max),
+        "prior_leak_area_total": results.iter().map(|result| result.prior_leak_area).sum::<f64>(),
+        "prior_leak_area_mean": mean(results.iter().map(|result| result.prior_leak_area)),
+        "prior_leaking_frames": prior_leaking_frames,
+        "prior_leak_free": prior_leaking_frames == 0,
+        "prior_size_max_delta": results
+            .iter()
+            .map(|result| result.prior_size_max_error)
+            .fold(0.0, f64::max),
+        "prior_size_frames_under_0_5_percent": prior_size_passing_frames,
+        "prior_size_frames_under_0_5_percent_ratio":
+            prior_size_passing_frames as f64 / results.len().max(1) as f64,
     });
     let size_summaries = [640, 1024, 1600]
         .into_iter()
@@ -171,6 +263,14 @@ fn film_area_eval() {
                 ),
                 "leak_area_total": variants.iter().map(|variant| variant.leak_area).sum::<f64>(),
                 "leaking_frames": variants.iter().filter(|variant| variant.leak_area > 1.0e-6).count(),
+                "prior_corner_error_mean": mean(
+                    variants.iter().map(|variant| variant.prior_corner_error),
+                ),
+                "prior_leak_area_total": variants.iter().map(|variant| variant.prior_leak_area).sum::<f64>(),
+                "prior_leaking_frames": variants
+                    .iter()
+                    .filter(|variant| variant.prior_leak_area > 1.0e-6)
+                    .count(),
             })
         })
         .collect::<Vec<_>>();
@@ -190,19 +290,32 @@ fn film_area_eval() {
                 "image_size": result.truth.image_size,
                 "truth": result.truth.points,
                 "detected": result.detection.points,
+                "prior_detected": result.prior_detection.points,
                 "corner_error": result.corner_error,
                 "leak_area": result.leak_area,
+                "prior_corner_error": result.prior_corner_error,
+                "prior_leak_area": result.prior_leak_area,
+                "prior_enabled": result.prior_enabled,
+                "prior_sample_count": result.prior_sample_count,
                 "size_max_error": result.size_max_error,
                 "size_mean_error": result.size_mean_error,
+                "prior_size_max_error": result.prior_size_max_error,
                 "confidence": result.detection.confidence,
                 "status": result.detection.status,
+                "prior_confidence": result.prior_detection.confidence,
+                "prior_status": result.prior_detection.status,
                 "variants": result.variants.iter().map(|variant| json!({
                     "size": variant.size,
                     "detected": variant.detection.points,
+                    "prior_detected": variant.prior_detection.points,
                     "corner_error": variant.corner_error,
                     "leak_area": variant.leak_area,
+                    "prior_corner_error": variant.prior_corner_error,
+                    "prior_leak_area": variant.prior_leak_area,
                     "confidence": variant.detection.confidence,
                     "status": variant.detection.status,
+                    "prior_confidence": variant.prior_detection.confidence,
+                    "prior_status": variant.prior_detection.status,
                 })).collect::<Vec<_>>(),
             })
         })
@@ -219,13 +332,29 @@ fn film_area_eval() {
     fs::write(&output, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
 
     println!(
-        "label={label} frames={} corner_mean={:.5} leak_total={:.6} leaking={} size_max={:.5} size_pass={}/{}",
+        "label={label} frames={} cold_corner={:.5} cold_leak={:.6} cold_leaking={} cold_size_pass={}/{}",
         results.len(),
         summary["corner_error_mean"].as_f64().unwrap_or_default(),
         summary["leak_area_total"].as_f64().unwrap_or_default(),
         summary["leaking_frames"].as_u64().unwrap_or_default(),
-        summary["size_max_delta"].as_f64().unwrap_or_default(),
         summary["size_frames_under_0_5_percent"]
+            .as_u64()
+            .unwrap_or_default(),
+        results.len()
+    );
+    println!(
+        "prior_enabled={} prior_corner={:.5} prior_leak={:.6} prior_leaking={} prior_size_pass={}/{}",
+        summary["prior_enabled_frames"].as_u64().unwrap_or_default(),
+        summary["prior_corner_error_mean"]
+            .as_f64()
+            .unwrap_or_default(),
+        summary["prior_leak_area_total"]
+            .as_f64()
+            .unwrap_or_default(),
+        summary["prior_leaking_frames"]
+            .as_u64()
+            .unwrap_or_default(),
+        summary["prior_size_frames_under_0_5_percent"]
             .as_u64()
             .unwrap_or_default(),
         results.len()
@@ -233,7 +362,7 @@ fn film_area_eval() {
     println!("wrote {}", output.display());
     for group in &group_reports {
         println!(
-            "{} [{} {}] n={} corner={:.5} leak={:.6} jitter={:.5}",
+            "{} [{} {}] n={} cold(corner={:.5} leak={:.6} jitter={:.5}) prior(enabled={} corner={:.5} leak={:.6} jitter={:.5})",
             group["eval_group"].as_str().unwrap_or_default(),
             group["category"].as_str().unwrap_or_default(),
             group["roll_format"].as_str().unwrap_or_default(),
@@ -241,6 +370,14 @@ fn film_area_eval() {
             group["corner_error_mean"].as_f64().unwrap_or_default(),
             group["leak_area_total"].as_f64().unwrap_or_default(),
             group["roll_jitter"].as_f64().unwrap_or_default(),
+            group["prior_enabled_frames"].as_u64().unwrap_or_default(),
+            group["prior_corner_error_mean"]
+                .as_f64()
+                .unwrap_or_default(),
+            group["prior_leak_area_total"]
+                .as_f64()
+                .unwrap_or_default(),
+            group["prior_roll_jitter"].as_f64().unwrap_or_default(),
         );
     }
 }
@@ -388,6 +525,24 @@ fn group_reports(results: &[FrameResult]) -> Vec<serde_json::Value> {
                 "leaking_frames": frames.iter().filter(|r| r.leak_area > 1.0e-6).count(),
                 "roll_jitter": corner_jitter(frames.iter().map(|r| r.detection.points).collect()),
                 "size_max_delta": frames.iter().map(|r| r.size_max_error).fold(0.0, f64::max),
+                "prior_enabled_frames": frames.iter().filter(|r| r.prior_enabled).count(),
+                "prior_corner_error_mean": mean(frames.iter().map(|r| r.prior_corner_error)),
+                "prior_corner_error_p95": percentile(
+                    frames.iter().map(|r| r.prior_corner_error),
+                    0.95,
+                ),
+                "prior_leak_area_total": frames.iter().map(|r| r.prior_leak_area).sum::<f64>(),
+                "prior_leaking_frames": frames
+                    .iter()
+                    .filter(|r| r.prior_leak_area > 1.0e-6)
+                    .count(),
+                "prior_roll_jitter": corner_jitter(
+                    frames.iter().map(|r| r.prior_detection.points).collect(),
+                ),
+                "prior_size_max_delta": frames
+                    .iter()
+                    .map(|r| r.prior_size_max_error)
+                    .fold(0.0, f64::max),
             })
         })
         .collect()

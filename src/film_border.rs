@@ -19,6 +19,9 @@ const AUTO_DETECTION_INSET: f32 = 0.01;
 const STANDARD_FRAME_ASPECTS: [f64; 6] =
     [3.0 / 2.0, 1.0, 4.0 / 3.0, 6.0 / 7.0, 6.0 / 9.0, 65.0 / 24.0];
 const ASPECT_SCORE_SIGMA: f64 = 0.20;
+const ROLL_PRIOR_WINDOW: f32 = 0.05;
+const ROLL_PRIOR_DETECTED_INSET: f32 = 0.02;
+const ROLL_PRIOR_INHERITED_INSET: f32 = 0.03;
 
 /// Gate refinement: how far inward (as a fraction of the edge's own span) a
 /// rebate walk may travel before it is declared a misdetection.
@@ -63,6 +66,20 @@ pub struct FilmBorderDetection {
     pub points: [[f32; 2]; 4],
     pub confidence: DetectionConfidence,
     pub status: &'static str,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FilmAreaPrior {
+    /// Median of the samples, normalized like a detected film area.
+    pub points: [[f32; 2]; 4],
+    pub sample_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilmAreaPriorSample {
+    pub points: [[f32; 2]; 4],
+    pub confirmed: bool,
+    pub confidence: DetectionConfidence,
 }
 
 impl FilmBorderDetection {
@@ -137,6 +154,105 @@ pub fn detect_film_border_with_format(
         "detected_contour",
         aspect_score,
     )
+}
+
+/// Detect a frame with a Roll-level spatial prior. This is intended for batch
+/// and import workers; an interactive one-off detection must keep using
+/// `detect_film_border_with_format`.
+pub fn detect_film_border_with_prior(
+    thumbnail: &DynamicImage,
+    roll_format: Option<&str>,
+    prior: Option<&FilmAreaPrior>,
+) -> FilmBorderDetection {
+    let detection = detect_film_border_with_format(thumbnail, roll_format);
+    let Some(prior) = prior else {
+        return detection;
+    };
+    apply_roll_prior(detection, prior)
+}
+
+/// Build a Roll prior only when its source frames agree. Confirmed frames win;
+/// without one, three mutually consistent High detections are required.
+pub fn film_area_prior_from_samples(samples: &[FilmAreaPriorSample]) -> Option<FilmAreaPrior> {
+    let confirmed = samples
+        .iter()
+        .filter(|sample| sample.confirmed)
+        .copied()
+        .collect::<Vec<_>>();
+    let highs = samples
+        .iter()
+        .filter(|sample| !sample.confirmed && sample.confidence == DetectionConfidence::High)
+        .copied()
+        .collect::<Vec<_>>();
+    let source = if !confirmed.is_empty() {
+        confirmed
+    } else if highs.len() >= 3 {
+        highs
+    } else {
+        return None;
+    };
+
+    let points = median_prior_points(&source);
+    let consistent = source.iter().all(|sample| {
+        sample
+            .points
+            .iter()
+            .flatten()
+            .zip(points.iter().flatten())
+            .all(|(actual, prior)| (actual - prior).abs() <= ROLL_PRIOR_WINDOW)
+    });
+    consistent.then_some(FilmAreaPrior {
+        points,
+        sample_count: source.len(),
+    })
+}
+
+fn median_prior_points(samples: &[FilmAreaPriorSample]) -> [[f32; 2]; 4] {
+    std::array::from_fn(|corner| {
+        std::array::from_fn(|axis| {
+            let mut values = samples
+                .iter()
+                .map(|sample| sample.points[corner][axis])
+                .collect::<Vec<_>>();
+            values.sort_by(f32::total_cmp);
+            values[values.len() / 2]
+        })
+    })
+}
+
+fn apply_roll_prior(
+    mut detection: FilmBorderDetection,
+    prior: &FilmAreaPrior,
+) -> FilmBorderDetection {
+    let inside_window = detection.confidence == DetectionConfidence::High
+        && !detection.status.contains("fallback")
+        && detection
+            .points
+            .iter()
+            .flatten()
+            .zip(prior.points.iter().flatten())
+            .all(|(actual, expected)| (actual - expected).abs() <= ROLL_PRIOR_WINDOW);
+
+    if inside_window {
+        for (point, prior_point) in detection.points.iter_mut().zip(prior.points) {
+            for axis in 0..2 {
+                point[axis] = point[axis].clamp(
+                    prior_point[axis] - ROLL_PRIOR_WINDOW,
+                    prior_point[axis] + ROLL_PRIOR_WINDOW,
+                );
+            }
+        }
+        detection.points = inset_points(detection.points, ROLL_PRIOR_DETECTED_INSET);
+        detection.status = "detected_roll_prior";
+        return detection;
+    }
+
+    let conservative = inset_points(prior.points, ROLL_PRIOR_INHERITED_INSET);
+    FilmBorderDetection {
+        points: conservative,
+        confidence: DetectionConfidence::Low,
+        status: "prior_inherited",
+    }
 }
 
 /// Walk each detected edge inward from the film boundary to the actual frame
@@ -905,11 +1021,15 @@ fn detected_result(
 }
 
 fn inset_automatic_points(points: [[f32; 2]; 4]) -> [[f32; 2]; 4] {
+    inset_points(points, AUTO_DETECTION_INSET)
+}
+
+fn inset_points(points: [[f32; 2]; 4], inset: f32) -> [[f32; 2]; 4] {
     let center = points.iter().fold([0.0f32; 2], |sum, point| {
         [sum[0] + point[0], sum[1] + point[1]]
     });
     let center = [center[0] * 0.25, center[1] * 0.25];
-    let scale = 1.0 - 2.0 * AUTO_DETECTION_INSET;
+    let scale = 1.0 - 2.0 * inset;
     points.map(|point| {
         [
             center[0] + (point[0] - center[0]) * scale,
@@ -1222,6 +1342,72 @@ mod tests {
             assert!((point[0] - expected[0]).abs() < 1.0e-5);
             assert!((point[1] - expected[1]).abs() < 1.0e-5);
         }
+    }
+
+    fn prior_sample(points: [[f32; 2]; 4], confirmed: bool) -> FilmAreaPriorSample {
+        FilmAreaPriorSample {
+            points,
+            confirmed,
+            confidence: DetectionConfidence::High,
+        }
+    }
+
+    #[test]
+    fn roll_prior_requires_three_high_results_without_a_confirmed_frame() {
+        let points = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]];
+        assert!(film_area_prior_from_samples(&[
+            prior_sample(points, false),
+            prior_sample(points, false),
+        ])
+        .is_none());
+
+        let prior = film_area_prior_from_samples(&[
+            prior_sample(points, false),
+            prior_sample(points, false),
+            prior_sample(points, false),
+        ])
+        .expect("three consistent High results form a prior");
+        assert_eq!(prior.points, points);
+        assert_eq!(prior.sample_count, 3);
+    }
+
+    #[test]
+    fn one_confirmed_frame_is_enough_but_disagreement_disables_the_prior() {
+        let points = [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]];
+        assert!(film_area_prior_from_samples(&[prior_sample(points, true)]).is_some());
+
+        let shifted = [[0.2, 0.1], [1.0, 0.1], [1.0, 0.9], [0.2, 0.9]];
+        assert!(film_area_prior_from_samples(&[
+            prior_sample(points, true),
+            prior_sample(shifted, true),
+        ])
+        .is_none());
+    }
+
+    #[test]
+    fn roll_prior_clamps_local_refinement_and_inherits_on_failure() {
+        let prior = FilmAreaPrior {
+            points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+            sample_count: 3,
+        };
+        let local = FilmBorderDetection {
+            points: [[0.125, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
+            confidence: DetectionConfidence::High,
+            status: "detected_gradient",
+        };
+        assert_eq!(
+            apply_roll_prior(local, &prior).status,
+            "detected_roll_prior"
+        );
+
+        let failed = FilmBorderDetection::fallback();
+        let inherited = apply_roll_prior(failed, &prior);
+        assert_eq!(inherited.confidence, DetectionConfidence::Low);
+        assert_eq!(inherited.status, "prior_inherited");
+        assert_eq!(
+            inherited.points,
+            inset_points(prior.points, ROLL_PRIOR_INHERITED_INSET)
+        );
     }
 
     /// A synthetic scan: open light panel outside the film body, a uniform

@@ -35,10 +35,14 @@ def render_one(root: Path, dataset: dict, result: dict, output: Path) -> None:
     draw = ImageDraw.Draw(image)
     line_width = max(2, round(max(image.size) / 320))
     draw_polygon(draw, result["truth"], (60, 220, 110), line_width)
-    draw_polygon(draw, result["detected"], (255, 132, 40), line_width)
+    detected = result.get("prior_detected", result["detected"])
+    draw_polygon(draw, detected, (255, 132, 40), line_width)
+    status = result.get("prior_status", result["status"])
+    corner_error = result.get("prior_corner_error", result["corner_error"])
+    leak_area = result.get("prior_leak_area", result["leak_area"])
     label = (
-        f"{frame['roll_id']} | {frame['category']} | {result['status']} | "
-        f"corner={result['corner_error']:.4f} leak={result['leak_area']:.4f}"
+        f"{frame['roll_id']} | {frame['category']} | {status} | "
+        f"corner={corner_error:.4f} leak={leak_area:.4f}"
     )
     font = ImageFont.load_default(size=max(12, round(image.width / 55)))
     draw.rectangle((0, 0, image.width, font.size * 2), fill=(0, 0, 0))
@@ -63,13 +67,17 @@ def main() -> None:
     if args.worst:
         frames = sorted(
             frames,
-            key=lambda frame: (frame["leak_area"], frame["corner_error"]),
+            key=lambda frame: (
+                frame.get("prior_leak_area", frame["leak_area"]),
+                frame.get("prior_corner_error", frame["corner_error"]),
+            ),
             reverse=True,
         )[: args.worst]
     for index, frame in enumerate(frames):
         source = frame["id"].split("::")[-1]
         safe_source = re.sub(r'[<>:"/\\|?*]+', "_", source)
-        name = f"{index:04d}-{frame['status']}-{safe_source}.jpg"
+        status = frame.get("prior_status", frame["status"])
+        name = f"{index:04d}-{status}-{safe_source}.jpg"
         render_one(root, dataset, frame, output / name[:180])
     print(f"Rendered {len(frames)} overlays to {output}")
 
