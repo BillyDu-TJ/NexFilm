@@ -15,6 +15,7 @@ const MAX_SIDE_RATIO: f64 = 6.0;
 const MAX_DIAGONAL_RATIO: f64 = 3.0;
 const MIN_GRADIENT_PROMINENCE: f64 = 1.22;
 const MAX_ANALYSIS_EDGE: u32 = 640;
+const AUTO_DETECTION_INSET: f32 = 0.01;
 const STANDARD_FRAME_ASPECTS: [f64; 6] =
     [3.0 / 2.0, 1.0, 4.0 / 3.0, 6.0 / 7.0, 6.0 / 9.0, 65.0 / 24.0];
 const ASPECT_SCORE_SIGMA: f64 = 0.20;
@@ -885,13 +886,15 @@ fn detected_result(
 ) -> FilmBorderDetection {
     let width_scale = (width.saturating_sub(1)).max(1) as f32;
     let height_scale = (height.saturating_sub(1)).max(1) as f32;
+    let mut normalized = points.map(|point| {
+        [
+            (point.x as f32 / width_scale).clamp(0.0, 1.0),
+            (point.y as f32 / height_scale).clamp(0.0, 1.0),
+        ]
+    });
+    normalized = inset_automatic_points(normalized);
     FilmBorderDetection {
-        points: points.map(|point| {
-            [
-                (point.x as f32 / width_scale).clamp(0.0, 1.0),
-                (point.y as f32 / height_scale).clamp(0.0, 1.0),
-            ]
-        }),
+        points: normalized,
         confidence: if aspect_score >= 0.35 {
             DetectionConfidence::High
         } else {
@@ -899,6 +902,20 @@ fn detected_result(
         },
         status,
     }
+}
+
+fn inset_automatic_points(points: [[f32; 2]; 4]) -> [[f32; 2]; 4] {
+    let center = points.iter().fold([0.0f32; 2], |sum, point| {
+        [sum[0] + point[0], sum[1] + point[1]]
+    });
+    let center = [center[0] * 0.25, center[1] * 0.25];
+    let scale = 1.0 - 2.0 * AUTO_DETECTION_INSET;
+    points.map(|point| {
+        [
+            center[0] + (point[0] - center[0]) * scale,
+            center[1] + (point[1] - center[1]) * scale,
+        ]
+    })
 }
 
 fn expected_frame_aspect(roll_format: &str) -> Option<f64> {
@@ -1187,6 +1204,24 @@ mod tests {
         assert!(square_as_square > square_as_three_by_two);
         assert!(square_as_three_by_two > 0.0);
         assert!(candidate_aspect_score(&three_by_two, Some(3.0 / 2.0)) > 0.98);
+    }
+
+    #[test]
+    fn automatic_detection_is_inset_by_one_percent_at_every_edge() {
+        let points = [
+            Point::new(0, 0),
+            Point::new(99, 0),
+            Point::new(99, 99),
+            Point::new(0, 99),
+        ];
+
+        let result = detected_result(points, 100, 100, "synthetic", 1.0);
+
+        let expected = [[0.01, 0.01], [0.99, 0.01], [0.99, 0.99], [0.01, 0.99]];
+        for (point, expected) in result.points.iter().zip(expected) {
+            assert!((point[0] - expected[0]).abs() < 1.0e-5);
+            assert!((point[1] - expected[1]).abs() < 1.0e-5);
+        }
     }
 
     /// A synthetic scan: open light panel outside the film body, a uniform
