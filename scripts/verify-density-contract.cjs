@@ -341,7 +341,7 @@ assert.doesNotMatch(
     'batch export must render the persisted state, not re-measure the film',
 );
 const inheritedExportBody =
-    commandSource.match(/fn inherited_export_base_color\([\s\S]*?\n\}\n/)?.[0] || '';
+    commandSource.match(/fn inherited_export_render_state\([\s\S]*?\n\}\n/)?.[0] || '';
 assert.ok(inheritedExportBody.length > 200, 'the inherited export-base fallback was not found');
 assert.match(
     inheritedExportBody,
@@ -352,6 +352,11 @@ assert.match(
     inheritedExportBody,
     /target_long_edge = PROXY_LONG_EDGE as u32/,
     'the inherited base measurement must use the canvas proxy scale',
+);
+assert.match(
+    inheritedExportBody,
+    /inherited_film_base_render_mapping/,
+    'the inherited export must rebuild the same Roll mapping as the first open',
 );
 assert.doesNotMatch(
     inheritedExportBody,
