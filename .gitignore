@@ -20,6 +20,7 @@ test_picture/
 *.tiff
 *.png
 !docs/assets/nexfilm-v1.0-develop.png
+!docs/assets/v1.2-phase4-raw-ab-panel.jpg
 !docs/handbook/**
 !ui/assets/author-sponsor-qr.jpg
 !ui/assets/uidesigner-sponsor-qr.jpg
