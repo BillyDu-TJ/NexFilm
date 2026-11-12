@@ -70,7 +70,7 @@ The NexFilm Engine utilizes Linear ProPhoto RGB (ROMM RGB with an identity linea
 4. **Target Color Space Transform & OETF Encoding**: Projecting positive color coordinates into target output profiles (sRGB, Display P3, Adobe RGB, or ACEScg) and applying corresponding optical-electro transfer functions.
 
 > [!NOTE]
-> Contrast adjustments, shadow recovery, and saturation balancing conducted in the positive print domain reflect perceptual aesthetics. Under no circumstances should these display-referred transforms be allowed to perturb optical density measurements.
+> Contrast adjustments, shadow recovery, and saturation balancing in the positive print domain are perceptual choices. Those display-referred transforms should not feed back into the optical density measurements.
 
 ## Non-Commutative Matrix Proof: The Invalidation of Density Color Space Transforms {#non-commutative-matrix-proof}
 

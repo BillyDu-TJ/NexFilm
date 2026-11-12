@@ -95,7 +95,7 @@ NexFilm 奉行“契约先行、机器守门”的软件工程文化。在 `scri
    执行 `cargo test --locked --lib`。全套 224 项单元测试覆盖了 `core_math` 矩阵运算、`color_science` 色适应变换、`pipeline` 跨度响应以及 `persistence` 数据库模式升级。
 2. **桌面端自动化契约防御网**：  
    每次代码变动均可通过以下命令实现秒级全量自检：
-   - `node scripts/verify-density-contract.cjs`：严格断言有片基时通道原点为零，且绝不包含未对齐的逐通道显示曲线。
+   - `node scripts/verify-density-contract.cjs`：断言有片基时通道原点为零，并且不包含未对齐的逐通道显示曲线。
    - `node scripts/verify-webgl-shaders.cjs`：核验 GLSL 着色器语法有效性与前后端 Uniform 变量映射契约。
    - `node scripts/verify-contact-sheet.cjs`：断言接触印样排版网格计算与文件名导出规则。
    - `node scripts/verify-develop-detail-ui.cjs`：验证工作台视图、色调曲线面板与 WebGL 渲染通道链。
@@ -104,10 +104,10 @@ NexFilm 奉行“契约先行、机器守门”的软件工程文化。在 `scri
    - `node scripts/verify-ui-startup-order.cjs`：断言 `index.html` 中前端脚本标签的声明加载依赖顺序。
    - `node scripts/verify-slider-contract.cjs`：断言滑块范围、步长与默认值的一致性。
 3. **双端同源文档一致性验证**：  
-   `node scripts/compile-handbook.mjs && node scripts/verify-handbook-sync.cjs` 确保手册编译产物 `ui/documentation-data.js` 与 Markdown 源文件保持字节级完全一致。
+   `node scripts/compile-handbook.mjs && node scripts/verify-handbook-sync.cjs` 确保手册编译产物 `ui/documentation-data.js` 与 Markdown 源文件保持字节级一致。
 
 > [!IMPORTANT]
-> 任何 Pull Request 在提交前必须保证上述本地测试套件 100% 绿灯通过。严禁修改契约脚本来迁就存在缺陷的代码实现。
+> 任何 Pull Request 在提交前都应保证上述本地测试套件全部通过。不要修改契约脚本来迁就存在缺陷的代码实现。
 
 ## GitHub Actions CI/CD 流水线工作流解剖 {#ci-cd-release-workflow}
 

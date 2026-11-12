@@ -43,7 +43,7 @@ src/
 1. **`src/pipeline.rs`（核心反相引擎）**：  
    `FilmPipeline` 结构体承载了光学密度的核心运算。代码通过 `contract` 字段明确区分旧版与新版管线：
    - **历史路径（`ProcessingContract::LegacyV1`）**：调用 `status_m_crosstalk_matrix()` 应用历史经验串扰矩阵，专供向后兼容旧版工程。
-   - **现代统一路径（`ProcessingContract::SmartAutoV11` / `CaptureCorrectedV11`）**：将串扰矩阵严格置为 $3 \times 3$ 单位矩阵（`Matrix3::identity()`），基于物理实测透射率与明确解析的输入域展开运算，绝不强加未经验证的经验失真。
+   - **现代统一路径（`ProcessingContract::SmartAutoV11` / `CaptureCorrectedV11`）**：将串扰矩阵置为 $3 \times 3$ 单位矩阵（`Matrix3::identity()`），基于物理实测透射率与明确解析的输入域展开运算，不额外强加未经验证的经验失真。
 2. **`src/color_science.rs`（线性色彩变换引擎）**：  
    该模块统一托管了所有色彩空间（`ColorSpaceId`）的色度学定义，包括 sRGB、Display P3、Adobe RGB (1998)、ITU-R BT.2020、Linear ProPhoto RGB（ROMM RGB）、ACES 2065-1 与 ACEScg。所有色度转换矩阵均在双精度浮点数下利用 Bradford 色适应变换严格推导，保证浮点数精度的无损传递。同时，模块内建了标准 ICC Profile 字节级生成器，用于在导出 16-bit 图像时内嵌合规的色彩特性文件。
 3. **`src/calibration_fit.rs`（硬件校准拟合）**：  
@@ -54,7 +54,7 @@ src/
 
 ## 流式分行解码器与大图内存受控管理 {#streaming-scanline-decoders}
 
-对于专业胶片扫描仪生成的百兆乃至数十吉字节超大 TIFF 或 Flextight `.fff` 图像，直接将整幅未压缩图像读入内存进行处理会导致内存峰值瞬间激增。
+对于专业胶片扫描仪生成的百兆乃至数十吉字节超大 TIFF 或 Flextight `.fff` 图像，直接把整幅未压缩图像读入内存会造成很高的内存峰值。
 
 NexFilm 在 `src/io_processor.rs` 与 `src/commands.rs` 中设计了**流式分行解码器**：
 

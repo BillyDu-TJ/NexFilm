@@ -12,12 +12,13 @@ const portalCards = [
     track: 'getting-started',
     kicker: '01 / Getting Started',
     title: 'Getting Started & Camera Scanning',
-    subtitle: 'For new users and camera digitizers: hardware selection, Gatekeeper authorization, and 5-minute roll inversion.',
-    targetSlug: 'overview-and-install',
-    badge: '4 Refined Chapters',
+    subtitle: 'For first-time users: download, installation, first-launch authorization, and a complete first pass through one roll.',
+    targetSlug: 'download-and-install',
+    badge: '5 Refined Chapters',
     badgeColor: 'text-accent border-accent/30 bg-accent-soft',
     highlights: [
       'Physics-grounded optical density negative inversion',
+      'Windows and macOS installation and first-launch setup',
       'CRI ≥ 95 backlight selection and ETTR exposure rules',
       'The non-negotiable rule of unexposed film base retention',
       'Whole-roll batch processing and shared white point anti-divergence',
@@ -27,7 +28,7 @@ const portalCards = [
     track: 'user-manual',
     kicker: '02 / User Manual',
     title: 'Complete Workbench User Manual',
-    subtitle: 'Comprehensive guide aligned 100% with the actual UI: five core views, film area cropping, curves, and master exports.',
+    subtitle: 'A practical guide that follows the actual interface: five core views, film-area handling, curves, and master exports.',
     targetSlug: 'workspace-and-views',
     badge: '7 Feature Chapters',
     badgeColor: 'text-text-secondary border-darkroom-line bg-darkroom-raised',
@@ -72,12 +73,17 @@ const portalCards = [
 
 const quickTasks = [
   {
+    title: 'Download, Install, and Launch NexFilm',
+    category: 'First Steps',
+    path: '/en/docs/download-and-install/#choose-installer',
+  },
+  {
     title: 'High-CRI Backlight & ETTR Exposure Rules',
     category: 'Digitization',
     path: '/en/docs/scanning-best-practices/#optical-illumination',
   },
   {
-    title: 'Five Minutes to Your First Inverted Roll',
+    title: 'Walk Through Your First Roll',
     category: 'Practical Guide',
     path: '/en/docs/first-roll-in-five-minutes/#import-workflow',
   },
@@ -106,7 +112,7 @@ const quickTasks = [
 
 <BaseLayout
   title="Documentation & Technical Reference · NexFilm Engine"
-  description="NexFilm Engine documentation hub: from optical scanning standards and five-minute quick start to workbench manuals and optical density color science."
+  description="NexFilm Engine documentation hub: installation and scanning fundamentals, the complete workbench manual, and optical density color science."
   lang={lang}
 >
   <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 sm:py-16 space-y-16">
@@ -122,7 +128,7 @@ const quickTasks = [
         <span class="text-accent">Film Inversion Technical Manual</span>
       </h1>
       <p class="text-base sm:text-lg text-text-secondary leading-relaxed font-sans">
-        No marketing fluff or hollow outlines. NexFilm documentation strictly aligns with the real user interface and optical physics, guiding you from digitization to master delivery.
+        NexFilm documentation follows the real interface and the underlying optics, from digitization through density inversion and master delivery.
       </p>
 
       <!-- Quick Search Trigger in Hero -->
@@ -142,7 +148,7 @@ const quickTasks = [
       </div>
     </header>
 
-    <!-- Quick Task Navigator (6 High-Frequency Jump Points) -->
+    <!-- Quick Task Navigator (7 High-Frequency Jump Points) -->
     <section class="space-y-4">
       <div class="flex items-center justify-between border-b border-darkroom-line pb-3">
         <div class="flex items-center gap-2">
@@ -258,7 +264,7 @@ const quickTasks = [
           Download Stable Release
         </a>
         <a
-          href={withBase('/en/docs/overview-and-install/')}
+          href={withBase('/en/docs/download-and-install/')}
           class="px-6 py-2.5 rounded-xl bg-darkroom-raised hover:bg-darkroom-chrome text-text-primary text-xs font-semibold border border-darkroom-line transition-all"
         >
           Start with Chapter 1 →

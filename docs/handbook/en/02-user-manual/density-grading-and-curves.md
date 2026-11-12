@@ -19,7 +19,7 @@ NexFilm's darkroom inversion engine physically decouples the unique chemistry of
 - **Color Mode**:
   Engineered specifically for chromogenic color negative films featuring integral orange dye couplers. The engine engages a three-channel logarithmic decoupling pipeline: it calculates unexposed film base density, shifts this reference value to zero density, and reconstructs the positive image using spectral dye uncoupling matrices.
 - **B&W Mode**:
-  Switching to B&W collapses three-channel RGB data into a unified, single-channel optical density representation, disabling color mask subtraction routines. Designed for authentic silver gelatin emulsions such as Ilford HP5 Plus, Kodak Tri-X, and Fomapan, this mode eliminates chromatic fringing and color staining on monochrome negatives.
+  Switching to B&W collapses three-channel RGB data into a single optical density channel and turns off color mask subtraction. This mode is made for silver gelatin emulsions such as Ilford HP5 Plus, Kodak Tri-X, and Fomapan, and it avoids the color stains that can appear on black-and-white negatives when the color channels are balanced independently.
 
 The Actions panel provides three primary triggers:
 1. **Auto Invert**:
@@ -75,7 +75,7 @@ In the rendering sequence, **Tone Curves** and **Detail** occupy precise positio
 
 ### 1. Four-Channel Monotonic Spline Curves
 NexFilm features a complete four-channel curve editor consisting of a composite **RGB Master Curve** alongside independent **Red, Green, and Blue Channel Curves**.
-- **Monotonic Spline Interpolation**: Curves use monotonic cubic Hermite splines. Regardless of how close control points are placed, the curve remains strictly monotonic, eliminating artificial ripple artifacts, highlight dips, or out-of-gamut oscillations outside the 0.0 to 1.0 range.
+- **Monotonic Spline Interpolation**: Curves use monotonic cubic Hermite splines. No matter how close the control points are, the curve stays monotonic, so highlight dips, dark-end wobble, and out-of-range oscillations do not appear.
 - **Interaction Guidelines**:
   - Click on empty curve space to insert a control point (up to 16 points per channel);
   - Right-click any control point to delete it;
@@ -100,7 +100,7 @@ The detail module features sharpening and local contrast controls:
         <tr><th>Control Parameter</th><th>Functional Description and Mathematical Formulation</th><th>Adjustable Value Range</th></tr>
     </thead>
     <tbody>
-        <tr><td><strong>Amount</strong></td><td>Total sharpening intensity. At 0, the sharpening pass is completely bypassed at the hardware level, passing raw pixels unsharpened.</td><td>0 – 150 (Default: 40)</td></tr>
+        <tr><td><strong>Amount</strong></td><td>Total sharpening intensity. At 0, the sharpening pass is skipped at the hardware level and pixels pass through unsharpened.</td><td>0 – 150 (Default: 40)</td></tr>
         <tr><td><strong>Radius</strong></td><td>Spatial convolution kernel footprint. Controls edge transition width; smaller values enhance fine textures, while larger values delineate broad contours.</td><td>0.5 – 3.0 px (Default: 1.0)</td></tr>
         <tr><td><strong>Detail</strong></td><td>Frequency weighting between micro-textures and primary edges. Low values confine sharpening to pronounced edges; high values emphasize film grain.</td><td>0 – 100 (Default: 25)</td></tr>
         <tr><td><strong>Masking</strong></td><td>Edge detection threshold. At 0, sharpening applies uniformly. At higher values, smooth skies and out-of-focus backgrounds are excluded to avoid magnifying scanner noise.</td><td>0 – 100 (Default: 0)</td></tr>

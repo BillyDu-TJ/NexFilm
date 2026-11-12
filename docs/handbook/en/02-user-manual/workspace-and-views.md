@@ -5,7 +5,7 @@ trackOrder: 2
 chapterOrder: 1
 kicker: "02 / User Manual"
 title: "Interface Overview, Five Core Views, and Interaction Guidelines"
-subtitle: "A detailed breakdown of menu bars, view routing, the filmstrip, inspector groups, and non-destructive interaction paradigms."
+subtitle: "A detailed look at the menu bar, view routing, filmstrip, inspector groups, and non-destructive interaction rules."
 readingTime: 8
 inApp: true
 sinceVersion: "v1.1.0"
@@ -53,7 +53,7 @@ State transitions between views operate with instantaneous reactive synchronisat
 Located directly beneath the main canvas in the Develop view, the Filmstrip displays every continuous frame belonging to the active roll. It functions as the critical navigation and visual parity hub during grading:
 
 - **Sequential Frame Ribbon**: Every frame in the filmstrip features its chronological frame sequence number and source file stem. The active editing target is distinctly highlighted with an illuminated accent border.
-- **Smooth Horizontal Navigation**: Hovering over the filmstrip allows horizontal scrolling via the mouse wheel. Pressing the keyboard directional keys <kbd>←</kbd> and <kbd>→</kbd> instantly navigates to the preceding or succeeding frame. During frame transitions, the canvas maintains the exact current zoom ratio and pan position, facilitating rapid comparative checks between adjacent frames.
+- **Smooth Horizontal Navigation**: Hover over the filmstrip to scroll it with the mouse wheel. Press <kbd>←</kbd> or <kbd>→</kbd> to move to the previous or next frame. The canvas keeps its current zoom and pan position, which makes it easier to compare neighboring frames.
 - **Live Synchronised Thumbnails**: Filmstrip previews are dynamic rendering targets rather than static file icons. When you adjust printer lights or apply a film print 3D LUT in the right inspector, the corresponding filmstrip thumbnail regenerates within milliseconds via GPU shader passes. Examining the entire filmstrip allows you to detect subtle density inconsistencies or tint shifts across a series of exposures immediately.
 - **Physical Calibration Frame Badges**: Frames flagged as unexposed film base or fully saturated film leaders display dedicated geometric corner badges, preventing them from being mistakenly exported as standard photographic frames.
 
@@ -72,8 +72,8 @@ The inspector situated on the right side of the Develop view serves as the contr
 9. **Sprocket**: Interactive sprocket hole color sampling, detection tolerance bounds, and transition edge feathering.
 10. **Print Emulation**: 14 built-in physical silver halide paper and motion picture print film 3D LUTs with variable opacity blending.
 
-To guarantee surgical precision and eliminate accidental parameter changes, the inspector incorporates four core interaction principles:
-- **Section Navigation Dots**: A vertical rail of miniature indicator dots sits on the left edge of the inspector. Clicking any dot instantly scrolls the inspector to that specific module.
+To keep adjustments precise and reduce accidental changes, the inspector follows four interaction rules:
+- **Section Navigation Dots**: A vertical rail of small dots sits on the left edge of the inspector. Click any dot to scroll to that module.
 - **Persistent Panel Collapsing**: Clicking the chevron toggle on any panel header collapses that module to maximize screen space. Collapse states persist across application sessions in your local profile.
 - **Activation Lock on Sliders**: Scrolling the mouse wheel over empty inspector space scrolls the panel list vertically. To adjust a numeric slider using the mouse wheel, the slider handle must first be clicked directly. This explicit activation lock prevents inadvertent modifications while browsing long panels.
 - **Direct Numeric Editing**: Every slider value readout can be clicked to engage keyboard entry. Users can type precise floating-point values, pressing <kbd>Enter</kbd> to confirm or <kbd>Esc</kbd> to dismiss and restore the prior setting.
@@ -93,7 +93,7 @@ To foster precise communication and consistency with classical darkroom physics,
         <tr><td><strong>Frame</strong></td><td>Frame</td><td>A single photographic negative image entity within a roll, acting as the smallest discrete unit for grading adjustments, history tracking, and high-resolution export.</td></tr>
         <tr><td><strong>Film Area</strong></td><td>Film Area</td><td>The bounding polygon delineating the active image area on the negative scan. Excludes perforations, film borders, and raw light table backlighting to focus optical density analysis strictly on valid emulsion.</td></tr>
         <tr><td><strong>Film Base</strong></td><td>Film Base</td><td>The unexposed clear polyester or triacetate carrier material. On color negative film, this area contains the orange masking dyes, establishing the physical zero point for mask subtraction.</td></tr>
-        <tr><td><strong>Film Leader</strong></td><td>Film Leader</td><td>The heavily exposed and fully developed head of the film strip, possessing the absolute maximum optical silver/dye density ($D_{\max}$) achievable by that specific roll emulsion.</td></tr>
+        <tr><td><strong>Film Leader</strong></td><td>Film Leader</td><td>The heavily exposed and fully developed head of the strip. It reaches the highest optical silver/dye density ($D_{\max}$) this particular emulsion can produce.</td></tr>
         <tr><td><strong>Optical Density</strong></td><td>Optical Density ($D$)</td><td>The logarithmic measure of light obstruction through a photographic medium, defined mathematically as $D = -\log_{10}(T)$, where $T$ is optical transmittance. All NexFilm inversions occur in this linear density domain.</td></tr>
         <tr><td><strong>D-Min / D-Max</strong></td><td>Density Limits</td><td>The physical endpoints calibrated in the inspector. D-Min sets the deepest printable black foundation, whereas D-Max sets the shoulder highlight boundary, defining overall image contrast.</td></tr>
         <tr><td><strong>Printer Lights</strong></td><td>Printer Lights</td><td>Emulation of darkroom optical enlarger dichroic color heads, introducing logarithmic exposure shifts across Red, Green, and Blue spectral bands to neutralize color casts.</td></tr>
@@ -104,4 +104,4 @@ To foster precise communication and consistency with classical darkroom physics,
 </table>
 
 > [!TIP] Non-Destructive Source File Guarantee
-> NexFilm Engine operates strictly under a read-only architecture for all raw capture assets. Adjusting film boundaries, rotating geometry, applying logarithmic inversions, or applying custom 3D LUTs will never alter or overwrite source camera RAW files or scanner TIFFs. All grading formulas and metadata entries persist exclusively inside the local application database, allowing full reversibility at any time.
+> NexFilm Engine treats all raw capture assets as read-only. Adjusting film boundaries, rotating geometry, applying logarithmic inversions, or using custom 3D LUTs does not alter or overwrite source camera RAW files or scanner TIFFs. Grading formulas and metadata live in the local application database, so edits can be reversed at any time.

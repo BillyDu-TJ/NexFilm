@@ -19,8 +19,8 @@ The architecture is supported by four core pillars:
 
 1. **Tauri 2 Host & Process Model**: The main process executes within a native Rust environment, managing window lifecycles, operating system menus, sandboxed file system access, and asynchronous worker orchestration. The presentation layer runs inside the native operating system web view (WebKit on macOS, WebView2 on Windows, and WebKitGTK 4.1 on Linux). Communication between the front-end interface and native backend occurs strictly across a type-safe asynchronous IPC boundary.
 2. **Rust Multithreaded Processing Core**: High-throughput tasks—such as demosaicing raw files, projective geometric transformations, relative transmittance normalization, and master file encoding—are handled by compiled Rust routines. Leveraging the Rayon data-parallelism framework, computation saturates multi-core CPU architectures and SIMD vector registers without runtime garbage collection overhead.
-3. **Vanilla HTML5 / CSS / WebGL2 UI**: The front-end avoids monolithic single-page application frameworks, relying instead on clean vanilla JavaScript, Tailwind CSS utility classes, and hardware-accelerated WebGL2 shaders. Interactive operations—such as adjusting printer lights, manipulating tone curves, or repositioning film gate handles—render on the GPU canvas at 60 frames per second with minimal latency.
-4. **SQLite Local Persistence & State Engine**: Roll library indexes, four-corner quad coordinates, printer lights offsets, base density measurements, and hardware calibration profiles reside within a local SQLite database (`nexfilm_user.db`), guaranteeing structured, non-destructive editing sessions.
+3. **Vanilla HTML5 / CSS / WebGL2 UI**: The frontend avoids monolithic single-page frameworks and relies on plain JavaScript, Tailwind CSS, and WebGL2 shaders. Printer-light changes, tone curves, and film-gate handles are drawn on the GPU canvas with little perceptible delay.
+4. **SQLite Local Persistence & State Engine**: Roll indexes, crop coordinates, printer-light offsets, base-density measurements, and calibration profiles live in a local SQLite database (`nexfilm_user.db`). Edits stay structured and non-destructive.
 
 | Architecture Layer | Technology & Runtime | Primary Responsibilities | Performance & Safety Guarantees |
 | --- | --- | --- | --- |
@@ -31,9 +31,9 @@ The architecture is supported by four core pillars:
 
 ## Two-Phase Asynchronous Pipeline: Rapid Ingestion & On-Demand Proxies {#two-phase-asynchronous-pipeline}
 
-Film digitization workflows involve large volumes of high-resolution camera RAW captures or multi-hundred-megabyte drum scanner TIFF files. Attempting to demosaic and invert an entire roll immediately upon folder ingestion would exhaust system memory and freeze the user interface.
+Film digitization workflows involve large high-resolution RAW files or multi-hundred-megabyte scanner TIFFs. Decoding and inverting an entire roll at full resolution during import would use too much memory and make the interface unresponsive.
 
-To guarantee responsive roll loading within seconds, NexFilm employs a **Two-Phase Asynchronous Performance Pipeline**:
+To keep roll loading responsive, NexFilm uses a **Two-Phase Asynchronous Pipeline**:
 
 ```text
 Phase 1: Library Ingestion (Near-Instantaneous Indexing)
@@ -54,7 +54,7 @@ User selects a negative frame to enter the Develop view
 
 During ingestion, the pipeline reads solely the embedded preview thumbnails stored in the raw container headers. The system indexes dozens of film frames in seconds, populating the interactive filmstrip while keeping memory utilization minimal.
 
-Full-resolution demosaicing occurs on demand when a user selects a specific frame to grade in the `Develop` workspace. The backend allocates worker threads from the background Rayon pool, decodes the raw sensor samples, generates a 16-bit linear positive proxy, and stores it in a bounded LRU cache ring. This strategy confines intensive computation strictly to active user targets, eliminating memory exhaustion risks.
+Full-resolution demosaicing happens only when a frame is opened in the `Develop` workspace. The backend draws worker threads from the Rayon pool, decodes the sensor samples, generates a 16-bit linear proxy, and stores it in a bounded LRU cache. Heavy work stays close to the frame you are using, which greatly reduces the chance of running out of memory.
 
 ## What-You-See-Is-What-You-Get: The WebGL2 and CPU Equivalence Contract {#wysiwyg-rendering-parity-contract}
 
@@ -65,13 +65,13 @@ NexFilm enforces an architectural **WYSIWYG Mathematical Equivalence Contract**:
 1. **Shared Source Formulation**: When rendering master deliverables, the Rust backend invokes the foundational routine `render_shader_equivalent_core` in `commands.rs`. The front-end WebGL2 fragment shader transcribes this exact formula into GLSL code line by line.
 2. **Unified Axioms & Numeric Precision**:
    - **Transmittance to Density Mapping**: Both pathways apply the identical numerical threshold $\epsilon = 1.0 \times 10^{-6}$ in evaluating $D = -\log_{10}(\max(T, \epsilon))$.
-   - **Neutral Base Anchor**: Whenever a valid film base measurement exists, both runtimes fix channel density offsets strictly to zero (`channel_offsets = 0`), ensuring that the clear base produces neutral display white.
+   - **Neutral Base Anchor**: When a valid film-base measurement exists, both runtimes set channel density offsets to zero (`channel_offsets = 0`), so the clear base produces neutral display white.
    - **Bounded Span Response**: The dynamic compensation branch in the GLSL shader mirrors the $1.15\times$ deadzone and $1.35\times$ / $3.0\times$ bounding thresholds of the CPU implementation.
-   - **Tone Curve Spline Interpolation**: Both the viewport shader and the export core sample tone curves via 256-entry or 4096-entry cubic spline lookup tables, guaranteeing identical highlight transitions without tonal banding.
+   - **Tone Curve Spline Interpolation**: The viewport shader and export core both sample tone curves through 256-entry or 4096-entry cubic spline LUTs, keeping highlight transitions consistent and avoiding tonal banding.
 3. **Automated Cross-Platform Verification**: Using `scripts/verify-density-contract.cjs` and shader syntax regression suites, every release validates that shader parameters, uniform bindings, and backend memory structures remain synchronized.
 
 > [!IMPORTANT]
-> Any feature addition to the rendering pipeline must be implemented concurrently across both the WebGL2 fragment shader and the Rust CPU core. Introducing unaligned mathematical heuristics in either layer is strictly prohibited.
+> Any new rendering feature must be implemented in both the WebGL2 fragment shader and the Rust CPU core. Do not add an unaligned heuristic to only one side.
 
 ## System Architecture Diagram & End-to-End Signal Topology {#system-architecture-signal-flow}
 
@@ -135,7 +135,7 @@ The diagram below presents the comprehensive system architecture and module topo
 
 ## Local Persistence & Non-Destructive Editing Guarantees {#local-persistence-and-safety}
 
-In photographic digitization, user adjustments—including crop polygons, printer lights, and tone curves—represent critical creative decisions. NexFilm adheres to a strict non-destructive editing policy: **the software never alters the binary contents of original RAW captures, TIFF scans, or master files on disk**.
+In photographic digitization, crop shapes, printer lights, and tone curves represent real creative work. NexFilm follows a non-destructive editing policy: **the software does not alter the binary contents of original RAW captures, TIFF scans, or master files on disk**.
 
 All session metadata and grading parameters are recorded as lightweight declarative state records in a local SQLite database (`nexfilm_user.db`). The persistence architecture (`src/persistence.rs`) is built upon three structural safeguards:
 

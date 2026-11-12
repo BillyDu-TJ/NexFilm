@@ -12,12 +12,13 @@ const portalCards = [
     track: 'getting-started',
     kicker: '01 / 快速上手',
     title: '快速上手与翻拍实战',
-    subtitle: '面向新用户与数码翻拍玩家，从硬件选型、系统放行到五分钟完成第一卷底片反相与导出。',
-    targetSlug: 'overview-and-install',
-    badge: '4 篇双语精编',
+    subtitle: '面向第一次接触 NexFilm 的用户，从下载安装、系统放行到完整走通第一卷底片。',
+    targetSlug: 'download-and-install',
+    badge: '5 篇双语精编',
     badgeColor: 'text-accent border-accent/30 bg-accent-soft',
     highlights: [
       '物理可解释的负片对数反相原理',
+      'Windows 与 macOS 首次安装和启动放行',
       'CRI ≥ 95 高显指光源与向右曝光',
       '保留未曝光透明片基边缘的核心铁律',
       '整卷批处理共享白点消除同场景跳色',
@@ -27,7 +28,7 @@ const portalCards = [
     track: 'user-manual',
     kicker: '02 / 工作台手册',
     title: '工作台全功能手册',
-    subtitle: '100% 对齐真实界面的完整暗房操作指南，覆盖五大视图、几何校正、四通道曲线与母带级导出。',
+    subtitle: '与真实界面保持一致的完整操作指南，覆盖五大视图、几何校正、四通道曲线与母带级导出。',
     targetSlug: 'workspace-and-views',
     badge: '7 篇功能手册',
     badgeColor: 'text-text-secondary border-darkroom-line bg-darkroom-raised',
@@ -72,12 +73,17 @@ const portalCards = [
 
 const quickTasks = [
   {
+    title: '下载、安装与第一次启动',
+    category: '新手入门',
+    path: '/zh/docs/download-and-install/#choose-installer',
+  },
+  {
     title: '高显指翻拍背光与曝光准则',
     category: '前期采集',
     path: '/zh/docs/scanning-best-practices/#optical-illumination',
   },
   {
-    title: '五分钟端到端处理第一卷底片',
+    title: '第一次走通整卷流程',
     category: '实操入门',
     path: '/zh/docs/first-roll-in-five-minutes/#import-workflow',
   },
@@ -106,7 +112,7 @@ const quickTasks = [
 
 <BaseLayout
   title="使用文档与技术手册 · NexFilm Engine"
-  description="NexFilm Engine 官方文档中心：从翻拍背光规范、五分钟快速上手，到工作台全功能手册与光学密度色彩科学白皮书。"
+  description="NexFilm Engine 官方文档中心：从下载安装与翻拍背光规范，到工作台全功能手册与光学密度色彩科学白皮书。"
   lang={lang}
 >
   <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12 sm:py-16 space-y-16">
@@ -122,7 +128,7 @@ const quickTasks = [
         <span class="text-accent">胶片反相与暗房技术手册</span>
       </h1>
       <p class="text-base sm:text-lg text-text-secondary leading-relaxed font-sans">
-        杜绝经验黑盒与大纲敷衍。NexFilm 文档严格对齐软件真实界面与光学物理原理，助你掌握从前期采集、密度反相到母带级导出的完整暗房工程。
+        NexFilm 文档以软件真实界面和光学物理为依据，从前期采集、密度反相一直写到母带级导出，尽量把每一步讲清楚。
       </p>
 
       <!-- Quick Search Trigger in Hero -->
@@ -142,7 +148,7 @@ const quickTasks = [
       </div>
     </header>
 
-    <!-- Quick Task Navigator (6 High-Frequency Jump Points) -->
+    <!-- Quick Task Navigator (7 High-Frequency Jump Points) -->
     <section class="space-y-4">
       <div class="flex items-center justify-between border-b border-darkroom-line pb-3">
         <div class="flex items-center gap-2">
@@ -248,7 +254,7 @@ const quickTasks = [
     <section class="p-8 sm:p-10 rounded-2xl bg-darkroom-panel border border-darkroom-line text-center space-y-4">
       <h3 class="text-2xl font-bold text-text-primary font-sans">准备好开始反相你的第一卷胶片了吗？</h3>
       <p class="text-xs sm:text-sm text-text-secondary max-w-xl mx-auto font-sans leading-relaxed">
-        下载 NexFilm Engine 原生安装包，在你的电脑上体验零学习成本、极速响应的纯物理光学反相工作台。
+        下载 NexFilm Engine 原生安装包，在你的电脑上体验响应迅速、基于光学密度模型的胶片反相工作台。
       </p>
       <div class="pt-2 flex flex-wrap items-center justify-center gap-4">
         <a
@@ -258,7 +264,7 @@ const quickTasks = [
           前往下载稳定版
         </a>
         <a
-          href={withBase('/zh/docs/overview-and-install/')}
+          href={withBase('/zh/docs/download-and-install/')}
           class="px-6 py-2.5 rounded-xl bg-darkroom-raised hover:bg-darkroom-chrome text-text-primary text-xs font-semibold border border-darkroom-line transition-all"
         >
           直接从第 1 章开始阅读 →

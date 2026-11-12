@@ -4,8 +4,8 @@ track: user-manual
 trackOrder: 2
 chapterOrder: 2
 kicker: "02 / 工作台手册"
-title: "格式支持矩阵、三态导入与胶卷档案库管理"
-subtitle: "全画幅 RAW、Flextight .fff 与扫描 TIFF 支持矩阵，按卷/散张导入架构与丢失文件断链恢复"
+title: "格式支持、导入入口与胶卷档案管理"
+subtitle: "全画幅 RAW、Flextight .fff 与扫描 TIFF 支持，按卷与散张导入的实际流程，以及丢失文件的重关联"
 readingTime: 9
 inApp: true
 sinceVersion: "v1.1.0"
@@ -24,8 +24,8 @@ NexFilm Engine 面向胶片数字化全流程构建，旨在打破相机数码�
     </thead>
     <tbody>
         <tr><td><strong>相机原始 RAW</strong></td><td><code>.dng</code>, <code>.nef</code>, <code>.cr2</code>, <code>.cr3</code>, <code>.arw</code>, <code>.raf</code>, <code>.rw2</code>, <code>.orf</code>, <code>.pef</code>, <code>.3fr</code>, <code>.iiq</code> 等主流单反/无反格式</td><td>12-bit / 14-bit / 16-bit 线性传感器原始拜耳（Bayer）马赛克数据</td><td>相机翻拍的最佳输入源。绕过机内白平衡与色调曲线，保留完整的传感器动态范围与线性透射率数据，为高精度去色罩提供充沛的曝光宽容度。</td></tr>
-        <tr><td><strong>哈苏 Flextight / Imacon</strong></td><td><code>.fff</code></td><td>16-bit 线性扫描仪原始传感器数据</td><td>自 <strong>v1.1.0</strong> 起，NexFilm 重构了解码判定逻辑，直接按扫描仪流式线性光学密度解算，不再强依赖 FlexColor 的专有设备识别字符串，彻底杜绝了将扫描仪文件误判为相机 RAW 的历史缺陷。</td></tr>
-        <tr><td><strong>工业扫描仪 TIFF</strong></td><td><code>.tif</code>, <code>.tiff</code></td><td>16-bit / 8-bit 未压缩或 LZW 压缩格式</td><td>完美支持 Epson、Noritsu、Frontier、Plustek 等扫描仪输出的单通道黑白与三通道彩色正片 TIFF。支持按行流式解码百兆乃至 GB 级高分辨率大画幅图像，内存占用平稳可控。</td></tr>
+        <tr><td><strong>哈苏 Flextight / Imacon</strong></td><td><code>.fff</code></td><td>16-bit 线性扫描仪原始传感器数据</td><td>自 <strong>v1.1.0</strong> 起，NexFilm 重构了解码判定逻辑，直接按扫描仪流式线性光学密度解算，不再强依赖 FlexColor 的专有设备识别字符串，解决了将扫描仪文件误判为相机 RAW 的历史问题。</td></tr>
+        <tr><td><strong>工业扫描仪 TIFF</strong></td><td><code>.tif</code>, <code>.tiff</code></td><td>16-bit / 8-bit 未压缩或 LZW 压缩格式</td><td>支持 Epson、Noritsu、Frontier、Plustek 等扫描仪输出的单通道黑白与三通道彩色正片 TIFF。可以按行流式解码百兆乃至 GB 级高分辨率大画幅图像，内存占用保持平稳。</td></tr>
         <tr><td><strong>标准位图格式</strong></td><td><code>.png</code>, <code>.jpg</code>, <code>.jpeg</code></td><td>8-bit / 16-bit 标准 sRGB 或 Display P3 色彩空间</td><td>支持快速读取预览与测试。受限于 8-bit JPEG 严重的动态范围压缩与片基色罩截断，无法达到 RAW 级别的自动物理校色精度，仅建议用于快速验证构图。</td></tr>
     </tbody>
 </table>
@@ -37,20 +37,83 @@ NexFilm Engine 面向胶片数字化全流程构建，旨在打破相机数码�
 
 ## 有界代理架构与低内存极速索引 {#bounded-proxy-architecture}
 
-在处理整卷 36 张 6000 万像素相机 RAW 文件或 4×5 大画幅超高分辨率 TIFF 扫描件时，传统修图软件往往会在导入阶段启动全局全图解码，导致数十 GB 的内存被瞬间吞噬、CPU 满载、风扇狂转并引发长时间的界面冻结。
+处理整卷 36 张 6000 万像素相机 RAW 文件，或者 4×5 大画幅高分辨率 TIFF 扫描件时，传统修图软件往往会在导入阶段启动全局全图解码。内存很快被占满，CPU 持续满载，界面也会卡上一段时间。
 
 NexFilm 重构了这种传统模型，全面采用**双阶有界代理架构（Two-Stage Bounded Proxy Architecture）**：
 
+<div class="doc-callout">
+    <div class="doc-callout-title">“有界代理”是什么</div>
+    <div class="doc-callout-body">可以把它理解成一张专门给屏幕操作用的工作副本：长边被限制在 <code>2560 px</code>，足以支撑 4K 屏上的放大、平移和实时调色，但不会把整张高分辨率原片一直塞在显存里。真正导出时，NexFilm 会重新读取原始文件做全分辨率计算，所以代理图只影响工作台里的预览速度，不决定最终画质。</div>
+</div>
+
 1. **第一阶段：轻量元数据快速注册与内嵌预览提取**
-   用户选择文件夹并点击导入时，引擎仅扫描文件头，以零解算开销提取文件中已预先生成的内嵌缩略图（Embedded Preview）与 Exif 拍摄元数据，并在本地数据库中建立轻量索引。这一过程使得数百张高分辨率照片可在 2 到 3 秒内完成入库并在“图库”中呈现完备网格，整个应用常驻内存仅占用不到 200 MB。
+   用户选定扫描文件并点击导入时，引擎仅扫描文件头，以很低的解算开销提取文件中已预先生成的内嵌缩略图（Embedded Preview）与 Exif 拍摄元数据，并在本地数据库中建立轻量索引。几十张到上百张照片通常能在几秒内完成入库，在“图库”中呈现完备网格，应用内存占用也保持在较低水平。
 2. **第二阶段：进入工作台时按需生成有界高精度代理**
    只有当用户双击某张底片进入“工作台”时，后台计算引擎才按需唤起全管线解码器，针对该画面计算长边限定为 `2560 px` 的高质量工作代理图（Bounded Proxy）。该代理图能够充分满足 4K 乃至 5K 显示器上的实时交互精修需求，同时将实时调色计算的纹理显存牢牢锁定在极低水平。
 
-在最终执行“导出”时，引擎会跳过代理图，重新从磁盘流式读取原始源文件，以最高位深和全分辨率物理执行完整的调色与锐化矩阵计算，确保成片画质毫无妥协。
+在最终执行“导出”时，引擎会跳过代理图，重新从磁盘流式读取原始源文件，以最高位深和全分辨率执行完整的调色与锐化矩阵计算，让成片保留原始扫描的细节。
 
-## 三态导入工作流与元数据注入 {#tri-state-import}
+## 导入对话框的三种入口与元数据注入 {#tri-state-import}
 
-为了适应摄影师在不同场景下的摄录习惯，NexFilm 提供了完备的三态导入工作流，在文件入库的源头即赋予其严谨的暗房归档属性：
+为了适应摄影师在不同场景下的摄录习惯，NexFilm 在 **Import Method** 对话框里提供了三种入口。它们看起来并列，实际用途并不一样：前两种负责把新文件带进工作区，第三种只是重新打开已经归档的胶卷。
+
+<div class="doc-ui-demo doc-ui-demo-import">
+  <div class="doc-ui-demo-topbar">
+    <span class="doc-ui-demo-window-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="doc-ui-demo-window-title">NEXFILM / IMPORT METHOD</span>
+    <span class="doc-ui-demo-badge">交互示意</span>
+  </div>
+  <input class="doc-ui-demo-radio" type="radio" name="doc-import-mode-zh" id="doc-import-roll-zh" checked>
+  <input class="doc-ui-demo-radio" type="radio" name="doc-import-mode-zh" id="doc-import-loose-zh">
+  <input class="doc-ui-demo-radio" type="radio" name="doc-import-mode-zh" id="doc-import-continue-zh">
+  <div class="doc-ui-demo-choices">
+    <label class="doc-ui-demo-choice" for="doc-import-roll-zh">
+      <span class="doc-ui-demo-index">01</span>
+      <span class="doc-ui-demo-choice-copy"><strong>按胶卷导入</strong><small>整卷归档，登记相机与胶片</small></span>
+      <span class="doc-ui-demo-arrow">→</span>
+    </label>
+    <label class="doc-ui-demo-choice" for="doc-import-loose-zh">
+      <span class="doc-ui-demo-index">02</span>
+      <span class="doc-ui-demo-choice-copy"><strong>散张导入</strong><small>单张或多张，不建立胶卷</small></span>
+      <span class="doc-ui-demo-arrow">→</span>
+    </label>
+    <label class="doc-ui-demo-choice" for="doc-import-continue-zh">
+      <span class="doc-ui-demo-index">03</span>
+      <span class="doc-ui-demo-choice-copy"><strong>继续编辑胶卷</strong><small>打开已有胶卷继续调色</small></span>
+      <span class="doc-ui-demo-arrow">→</span>
+    </label>
+  </div>
+  <div class="doc-ui-demo-panels">
+    <section class="doc-ui-demo-panel doc-ui-demo-panel-roll" aria-label="按胶卷导入示意">
+      <div class="doc-ui-demo-window">
+        <div class="doc-ui-demo-window-head"><span>ROLL METADATA</span><span>下一步：选择影像</span></div>
+        <div class="doc-ui-demo-fields">
+          <div class="doc-ui-demo-field"><span>FORMAT</span><strong>135 (35mm)</strong></div>
+          <div class="doc-ui-demo-field"><span>CAMERA</span><strong>Leica M6</strong></div>
+          <div class="doc-ui-demo-field"><span>FILM</span><strong>Kodak Portra 400</strong></div>
+          <div class="doc-ui-demo-field"><span>DATE</span><strong>2026-11-12</strong></div>
+        </div>
+        <div class="doc-ui-demo-window-foot"><span>用于整卷批处理与共享白点</span><span class="doc-ui-demo-primary">选择影像 →</span></div>
+      </div>
+    </section>
+    <section class="doc-ui-demo-panel doc-ui-demo-panel-loose" aria-label="散张导入示意">
+      <div class="doc-ui-demo-window">
+        <div class="doc-ui-demo-window-head"><span>LOOSE IMPORT</span><span>下一步：选择文件</span></div>
+        <div class="doc-ui-demo-dropzone"><strong>拖入图像文件</strong><span>RAW / TIFF / PNG / JPEG</span></div>
+        <div class="doc-ui-demo-window-foot"><span>不绑定胶卷，直接进入图库</span><span class="doc-ui-demo-primary">选择文件 →</span></div>
+      </div>
+    </section>
+    <section class="doc-ui-demo-panel doc-ui-demo-panel-continue" aria-label="继续编辑胶卷示意">
+      <div class="doc-ui-demo-window">
+        <div class="doc-ui-demo-window-head"><span>CONTINUE EDITING ROLL</span><span>选择胶卷档案</span></div>
+        <div class="doc-ui-demo-select"><span>ROLL ARCHIVE</span><strong>Portra 400 · 2026-10-18</strong><b>⌄</b></div>
+        <p class="doc-ui-demo-note">这个入口只打开已归档胶卷，不会向卷内新增扫描文件。</p>
+        <div class="doc-ui-demo-window-foot"><span>回到原胶卷继续编辑</span><span class="doc-ui-demo-primary">打开 →</span></div>
+      </div>
+    </section>
+  </div>
+  <p class="doc-ui-demo-caption">点击上方任一模式查看下一步。此为界面示意，不会执行真实导入。</p>
+</div>
 
 ### 1. 按卷导入（Import as Roll）
 此模式是暗房标准化作业的首选流程，专为按卷冲洗、翻拍或扫描的成套素材量身定制：
@@ -68,8 +131,10 @@ NexFilm 重构了这种传统模型，全面采用**双阶有界代理架构（T
 - 散张导入的画面独立存在于图库中，拥有完备的单帧物理反相与微调能力，但默认不强制绑定胶卷元数据，也不参与整卷物理标定。
 - 软件具备强大的重复导入识别机制：当拖入的文件路径已存在于当前项目时，系统会自动跳过重复项，防止索引冗余。
 
-### 3. 追加画面至已有胶卷（Append to Roll）
-当一卷胶卷因分段翻拍或补扫而产生新文件时，用户无需新建胶卷，只需在“历史胶卷记录”中选中目标胶卷并点击“继续编辑胶卷”，随后通过右上角的“导入胶卷”选择新文件，新素材即可无缝追加进该卷的现有底片条末端，继承相同的机身与乳剂上下文。
+### 3. 继续编辑已有胶卷（Continue Editing Roll）
+如果一卷底片之前已经归档，现在想回到原来的胶卷里继续调色，可以在 **Import Method** 中选择 **Continue Editing Roll**。接下来从 **Roll Archive** 下拉列表中选中目标胶卷，点击 **Open & Edit**，软件会把这一卷重新载入图库与底片条。
+
+这里需要说明清楚：**Continue Editing Roll 只负责打开已有胶卷，不会向卷内追加新文件。** 如果后来补扫了几张同卷底片，目前需要通过按胶卷导入重新建立一卷，再分别管理两批扫描。文档不会把没有出现在界面里的追加操作写成现有功能。
 
 ## 历史胶卷记录多维筛选与归档管理 {#rolls-management}
 
@@ -82,11 +147,11 @@ Rolls 视图的核心功能包括：
   1. **提升至图库（Promote to Library / 加入图库）**：将该归档卷的所有画面载入当前活跃图库，方便重新进入工作台精修。
   2. **编辑胶卷信息（Edit Info）**：支持随时修正或补充相机型号、胶卷名称、日期以及详细的胶卷备注，修改后将自动同步至未来导出的 Exif 元数据中。
   3. **导出接触印样**：一键生成带有物理齿孔、片边字码与卷标头的数字暗房接触印样。
-  4. **删除胶卷记录**：点击删除时，系统会弹出双重安全选择：仅从 NexFilm 本地数据库中注销该卷索引，或者在注销索引的同时将磁盘上的原始文件移入操作系统废纸篓。选择后者时，若某些源片同时被其他项目引用，系统将安全保留原文件，杜绝误删风险。
+  4. **删除胶卷记录**：点击删除时，系统会弹出双重安全选择：仅从 NexFilm 本地数据库中注销该卷索引，或者在注销索引的同时将磁盘上的原始文件移入操作系统废纸篓。选择后者时，若某些源片同时被其他项目引用，系统会保留原文件，降低误删风险。
 
 ## 源文件离线与定位文件断链修复 {#locate-missing-files}
 
-NexFilm 始终践行轻量化与非破坏性设计原则：**软件绝不复制或挪动用户的原始素材文件**。在数据库 `nexfilm_user.db` 中，仅记录了源文件在本地文件系统中的绝对物理路径。
+NexFilm 始终践行轻量化与非破坏性设计原则：**软件不会复制或挪动用户的原始素材文件**。在数据库 `nexfilm_user.db` 中，仅记录了源文件在本地文件系统中的绝对物理路径。
 
 当用户在操作系统中重命名了存放底片的文件夹、移动了目录结构，或者拔出了外置移动硬盘时，工作台与图库中对应的画面会进入“离线脱机状态”：
 - 画面卡片上会出现明显的警告图标，提示“文件路径未找到”。

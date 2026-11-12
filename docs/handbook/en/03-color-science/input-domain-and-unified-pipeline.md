@@ -26,7 +26,7 @@ Input File (RAW / FFF / TIFF / DNG / JPEG)
 resolve_input_domain(path, scanner_profile)
        │  ← The sole permissible branching point
        ▼
-Unified Workspace: Linear ProPhoto f32 (eliminating u16 quantization loss)
+Unified workspace: linear ProPhoto f32 (reduces u16 quantization loss)
        │
        ▼
 Unified Density Transform: D = -log10(max(T, epsilon))
@@ -41,14 +41,14 @@ Bounded Channel Span Response (1.15x deadzone / 1.35x cap / 3.0x truncated cap)
 Positive Linearization & Display Mapping: ProPhoto -> Output Gamut & Target LUT
 ```
 
-This clean decoupling eliminates the gamut clipping and precision loss caused by legacy intermediate quantizations into 16-bit unsigned sRGB, ensuring that wide-latitude film negatives maintain radiometric consistency across all capture hardware.
+This separation removes most of the gamut clipping and precision loss caused by the old intermediate step through 16-bit unsigned sRGB. Wide-latitude negatives from different capture hardware are then evaluated on the same optical footing.
 
 ## Five-Tier Input Domain Resolution & Metadata Extraction {#five-tier-input-domain-resolution}
 
 To translate heterogeneous image captures into physical relative transmittance, NexFilm implements a prioritized resolution chain encapsulated in the `resolve_input_domain` function. The engine evaluates five tiers of metadata evidence in sequence, attaching provenance records, color primaries, transfer functions, and confidence flags to each processed frame:
 
 1. **Tier 1: Embedded ICC Color Profile (Verified)**  
-   If a TIFF or JPEG image embeds a valid ICC profile (such as Adobe RGB (1998), Display P3, or custom scanner calibration profiles), the engine extracts chromaticity matrices (`rXYZ`, `gXYZ`, `bXYZ`) and parametric tone reproduction curves. This profile is designated as Verified and carries the highest authority.
+   If a TIFF or JPEG image embeds a valid ICC profile (such as Adobe RGB (1998), Display P3, or a custom scanner profile), the engine extracts chromaticity matrices (`rXYZ`, `gXYZ`, `bXYZ`) and parametric tone reproduction curves. This profile is marked Verified and takes priority over the other tiers.
 2. **Tier 2: Scanner Container Metadata & Property Lists (Verified / Estimated)**  
    For Hasselblad Flextight / Imacon `.fff` files, the decoder inspects the TIFF header for embedded XML property lists (plist), extracting `RGBProfile` descriptors and `Gamma` coefficients. If the container explicitly designates AdobeRGB or scanner-calibrated profiles, the declared gamma expansion applies directly. When container properties are absent, the engine falls back to documented scanner standards (Gamma 1.8, sRGB primaries, tagged as `estimated`).
 3. **Tier 3: RAW / LinearRaw Metadata & Sensor Matrices (Declared)**  
@@ -58,7 +58,7 @@ To translate heterogeneous image captures into physical relative transmittance, 
 5. **Tier 5: sRGB Fallback with Diagnostic Warning (Estimated Fallback)**  
    If all preceding criteria fail to match, the image data is interpreted under standard sRGB assumptions. The processing pipeline marks the record with an `estimated` diagnostic flag, alerting the user to review color accuracy in the inspection panel.
 
-Resolution outcomes are permanently recorded in the project SQLite database under `PipelineProcessingReport::input_domain`, detailing primary coordinates, transfer functions, and diagnostic logs.
+Resolution outcomes are recorded with each frame in the project SQLite database under `PipelineProcessingReport::input_domain`, including primary coordinates, transfer functions, and diagnostic logs.
 
 ## Film Base Sampling Priority & Quality Validation Thresholds {#film-base-sampling-priority}
 
@@ -75,7 +75,7 @@ NexFilm implements a three-tier base sampling hierarchy governed by strict physi
 During candidate validation, the `film_base_band_agrees` routine enforces a unidirectional physical inequality: because the unexposed film base represents the maximum possible optical transmittance of the film strip, image-forming areas within the frame cannot physically transmit more light than the base itself. If the measured border narrow band is darker than the emulsion tail by more than 0.05 D, the engine concludes that the border is contaminated by flare or lighting falloff and automatically falls back to the internal low-density tail.
 
 > [!IMPORTANT]
-> When copying grading parameters between frames, NexFilm never copies the absolute base density value. Through the `choose_pasted_film_base` mechanism, the engine recalculates the base within the target frame own geometry. Only if the target frame completely lacks valid base candidates is an inherited value used as a fallback, marked explicitly in the interface as `inherited_film_base`.
+> When copying grading settings between frames, NexFilm does not carry over the source frame's absolute base density. The `choose_pasted_film_base` path recalculates the base inside the target frame's own geometry. Only when the target frame has no usable base sample does the engine fall back to an inherited value, and the interface marks it as `inherited_film_base`.
 
 ## Bounded Channel Span Response: Preserving the Neutral Axis {#bounded-channel-span-response}
 
@@ -85,7 +85,7 @@ However, in complex digitization workflows—particularly panoramic stitched TIF
 
 While earlier experiments introduced per-channel display curves, that approach distorted the color balance of healthy negatives. NexFilm introduces the **Bounded Channel Span Response** model, establishing three mathematical safeguards:
 
-1. **Shared Window Origin**: Whenever a valid film base is present, `channel_offsets` remains fixed at zero across all three channels. Consequently, regardless of span scaling, density zero (the clear film base) always maps to identical positive display white, preventing baseline color contamination.
+1. **Shared Window Origin**: When a valid film base is present, `channel_offsets` stays at zero across all three channels. Whatever happens to span scaling, density zero (the clear film base) maps to the same display white, so the base does not introduce a cast.
 2. **1.15x Deadzone Threshold**: For standard negatives processed and scanned under balanced lighting (where channel span ratios remain between 1.00 and 1.15), channel gain adjustments remain in the deadzone, preserving identical three-channel window allocation.
 3. **Bounded Gain Ceilings**: Using `measure_content_channel_spans`, the system measures effective density spans between the 2nd and 98th percentiles per channel. When imbalance exceeds 1.15, window widths are scaled via a smooth linear ramp:
    $$g_i = \text{clamp}\left(\frac{\text{span}_i}{\text{luma}(\text{span})}, \frac{1}{g_{\text{max}}}, g_{\text{max}}\right)$$
@@ -99,7 +99,7 @@ The stability of the unified density pipeline is verified through automated regr
 
 | Test Sample & Capture Origin | Input Domain Resolution | Base Sampling Source | Legacy R/G · B/G | Unified R/G · B/G | Diagnostic Observations & Corrections |
 | --- | --- | --- | --- | --- | --- |
-| `Hasselblad fff/Task _1233.fff` | CameraNative / CameraRaw | Emulsion low-density tail | 0.583 · 1.001 | 0.963 · 1.086 | Camera RAW capture; extra channel curves removed, restoring transparent and balanced highlights |
+| `Hasselblad fff/Task _1233.fff` | CameraNative / CameraRaw | Emulsion low-density tail | 0.583 · 1.001 | 0.963 · 1.086 | Camera RAW path removes the extra channel response and brings back a natural, open highlight |
 | `Hasselblad fff/Task _1343.fff` | CameraNative / CameraRaw | Film border narrow band | 0.980 · 0.970 | 0.991 · 0.969 | Highlight clipping at 45%; deadzone active; identical outputs across legacy and unified pipelines |
 | `Hasselblad fff/Unable_to_invert.fff` | AdobeRgb1998 / Gamma2.0 | Full frame brightest percentile | 0.894 · 1.037 | 0.806 · 1.046 | Container metadata guides accurate gamma linearization; residual yellow-green cast suppressed |
 | `Lightroom Pano/_DSC7569-Pano.tif` | AdobeRgb1998 / Gamma2.2 | Film border narrow band | 0.848 · 1.907 | 0.696 · 1.288 | Imbalance ratio 3.35; bounded span response active; red channel zero-clipping reduced from 78.8% to 9.3% |

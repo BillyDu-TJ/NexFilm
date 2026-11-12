@@ -2,8 +2,8 @@
 id: scanning-best-practices
 track: getting-started
 trackOrder: 1
-chapterOrder: 2
-kicker: "01.2 / Getting Started"
+chapterOrder: 3
+kicker: "01.3 / Getting Started"
 title: "Camera Scanning and Digitization Best Practices"
 subtitle: "Physical requirements for backlight CRI, exposure rules, and unexposed film base."
 readingTime: 8
@@ -13,7 +13,7 @@ sinceVersion: "v1.1.0"
 
 ## Backlight Color Rendering and Spectral Continuity {#optical-illumination}
 
-During camera scanning of color negative film, the digital image sensor does not capture reflected light from physical objects. Instead, it measures transmitted light passing through three distinct emulsion dye layers. The recorded light intensity at the sensor plane represents the product of the light source emission spectrum and the spectral transmittance of each dye layer. If the backlight exhibits significant spectral troughs, emission spikes, or discontinuous wavelength gaps, the resulting channel transmittance records will suffer from physical cross-talk that cannot be resolved computationally. Digital inversion algorithms cannot recreate spectral energy that was never registered by the camera sensor. Therefore, the optical quality of your backlight dictates the mathematical ceiling for color accuracy and orange mask subtraction.
+When you scan a color negative with a camera, the sensor is not recording light reflected from a subject. It is measuring light that has passed through three dye layers. The intensity at the sensor is the light source spectrum multiplied by the transmittance of each layer. If the backlight has deep spectral troughs, sharp peaks, or large gaps, the channel records pick up physical cross-talk that software cannot untangle later. An inversion algorithm cannot recreate spectral energy the sensor never received. The quality of the backlight therefore sets the practical limit for color accuracy and orange-mask subtraction.
 
 Negative emulsion relies on yellow, magenta, and cyan dye couplers. To isolate the absorption characteristics of each layer, the illuminating backlight must offer continuous spectral distribution across the visible spectrum.
 
@@ -92,11 +92,11 @@ Camera exposure settings during film digitization must focus on capturing the fu
     </tbody>
 </table>
 
-The fundamental rule of camera scanning exposure is **Exposure to the Right (ETTR)** based on real-time RGB histograms. Monitor three-channel histograms in live view and shift the histogram curve as far to the right as possible without clipping the red, green, or blue channels. Because the unexposed orange film base represents the most translucent region across the entire negative, the rightmost peak on the histogram will correspond to this clear film base. Keeping this base peak roughly one-third to one-half stop below full digital saturation guarantees that the dense negative highlights receive maximum photon volume, suppressing shadow noise in the final positive image.
+The basic exposure rule for camera scanning is **Exposure to the Right (ETTR)**, read from the live RGB histogram. Push the histogram to the right without clipping red, green, or blue. The unexposed orange base is the clearest part of the negative, so the rightmost peak usually belongs to that base. Keep that peak about one-third to one-half stop below digital white. The denser highlights then get as much light as possible, and shadow noise in the final positive stays lower.
 
 ## The Fundamental Rule of Unexposed Film Base Retention {#film-base-retention}
 
-A common error among photographers new to digital scanning is framing the camera crop tightly against the exposed image area, trimming away the surrounding border and sprocket gaps. This framing eliminates the primary physical anchor required for optical density calibration.
+A common mistake when starting with camera scanning is to frame tightly against the picture area and cut away the surrounding border and sprocket gaps. That removes the physical reference the density calibration needs.
 
 In 135 film, the margins containing the sprocket holes and the rebate between consecutive frames receive no light during exposure in the camera. Similarly, in 120 roll film, the clear rebate along the top and bottom borders consists of pure, unexposed film base. This unexposed zone contains only the physical support material (cellulose acetate or polyester) and the residual chemical dye mask remaining after development and fixing.
 

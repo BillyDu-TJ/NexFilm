@@ -5,15 +5,20 @@ trackOrder: 2
 chapterOrder: 6
 kicker: "02 / User Manual"
 title: "Master-Grade Exports, Color Space Management, and Contact Sheets"
-subtitle: "A six-format decision matrix, seven output ICC color spaces, tokenized batch renaming, and authentic physical contact sheets."
+subtitle: "Seven export formats, seven output ICC color spaces, tokenized batch renaming, and contact sheets built around film geometry."
 readingTime: 13
 inApp: true
 sinceVersion: "v1.1.0"
 ---
 
-## Six Export Formats Decision Matrix and Selection Guidelines {#format-decision-matrix}
+## Export Formats: A Practical Guide {#format-decision-matrix}
 
-In an authentic darkroom workflow, export represents the final serialization step where non-destructive grading adjustments, geometric transformations, and tone curves are permanently rendered into concrete raster assets. NexFilm rejects simplistic, one-size-fits-all output pipelines. To serve web publication, fine-art printing, archival preservation, and motion picture post-production, the engine provides an extensive export matrix spanning six distinct formats across deliverable and master classifications.
+In a darkroom workflow, export is where non-destructive grading, geometry, and tone curves are finally baked into a raster file. NexFilm does not force every destination into one output setting. Web publishing, print, long-term archiving, and motion-picture post each have different needs, and the export dialog reflects that.
+
+<div class="doc-callout">
+    <div class="doc-callout-title">What Linear TIFF, ICC, and DNG Mean Here</div>
+    <div class="doc-callout-body"><p><strong>A linear TIFF</strong> contains pixel values without a display gamma curve. The numbers stay closer to the light recorded by the sensor or scanner, which makes the file useful in Resolve, Nuke, and similar tools. <strong>An ICC profile</strong> describes which color space those numbers belong to, so color-managed software knows how to display them.</p><p><strong>Linear DNG</strong> is a finished positive from NexFilm, wrapped in a linear DNG container that Adobe software can open. <strong>Camera RAW DNG</strong> is different: it packs the original camera mosaic data without inversion or grading.</p></div>
+</div>
 
 The technical specifications, data linearity models, and target applications for each format are detailed below:
 
@@ -22,40 +27,40 @@ The technical specifications, data linearity models, and target applications for
         <tr><th>Export Format</th><th>Bit Depth and Encoding</th><th>Data Linearity</th><th>Embedded Adjustments</th><th>Recommended Downstream Workflow</th><th>Storage and Fidelity Tradeoffs</th></tr>
     </thead>
     <tbody>
-        <tr><td><strong>JPEG · 8-bit</strong></td><td>8-bit integer, lossy DCT compression</td><td>Non-linear display space (gamma encoded)</td><td>Yes (includes printer lights, curves, detail, and print LUTs)</td><td>Web browsers, mobile devices, social platforms, and instant sharing.</td><td>Compact footprint (typically 2–8 MB). Quality slider spans 40 to 100 (default 92). Ideal for rapid proofs.</td></tr>
-        <tr><td><strong>PNG · 16-bit</strong></td><td>16-bit integer, lossless compression</td><td>Non-linear display space</td><td>Yes (complete positive grading baked in)</td><td>High-fidelity image viewers, digital archives, and publishing layouts.</td><td>Moderate footprint (~30–70 MB). Preserves 65,536 tonal levels per channel with zero lossy compression artifacts.</td></tr>
+        <tr><td><strong>JPEG · 8-bit</strong></td><td>8-bit integer, lossy DCT compression</td><td>Non-linear display space (gamma encoded)</td><td>Yes (includes printer lights, curves, detail, and print LUTs)</td><td>Web browsers, mobile devices, social platforms, and quick sharing.</td><td>Compact file size (usually 2–8 MB). Quality runs from 40 to 100, with 92 as the default. Good for proofs and everyday delivery.</td></tr>
+        <tr><td><strong>PNG · 16-bit</strong></td><td>16-bit integer, lossless compression</td><td>Non-linear display space</td><td>Yes (complete positive grading baked in)</td><td>High-fidelity image viewers, digital archives, and page layout.</td><td>Moderate file size (around 30–70 MB). Keeps 65,536 tonal levels per channel and avoids JPEG compression artifacts.</td></tr>
         <tr><td><strong>TIFF · 8-bit</strong></td><td>8-bit integer, lossless compression</td><td>Non-linear display space</td><td>Yes (complete positive grading baked in)</td><td>Legacy prepress workflows, desktop publishing, and raster prepress tools.</td><td>Moderate footprint. Engineered specifically for legacy prepress environments requiring TIFF containers under memory constraints.</td></tr>
         <tr><td><strong>TIFF · 16-bit</strong></td><td>16-bit integer, lossless compression</td><td>Non-linear display space</td><td>Yes (complete positive grading baked in)</td><td>Adobe Photoshop, Lightroom, Capture One, and fine-art giclée printing.</td><td>Substantial footprint (80–180 MB). The industry benchmark for master retouching, offering maximum headroom for layered color adjustments.</td></tr>
         <tr><td><strong>TIFF · 16-bit linear</strong></td><td>16-bit integer, lossless compression</td><td><strong>Pure linear optical space</strong> (display gamma omitted)</td><td>Yes (includes inversion and printer lights, but strips display curves)</td><td>DaVinci Resolve, Autodesk Flame, and Nuke visual effects pipelines.</td><td>Cinema delivery format. Embeds a linear ICC profile, where pixel values scale proportionally to scene transmission for wide-gamut grading.</td></tr>
         <tr><td><strong>DNG · linear</strong></td><td>16-bit linear integer/floating-point DNG</td><td><strong>Pure linear optical space</strong></td><td>Yes (serialized as an Adobe LinearRaw DNG container)</td><td>Adobe Camera Raw, Lightroom Classic, and Photoshop.</td><td>Packs the inverted positive into an Adobe LinearRaw container, allowing Lightroom to manipulate highlights and shadows natively.</td></tr>
-        <tr><td><strong>DNG · camera RAW</strong></td><td>Raw sensor Bayer mosaic</td><td>Raw camera sensor linear data</td><td><strong>No (contains zero grading or inversion parameters)</strong></td><td>Any RAW processing utility supporting standard Adobe DNG.</td><td><strong>Pure archival data encapsulation</strong>. Repacks unmodified camera Bayer pixels directly into DNG for offsite negative preservation.</td></tr>
+        <tr><td><strong>DNG · camera RAW</strong></td><td>Raw sensor Bayer mosaic</td><td>Raw camera sensor linear data</td><td><strong>No (contains no grading or inversion parameters)</strong></td><td>Any RAW processing utility supporting standard Adobe DNG.</td><td><strong>An archival wrapper for the original data</strong>. Unmodified camera Bayer pixels are packed directly into DNG for offsite negative preservation.</td></tr>
     </tbody>
 </table>
 
 > [!IMPORTANT] Distinguishing Linear DNG from Camera RAW DNG
-> **Linear DNG represents a fully processed positive master**: inversion, printer lights, and perspective corrections are completely rendered, while retaining linear dynamic range. **Camera RAW DNG is strictly an unmodified archival container**: it contains zero color corrections, inversions, or crops. Output color spaces and output sharpening are entirely bypassed for Camera RAW DNG, and this option is available exclusively when the source file is a native camera RAW (scanner TIFFs cannot be exported as Camera RAW DNG).
+> **Linear DNG is a finished positive master**: inversion, printer lights, and perspective corrections are baked in, while linear dynamic range is retained. **Camera RAW DNG is an unmodified archival container**: it contains no color corrections, inversion, or crop. Output color space and output sharpening do not apply to Camera RAW DNG, and the option is available only when the source is a native camera RAW file (scanner TIFFs cannot be exported as Camera RAW DNG).
 
 ## Seven Output ICC Color Spaces and Gamut Mapping {#color-spaces-and-icc}
 
-Color spaces govern how exported pixel values translate into visible spectral wavelengths on physical monitors or printing inks. NexFilm integrates seven standardized output color spaces spanning consumer displays to cinema archival standards, automatically embedding matching ICC profiles into file headers:
+Color spaces determine how the exported numbers turn into visible color on a display or in ink. NexFilm includes seven standard output spaces, from ordinary screens to cinema archival work, and writes the matching ICC profile into the file:
 
 <table class="doc-table">
     <thead>
         <tr><th>Color Space Designation</th><th>Official Standard and Gamut Coverage</th><th>Target Delivery Medium</th><th>Operational Guidelines and Core Restrictions</th></tr>
     </thead>
     <tbody>
-        <tr><td><strong>sRGB</strong></td><td>sRGB IEC 61966-2.1 (standard web gamut)</td><td>Internet publishing, web galleries, mobile displays, and standard office monitors.</td><td>The safest, most universally compatible color space. Devices lacking color management assume sRGB, preventing unexpected shifts.</td></tr>
+        <tr><td><strong>sRGB</strong></td><td>sRGB IEC 61966-2.1 (standard web gamut)</td><td>Internet publishing, web galleries, mobile displays, and standard office monitors.</td><td>The safest choice for compatibility. Devices without color management usually assume sRGB, which keeps surprises to a minimum.</td></tr>
         <tr><td><strong>Display P3</strong></td><td>Apple Display P3 (DCI-P3 gamut paired with D65 white point)</td><td>MacBook Pro, iPhone, iPad, and wide-gamut OLED/Mini-LED displays.</td><td>Renders substantially richer reds and greens than sRGB, ideal for viewing high-fidelity digital portfolios across the Apple ecosystem.</td></tr>
         <tr><td><strong>Adobe RGB (1998)</strong></td><td>Adobe RGB (1998) (wide photography gamut)</td><td>Fine-art giclée printing, high-end book publishing, and professional photography displays.</td><td>Encompasses nearly all cyan and green printing ink pigments, representing the traditional gold standard for print prepress.</td></tr>
         <tr><td><strong>ITU-R BT.2020</strong></td><td>Rec.2020 (ultra-wide broadcast gamut)</td><td>4K/8K UHD television production, HDR workflows, and next-generation wide-gamut displays.</td><td>Extremely wide color envelope aligned with contemporary and future digital broadcast standards.</td></tr>
-        <tr><td><strong>ProPhoto RGB</strong></td><td>ProPhoto RGB / ROMM RGB (ultra-wide master space)</td><td>16-bit archival masters, preservation of extreme negative dye saturation, and deep Photoshop retouching.</td><td>Covers over 90% of visible spectrum colors, easily accommodating intense emulsion dye saturation. <strong>Never use with 8-bit JPEG</strong>.</td></tr>
+        <tr><td><strong>ProPhoto RGB</strong></td><td>ProPhoto RGB / ROMM RGB (ultra-wide master space)</td><td>16-bit archival masters, saturated negative dyes, and extensive Photoshop work.</td><td>Covers more than 90% of visible colors and leaves room for most film dyes. <strong>Do not use it with 8-bit JPEG</strong>.</td></tr>
         <tr><td><strong>ACEScg</strong></td><td>ACEScg (AP1 color space, D60 white point)</td><td>Computer-generated imagery (CGI), visual effects compositing, and digital intermediate grading.</td><td>The global film industry interchange standard, facilitating handoffs into DaVinci Resolve color suites.</td></tr>
         <tr><td><strong>ACES2065-1</strong></td><td>ACES2065-1 (AP0 ultra-wide space, D60 white point)</td><td>The Academy of Motion Picture Arts and Sciences (AMPAS) archival and data exchange master.</td><td>Fully encompasses the entire visible spectrum and beyond, designated for long-term institutional preservation.</td></tr>
     </tbody>
 </table>
 
 > [!WARNING] Never Apply Wide-Gamut Profiles to 8-Bit JPEGs
-> When exporting 8-bit JPEGs, color information is restricted to 256 discrete levels per channel. Applying ultra-wide gamuts such as ProPhoto RGB or ACES to an 8-bit file stretches these scarce quantization steps over vast color distances. This inevitably causes severe **color banding and posterization** across smooth skies and subtle skin tones. When exporting 8-bit JPEGs, restrict your color space strictly to **sRGB** or **Display P3**.
+> An 8-bit JPEG has only 256 levels per channel. If you stretch those levels across an ultra-wide space such as ProPhoto RGB or ACES, smooth skies and skin tones are much more likely to show visible **banding and posterization**. For 8-bit JPEG, stay with **sRGB** or **Display P3**.
 
 ## Resizing Strategies, Quality Protection, and Output Sharpening {#dimensions-and-sharpening}
 
@@ -65,10 +70,10 @@ Within the Dimensions section of the export dialogue, photographers can configur
 Renders the complete sensor or scanner matrix at full resolution without resampling, providing the foundation for archival masters and large-format exhibition prints.
 
 ### 2. Set Long Edge
-Specifies a custom maximum long-edge dimension spanning **`256` to `32768` pixels**. The panel provides one-click quick presets for 1024, 2048, 4096, and 8192 pixels (with 2048 px representing the universal standard for high-density social web delivery). Scaling maintains exact aspect ratios to prevent image distortion.
+Set a maximum long-edge size from **`256` to `32768` pixels**. The panel includes presets for 1024, 2048, 4096, and 8192 pixels; 2048 px works well for most social sharing. Resizing keeps the source aspect ratio, so the image is not stretched.
 
 ### 3. Upscaling Protection (Allow Upscaling Off by Default)
-The interface features an "Allow Upscaling" checkbox, **which remains strictly unselected by default**. When an original capture possesses long-edge dimensions smaller than the specified target, the engine maintains the native file size rather than performing synthetic interpolation. This policy protects native silver grain from being softened by interpolation blur.
+The "Allow Upscaling" checkbox is **off by default**. If the original file is smaller than the target long edge, NexFilm keeps its native size instead of adding synthetic pixels. That keeps silver grain from turning into interpolation mush.
 
 ### 4. Four-Tier Output Sharpening Matrix
 Operating independently from the creative sharpening controls in the Develop workspace, output sharpening specifically counteracts resampling blur introduced during resolution scaling:
@@ -101,11 +106,11 @@ When exporting dozens of frames, consistent file naming is essential for catalog
 - `{Roll}_{Original}_{Seq}` → Resolves to `2024_Tokyo_DSC_1024_001.png` (source provenance template).
 
 **Filename Sanitization**:
-The template engine automatically sanitizes invalid filesystem characters (`< > : " / \ | ? *`) and control codes, converting them into clean underscores. It also detects Windows reserved filenames (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`), prefixing an underscore to guarantee cross-platform file write operations.
+The template engine replaces invalid filesystem characters (`< > : " / \ | ? *`) and control codes with underscores. It also detects Windows reserved names (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`) and prefixes them with an underscore so the files can be written safely on both platforms.
 
 **Conflict Resolution Policies**:
 If identically named files already occupy the target directory, the engine provides three deterministic options:
-1. **Keep both · add a suffix (Default)**: Automatically appends `_1`, `_2` suffixes to prevent data loss;
+1. **Keep both · add a suffix (Default)**: Appends `_1`, `_2` suffixes so an earlier file is not overwritten;
 2. **Replace existing file**: Overwrites prior files, useful when regenerating revised deliverables;
 3. **Skip existing file**: Bypasses existing filenames, exporting only newly added frames.
 
@@ -134,7 +139,7 @@ Because 120 film lacks perforations, the engine identifies frame dimensions and 
 
 ### 3. Layout Aesthetics and Unprocessed Frame Handling
 - **Darkroom Presentation**: Contact sheets sit on a warm matte photographic paper ground (`#E9E9E7`) with pure black negative strips. The footer displays a clean vector lockup of the **NEXFILM** logo alongside Roll ID, Camera, Film Stock, and Date headers.
-- **Handling Uninverted Frames**: If certain frames within a roll have not yet been graded in the Develop workspace, the engine avoids rendering raw negative scans. Instead, it fills the frame slot with an elegant neutral grey tone labeled with a understated **NOT DEVELOPED** indicator, maintaining sheet presentation while signaling remaining work.
+- **Handling Uninverted Frames**: If some frames in a roll have not yet been graded in Develop, the engine does not drop raw negative scans into the contact sheet. Those slots show a neutral grey field with a **NOT DEVELOPED** label, so the sheet stays consistent and unfinished work remains visible.
 
 Generated contact sheets save automatically as `contact_sheet_{roll_id}_{camera}.jpg` in your destination folder.
 
@@ -142,6 +147,6 @@ Generated contact sheets save automatically as `contact_sheet_{roll_id}_{camera}
 
 Whether exporting dozens of 16-bit master TIFFs or generating large-format contact sheets, export operations are managed by a dedicated background concurrency queue:
 
-- **Pre-Flight Integrity Check**: Before launching processing, the engine performs a pre-flight scan: it verifies source file availability on disk and validates inversion parameter integrity. If missing files are detected, the system pauses immediately and presents an itemized dialog, preventing wasted processing time.
-- **Asynchronous Execution**: The worker pool utilizes multi-core hardware while regulating disk I/O to avoid head thrashing on mechanical drives. Photographers can continue refining other images in the Develop workspace while background exports proceed.
-- **The Darkroom Test Print Rule**: Before launching a large-scale master export, **always select a single frame with rich tonal contrast to export as a test proof**. Inspecting this proof on a calibrated monitor verifies colors, sharpness, and dimensions before processing an entire roll.
+- **Pre-Flight Check**: Before processing starts, NexFilm verifies that the source files are still on disk and that each frame has a valid inversion recipe. If files are missing, it stops and lists them instead of failing hours into a batch.
+- **Asynchronous Execution**: The worker pool uses multiple CPU cores while keeping disk I/O within a sensible range. You can keep grading other frames in Develop while the export runs.
+- **The Darkroom Test Print Rule**: Before a large master export, **export one frame with a wide tonal range as a proof**. Check it on a calibrated monitor for color, sharpness, and dimensions before processing the full roll.

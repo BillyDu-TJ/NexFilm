@@ -236,6 +236,7 @@ if (!fs.existsSync(pagefindJs) || fs.statSync(pagefindJs).size === 0) {
 
 // Verify that canonical chapters have data-pagefind-body, and alias routes DO NOT have data-pagefind-body
 const canonicalDocRoutes = [
+  '/zh/docs/download-and-install/',
   '/zh/docs/overview-and-install/',
   '/zh/docs/scanning-best-practices/',
   '/zh/docs/first-roll-in-five-minutes/',

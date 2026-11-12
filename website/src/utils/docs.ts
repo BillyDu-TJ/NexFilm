@@ -43,13 +43,13 @@ export interface DocTrackGroup {
 
 const TRACK_CONFIG = {
   zh: {
-    'getting-started': { title: '快速上手', order: 1, desc: '从翻拍光源、物理反相到五分钟整卷导出实操' },
+    'getting-started': { title: '快速上手', order: 1, desc: '从下载安装、翻拍光源到第一次完整走通整卷流程' },
     'user-manual': { title: '工作台手册', order: 2, desc: '界面视图、底片范围、暗房印片光与母带级导出' },
     'color-science': { title: '色彩科学参考', order: 3, desc: '三大数学域推导、输入域解析与硬件校准白皮书' },
     'architecture': { title: '源码与架构', order: 4, desc: 'Tauri 2 进程模型、GPU/CPU 渲染等价与贡献指南' },
   },
   en: {
-    'getting-started': { title: 'Getting Started', order: 1, desc: 'From optical capture to five-minute roll export' },
+    'getting-started': { title: 'Getting Started', order: 1, desc: 'From installation and scanning setup to a complete first roll' },
     'user-manual': { title: 'User Manual', order: 2, desc: 'Interface, film area, printer lights & master exports' },
     'color-science': { title: 'Color Science', order: 3, desc: 'Three mathematical domains, unified pipeline & calibration' },
     'architecture': { title: 'Architecture', order: 4, desc: 'Tauri 2 runtime, GPU/CPU parity & contributing guidelines' },

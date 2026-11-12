@@ -475,8 +475,8 @@ const HEAVY_USER_MANUAL_CHAPTERS = [
 
 for (const [langDir, locale] of [['zh', 'zh-CN'], ['en', 'en']]) {
   const gettingStartedChapters = parsedData[locale].filter(ch => ch.track === 'getting-started');
-  if (gettingStartedChapters.length !== 4) {
-    console.error(`[compile-handbook] Expected 4 getting-started chapters in ${locale}, found ${gettingStartedChapters.length}`);
+  if (gettingStartedChapters.length !== 5) {
+    console.error(`[compile-handbook] Expected 5 getting-started chapters in ${locale}, found ${gettingStartedChapters.length}`);
     process.exit(1);
   }
 

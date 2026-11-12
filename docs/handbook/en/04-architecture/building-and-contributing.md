@@ -108,14 +108,14 @@ NexFilm enforces an engineering culture centered on machine-verified regression 
    - `node scripts/verify-ui-startup-order.cjs`: Verifies script tag declaration order inside `index.html`.
    - `node scripts/verify-slider-contract.cjs`: Verifies UI slider ranges, steps, and default values.
 3. **Dual-End Handbook Consistency**:  
-   Running `node scripts/compile-handbook.mjs && node scripts/verify-handbook-sync.cjs` guarantees that compiled desktop data (`ui/documentation-data.js`) matches Markdown documentation files byte-for-byte.
+   Running `node scripts/compile-handbook.mjs && node scripts/verify-handbook-sync.cjs` verifies that the compiled desktop data (`ui/documentation-data.js`) matches the Markdown sources byte for byte.
 
 > [!IMPORTANT]
 > All automated contract suites must pass cleanly with zero failures before opening a pull request. Altering contract tests to mask algorithmic defects or regressions is strictly prohibited.
 
 ## GitHub Actions CI/CD Pipeline Architecture {#ci-cd-release-workflow}
 
-The continuous integration and release pipeline is defined in `.github/workflows/release.yml`. The workflow implements a two-stage verification strategy to optimize runner resources and guarantee production artifact integrity:
+The continuous integration and release pipeline is defined in `.github/workflows/release.yml`. It uses a two-stage verification strategy to keep runner cost down and protect the integrity of release artifacts:
 
 ```text
 Trigger: Version tag push (e.g. v1.1.0) or workflow dispatch

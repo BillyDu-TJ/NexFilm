@@ -2,23 +2,30 @@
 id: overview-and-install
 track: getting-started
 trackOrder: 1
-chapterOrder: 1
-kicker: "01.1 / Getting Started"
-title: "Understanding NexFilm and Installation Guide"
-subtitle: "A physics-grounded negative film inversion workbench and system setup."
-readingTime: 7
+chapterOrder: 2
+kicker: "01.2 / Getting Started"
+title: "Understanding NexFilm: Principles, Installation, and Workspace"
+subtitle: "The ideas behind optical density inversion, installer selection, first-launch authorization, and the workspace layout."
+readingTime: 8
 inApp: true
 sinceVersion: "v1.1.0"
-aliases: ["quick-start"]
+aliases: ["nexfilm-overview"]
 ---
 
 ## Physics-grounded Inversion vs Empirical Curves {#core-principles}
 
-Color negative inversion in general-purpose photographic software has historically relied on empirical curve manipulation in display gamma color spaces. When photographers import camera scans or flatbed scanner acquisitions into conventional editors, the standard workflow typically involves manually flipping RGB tone curve endpoints, tweaking levels sliders, or applying black-box lookup tables to neutralize the orange-brown film base mask. This approach is fundamentally at odds with photographic physics. Camera sensor RAW files capture photons in a linear transmittance domain, whereas light absorption across the dye layers of negative film emulsion follows the Beer-Lambert law, establishing a logarithmic relationship between optical density and transmittance. Inverting pixel values within a non-linear display gamma space distorts the inter-channel mathematical relationships, leading to clipped highlight color shifts, muddy shadows, and chronic color inconsistencies across frames within the same roll.
+Color negative inversion in general-purpose photo software has long relied on pulling curves or applying presets in display gamma color spaces. Photographers importing camera scans or flatbed scans into a conventional editor often flip the RGB curve endpoints, drag the Levels sliders around, or try a black-box lookup table to neutralize the orange-brown film base mask.
+
+That approach runs into a physical problem. Camera sensor RAW files record light in a linear transmittance domain, while light absorption through the dye layers of a negative follows the Beer-Lambert law. Optical density and transmittance therefore have a logarithmic relationship. Inverting pixels directly in a non-linear display space can distort the relationship between channels, which shows up as color shifts in clipped highlights, muddy shadows, and inconsistent color from frame to frame on the same roll.
+
+<div class="doc-callout">
+    <div class="doc-callout-title">A Few Terms Before We Go Further</div>
+    <div class="doc-callout-body"><p><strong>Optical density</strong> is a logarithmic measure of how much light the film blocks. The darker the negative, the higher the density. <strong>D-Min</strong> is the density of the unexposed film base, where the orange mask lives. <strong>D-Max</strong> is the density of a fully exposed leader or the deepest silver area, representing the darkest end the roll can produce.</p><p><strong>Printer lights</strong> come from the traditional darkroom. Adding more red, green, or blue filtration in an enlarger changes how much of each color reaches the paper. NexFilm uses three logarithmic sliders to do the same job, so the controls are adjusting color balance rather than ordinary RGB brightness.</p></div>
+</div>
 
 NexFilm Engine is built around a unified optical density pipeline. The software converts input sensor transmittance values into optical density ($D = -\log_{10}(T)$) through rigorous mathematical transformations. Density-domain processing enables authentic physical anchoring of both the unexposed film base ($D_{\min}$) and the chemical density ceiling ($D_{\max}$). Within the optical density domain, color balance adjustment corresponds to pure additive shifts across color channels, mirroring the physical behavior of colored enlarger head filtration (Printer Lights) used in traditional photographic darkrooms. NexFilm adheres strictly to verifiable algorithmic principles: the built-in library of over forty film stock names is intended exclusively for archival metadata indexing, EXIF injection, and contact sheet titling. Inversion calculations rely entirely on measured physical base densities rather than non-verifiable black-box film profile presets.
 
-By establishing clear mathematical boundaries between transmittance, optical density, and output color space, NexFilm provides consistent, repeatable, and non-destructive inversion across single frames and entire rolls. Whether working with 135 formats, 120 medium format roll film, large format sheet film, or uncompressed linear TIFF files from drum scanners, the engine delivers predictable tone reproduction anchored directly in emulsion physics.
+By keeping transmittance, optical density, and output color space clearly separated, NexFilm provides consistent, repeatable, non-destructive inversion for single frames and whole rolls. Whether you work with 135, 120 roll film, large-format sheets, or uncompressed linear TIFF files from a drum scanner, the tone reproduction stays tied to the emulsion rather than to a guessed preset.
 
 ## Platform Matrix and Installation Packages {#package-selection}
 
@@ -63,7 +70,7 @@ NexFilm is open-source software maintained by independent developers. Because th
 
 <div class="doc-callout">
     <div class="doc-callout-title">System Integrity and Security Policies</div>
-    <div class="doc-callout-body">When authorizing software on macOS, instructions advising users to disable System Integrity Protection (SIP) via <code>csrutil disable</code> in Recovery Mode represent an unnecessary security hazard. NexFilm requires only standard per-app Gatekeeper authorization. Never disable system-wide security protections to run application software.</div>
+    <div class="doc-callout-body">Instructions that tell you to disable System Integrity Protection (SIP) with <code>csrutil disable</code> in Recovery Mode are asking for far more risk than NexFilm needs. The app only needs its own quarantine flag cleared. There is no reason to disable system-wide security to run it.</div>
 </div>
 
 ### First Launch Authorization on Windows {#first-launch-authorization-on-windows}
@@ -76,14 +83,26 @@ When launching the `.exe` installer, Microsoft Defender SmartScreen may display 
 
 ### First Launch Authorization on macOS {#first-launch-authorization-on-macos}
 
-Mount the downloaded `.dmg` disk image and drag the `NexFilm Engine.app` bundle into your `Applications` folder. When opening the app for the first time, macOS Gatekeeper may block execution, reporting that the developer cannot be verified. Use either of the following standard methods:
+Mount the downloaded `.dmg` disk image and drag `NexFilm Engine.app` into your **Applications** folder. On first launch, macOS Gatekeeper may report that Apple cannot check the app for malicious software, or that the app is damaged. Use the Terminal command below to clear the app's quarantine attributes:
 
-1. **Finder Context Menu Method (Recommended)**: Open Finder, navigate to the **Applications** folder, and locate `NexFilm Engine`. Hold the <kbd>Control</kbd> key and click the application icon (or right-click), then choose **Open** from the context menu. A confirmation prompt will appear containing an explicit **Open** button. Click **Open** to clear the quarantine flag and launch the engine.
-2. **System Settings Security Panel Method**: If the initial launch was blocked, open **System Settings** from the Apple menu and navigate to **Privacy &amp; Security**. Scroll down to the Security section, where a notice will state that NexFilm Engine was blocked from opening because it is not from an identified developer. Click **Open Anyway**, authenticate with your macOS user password or Touch ID, and the application will start normally.
+1. Open **Launchpad** → **Other** → **Terminal** (or **Finder** → **Applications** → **Utilities** → **Terminal**).
+2. Copy the complete command below, paste it into Terminal, and press <kbd>Return</kbd>:
+
+```bash
+xattr -cr "/Applications/NexFilm Engine.app"
+```
+
+3. If macOS asks for a password, enter your Mac login password and press <kbd>Return</kbd>. Terminal does not display characters while you type; this is expected.
+4. Return to **Applications** and open `NexFilm Engine` again.
+
+<div class="doc-callout">
+    <div class="doc-callout-title">What this command does</div>
+    <div class="doc-callout-body">This command recursively clears extended attributes and the download quarantine flag from <code>NexFilm Engine.app</code>. It affects only this app and does not disable Gatekeeper, System Integrity Protection (SIP), or any other system-wide security feature. It assumes the app is installed in <code>/Applications</code>; if you installed it elsewhere, replace the path in the command with the actual location.</div>
+</div>
 
 ## Storage Architecture and Read-Only Guarantee {#storage-architecture}
 
-Protecting original photographic data is a core architectural priority. NexFilm enforces a strict **read-only policy for source scans**. Throughout importing, base measurement, interactive WebGL preview rendering, and export processing, the software performs stream-oriented read operations on original image files. NexFilm never overwrites, renames, alters, or relocates your original RAW or TIFF scan files.
+Protecting original photographic data is a core architectural priority. NexFilm follows a strict **read-only policy for source scans**. During import, base measurement, interactive WebGL preview rendering, and export, the software only reads the original files. It does not overwrite, rename, alter, or relocate your RAW or TIFF scans.
 
 All archival metadata, frame crop coordinates, photometric base markers, color adjustments, and cached thumbnails are maintained within the standard user application support directory of your operating system.
 

@@ -2,8 +2,8 @@
 id: roll-vs-loose-workflows
 track: getting-started
 trackOrder: 1
-chapterOrder: 4
-kicker: "01.4 / Getting Started"
+chapterOrder: 5
+kicker: "01.5 / Getting Started"
 title: "Roll Physical Calibration versus Loose Frames Workflow"
 subtitle: "Whole-roll calibration, shared white point anti-divergence, and 120 format fallback."
 readingTime: 8
@@ -34,7 +34,7 @@ Evaluating the underlying mechanisms and trade-offs of each workflow ensures con
         </tr>
         <tr>
             <td><strong>Inter-Frame Consistency</strong></td>
-            <td>Maximum consistency. Completely eliminates color casts and tonal divergence across frames within the same scene</td>
+            <td>Much more consistent. Largely removes color casts and tonal drift between frames from the same scene</td>
             <td>Independent per frame. Requires visual fine-tuning or manual propagation using Copy Settings</td>
         </tr>
         <tr>
@@ -56,7 +56,9 @@ For cohesive documentary, portrait, or commercial projects photographed across c
 
 The inter-frame color consistency delivered by the roll workflow relies on establishing two empirical physical boundary anchors on the chemical emulsion: the **unexposed clear base ($D_{\min}$)** and the **fully exposed, maximum density leader ($D_{\max}$)**.
 
-When loading 135 film, the leader tongue pulled from the cassette is exposed to daylight and achieves maximum silver and dye density upon development, representing the chemical saturation ceiling ($D_{\max}$). In contrast, the unexposed emulsion inside the cassette throat or the spacing between frames receives zero light exposure, recording only the optical density of the polyester or acetate support and the residual orange dye couplers ($D_{\min}$). Together, these two measurements define the physical dynamic range of the emulsion under specific development chemistry.
+When you load 135 film, the leader pulled from the cassette is exposed to daylight and develops to maximum silver and dye density. That is the chemical ceiling for this roll ($D_{\max}$). The unexposed emulsion inside the cassette throat, or between frames, receives no light and records only the support plus residual orange dye couplers ($D_{\min}$). Together, these two measurements set the physical dynamic range for the roll under its particular development.
+
+In plain terms, **film base** is the reference white for the roll, and **the leader** is the reference black. Neither is picture content, but both anchor color and contrast across every frame. This is also why frames used for calibration are marked separately and kept out of normal grading.
 
 Calibration is executed directly within the **Library** view:
 
@@ -72,15 +74,20 @@ Calibration is executed directly within the **Library** view:
 
 ## Whole Roll Processing and Shared White Point Anti-Divergence {#whole-roll-batch-processing}
 
-When batch processing film in conventional photo editing software, photographers encounter color jumping across consecutive shots. In a backlit sequence of three shots—one wide angle showing sky, one close-up of dark shadows, and one portrait—independent automatic levels tools stretch each histogram separately based on local pixel energy. This causes the wide shot to appear cyan, the shadow shot to appear magenta and over-exposed, and skin tones in the portrait to drift yellow.
+When batch processing film in conventional photo software, photographers often run into color jumping across consecutive shots. Imagine a backlit sequence of three frames: a wide shot with plenty of sky, a close-up dominated by dark shadows, and a portrait. If automatic levels stretch each histogram on its own, the wide shot may go cyan, the shadow shot may go magenta and look overexposed, and the portrait skin may drift yellow.
 
 NexFilm solves this problem with its **Auto Invert Roll** batch architecture:
 
-1. **Unified Base Mask Subtraction**: Every frame across the roll is stripped of its orange mask using the calibrated global $D_{\min}$ density vector, eliminating base-induced frame variances.
+<div class="doc-callout">
+    <div class="doc-callout-title">What Is a Shared White Point?</div>
+    <div class="doc-callout-body">It is not the brightest pixel from each individual frame. NexFilm first finds the real highlight limit across the roll and then uses that same white point for every frame. A sky-heavy frame and a shadow-heavy frame can then share the same scene color instead of being pulled in different directions by local auto levels.</div>
+</div>
+
+1. **Unified Base Mask Subtraction**: Every frame is stripped of its orange mask with the calibrated global $D_{\min}$ density vector, reducing variation caused by the base.
 2. **Roll-Wide Photometric Analysis**: Prior to inverting individual frames, the batch routine scans the optical density of all saved film areas across the roll, identifying the single brightest genuine highlight across the entire sequence.
 3. **Global Shared White Point Synchronization**: The software establishes this roll-wide highlight density as the shared white point anchor for every exposure in the roll.
 
-Because all frames reference identical black and white density mapping constants, bright sky areas do not cause midtones to collapse, and dark shadows do not trigger spurious brightening. Contrast and color balance reflect the actual scene lighting observed during exposure, preserving color coherence across consecutive frames.
+Because all frames share the same black and white density mapping constants, bright sky does not force the midtones down, and dark shadows do not trigger a sudden lift. Contrast and color balance stay close to the lighting recorded at capture time, and consecutive frames hold together much better.
 
 ## 120 Medium Format and Headless Negative Fallback Pipeline {#120-and-headless-fallback}
 
@@ -109,22 +116,20 @@ To address this condition, NexFilm incorporates a **Bounded Channel Span Respons
             <td><strong>Hard Cap Ceiling</strong></td>
             <td>Ratio $\ge 3.0\times$</td>
             <td>Strict clipping limit forbidding any channel from stretching beyond 3x the master channel</td>
-            <td>Completely eliminates gray-world clipping, color banding, and blown highlight artifacts in extreme contrast exposures</td>
+            <td>Avoids the usual gray-world clipping, color banding, and blown highlights that show up in extreme-contrast frames</td>
         </tr>
     </tbody>
 </table>
 
-When working with headless negatives, users do not need to sample a leader in the Library. Open the frame in Develop and select **Auto Invert**. The bounded span model evaluates the local rebate base density and dynamically anchors highlight limits within the $1.15\times$ to $1.35\times$ safety window, delivering crisp, natural contrast without breaking emulsion physics.
+When working with a roll that has no leader, there is no need to sample one in the Library. Open the frame in Develop and choose **Auto Invert**. The bounded span model reads the local base density and places the highlight limit inside the $1.15\times$ to $1.35\times$ safety window. The result usually stays crisp and natural without pushing the emulsion past what it can hold.
 
-## Managing Loose Imports and Archival Roll Association {#loose-import-to-archive}
+## What Loose Import Can and Cannot Do {#loose-import-to-archive}
 
-The Loose Import workflow provides instant access for single-frame adjustments. Dragging RAW or TIFF files directly into the window allows immediate grading without catalog registration.
+The Loose Import workflow is handy for one-off adjustments. Drop RAW or TIFF files into the window and start grading without creating a roll entry.
 
-However, leaving assets in loose status long-term complicates retrieval and precludes contact sheet compilation. NexFilm bridges transient sessions with permanent roll archives in the **Rolls** view:
+It is not, however, the same kind of archive as Import by Roll. Loose frames do not appear as roll cards in **Rolls**, and they do not take part in roll calibration, shared white points, contact sheets, or roll-wide batch processing. They can be graded and exported one at a time, which makes them useful for test frames, quick checks, and scattered material, but they are not a good primary archive for a real roll.
 
-1. **Reviewing Loose Sessions**: Open the **Rolls** view in the top header. The left sidebar displays permanent catalog rolls alongside a dedicated **Loose Imports Archive** container.
-2. **Multi-Frame Selection**: In the loose frames list, hold the <kbd>Shift</kbd> key to select frames belonging to a common photographic set.
-3. **Consolidation into Permanent Rolls**: Click **Convert to New Roll** at the bottom of the list. A roll metadata dialog prompts for name, film stock, and camera details. Confirming the conversion updates the foreign key records in the SQLite database, grouping the selected frames into a permanent archival roll.
+If a set of scans clearly belongs to one roll, use Import by Roll from the beginning. Frames already handled as Loose Imports cannot currently be merged into a roll from the interface. To put them into the roll archive, import them again as a roll. Keep any previous grading notes or proof exports before doing so, and avoid repeating work unnecessarily.
 
 <div class="doc-callout">
     <div class="doc-callout-title">Relocating Source Scans for Loose Imports</div>

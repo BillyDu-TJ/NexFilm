@@ -50,7 +50,7 @@ Within the optical density and color conversion layer, NexFilm enforces stateles
    In `Capture Characterized` workflows, this module solves regularized matrix equations via `nalgebra::DMatrix` and singular value decomposition (`SVD`). The implementation enforces three safety guards: `MIN_PATCHES = 4`, `MAX_CONDITION_NUMBER = 1.0e5`, and `MAX_VALIDATION_RMSE = 0.08`, intercepting ill-conditioned acquisitions and documenting diagnostic telemetry.
 
 > [!NOTE]
-> `FilmPipeline` is completely free of global mutable locks. During batch processing or multi-frame export, the Rayon thread pool instantiates multiple isolated pipeline workers concurrently, scaling throughput linearly across available physical CPU cores.
+> `FilmPipeline` has no global mutable locks. During batch processing or multi-frame export, the Rayon pool can run several isolated pipeline workers at once and use the available CPU cores.
 
 ## Streaming Scanline Decoders & Bounded Memory Footprint {#streaming-scanline-decoders}
 
@@ -85,7 +85,7 @@ Application Launch -> Open nexfilm_user.db
               └─> Commit transaction; complete idempotent bootstrap
 ```
 
-During the v1.1.0 rollout of the unified density pipeline, legacy `legacy_linear_srgb` approximations were deprecated. To prevent obsolete density parameters from affecting new sessions, `migrate_retired_density_recipe` scans the database during startup, removes invalidated derivative states, and ensures the front end triggers a clean re-inversion upon next access. The migration is idempotent and produces zero side effects on repeated runs. Database transactions wrap entire roll grading operations, guaranteeing atomic state changes across editing sessions.
+The v1.1.0 density pipeline retired the old `legacy_linear_srgb` approximations. To keep obsolete density parameters out of new sessions, `migrate_retired_density_recipe` scans the database during startup, removes invalidated derivative states, and makes the front end run a fresh inversion on the next visit. Running the migration more than once is safe. Roll-level grading changes are wrapped in database transactions, so an edit session either commits or rolls back as a unit.
 
 ## Front-End UI Architecture & Module Responsibility Matrix {#frontend-rendering-and-ui-modules}
 

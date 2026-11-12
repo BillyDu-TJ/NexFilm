@@ -23,7 +23,7 @@ const faqs = [
   {
     category: 'setup',
     q: 'How do I bypass the macOS "App is damaged / Developer cannot be verified" quarantine prompt via Terminal?',
-    a: `macOS automatically places downloaded open-source binaries under quarantine. Open your Terminal and run the following command to lift it immediately:<br><code class="inline-block px-2 py-1 mt-1 rounded bg-darkroom-canvas text-accent font-mono text-xs border border-darkroom-line">xattr -cr /Applications/NexFilm\\ Engine.app</code><br>Alternatively, authorize it via System Settings > Privacy & Security. See <a href="${withBase('/en/docs/overview-and-install/#first-launch-authorization-on-macos')}" class="text-accent underline">macOS Authorization Guide →</a>`
+    a: `macOS automatically places downloaded open-source binaries under quarantine. Open your Terminal and run the following command to lift it immediately:<br><code class="inline-block px-2 py-1 mt-1 rounded bg-darkroom-canvas text-accent font-mono text-xs border border-darkroom-line">xattr -cr "/Applications/NexFilm Engine.app"</code><br>See <a href="${withBase('/en/docs/overview-and-install/#first-launch-authorization-on-macos')}" class="text-accent underline">macOS Authorization Guide →</a>`
   },
   {
     category: 'setup',

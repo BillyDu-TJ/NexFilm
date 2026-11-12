@@ -19,12 +19,12 @@ In film scanning and camera digitization, hardware environments and precision re
 | Operating Tier | Calibration Prerequisites | Algorithmic Basis & Mathematics | Intended Application & Accuracy |
 | --- | --- | --- | --- |
 | `Smart Auto (ProPhoto Estimate)` | Single film capture; zero reference frames required | Heuristic film base sampling, global density window analysis, and Linear ProPhoto projection | Rapid daily inversion, uncalibrated loose frames, and commercial scanner files |
-| `Capture Corrected` | Dark Frame and Open Gate Flat Field | Per-pixel thermal dark bias subtraction and open-gate radiant transmittance normalization | Advanced camera scanning; eliminates vignetting and backlight chromaticity drift |
+| `Capture Corrected` | Dark Frame and Open Gate Flat Field | Per-pixel thermal dark bias subtraction and open-gate radiant transmittance normalization | Advanced camera scanning; reduces vignetting and backlight color drift |
 | `Capture Characterized` | Dark Frame, Flat Field, and Transmission Target | SVD pseudo-inverse fitting of a regularized $3 \times 3$ capture separation matrix | Laboratory scanning rigs requiring formal decoupling of sensor dyes and illumination |
 
 Under `Smart Auto`, the pipeline assumes an ideal linear sensor response and derives the clear base density and dynamic range window directly from statistical cues within the frame. This path requires minimal setup and satisfies general photography needs.
 
-When switched to `Capture Corrected`, the pipeline operates strictly in the pre-log transmittance domain. By measuring dark current and the bare illumination field, it executes per-pixel radiometric normalization. In the highest tier, `Capture Characterized`, the system builds upon flat-field normalization to calculate a capture separation matrix tailored to the specific sensor color filter array and backlight spectral power distribution.
+When switched to `Capture Corrected`, the pipeline works in the pre-log transmittance domain. By measuring dark current and the bare illumination field, it performs per-pixel radiometric normalization. In `Capture Characterized`, it goes one step further: flat-field normalization is followed by a capture separation matrix fitted to the specific sensor color filter array and backlight spectrum.
 
 ## Physics of Dark and Flat-Field Correction & Quality Gates {#dark-and-flat-field-correction}
 
@@ -33,7 +33,7 @@ In camera scanning systems, raw sensor readings rarely represent pure optical tr
 The `Capture Corrected` pathway removes these systematic capture artifacts through two empirical reference acquisitions:
 
 1. **Dark Frame**: Recorded with all incident illumination blocked, isolating sensor dark current, thermal noise, readout bias, and potential light leaks within the camera chamber.
-2. **Open Gate Flat Field**: Recorded with the film carrier completely empty under identical scanning exposure, mapping the two-dimensional spatial irradiance of the backlight and the geometric falloff of the lens.
+2. **Open Gate Flat Field**: Recorded with the film carrier empty under the same scanning exposure, mapping the backlight's spatial irradiance and the lens falloff.
 
 Denoting raw sample readings as $I_{\text{sample}}(x, y)$, dark frame values as $I_{\text{dark}}(x, y)$, and open-gate readings as $I_{\text{open}}(x, y)$, the normalized relative transmittance is evaluated per pixel:
 
@@ -74,7 +74,7 @@ To maintain stability across varied hardware setups, `calibration_fit.rs` enforc
 To ensure that calibration assets deliver repeatable accuracy across entire scanning sessions, technicians should observe the following standard darkroom procedure:
 
 1. **Phase 1: Illumination Thermal Stabilization**  
-   Energize the high-CRI backlight panel (recommended CRI ≥ 95, TLCI ≥ 98) at least 20 minutes prior to calibration. This warmup period allows the LED emitter junctions to achieve thermal equilibrium, preventing correlated color temperature and luminance drift during scanning. Darken the room completely to eliminate ambient flare.
+   Turn on the high-CRI backlight (CRI ≥ 95 and TLCI ≥ 98 recommended) at least 20 minutes before calibration. The LED junctions reach thermal equilibrium, which reduces color-temperature and brightness drift during scanning. Darken the room to cut ambient flare.
 2. **Phase 2: Mechanical Alignment & Optical Lock**  
    Secure the digitizing camera to a rigid copy stand. Using a two-axis spirit level or mirror reflection target, confirm that the camera sensor plane is parallel to the film carrier stage. Set the macro lens to its optimum aperture range (typically f/5.6 to f/8). Lock the focus barrel and disable optical and sensor stabilization systems.
 3. **Phase 3: Dark Frame Acquisition**  
@@ -82,7 +82,7 @@ To ensure that calibration assets deliver repeatable accuracy across entire scan
 4. **Phase 4: Open Gate Flat-Field Acquisition**  
    Remove the lens cap and clean the carrier glass or mask. With the film holder empty, preserve identical optical focus and aperture settings. Adjust shutter speed or backlight intensity so that the illumination histogram sits comfortably between 70% and 85% of maximum scale (ETTR without clipping any channel). Capture and archive the raw file.
 5. **Phase 5: Transmission Target Acquisition**  
-   Position the transmission calibration target (such as a 35mm or 120 format IT8.7/1 slide) within the carrier. Verify that all target patches lie within the uniform field of view. Mask off all exposed light panel areas surrounding the target frame with black cardstock to eliminate veiling glare. Record the capture in raw format.
+   Position the transmission target (such as a 35mm or 120 format IT8.7/1 slide) in the carrier. Check that every patch sits inside the even part of the field. Cover exposed light-panel areas around the target with black cardstock to cut veiling glare. Record the capture in raw format.
 
 Within the NexFilm interface, navigate to the `Hardware Calibration` workspace. Import the three raw acquisitions in sequence. The engine processes the flat-field map and calculates the separation matrix within seconds, generating a verified profile stamped with an internal SHA-256 integrity hash.
 
@@ -90,7 +90,7 @@ Within the NexFilm interface, navigate to the `Hardware Calibration` workspace. 
 
 Scientific integrity requires distinguishing between verified physical implementations and exploratory models. The NexFilm engineering team maintains full transparency regarding current capabilities:
 
-1. **Radiometric Transmittance Normalization is Verified**: Dark subtraction and open-gate field normalization under `Capture Corrected` rest upon classical radiometric optics. These steps have undergone end-to-end regression testing and eliminate illumination non-uniformity.
+1. **Radiometric Transmittance Normalization is Verified**: Dark subtraction and open-gate field normalization under `Capture Corrected` rest on classical radiometric optics. These steps have end-to-end regression coverage and reduce uneven illumination.
 2. **Target Fitting Separates Capture Hardware, Not Film Couplers**: The regularized $3 \times 3$ matrix calculated under `Capture Characterized` isolates sensor filter overlaps and backlight spectral features. It does not invert the chemical sensitometric response of photographic emulsions.
 3. **No Embedded Status M Filter Integration Library**: Because commercial camera filter arrays differ substantially from physical Status M densitometer response curves, the internal `status_m_crosstalk_matrix()` is retained solely as an empirical reference for legacy sessions. NexFilm does not claim to function as a certified laboratory densitometer.
 4. **Hardware Profiles are Setup-Specific**: Generated calibration profiles remain valid only for the exact camera body, lens, working aperture, and illumination panel used during acquisition. Modifying the reproduction ratio or changing backlight color temperature requires recalculating the profile.

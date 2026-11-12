@@ -23,7 +23,7 @@ const faqs = [
   {
     category: 'setup',
     q: 'macOS 提示“已损坏 / 无法验证开发者”如何通过终端一键解决？',
-    a: `macOS 对未公证应用默认添加隔离属性。你可以打开系统的“终端”应用，运行以下命令即可瞬间解除拦截：<br><code class="inline-block px-2 py-1 mt-1 rounded bg-darkroom-canvas text-accent font-mono text-xs border border-darkroom-line">xattr -cr /Applications/NexFilm\\ Engine.app</code><br>或者在系统设置的“隐私与安全性”底部点击“仍要打开”。详见 <a href="${withBase('/zh/docs/overview-and-install/#first-launch-authorization-on-macos')}" class="text-accent underline">macOS 首次放行指南 →</a>`
+    a: `macOS 对未公证应用默认添加隔离属性。你可以打开系统的“终端”应用，运行以下命令即可解除拦截：<br><code class="inline-block px-2 py-1 mt-1 rounded bg-darkroom-canvas text-accent font-mono text-xs border border-darkroom-line">xattr -cr "/Applications/NexFilm Engine.app"</code><br>详见 <a href="${withBase('/zh/docs/overview-and-install/#first-launch-authorization-on-macos')}" class="text-accent underline">macOS 首次放行指南 →</a>`
   },
   {
     category: 'setup',

@@ -13,7 +13,7 @@ sinceVersion: "v1.1.0"
 
 ## Two-Stage Physical Print Mapping Model {#two-stage-physics}
 
-Across more than a century of darkroom tradition, a developed negative was never regarded as the finished artistic print. The negative frame exposed in-camera merely documents scene optical density within silver halide crystals or dye couplers, operating as an intermediate linear medium. In an authentic optical darkroom, the creation of a finished photograph requires two distinct physical stages:
+For more than a century, a developed negative was not treated as the finished print. The frame exposed in-camera records scene density in silver halide crystals or dye couplers; it is an intermediate medium. In an optical darkroom, a finished photograph takes two physical steps:
 
 1. **Stage 1: Negative Development and Density Inversion (Scene Reconstruction)**
    The orange film base mask is neutralized, and transmission density ratios are inverted according to the spectral sensitivity of the emulsion layers. This stage focuses on objective, uncolored physical scene reconstruction, preserving complete dynamic range from shadows to highlights.
@@ -56,7 +56,7 @@ The matrix below provides complete specifications for all 14 built-in LUT profil
 The **Print Emulation** module provides flexible controls for fine-tuning medium characteristics:
 
 - **Opacity Blending (0% – 100%)**:
-  Defaults to 100% for full paper emulation. The linear slider allows continuous mixing. Dialing opacity to 60%–80% retains the natural density of the base inversion while introducing the highlight rolloff and tonal weight of authentic photographic paper. Selecting "No Built-in LUT" completely bypasses the shader pass.
+  Defaults to 100% for full paper emulation. The slider blends continuously. At 60%–80%, the image keeps the neutral density of the inversion while picking up some of the highlight rolloff and tonal weight of photographic paper. Choosing "No Built-in LUT" bypasses the shader pass.
 - **Custom Third-Party `.cube` Loading**:
   Clicking "Load Custom LUT" opens the native file picker to import custom lookup tables. NexFilm supports standard Adobe `.cube` files across grid resolutions of 17×17×17, 33×33×33, and 65×65×65, evaluated via hardware trilinear interpolation.
 
@@ -68,7 +68,7 @@ The **Print Emulation** module provides flexible controls for fine-tuning medium
 For black-and-white photographers, NexFilm offers an authentic digital equivalent of working with traditional Multigrade Variable Contrast paper under an enlarger:
 
 1. **Switch to B&W Mode**:
-   Engage **B&W** in the inspector mode switcher. The pipeline consolidates three color channels into a single optical density channel, eliminating color dye masks while the histogram adapts to monochrome luminance.
+   Engage **B&W** in the inspector mode switcher. The pipeline combines the three color channels into a single optical density channel and removes the color dye masks; the histogram switches to monochrome luminance.
 2. **Define Boundaries and Run Auto Invert**:
    Frame the active negative area and trigger **Auto Invert**. The engine measures the minimum and maximum silver densities to construct a balanced positive.
 3. **Select an Ilford MGFB Paper Grade**:

@@ -17,13 +17,13 @@ In conventional digital photo editing software, "cropping" is typically viewed m
 
 The core distinctions and pipeline roles are defined as follows:
 - **Film Area establishes the optical analysis domain**: It defines the bounding polygon encompassing valid, light-sensitive emulsion on the negative scan. The engine analyzes strictly the pixels bounded by this area to calculate minimum optical density (D-Min / unexposed film base), maximum optical density (D-Max / film leader), and channel dynamic spans. Even if your final artistic composition requires a tighter crop, the Film Area should enclose the entire valid image area so the inversion solver possesses maximum dynamic range samples.
-- **Composition Crop determines the final deliverable framing**: Operating downstream of physical inversion and tone curve adjustments, crop defines the exported aspect ratio (e.g., 3:2, 1:1, or freeform). Composition cropping never alters or discards the optical density statistics harvested by the Film Area. Consequently, tightening or altering your crop after inversion causes zero tone drift or color shift.
+- **Composition Crop determines the final deliverable framing**: It works after physical inversion and tone curve adjustments, defining the exported aspect ratio (for example, 3:2, 1:1, or freeform). Composition cropping does not discard the density statistics collected by the Film Area. Tightening or changing the crop after inversion therefore leaves overall contrast and color balance where they were.
 
-Both tools share a unified canvas coordinate system. However, in execution order, Film Area bounding always precedes density calculations, while Composition Crop is applied at the tail end of rendering.
+Both tools share the same canvas coordinate system. The Film Area is processed before density calculations, while Composition Crop is applied at the end of rendering.
 
 ## Framing Pitfalls and Optical Mechanisms {#framing-pitfalls}
 
-When digitizing negatives via camera scanning or flatbeds, frames are often surrounded by intense raw backlight, opaque film holder borders, or continuous 35mm sprocket holes. Imprecise film boundary bounding severely corrupts the statistical engine during automatic inversion.
+When digitizing negatives with a camera or flatbed, frames are often surrounded by raw backlight, opaque film-holder borders, or 35mm sprocket holes. If the Film Area is drawn carelessly, automatic inversion is working from badly contaminated samples.
 
 The table below outlines the three most frequent framing mistakes and their optical failure modes:
 
@@ -33,7 +33,7 @@ The table below outlines the three most frequent framing mistakes and their opti
     </thead>
     <tbody>
         <tr><td><strong>Enclosing Raw Light Table Backlight</strong></td><td>Unobstructed light table illumination outside the negative strip (pure white light at ~100% transmission).</td><td>The engine interprets the extreme brightness of the light source as the minimum film density (D-Min base), depressing all genuine negative highlight and shadow densities downward.</td><td>The inverted positive appears heavily flattened, dark, and muddy, exhibiting crushed dynamic range with blocked shadows and suppressed highlights.</td></tr>
-        <tr><td><strong>Enclosing Opaque Film Holder Borders</strong></td><td>Completely opaque black plastic or metal borders from scanning masks and film carrier edges.</td><td>The engine interprets pure physical occlusion (near-zero transmission) as full film exposure (D-Max leader), artificially pushing the black point baseline upward.</td><td>Shadow contrast is completely lost; deep blacks lift unnaturally into a milky, washed-out grey haze.</td></tr>
+        <tr><td><strong>Enclosing Opaque Film Holder Borders</strong></td><td>Fully opaque black plastic or metal borders from scanning masks and film carrier edges.</td><td>The engine interprets pure physical occlusion (near-zero transmission) as full film exposure (D-Max leader), artificially pushing the black point baseline upward.</td><td>Shadow contrast is lost; deep blacks lift unnaturally into a milky, washed-out grey haze.</td></tr>
         <tr><td><strong>Enclosing 135 Perforation Sprocket Holes</strong></td><td>Unfiltered backlight shining through 35mm sprocket perforations and associated flare halos.</td><td>Intense light unattenuated by negative dye couplers corrupts three-channel transmission ratios, triggering channel-span protection guards incorrectly.</td><td>Severe, stubborn color casts (frequently cyan, magenta, or yellow) dominate frame edges or whole images, resisting standard white balance dropper adjustments.</td></tr>
     </tbody>
 </table>
@@ -66,7 +66,7 @@ Even with bubble levels on reprographic copy stands, subtle tilt or camera pitch
 
 ## Sprocket Hole Sampling and Edge Feathering Control {#sprocket-control}
 
-For creative projects utilizing 35mm sprocket hole photography or whenever an uncropped film rebate aesthetic is desired, the inspector provides a dedicated **Sprocket** module:
+For 35mm sprocket-hole photography, or whenever you want to keep an uncropped film-rebate look, the inspector has a dedicated **Sprocket** module:
 
 - **Sample Sprocket Hole**: Activates a precision eyedropper tool. Clicking within an exposed perforation hole samples the unattenuated backlight color and intensity directly from that frame.
 - **Tolerance**: Adjusts the detection window around the sampled perforation brightness. Increasing tolerance ensures that flare halos and optical dispersion along perforation edges are effectively neutralized, preventing color contamination across adjacent emulsion.

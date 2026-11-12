@@ -620,13 +620,13 @@ async function runTests() {
     if (docViewStatus.display === 'none' || !docViewStatus.isActive) {
       throw new Error(`Documentation view did not activate properly in iframe: ${JSON.stringify(docViewStatus)}`);
     }
-    if (docViewStatus.zhCount !== 15 || docViewStatus.enCount !== 15) {
-      throw new Error(`Expected 15 chapters in embedded demo sandbox, got zh: ${docViewStatus.zhCount}, en: ${docViewStatus.enCount}`);
+    if (docViewStatus.zhCount !== 16 || docViewStatus.enCount !== 16) {
+      throw new Error(`Expected 16 chapters in embedded demo sandbox, got zh: ${docViewStatus.zhCount}, en: ${docViewStatus.enCount}`);
     }
     if (!docViewStatus.hasSection2Chapters) {
       throw new Error('Embedded demo sandbox missing Section 2 chapters (workspace-and-views, density-grading-and-curves)!');
     }
-    console.log('  ✓ #view-documentation active and loaded all 15 synchronized chapters in demo sandbox.');
+    console.log('  ✓ #view-documentation active and loaded all 16 synchronized chapters in demo sandbox.');
 
     // 7.9 Verify zero unhandled exceptions inside iframe
     if (iframeErrors.length > 0) {
@@ -738,7 +738,7 @@ async function runTests() {
       { name: '1280px (Desktop)', width: 1280, height: 800 },
       { name: '1440px (Wide Desktop)', width: 1440, height: 900 }
     ];
-    const routes = ['/zh/', '/en/', '/zh/features/', '/en/features/', '/zh/gallery/', '/zh/docs/', '/zh/docs/overview-and-install/'];
+    const routes = ['/zh/', '/en/', '/zh/features/', '/en/features/', '/zh/gallery/', '/zh/docs/', '/zh/docs/download-and-install/', '/zh/docs/overview-and-install/'];
 
     const testPage = await browser.newPage();
     await testPage.setRequestInterception(true);

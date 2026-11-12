@@ -4,7 +4,7 @@
  * scripts/verify-handbook-sync.cjs
  *
  * Verifies 100% symmetry between docs/handbook/zh and docs/handbook/en:
- * - Exactly 18 canonical markdown files per language (4 + 7 + 4 + 3)
+ * - Exactly 19 canonical markdown files per language (5 + 7 + 4 + 3)
  * - Zero obsolete migration files
  * - Perfect symmetry in filename, id, track, trackOrder, chapterOrder, inApp, and section IDs
  * - Byte-for-byte synchronization with ui/documentation-data.js on disk
@@ -40,13 +40,13 @@ const enFiles = collectMarkdownFiles(path.join(docsRootDir, 'en'));
 
 console.log(`[verify-handbook-sync] Discovered ${zhFiles.length} zh files and ${enFiles.length} en files.`);
 
-if (zhFiles.length !== 18) {
-  console.error(`❌ Expected exactly 18 zh handbook files, found ${zhFiles.length}!`);
+if (zhFiles.length !== 19) {
+  console.error(`❌ Expected exactly 19 zh handbook files, found ${zhFiles.length}!`);
   process.exit(1);
 }
 
-if (enFiles.length !== 18) {
-  console.error(`❌ Expected exactly 18 en handbook files, found ${enFiles.length}!`);
+if (enFiles.length !== 19) {
+  console.error(`❌ Expected exactly 19 en handbook files, found ${enFiles.length}!`);
   process.exit(1);
 }
 
@@ -168,7 +168,7 @@ for (const [rel, pair] of relativeMap.entries()) {
   }
 }
 
-console.log('✓ All 18 zh/en markdown pairs match symmetrically in metadata and section IDs.');
+console.log('✓ All 19 zh/en markdown pairs match symmetrically in metadata and section IDs.');
 
 // 3. Byte-for-byte check against disk ui/documentation-data.js
 if (!fs.existsSync(uiDataFile)) {
