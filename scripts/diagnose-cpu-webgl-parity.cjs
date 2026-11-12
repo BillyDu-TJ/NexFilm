@@ -41,7 +41,17 @@ const browser = chromeCandidates.find(fs.existsSync);
 if (!browser) throw new Error('Chrome or Edge was not found');
 
 const { width, height, uniforms, curve } = fixture;
-const payload = JSON.stringify({ vertex, fragment, width, height, uniforms, curve, transport: fixture.transport, rendered: fixture.rendered });
+const payload = JSON.stringify({
+    vertex,
+    fragment,
+    width,
+    height,
+    uniforms,
+    curve,
+    transport: fixture.transport,
+    rendered: fixture.rendered,
+    positive_to_display: fixture.positive_to_display,
+});
 if (payload.includes('</script')) throw new Error('fixture contains a script terminator');
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nexfilm-parity-'));
@@ -195,6 +205,15 @@ if (!gl) {
         gl.uniform1f(loc('u_shadow_threshold'), 0.0);
         gl.uniform1f(loc('u_highlight_threshold'), 1.0);
         gl.uniform1i(loc('u_alpha_guard'), 0);
+        const positive = spec.positive_to_display;
+        if (!Array.isArray(positive) || positive.length !== 9) {
+            throw new Error('fixture is missing positive_to_display');
+        }
+        gl.uniformMatrix3fv(loc('u_positive_to_display'), false, new Float32Array([
+            positive[0], positive[3], positive[6],
+            positive[1], positive[4], positive[7],
+            positive[2], positive[5], positive[8],
+        ]));
 
         gl.viewport(0, 0, spec.width, spec.height);
         while (gl.getError() !== gl.NO_ERROR) { /* drain pending errors before the draw */ }

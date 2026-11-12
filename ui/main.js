@@ -2096,6 +2096,7 @@ let currentPositiveToDisplay = PROPHOTO_TO_LINEAR_SRGB;
 let proxyHasAnalyzedBase = false;
 let currentPipelineState = { contract: 'legacy_v1', density_anchors: {} };
 let currentPipelineContract = 'legacy_v1';
+const shownPipelineWarnings = new Set();
 // Null until a proxy parse commits it together with the texture it describes.
 // Assuming a domain here would let a render run before the first parse and
 // interpret whatever texture is bound with the wrong decoder.
@@ -2134,6 +2135,17 @@ function updatePipelineStatus() {
         btnAutoColorRoll.setAttribute('aria-label', btnAutoColorRoll.title);
     }
     updateInvertActionLayout();
+}
+
+// Resolver fallback reasons are technical identifiers. Surface the ones that
+// change what the user must do, once per frame, in the UI language.
+function showPipelineWarnings(state = currentPipelineState, targetId = activeId) {
+    const reasons = state?.processing_report?.fallback_reasons || [];
+    if (!reasons.some(reason => String(reason).includes('anchor_working_basis_mismatch'))) return;
+    const key = `${targetId || 'roll'}:anchor_working_basis_mismatch`;
+    if (shownPipelineWarnings.has(key)) return;
+    shownPipelineWarnings.add(key);
+    showToast(i18nText('calibrationConfig.warning.roll_anchor_working_basis_mismatch'), 'warning');
 }
 
 // Invert Whole Roll is a Roll-only shortcut: it measures the brightest frame of
@@ -6941,6 +6953,7 @@ async function selectImage(id, { force = false } = {}) {
             currentPipelineState = state.pipeline_state || { contract: 'legacy_v1', density_anchors: {} };
             currentPipelineContract = currentPipelineState.contract || 'legacy_v1';
             updatePipelineStatus();
+            showPipelineWarnings(currentPipelineState, id);
             if (state.base_analyzed) {
                 proxyAnalyzedBaseIds.add(id);
             } else {
@@ -8337,6 +8350,7 @@ async function doAutoColor(targetId = activeId, generation = developOperationRev
         const cached = imageStates.get(targetId);
         if (cached) cached.pipeline_state = JSON.parse(JSON.stringify(currentPipelineState));
         updatePipelineStatus();
+        showPipelineWarnings(currentPipelineState, targetId);
     }
     const batchState = {
         dmin: limits.d_min,
@@ -8726,6 +8740,7 @@ async function syncActiveFrameAfterRollInvert(rollId) {
     currentDMax = currentPipelineState.render_mapping?.density_high?.slice() || currentDMax;
     updateDMinMaxDisplay();
     updatePipelineStatus();
+    showPipelineWarnings(currentPipelineState, activeId);
     autoInvertAppliedActiveImage = true;
     proxyHasAnalyzedBase = true;
     const activeItem = findKnownItem(activeId);

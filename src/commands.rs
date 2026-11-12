@@ -1832,10 +1832,10 @@ fn build_response_buffer_from_proxy_with_state(
     // shader displays the positive (and the staged negative) through it
     // instead of ProPhoto -> sRGB, so the matrix travels with the very pixels
     // it belongs to.
-    let camera_to_display = pipeline_state
-        .processing_report
-        .camera_to_display
-        .filter(|_| flags & 2 != 0);
+    let camera_to_display = (flags & 2 != 0)
+        .then_some(pipeline_state.processing_report.camera_to_display)
+        .flatten()
+        .and_then(camera_display_matrix);
     let flags = flags | if camera_to_display.is_some() { 8 } else { 0 };
     let header = 28 + if camera_to_display.is_some() { 36 } else { 0 };
     let mut out = vec![0u8; (width * height * 8) as usize + header];
@@ -4877,7 +4877,17 @@ fn camera_native_working_buffer(
     let image =
         ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(decoded.width, decoded.height, decoded.pixels)
             .ok_or_else(|| "Failed to allocate the camera-native working buffer".to_string())?;
-    Ok((image, Some(decoded.camera_to_srgb)))
+    Ok((image, camera_display_matrix(decoded.camera_to_srgb)))
+}
+
+/// A camera matrix may drive the positive only when the decode actually
+/// resolved one. LibRaw initialises an unknown camera to the identity, and the
+/// M1 fallback can fail to replace it; persisting that value would claim a
+/// display basis that does not exist.
+fn camera_display_matrix(matrix: [f32; 9]) -> Option<[f32; 9]> {
+    (crate::raw_backend::camera_matrix_plausible(matrix)
+        && !crate::raw_backend::camera_matrix_missing(matrix))
+    .then_some(matrix)
 }
 
 fn decode_prophoto_basis_estimate(
@@ -4945,7 +4955,6 @@ fn decode_prophoto_basis_estimate(
     Ok(converted)
 }
 
-#[cfg(test)]
 fn decode_scanner_profiled_estimate_image_buffer(
     path: &str,
     mode: DecodeMode,
@@ -10716,7 +10725,7 @@ fn positive_to_display_matrix(pipeline_state: &PipelineState) -> [f32; 9] {
     pipeline_state
         .processing_report
         .camera_to_display
-        .filter(|matrix| matrix.iter().all(|value| value.is_finite()))
+        .and_then(camera_display_matrix)
         .unwrap_or_else(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb))
 }
 
@@ -14130,6 +14139,13 @@ fn build_roll_calibration_status(
     {
         warnings.push("roll_anchor_prophoto_estimate".to_string());
     }
+    if resolution
+        .rejected_anchor_reasons
+        .iter()
+        .any(|reason| reason.ends_with("|anchor_working_basis_mismatch"))
+    {
+        warnings.push("roll_anchor_working_basis_mismatch".to_string());
+    }
     if legacy {
         warnings.push("legacy_contract_preserved".to_string());
     }
@@ -14651,6 +14667,40 @@ mod calibration_profile_contract_tests {
             .warnings
             .iter()
             .any(|warning| warning == "profile_missing_fallback"));
+    }
+
+    #[test]
+    fn roll_status_reports_an_anchor_sampled_in_another_color_basis() {
+        let mut roll = roll("135", None);
+        roll.density_anchors.d_min_base = Some(crate::app_state::DensityAnchor {
+            density: [0.1, 0.2, 0.3],
+            source: crate::app_state::DensityAnchorSource::SampledFilmBase,
+            scope: crate::app_state::DensityAnchorScope::Roll,
+            confidence: crate::app_state::DensityAnchorConfidence::UserSampled,
+            reference_id: Some("frame.nef".to_string()),
+            provenance: crate::app_state::DensityAnchorProvenance {
+                input_domain: crate::app_state::DataDomain::ProPhotoEstimate,
+                raw_decode_version: Some(RAW_DECODE_VERSION),
+                algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+                legacy: false,
+                working_basis: crate::app_state::WorkingBasis::ProPhotoEstimate,
+                ..Default::default()
+            },
+        });
+        let status = build_roll_calibration_status(
+            &roll,
+            &[],
+            Some((
+                PipelineState::smart_auto(),
+                true,
+                PipelineImageKind::RawBayer,
+                crate::app_state::WorkingBasis::CameraNative,
+            )),
+        );
+        assert!(status
+            .warnings
+            .iter()
+            .any(|warning| warning == "roll_anchor_working_basis_mismatch"));
     }
 
     #[test]
@@ -19607,6 +19657,10 @@ mod import_contract_tests {
 
         let mut state = default_pipeline_state_for_import(true, "LOOSE_DEFAULT", &[]);
         state.processing_report.base_source = "content_estimate".to_string();
+        // Exercise the camera-native display path instead of the default
+        // ProPhoto matrix, so the parity harness pins u_positive_to_display.
+        let camera_to_display = [1.25, -0.20, -0.05, -0.10, 1.15, -0.05, 0.00, -0.15, 1.15];
+        state.processing_report.camera_to_display = Some(camera_to_display);
         let base_color = base_color_from_density(base_density);
         let mut params = TuningParams::default();
         params.density.d_min = [0.05, 0.06, 0.08];
@@ -19696,6 +19750,7 @@ mod import_contract_tests {
                 "green": params.curve.curve_green,
                 "blue": params.curve.curve_blue,
             },
+            "positive_to_display": camera_to_display,
             "rendered": rendered.as_raw(),
         });
         let output_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -23818,6 +23873,43 @@ mod import_contract_tests {
             );
             let render_r = render_core(&retired, usable_r, base_r, &limits_r, offsets_r, None);
 
+            if name == "4000363" {
+                let sky_metrics = |label: &str, render: &ImageBuffer<Rgb<u16>, Vec<u16>>| {
+                    let (width, height) = render.dimensions();
+                    let x0 = (width as f32 * 0.15).round() as u32;
+                    let x1 = (width as f32 * 0.84).round() as u32;
+                    let y0 = (height as f32 * 0.16).round() as u32;
+                    let y1 = (height as f32 * 0.30).round() as u32;
+                    let mut count = 0u64;
+                    let mut clipped = 0u64;
+                    let mut sum = [0.0f64; 3];
+                    for y in y0..y1 {
+                        for x in x0..x1 {
+                            let pixel =
+                                render.get_pixel(x, y).0.map(|value| value as f32 / 65535.0);
+                            count += 1;
+                            if pixel.iter().any(|value| *value >= 0.995) {
+                                clipped += 1;
+                            }
+                            for channel in 0..3 {
+                                sum[channel] += pixel[channel] as f64;
+                            }
+                        }
+                    }
+                    let mean = sum.map(|value| value / count.max(1) as f64);
+                    println!(
+                        "[SKY] {label}: roi={x0},{y0}..{x1},{y1} any>=0.995 {:.2}%  mean RGB=({:.4},{:.4},{:.4})  B/G={:.4}",
+                        100.0 * clipped as f64 / count.max(1) as f64,
+                        mean[0],
+                        mean[1],
+                        mean[2],
+                        mean[2] / mean[1].max(1.0e-9),
+                    );
+                };
+                sky_metrics("retired", &render_r);
+                sky_metrics("camera-native", &render_a);
+            }
+
             let invert = |image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
                           base: [f32; 3],
                           d_min: [f32; 3],
@@ -26145,6 +26237,7 @@ mod export_readonly_contract_tests {
     }
 }
 
+#[cfg(test)]
 mod camera_native_basis_tests {
     use super::{
         build_response_buffer_from_proxy_with_state, camera_native_working_buffer,
@@ -26166,6 +26259,7 @@ mod camera_native_basis_tests {
         1.732, -0.656, -0.076, -0.152, 1.502, -0.350, 0.008, -0.408, 1.400,
     ];
     const IDENTITY: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+    const UNIFORM_CAMERA_GAIN: [f32; 9] = [1.10, 0.0, 0.0, 0.0, 1.10, 0.0, 0.0, 0.0, 1.10];
     const SWAP_RED_BLUE: [f32; 9] = [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0];
 
     #[test]
@@ -26224,6 +26318,16 @@ mod camera_native_basis_tests {
             NIKON_CAMERA_TO_SRGB,
         ));
         assert!((retired[2] - negative[0][2]).abs() > 1.0e-3);
+
+        let unresolved = crate::raw_backend::CameraRgbEstimate {
+            width: 1,
+            height: 1,
+            pixels: negative[0].to_vec(),
+            camera_to_srgb: IDENTITY,
+            label: "unresolved",
+        };
+        let (_, matrix) = camera_native_working_buffer(unresolved).unwrap();
+        assert_eq!(matrix, None);
     }
 
     fn render_one_pixel(state: &PipelineState, mode: FilmMode) -> [u16; 3] {
@@ -26275,9 +26379,18 @@ mod camera_native_basis_tests {
             positive_to_display_matrix(&mapped_state(Some(NIKON_CAMERA_TO_SRGB))),
             NIKON_CAMERA_TO_SRGB
         );
-        // A non-finite record never reaches the display.
+        // A non-finite, identity, or implausible record never reaches the
+        // display and is never claimed as a persisted camera basis.
         assert_eq!(
             positive_to_display_matrix(&mapped_state(Some([f32::NAN; 9]))),
+            prophoto
+        );
+        assert_eq!(
+            positive_to_display_matrix(&mapped_state(Some(IDENTITY))),
+            prophoto
+        );
+        assert_eq!(
+            positive_to_display_matrix(&mapped_state(Some([100.0; 9]))),
             prophoto
         );
 
@@ -26287,13 +26400,19 @@ mod camera_native_basis_tests {
             render_one_pixel(&mapped_state(Some(prophoto)), FilmMode::Color)
         );
         // The persisted matrix is the one applied to the normalized positive.
-        let identity = render_one_pixel(&mapped_state(Some(IDENTITY)), FilmMode::Color);
+        let fallback = render_one_pixel(&mapped_state(None), FilmMode::Color);
+        let gain = render_one_pixel(&mapped_state(Some(UNIFORM_CAMERA_GAIN)), FilmMode::Color);
         let swapped = render_one_pixel(&mapped_state(Some(SWAP_RED_BLUE)), FilmMode::Color);
-        assert!(identity[0] < identity[1] && identity[1] < identity[2]);
-        assert_eq!(swapped, [identity[2], identity[1], identity[0]]);
-        assert_ne!(
-            identity,
-            render_one_pixel(&mapped_state(None), FilmMode::Color)
+        assert_eq!(
+            positive_to_display_matrix(&mapped_state(Some(SWAP_RED_BLUE))),
+            SWAP_RED_BLUE
+        );
+        assert!(gain[0] < gain[1] && gain[1] < gain[2]);
+        assert_ne!(swapped, fallback);
+        assert_ne!(gain, fallback);
+        assert_eq!(
+            render_one_pixel(&mapped_state(Some(IDENTITY)), FilmMode::Color),
+            fallback
         );
         // B&W prints luma density and takes no colour matrix at all.
         assert_eq!(
@@ -26316,6 +26435,19 @@ mod camera_native_basis_tests {
         let flags = u32::from_le_bytes(plain[24..28].try_into().unwrap());
         assert_eq!(flags & 8, 0);
         assert_eq!(plain.len(), 28 + 2 * 8);
+
+        let unresolved = build_response_buffer_from_proxy_with_state(
+            &proxy,
+            &base,
+            &mapped_state(Some(IDENTITY)),
+            None,
+            true,
+        );
+        assert_eq!(
+            u32::from_le_bytes(unresolved[24..28].try_into().unwrap()) & 8,
+            0
+        );
+        assert_eq!(unresolved.len(), 28 + 2 * 8);
 
         let camera = build_response_buffer_from_proxy_with_state(
             &proxy,
@@ -26375,5 +26507,248 @@ mod camera_native_basis_tests {
         let round_trip: PipelineState =
             serde_json::from_str(&serde_json::to_string(&stamped).unwrap()).unwrap();
         assert_eq!(round_trip, stamped);
+    }
+}
+
+#[cfg(test)]
+mod fixture_sweep_tests {
+    use super::{
+        base_color_from_density, compute_content_limits_f32_with_bounds,
+        decode_scanner_profiled_estimate_image_buffer,
+        decode_scanner_profiled_estimate_with_matrix, estimate_film_base_f32, is_scanner_fff_tiff,
+        prepare_content_render_limits, render_f32_shader_equivalent, DecodeMode, PROXY_LONG_EDGE,
+    };
+    use crate::app_state::{DensityAnchors, GeometryState, PipelineState, TuningParams};
+    use image::{ImageBuffer, Rgb};
+    use sha2::{Digest, Sha256};
+    use std::path::{Path, PathBuf};
+
+    fn collect_files(root: &Path, output: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_files(&path, output);
+            } else if path.is_file() {
+                output.push(path);
+            }
+        }
+    }
+
+    fn camera_raw(path: &Path) -> bool {
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .is_some_and(|value| value.eq_ignore_ascii_case("fff"))
+        {
+            return !is_scanner_fff_tiff(path.to_string_lossy().as_ref());
+        }
+        matches!(
+            path.extension()
+                .and_then(|value| value.to_str())
+                .map(|value| value.to_ascii_lowercase())
+                .as_deref(),
+            Some("nef" | "arw" | "raf" | "cr2" | "cr3")
+        )
+    }
+
+    fn render_fixture(
+        image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+        camera_to_display: Option<[f32; 9]>,
+    ) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+        let geom = GeometryState::default();
+        let estimate = estimate_film_base_f32(image, &geom);
+        let base = if estimate.usable {
+            estimate.density
+        } else {
+            [0.0; 3]
+        };
+        let mut limits =
+            compute_content_limits_f32_with_bounds(image, None, &geom, base, None).unwrap();
+        let (offsets, _) =
+            prepare_content_render_limits(&mut limits, &DensityAnchors::default(), base);
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.base_source = if estimate.usable {
+            "detected_film_base"
+        } else {
+            "missing_film_base_reference"
+        }
+        .to_string();
+        state.processing_report.camera_to_display = camera_to_display;
+        state.render_mapping.density_low = limits.d_min;
+        state.render_mapping.density_high = limits.d_max;
+        state.render_mapping.channel_offsets = offsets;
+        let mut params = TuningParams::default();
+        params.density.d_min = limits.d_min;
+        params.density.d_max = limits.d_max;
+        render_f32_shader_equivalent(
+            image,
+            None,
+            &params,
+            &geom,
+            &base_color_from_density(base),
+            &state,
+            None,
+        )
+    }
+
+    fn digest(image: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> String {
+        let mut hasher = Sha256::new();
+        for value in image.as_raw() {
+            hasher.update(value.to_le_bytes());
+        }
+        format!("{:x}", hasher.finalize())
+    }
+
+    #[test]
+    #[ignore = "manual fixture byte sweep"]
+    fn non_camera_fixture_sweep_report() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        let label = std::env::var("NEXFILM_SWEEP_LABEL").unwrap_or_else(|_| "current".to_string());
+        let filter = std::env::var("NEXFILM_SWEEP_FILTER").unwrap_or_default();
+        let mut paths = Vec::new();
+        collect_files(&root, &mut paths);
+        paths.sort();
+        let mut entries = Vec::new();
+        for path in paths {
+            if camera_raw(&path) {
+                continue;
+            }
+            if !filter.is_empty() && !path.to_string_lossy().contains(&filter) {
+                continue;
+            }
+            let image = match decode_scanner_profiled_estimate_image_buffer(
+                path.to_string_lossy().as_ref(),
+                DecodeMode::DevelopProxy,
+                None,
+                PROXY_LONG_EDGE as u32,
+            ) {
+                Ok(image) => image,
+                Err(error) => {
+                    eprintln!("[SWEEP] skipped {}: {error}", path.display());
+                    continue;
+                }
+            };
+            let rendered = render_fixture(&image, None);
+            entries.push(serde_json::json!({
+                "path": path.strip_prefix(&root).unwrap().to_string_lossy(),
+                "sha256": digest(&rendered),
+                "dimensions": [rendered.width(), rendered.height()],
+            }));
+        }
+        let output = root
+            .parent()
+            .unwrap()
+            .join("target")
+            .join("fixture-sweep")
+            .join(format!("non-camera-{label}.json"));
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(
+            &output,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "label": label,
+                "frames": entries,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        println!(
+            "[SWEEP] wrote {} entries to {}",
+            entries.len(),
+            output.display()
+        );
+    }
+
+    #[test]
+    #[ignore = "manual camera-RAW fixture byte sweep"]
+    fn camera_native_fixture_sweep_report() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        let label = std::env::var("NEXFILM_SWEEP_LABEL").unwrap_or_else(|_| "current".to_string());
+        let mut paths = Vec::new();
+        collect_files(&root, &mut paths);
+        paths.sort();
+        let options = crate::raw_backend::DecodeOptions {
+            half_size: true,
+            demosaic_quality: 3,
+            output_bps: 16,
+            no_auto_bright: true,
+            output_color: 0,
+            linear_gamma: true,
+            use_camera_wb: false,
+        };
+        let mut entries = Vec::new();
+        for path in paths {
+            if !camera_raw(&path) {
+                continue;
+            }
+            let Ok((working, matrix)) = decode_scanner_profiled_estimate_with_matrix(
+                path.to_string_lossy().as_ref(),
+                DecodeMode::DevelopProxy,
+                None,
+                PROXY_LONG_EDGE as u32,
+            ) else {
+                eprintln!("[SWEEP] skipped {}", path.display());
+                continue;
+            };
+            let Ok(camera) = crate::raw_backend::decode_smart_auto_rgb_with_policy(
+                &path,
+                &options,
+                crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
+            ) else {
+                eprintln!("[SWEEP] skipped camera decode {}", path.display());
+                continue;
+            };
+            let camera_to_srgb = camera.camera_to_srgb;
+            let camera_image = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(
+                camera.width,
+                camera.height,
+                camera.pixels,
+            )
+            .unwrap();
+            let srgb_to_prophoto = crate::color_science::linear_conversion_matrix(
+                crate::color_science::ColorSpaceId::SRgb,
+                crate::color_science::ColorSpaceId::ProPhotoRgb,
+            );
+            let mut retired = camera_image.clone();
+            for pixel in retired.pixels_mut() {
+                let srgb = crate::color_science::compress_linear_srgb_for_density(
+                    crate::color_science::apply_linear_matrix(pixel.0, camera_to_srgb),
+                );
+                pixel.0 = crate::color_science::apply_linear_matrix(srgb, srgb_to_prophoto);
+            }
+            let current_render = render_fixture(&working, matrix);
+            let retired_render = render_fixture(&retired, None);
+            entries.push(serde_json::json!({
+                "path": path.strip_prefix(&root).unwrap().to_string_lossy(),
+                "current_sha256": digest(&current_render),
+                "retired_sha256": digest(&retired_render),
+                "changed": digest(&current_render) != digest(&retired_render),
+                "camera_to_display": matrix,
+                "dimensions": [current_render.width(), current_render.height()],
+            }));
+        }
+        let output = root
+            .parent()
+            .unwrap()
+            .join("target")
+            .join("fixture-sweep")
+            .join(format!("camera-raw-{label}.json"));
+        std::fs::create_dir_all(output.parent().unwrap()).unwrap();
+        std::fs::write(
+            &output,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "label": label,
+                "frames": entries,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        println!(
+            "[SWEEP] wrote {} camera-RAW entries to {}",
+            entries.len(),
+            output.display()
+        );
     }
 }
