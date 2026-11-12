@@ -15,12 +15,13 @@ const MAX_DIAGONAL_RATIO: f64 = 3.0;
 const MIN_GRADIENT_PROMINENCE: f64 = 1.22;
 const MAX_ANALYSIS_EDGE: u32 = 640;
 const WORKING_EDGE: u32 = 1024;
-const AUTO_DETECTION_INSET: f32 = 0.01;
+const AUTO_DETECTION_INSET_X: f32 = 0.01;
+const AUTO_DETECTION_INSET_Y: f32 = 0.02;
 const STANDARD_FRAME_ASPECTS: [f64; 6] =
     [3.0 / 2.0, 1.0, 4.0 / 3.0, 6.0 / 7.0, 6.0 / 9.0, 65.0 / 24.0];
 const ASPECT_SCORE_SIGMA: f64 = 0.20;
 const ROLL_PRIOR_WINDOW: f32 = 0.05;
-const ROLL_PRIOR_INSET: f32 = 0.03;
+const ROLL_PRIOR_INSET: f32 = 0.01;
 const SOURCE_PRIOR_INSET: f32 = 0.01;
 
 /// Gate refinement: how far inward (as a fraction of the edge's own span) a
@@ -151,12 +152,16 @@ pub fn detect_film_border_with_format(
     // gate edges from robust Sobel projections first, then fit each edge.
     if let Some(points) = detect_from_gradient_projections(&blurred) {
         let aspect_score = candidate_aspect_score(&points, preferred_aspect);
+        // The gradient fit follows the strongest long edges. The rebate walk
+        // was less stable than this candidate on camera negatives, so keep it
+        // for the contour fallback rather than moving an already-good quad.
         return detected_result(
-            refine_to_gate(thumbnail, points, width, height),
+            points,
             width,
             height,
             "detected_gradient",
             aspect_score,
+            true,
         );
     }
 
@@ -173,12 +178,14 @@ pub fn detect_film_border_with_format(
         return FilmBorderDetection::fallback_for_frame(width, height, roll_format);
     };
 
+    let refined = refine_to_gate(thumbnail, points, width, height);
     detected_result(
-        refine_to_gate(thumbnail, points, width, height),
+        refined,
         width,
         height,
         "detected_contour",
         aspect_score,
+        true,
     )
 }
 
@@ -420,22 +427,18 @@ fn apply_roll_prior(detection: FilmBorderDetection, prior: &FilmAreaPrior) -> Fi
             .zip(prior.points.iter().flatten())
             .all(|(actual, expected)| (actual - expected).abs() <= ROLL_PRIOR_WINDOW);
 
-    // The prior is the scale-stable geometry contract. Local detection may
-    // confirm it and raise confidence, but must not make the returned quad vary
-    // when the same frame is analysed at 640, 1024 or 1600 pixels.
-    let conservative = inset_points(prior.points, ROLL_PRIOR_INSET);
+    if inside_window {
+        return FilmBorderDetection {
+            points: detection.points,
+            confidence: DetectionConfidence::High,
+            status: "detected_roll_prior",
+        };
+    }
+
     FilmBorderDetection {
-        points: conservative,
-        confidence: if inside_window {
-            DetectionConfidence::High
-        } else {
-            DetectionConfidence::Low
-        },
-        status: if inside_window {
-            "detected_roll_prior"
-        } else {
-            "prior_inherited"
-        },
+        points: inset_points(prior.points, ROLL_PRIOR_INSET),
+        confidence: DetectionConfidence::Low,
+        status: "prior_inherited",
     }
 }
 
@@ -1194,6 +1197,7 @@ fn detected_result(
     height: u32,
     status: &'static str,
     aspect_score: f64,
+    inset_automatic: bool,
 ) -> FilmBorderDetection {
     let width_scale = (width.saturating_sub(1)).max(1) as f32;
     let height_scale = (height.saturating_sub(1)).max(1) as f32;
@@ -1203,7 +1207,9 @@ fn detected_result(
             (point.y as f32 / height_scale).clamp(0.0, 1.0),
         ]
     });
-    normalized = inset_automatic_points(normalized);
+    if inset_automatic {
+        normalized = inset_automatic_points(normalized);
+    }
     FilmBorderDetection {
         points: normalized,
         confidence: if aspect_score >= 0.35 {
@@ -1216,7 +1222,18 @@ fn detected_result(
 }
 
 fn inset_automatic_points(points: [[f32; 2]; 4]) -> [[f32; 2]; 4] {
-    inset_points(points, AUTO_DETECTION_INSET)
+    let center = points.iter().fold([0.0f32; 2], |sum, point| {
+        [sum[0] + point[0], sum[1] + point[1]]
+    });
+    let center = [center[0] * 0.25, center[1] * 0.25];
+    let scale_x = 1.0 - 2.0 * AUTO_DETECTION_INSET_X;
+    let scale_y = 1.0 - 2.0 * AUTO_DETECTION_INSET_Y;
+    points.map(|point| {
+        [
+            center[0] + (point[0] - center[0]) * scale_x,
+            center[1] + (point[1] - center[1]) * scale_y,
+        ]
+    })
 }
 
 fn inset_points(points: [[f32; 2]; 4], inset: f32) -> [[f32; 2]; 4] {
@@ -1539,7 +1556,7 @@ mod tests {
     }
 
     #[test]
-    fn automatic_detection_is_inset_by_one_percent_at_every_edge() {
+    fn automatic_detection_uses_separate_horizontal_and_vertical_insets() {
         let points = [
             Point::new(0, 0),
             Point::new(99, 0),
@@ -1547,9 +1564,9 @@ mod tests {
             Point::new(0, 99),
         ];
 
-        let result = detected_result(points, 100, 100, "synthetic", 1.0);
+        let result = detected_result(points, 100, 100, "synthetic", 1.0, true);
 
-        let expected = [[0.01, 0.01], [0.99, 0.01], [0.99, 0.99], [0.01, 0.99]];
+        let expected = [[0.01, 0.02], [0.99, 0.02], [0.99, 0.98], [0.01, 0.98]];
         for (point, expected) in result.points.iter().zip(expected) {
             assert!((point[0] - expected[0]).abs() < 1.0e-5);
             assert!((point[1] - expected[1]).abs() < 1.0e-5);
@@ -1657,7 +1674,7 @@ mod tests {
     }
 
     #[test]
-    fn roll_prior_clamps_local_refinement_and_inherits_on_failure() {
+    fn roll_prior_uses_consistent_detection_and_insets_the_median_fallback() {
         let prior = FilmAreaPrior {
             points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9], [0.1, 0.9]],
             sample_count: 3,
@@ -1668,10 +1685,10 @@ mod tests {
             confidence: DetectionConfidence::High,
             status: "detected_gradient",
         };
-        assert_eq!(
-            apply_roll_prior(local, &prior).status,
-            "detected_roll_prior"
-        );
+        let adopted = apply_roll_prior(local.clone(), &prior);
+        assert_eq!(adopted.status, "detected_roll_prior");
+        assert_eq!(adopted.confidence, DetectionConfidence::High);
+        assert_eq!(adopted.points, local.points);
 
         let failed = FilmBorderDetection::fallback();
         let inherited = apply_roll_prior(failed, &prior);

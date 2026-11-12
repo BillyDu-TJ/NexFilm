@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use image::{imageops::FilterType, DynamicImage, GenericImageView};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -41,10 +43,22 @@ struct FrameResult {
     prior_leak_area: f64,
     prior_enabled: bool,
     prior_sample_count: usize,
+    prior_first_1_detection: nexfilm_engine::film_border::FilmBorderDetection,
+    prior_first_1_corner_error: f64,
+    prior_first_1_leak_area: f64,
+    prior_first_1_enabled: bool,
+    prior_first_1_sample_count: usize,
+    prior_first_3_detection: nexfilm_engine::film_border::FilmBorderDetection,
+    prior_first_3_corner_error: f64,
+    prior_first_3_leak_area: f64,
+    prior_first_3_enabled: bool,
+    prior_first_3_sample_count: usize,
     variants: Vec<VariantResult>,
     size_max_error: f64,
     size_mean_error: f64,
     prior_size_max_error: f64,
+    prior_first_1_size_max_error: f64,
+    prior_first_3_size_max_error: f64,
 }
 
 #[derive(Debug)]
@@ -56,6 +70,65 @@ struct VariantResult {
     prior_detection: nexfilm_engine::film_border::FilmBorderDetection,
     prior_corner_error: f64,
     prior_leak_area: f64,
+    prior_first_1_detection: nexfilm_engine::film_border::FilmBorderDetection,
+    prior_first_1_corner_error: f64,
+    prior_first_1_leak_area: f64,
+    prior_first_3_detection: nexfilm_engine::film_border::FilmBorderDetection,
+    prior_first_3_corner_error: f64,
+    prior_first_3_leak_area: f64,
+}
+
+#[derive(Clone, Copy)]
+enum PriorScenario {
+    LeaveOneOut,
+    Previous(usize),
+}
+
+fn historical_prior(
+    truth: &TruthFrame,
+    scenario: PriorScenario,
+    grouped: &BTreeMap<String, Vec<TruthFrame>>,
+    grouped_by_source: &BTreeMap<String, Vec<TruthFrame>>,
+) -> Option<nexfilm_engine::film_border::FilmAreaPrior> {
+    let history = |frames: &[TruthFrame]| -> Vec<TruthFrame> {
+        let position = frames.iter().position(|frame| frame.id == truth.id);
+        match (scenario, position) {
+            (PriorScenario::LeaveOneOut, _) => frames
+                .iter()
+                .filter(|frame| frame.id != truth.id)
+                .cloned()
+                .collect(),
+            (PriorScenario::Previous(count), Some(position)) => frames[..position]
+                .iter()
+                .rev()
+                .take(count)
+                .cloned()
+                .collect(),
+            (PriorScenario::Previous(_), None) => Vec::new(),
+        }
+    };
+    let samples = |frames: &[TruthFrame]| {
+        frames
+            .iter()
+            .map(|frame| nexfilm_engine::film_border::FilmAreaPriorSample {
+                points: frame.points,
+                confirmed: true,
+                confidence: nexfilm_engine::film_border::DetectionConfidence::High,
+            })
+            .collect::<Vec<_>>()
+    };
+
+    if !truth.roll_format.eq_ignore_ascii_case("loose") {
+        let roll_history = history(&grouped[&truth.eval_group]);
+        if let Some(prior) =
+            nexfilm_engine::film_border::film_area_prior_from_samples(&samples(&roll_history))
+        {
+            return Some(prior);
+        }
+    }
+
+    let source_history = history(&grouped_by_source[&truth.source_path]);
+    nexfilm_engine::film_border::film_area_prior_from_common_area(&samples(&source_history))
 }
 
 #[test]
@@ -107,46 +180,26 @@ fn film_area_eval() {
             groups
         },
     );
-    let camera_family = dataset
-        .frames
-        .iter()
-        .filter(|frame| camera_raw_path(&frame.source_path))
-        .map(|frame| nexfilm_engine::film_border::FilmAreaPriorSample {
-            points: frame.points,
-            confirmed: true,
-            confidence: nexfilm_engine::film_border::DetectionConfidence::High,
-        })
-        .collect::<Vec<_>>();
-    let camera_family_prior =
-        nexfilm_engine::film_border::film_area_prior_from_common_area(&camera_family);
     let mut results = Vec::with_capacity(dataset.frames.len());
     for truth in &dataset.frames {
-        let roll_prior = (!truth.roll_format.eq_ignore_ascii_case("loose")).then(|| {
-            let samples = grouped[&truth.eval_group]
-                .iter()
-                .map(|sample| nexfilm_engine::film_border::FilmAreaPriorSample {
-                    points: sample.points,
-                    confirmed: true,
-                    confidence: nexfilm_engine::film_border::DetectionConfidence::High,
-                })
-                .collect::<Vec<_>>();
-            nexfilm_engine::film_border::film_area_prior_from_common_area(&samples)
-        });
-        let source_prior = grouped_by_source[&truth.source_path]
-            .iter()
-            .map(|sample| nexfilm_engine::film_border::FilmAreaPriorSample {
-                points: sample.points,
-                confirmed: true,
-                confidence: nexfilm_engine::film_border::DetectionConfidence::High,
-            })
-            .collect::<Vec<_>>();
-        let source_prior =
-            nexfilm_engine::film_border::film_area_prior_from_common_area(&source_prior);
-        let prior = roll_prior.flatten().or(source_prior).or_else(|| {
-            camera_raw_path(&truth.source_path)
-                .then(|| camera_family_prior.clone())
-                .flatten()
-        });
+        let prior = historical_prior(
+            truth,
+            PriorScenario::LeaveOneOut,
+            &grouped,
+            &grouped_by_source,
+        );
+        let prior_first_1 = historical_prior(
+            truth,
+            PriorScenario::Previous(1),
+            &grouped,
+            &grouped_by_source,
+        );
+        let prior_first_3 = historical_prior(
+            truth,
+            PriorScenario::Previous(3),
+            &grouped,
+            &grouped_by_source,
+        );
         let image_path = root.join(&truth.image);
         let original = image::open(&image_path)
             .unwrap_or_else(|error| panic!("cannot open {}: {error}", image_path.display()));
@@ -171,12 +224,42 @@ fn film_area_eval() {
                 Some(&truth.roll_format),
                 prior.as_ref(),
             );
+            let prior_first_1_detection =
+                nexfilm_engine::film_border::detect_film_border_with_prior(
+                    &sized,
+                    Some(&truth.roll_format),
+                    prior_first_1.as_ref(),
+                );
+            let prior_first_3_detection =
+                nexfilm_engine::film_border::detect_film_border_with_prior(
+                    &sized,
+                    Some(&truth.roll_format),
+                    prior_first_3.as_ref(),
+                );
             variants.push(VariantResult {
                 size,
                 corner_error: corner_error(&detection.points, &truth.points),
                 leak_area: leakage_area(&detection.points, &truth.points),
                 prior_corner_error: corner_error(&prior_detection.points, &truth.points),
                 prior_leak_area: leakage_area(&prior_detection.points, &truth.points),
+                prior_first_1_corner_error: corner_error(
+                    &prior_first_1_detection.points,
+                    &truth.points,
+                ),
+                prior_first_1_leak_area: leakage_area(
+                    &prior_first_1_detection.points,
+                    &truth.points,
+                ),
+                prior_first_3_corner_error: corner_error(
+                    &prior_first_3_detection.points,
+                    &truth.points,
+                ),
+                prior_first_3_leak_area: leakage_area(
+                    &prior_first_3_detection.points,
+                    &truth.points,
+                ),
+                prior_first_1_detection,
+                prior_first_3_detection,
                 prior_detection,
                 detection,
             });
@@ -191,18 +274,42 @@ fn film_area_eval() {
         let prior_detection = primary.prior_detection.clone();
         let prior_corner_error = primary.prior_corner_error;
         let prior_leak_area = primary.prior_leak_area;
+        let prior_first_1_detection = primary.prior_first_1_detection.clone();
+        let prior_first_1_corner_error = primary.prior_first_1_corner_error;
+        let prior_first_1_leak_area = primary.prior_first_1_leak_area;
+        let prior_first_3_detection = primary.prior_first_3_detection.clone();
+        let prior_first_3_corner_error = primary.prior_first_3_corner_error;
+        let prior_first_3_leak_area = primary.prior_first_3_leak_area;
         let mut size_errors = Vec::new();
         let mut prior_size_errors = Vec::new();
+        let mut prior_first_1_size_errors = Vec::new();
+        let mut prior_first_3_size_errors = Vec::new();
         for variant in &variants {
             size_errors.push(corner_error(&variant.detection.points, &detection.points));
             prior_size_errors.push(corner_error(
                 &variant.prior_detection.points,
                 &prior_detection.points,
             ));
+            prior_first_1_size_errors.push(corner_error(
+                &variant.prior_first_1_detection.points,
+                &prior_first_1_detection.points,
+            ));
+            prior_first_3_size_errors.push(corner_error(
+                &variant.prior_first_3_detection.points,
+                &prior_first_3_detection.points,
+            ));
         }
         let size_max_error = size_errors.iter().copied().fold(0.0, f64::max);
         let size_mean_error = size_errors.iter().sum::<f64>() / size_errors.len().max(1) as f64;
         let prior_size_max_error = prior_size_errors.iter().copied().fold(0.0, f64::max);
+        let prior_first_1_size_max_error = prior_first_1_size_errors
+            .iter()
+            .copied()
+            .fold(0.0, f64::max);
+        let prior_first_3_size_max_error = prior_first_3_size_errors
+            .iter()
+            .copied()
+            .fold(0.0, f64::max);
 
         results.push(FrameResult {
             truth: truth.clone(),
@@ -214,10 +321,26 @@ fn film_area_eval() {
             prior_leak_area,
             prior_enabled: prior.is_some(),
             prior_sample_count: prior.as_ref().map_or(0, |prior| prior.sample_count),
+            prior_first_1_detection,
+            prior_first_1_corner_error,
+            prior_first_1_leak_area,
+            prior_first_1_enabled: prior_first_1.is_some(),
+            prior_first_1_sample_count: prior_first_1
+                .as_ref()
+                .map_or(0, |prior| prior.sample_count),
+            prior_first_3_detection,
+            prior_first_3_corner_error,
+            prior_first_3_leak_area,
+            prior_first_3_enabled: prior_first_3.is_some(),
+            prior_first_3_sample_count: prior_first_3
+                .as_ref()
+                .map_or(0, |prior| prior.sample_count),
             variants,
             size_max_error,
             size_mean_error,
             prior_size_max_error,
+            prior_first_1_size_max_error,
+            prior_first_3_size_max_error,
         });
     }
 
@@ -249,6 +372,16 @@ fn film_area_eval() {
                 "prior_leak_area": result.prior_leak_area,
                 "prior_enabled": result.prior_enabled,
                 "prior_sample_count": result.prior_sample_count,
+                "prior_first_1_detected": result.prior_first_1_detection.points,
+                "prior_first_1_corner_error": result.prior_first_1_corner_error,
+                "prior_first_1_leak_area": result.prior_first_1_leak_area,
+                "prior_first_1_enabled": result.prior_first_1_enabled,
+                "prior_first_1_sample_count": result.prior_first_1_sample_count,
+                "prior_first_3_detected": result.prior_first_3_detection.points,
+                "prior_first_3_corner_error": result.prior_first_3_corner_error,
+                "prior_first_3_leak_area": result.prior_first_3_leak_area,
+                "prior_first_3_enabled": result.prior_first_3_enabled,
+                "prior_first_3_sample_count": result.prior_first_3_sample_count,
                 "confidence": result.detection.confidence,
                 "status": result.detection.status,
                 "prior_confidence": result.prior_detection.confidence,
@@ -266,6 +399,22 @@ fn film_area_eval() {
     let prior_size_passing_frames = results
         .iter()
         .filter(|result| result.prior_size_max_error < 0.005)
+        .count();
+    let prior_first_1_leaking_frames = results
+        .iter()
+        .filter(|result| result.prior_first_1_leak_area > 1.0e-6)
+        .count();
+    let prior_first_1_size_passing_frames = results
+        .iter()
+        .filter(|result| result.prior_first_1_size_max_error < 0.005)
+        .count();
+    let prior_first_3_leaking_frames = results
+        .iter()
+        .filter(|result| result.prior_first_3_leak_area > 1.0e-6)
+        .count();
+    let prior_first_3_size_passing_frames = results
+        .iter()
+        .filter(|result| result.prior_first_3_size_max_error < 0.005)
         .count();
     let summary = json!({
         "label": label,
@@ -304,6 +453,46 @@ fn film_area_eval() {
         "prior_size_frames_under_0_5_percent": prior_size_passing_frames,
         "prior_size_frames_under_0_5_percent_ratio":
             prior_size_passing_frames as f64 / results.len().max(1) as f64,
+        "prior_first_1_enabled_frames": results.iter().filter(|result| result.prior_first_1_enabled).count(),
+        "prior_first_1_corner_error_mean": mean(results.iter().map(|result| result.prior_first_1_corner_error)),
+        "prior_first_1_corner_error_p95": percentile(
+            results.iter().map(|result| result.prior_first_1_corner_error),
+            0.95,
+        ),
+        "prior_first_1_corner_error_max": results
+            .iter()
+            .map(|result| result.prior_first_1_corner_error)
+            .fold(0.0, f64::max),
+        "prior_first_1_leak_area_total": results.iter().map(|result| result.prior_first_1_leak_area).sum::<f64>(),
+        "prior_first_1_leak_area_mean": mean(results.iter().map(|result| result.prior_first_1_leak_area)),
+        "prior_first_1_leaking_frames": prior_first_1_leaking_frames,
+        "prior_first_1_size_max_delta": results
+            .iter()
+            .map(|result| result.prior_first_1_size_max_error)
+            .fold(0.0, f64::max),
+        "prior_first_1_size_frames_under_0_5_percent": prior_first_1_size_passing_frames,
+        "prior_first_1_size_frames_under_0_5_percent_ratio":
+            prior_first_1_size_passing_frames as f64 / results.len().max(1) as f64,
+        "prior_first_3_enabled_frames": results.iter().filter(|result| result.prior_first_3_enabled).count(),
+        "prior_first_3_corner_error_mean": mean(results.iter().map(|result| result.prior_first_3_corner_error)),
+        "prior_first_3_corner_error_p95": percentile(
+            results.iter().map(|result| result.prior_first_3_corner_error),
+            0.95,
+        ),
+        "prior_first_3_corner_error_max": results
+            .iter()
+            .map(|result| result.prior_first_3_corner_error)
+            .fold(0.0, f64::max),
+        "prior_first_3_leak_area_total": results.iter().map(|result| result.prior_first_3_leak_area).sum::<f64>(),
+        "prior_first_3_leak_area_mean": mean(results.iter().map(|result| result.prior_first_3_leak_area)),
+        "prior_first_3_leaking_frames": prior_first_3_leaking_frames,
+        "prior_first_3_size_max_delta": results
+            .iter()
+            .map(|result| result.prior_first_3_size_max_error)
+            .fold(0.0, f64::max),
+        "prior_first_3_size_frames_under_0_5_percent": prior_first_3_size_passing_frames,
+        "prior_first_3_size_frames_under_0_5_percent_ratio":
+            prior_first_3_size_passing_frames as f64 / results.len().max(1) as f64,
     });
     let size_summaries = [640, 1024, 1600]
         .into_iter()
@@ -328,6 +517,22 @@ fn film_area_eval() {
                 "prior_leaking_frames": variants
                     .iter()
                     .filter(|variant| variant.prior_leak_area > 1.0e-6)
+                    .count(),
+                "prior_first_1_corner_error_mean": mean(
+                    variants.iter().map(|variant| variant.prior_first_1_corner_error),
+                ),
+                "prior_first_1_leak_area_total": variants.iter().map(|variant| variant.prior_first_1_leak_area).sum::<f64>(),
+                "prior_first_1_leaking_frames": variants
+                    .iter()
+                    .filter(|variant| variant.prior_first_1_leak_area > 1.0e-6)
+                    .count(),
+                "prior_first_3_corner_error_mean": mean(
+                    variants.iter().map(|variant| variant.prior_first_3_corner_error),
+                ),
+                "prior_first_3_leak_area_total": variants.iter().map(|variant| variant.prior_first_3_leak_area).sum::<f64>(),
+                "prior_first_3_leaking_frames": variants
+                    .iter()
+                    .filter(|variant| variant.prior_first_3_leak_area > 1.0e-6)
                     .count(),
             })
         })
@@ -355,9 +560,21 @@ fn film_area_eval() {
                 "prior_leak_area": result.prior_leak_area,
                 "prior_enabled": result.prior_enabled,
                 "prior_sample_count": result.prior_sample_count,
+                "prior_first_1_detected": result.prior_first_1_detection.points,
+                "prior_first_1_corner_error": result.prior_first_1_corner_error,
+                "prior_first_1_leak_area": result.prior_first_1_leak_area,
+                "prior_first_1_enabled": result.prior_first_1_enabled,
+                "prior_first_1_sample_count": result.prior_first_1_sample_count,
+                "prior_first_3_detected": result.prior_first_3_detection.points,
+                "prior_first_3_corner_error": result.prior_first_3_corner_error,
+                "prior_first_3_leak_area": result.prior_first_3_leak_area,
+                "prior_first_3_enabled": result.prior_first_3_enabled,
+                "prior_first_3_sample_count": result.prior_first_3_sample_count,
                 "size_max_error": result.size_max_error,
                 "size_mean_error": result.size_mean_error,
                 "prior_size_max_error": result.prior_size_max_error,
+                "prior_first_1_size_max_error": result.prior_first_1_size_max_error,
+                "prior_first_3_size_max_error": result.prior_first_3_size_max_error,
                 "confidence": result.detection.confidence,
                 "status": result.detection.status,
                 "prior_confidence": result.prior_detection.confidence,
@@ -370,6 +587,12 @@ fn film_area_eval() {
                     "leak_area": variant.leak_area,
                     "prior_corner_error": variant.prior_corner_error,
                     "prior_leak_area": variant.prior_leak_area,
+                    "prior_first_1_detected": variant.prior_first_1_detection.points,
+                    "prior_first_1_corner_error": variant.prior_first_1_corner_error,
+                    "prior_first_1_leak_area": variant.prior_first_1_leak_area,
+                    "prior_first_3_detected": variant.prior_first_3_detection.points,
+                    "prior_first_3_corner_error": variant.prior_first_3_corner_error,
+                    "prior_first_3_leak_area": variant.prior_first_3_leak_area,
                     "confidence": variant.detection.confidence,
                     "status": variant.detection.status,
                     "prior_confidence": variant.prior_detection.confidence,
@@ -417,6 +640,40 @@ fn film_area_eval() {
             .unwrap_or_default(),
         results.len()
     );
+    println!(
+        "first1_enabled={} first1_corner={:.5} first1_leak={:.6} first1_leaking={} first1_size_pass={}/{}",
+        summary["prior_first_1_enabled_frames"].as_u64().unwrap_or_default(),
+        summary["prior_first_1_corner_error_mean"]
+            .as_f64()
+            .unwrap_or_default(),
+        summary["prior_first_1_leak_area_total"]
+            .as_f64()
+            .unwrap_or_default(),
+        summary["prior_first_1_leaking_frames"]
+            .as_u64()
+            .unwrap_or_default(),
+        summary["prior_first_1_size_frames_under_0_5_percent"]
+            .as_u64()
+            .unwrap_or_default(),
+        results.len()
+    );
+    println!(
+        "first3_enabled={} first3_corner={:.5} first3_leak={:.6} first3_leaking={} first3_size_pass={}/{}",
+        summary["prior_first_3_enabled_frames"].as_u64().unwrap_or_default(),
+        summary["prior_first_3_corner_error_mean"]
+            .as_f64()
+            .unwrap_or_default(),
+        summary["prior_first_3_leak_area_total"]
+            .as_f64()
+            .unwrap_or_default(),
+        summary["prior_first_3_leaking_frames"]
+            .as_u64()
+            .unwrap_or_default(),
+        summary["prior_first_3_size_frames_under_0_5_percent"]
+            .as_u64()
+            .unwrap_or_default(),
+        results.len()
+    );
     println!("wrote {}", output.display());
     for group in &group_reports {
         println!(
@@ -452,11 +709,6 @@ fn resized_to_longest_edge(image: &DynamicImage, target: u32) -> DynamicImage {
         (height as f64 * scale).round().max(1.0) as u32,
         FilterType::Triangle,
     )
-}
-
-fn camera_raw_path(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.ends_with(".nef") || lower.ends_with(".raf") || lower.ends_with(".dng")
 }
 
 fn corner_error(left: &[[f32; 2]; 4], right: &[[f32; 2]; 4]) -> f64 {
@@ -605,6 +857,42 @@ fn group_reports(results: &[FrameResult]) -> Vec<serde_json::Value> {
                 "prior_size_max_delta": frames
                     .iter()
                     .map(|r| r.prior_size_max_error)
+                    .fold(0.0, f64::max),
+                "prior_first_1_enabled_frames": frames.iter().filter(|r| r.prior_first_1_enabled).count(),
+                "prior_first_1_corner_error_mean": mean(frames.iter().map(|r| r.prior_first_1_corner_error)),
+                "prior_first_1_corner_error_p95": percentile(
+                    frames.iter().map(|r| r.prior_first_1_corner_error),
+                    0.95,
+                ),
+                "prior_first_1_leak_area_total": frames.iter().map(|r| r.prior_first_1_leak_area).sum::<f64>(),
+                "prior_first_1_leaking_frames": frames
+                    .iter()
+                    .filter(|r| r.prior_first_1_leak_area > 1.0e-6)
+                    .count(),
+                "prior_first_1_roll_jitter": corner_jitter(
+                    frames.iter().map(|r| r.prior_first_1_detection.points).collect(),
+                ),
+                "prior_first_1_size_max_delta": frames
+                    .iter()
+                    .map(|r| r.prior_first_1_size_max_error)
+                    .fold(0.0, f64::max),
+                "prior_first_3_enabled_frames": frames.iter().filter(|r| r.prior_first_3_enabled).count(),
+                "prior_first_3_corner_error_mean": mean(frames.iter().map(|r| r.prior_first_3_corner_error)),
+                "prior_first_3_corner_error_p95": percentile(
+                    frames.iter().map(|r| r.prior_first_3_corner_error),
+                    0.95,
+                ),
+                "prior_first_3_leak_area_total": frames.iter().map(|r| r.prior_first_3_leak_area).sum::<f64>(),
+                "prior_first_3_leaking_frames": frames
+                    .iter()
+                    .filter(|r| r.prior_first_3_leak_area > 1.0e-6)
+                    .count(),
+                "prior_first_3_roll_jitter": corner_jitter(
+                    frames.iter().map(|r| r.prior_first_3_detection.points).collect(),
+                ),
+                "prior_first_3_size_max_delta": frames
+                    .iter()
+                    .map(|r| r.prior_first_3_size_max_error)
                     .fold(0.0, f64::max),
             })
         })

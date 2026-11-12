@@ -8033,16 +8033,10 @@ fn install_film_base(
     // mapping copied from another frame would carry that frame's exposure.
     // The white point is only re-derived when this frame knows its highlight
     // fraction, so an unknown one cannot silently flatten the print.
-    let highlight_known = runtime.density_anchors.highlight_fraction.is_some()
-        || item.runtime_frame_highlight.is_some();
-    if highlight_known {
-        if let Some(mapping) = roll_density_mapping_with_frame_base(
-            &runtime,
-            Some(density),
-            item.runtime_frame_highlight,
-        ) {
-            runtime.render_mapping = mapping;
-        }
+    if let Some(mapping) =
+        inherited_film_base_render_mapping(&runtime, density, item.runtime_frame_highlight)
+    {
+        runtime.render_mapping = mapping;
     }
     let mut persisted = item.pipeline_state.clone();
     persisted.processing_report = runtime.processing_report.clone();
@@ -8054,6 +8048,21 @@ fn install_film_base(
     item.runtime_frame_base = Some(density);
     item.pristine_proxy = None;
     Ok(())
+}
+
+/// Rebuild a Roll-anchored mapping around a newly measured frame base. This is
+/// shared by the first open (`prepare_proxy`) and the read-only export path so
+/// both render the same inherited frame.
+fn inherited_film_base_render_mapping(
+    pipeline: &PipelineState,
+    density: [f32; 3],
+    highlight: Option<f32>,
+) -> Option<RenderMapping> {
+    let highlight_known =
+        pipeline.density_anchors.highlight_fraction.is_some() || highlight.is_some();
+    highlight_known
+        .then(|| roll_density_mapping_with_frame_base(pipeline, Some(density), highlight))
+        .flatten()
 }
 
 /// The base a frame that inherited one from another frame should run on, now
@@ -9297,51 +9306,7 @@ pub async fn auto_detect_film_border_batch(
                 }
             }
         }
-        let family_prior = if roll_prior_allowed {
-            None
-        } else {
-            let mut family_statement = connection
-                .prepare(
-                    "SELECT ge.geom FROM image_states AS ge
-                     JOIN rolls AS r USING (roll_id)
-                     WHERE r.roll_format = 'Loose'
-                       AND json_extract(ge.geom, '$.calibration_confirmed') = 1
-                       AND json_extract(ge.geom, '$.calibration_points') IS NOT NULL
-                       AND (lower(ge.file_path) LIKE '%.nef'
-                            OR lower(ge.file_path) LIKE '%.raf'
-                            OR lower(ge.file_path) LIKE '%.dng')",
-                )
-                .map_err(|error| format!("Failed to prepare camera family areas: {error}"))?;
-            let family_rows = family_statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(|error| format!("Failed to read camera family areas: {error}"))?;
-            let mut family_samples = Vec::new();
-            for geometry in family_rows {
-                let geometry: Value = serde_json::from_str(
-                    &geometry
-                        .map_err(|error| format!("Failed to read family geometry: {error}"))?,
-                )
-                .map_err(|error| format!("Failed to parse family geometry: {error}"))?;
-                let Some(points) = geometry.get("calibration_points") else {
-                    continue;
-                };
-                if let Ok(points) = serde_json::from_value::<[[f32; 2]; 4]>(points.clone()) {
-                    family_samples.push(crate::film_border::FilmAreaPriorSample {
-                        points,
-                        confirmed: true,
-                        confidence: crate::film_border::DetectionConfidence::High,
-                    });
-                }
-            }
-            crate::film_border::film_area_prior_from_common_area(&family_samples)
-        };
-        let confirmed_roll_prior = crate::film_border::film_area_prior_from_common_area(
-            &samples
-                .iter()
-                .filter(|sample| sample.confirmed)
-                .copied()
-                .collect::<Vec<_>>(),
-        );
+        let confirmed_roll_prior = crate::film_border::film_area_prior_from_samples(&samples);
 
         let mut results = Vec::with_capacity(file_paths.len());
         for file_path in file_paths {
@@ -9379,13 +9344,6 @@ pub async fn auto_detect_film_border_batch(
                     }
                 }
                 prior = crate::film_border::film_area_prior_from_common_area(&source_samples);
-            }
-            let lower_path = file_path.to_ascii_lowercase();
-            let camera_raw = lower_path.ends_with(".nef")
-                || lower_path.ends_with(".raf")
-                || lower_path.ends_with(".dng");
-            if prior.is_none() && !roll_prior_allowed && camera_raw {
-                prior = family_prior.clone();
             }
             let (encoded, geom) = if let Some((encoded, geom)) =
                 in_memory_thumbnails.get(&normalize_path(&file_path))
@@ -11955,12 +11913,25 @@ struct ExportRenderInputs {
 }
 
 fn export_render_inputs_from_snapshot(snapshot: &ExportItemSnapshot) -> ExportRenderInputs {
-    ExportRenderInputs {
+    let mut inputs = ExportRenderInputs {
         params: snapshot.params.clone(),
         geom: snapshot.geom.clone(),
         base_color: snapshot.base_color.clone(),
         render_pipeline_state: snapshot.pipeline_state.clone(),
+    };
+    if let Some(inherited) = inherited_export_render_state(snapshot) {
+        inputs.base_color = inherited.base_color;
+        if let Some(mapping) = inherited.render_mapping {
+            inputs.render_pipeline_state.content_range = None;
+            inputs.render_pipeline_state.render_mapping = mapping;
+        }
     }
+    inputs
+}
+
+struct InheritedExportRenderState {
+    base_color: BaseColor,
+    render_mapping: Option<RenderMapping>,
 }
 
 /// Measure an inherited film base on the same 2560 px proxy scale
@@ -11973,7 +11944,9 @@ fn export_render_inputs_from_snapshot(snapshot: &ExportItemSnapshot) -> ExportRe
 /// `None` means the frame is not inherited, has no confirmed Film Area to
 /// measure, or the proxy measurement was unusable; callers keep the persisted
 /// colour in that case, matching the prepare_proxy fallback.
-fn inherited_export_base_color(snapshot: &ExportItemSnapshot) -> Option<BaseColor> {
+fn inherited_export_render_state(
+    snapshot: &ExportItemSnapshot,
+) -> Option<InheritedExportRenderState> {
     if snapshot.pipeline_state.processing_report.base_source
         != crate::pipeline::INHERITED_FILM_BASE_SOURCE
         || snapshot.geom.calibration_points.is_none()
@@ -11999,14 +11972,44 @@ fn inherited_export_base_color(snapshot: &ExportItemSnapshot) -> Option<BaseColo
             FilterType::Lanczos3,
         );
     }
-    inherited_film_base_measurement(&snapshot.pipeline_state, &snapshot.geom, &proxy)
-        .map(|estimate| base_color_from_density(estimate.density))
+    let estimate =
+        inherited_film_base_measurement(&snapshot.pipeline_state, &snapshot.geom, &proxy)?;
+
+    // `prepare_proxy` measures the frame's own base and highlight, then rebuilds
+    // the Roll mapping around that base. Reproduce both steps here on the same
+    // proxy scale; this state is used for rendering and never persisted.
+    let anchor_base = pipeline_base_density(&snapshot.pipeline_state, &BaseColor::default());
+    let detected_base = matches!(
+        snapshot.pipeline_state.contract,
+        ProcessingContract::RollAnchoredProPhotoV11 | ProcessingContract::CaptureCorrectedV11
+    )
+    .then_some(anchor_base)
+    .filter(|base| base.iter().all(|value| *value > 0.0))
+    .and_then(|base| detect_frame_base_density(&proxy, base));
+    let detected_highlight = detected_base
+        .zip(roll_physical_density_span(
+            &snapshot.pipeline_state.density_anchors,
+            anchor_base,
+        ))
+        .and_then(|(base, span)| detect_frame_highlight_fraction(&proxy, base, span));
+    let render_mapping = inherited_film_base_render_mapping(
+        &snapshot.pipeline_state,
+        estimate.density,
+        detected_highlight,
+    );
+    Some(InheritedExportRenderState {
+        base_color: base_color_from_density(estimate.density),
+        render_mapping,
+    })
 }
 
 /// The base colour this export actually renders with. Only an inherited base
 /// is measured here; every other frame uses its persisted state verbatim.
+#[cfg(test)]
 fn export_base_color_from_snapshot(snapshot: &ExportItemSnapshot) -> BaseColor {
-    inherited_export_base_color(snapshot).unwrap_or_else(|| snapshot.base_color.clone())
+    inherited_export_render_state(snapshot)
+        .map(|state| state.base_color)
+        .unwrap_or_else(|| snapshot.base_color.clone())
 }
 
 #[tauri::command]
@@ -12312,20 +12315,16 @@ pub async fn batch_export_images(
             let inputs = export_render_inputs_from_snapshot(snapshot);
             let params_owned = inputs.params;
             let geom_owned = inputs.geom;
-            let base_color_owned = if snapshot.pipeline_state.processing_report.base_source
+            let base_color_owned = inputs.base_color;
+            if snapshot.pipeline_state.processing_report.base_source
                 == crate::pipeline::INHERITED_FILM_BASE_SOURCE
+                && base_color_owned != snapshot.base_color
             {
-                let measured = export_base_color_from_snapshot(snapshot);
-                if measured != snapshot.base_color {
-                    eprintln!(
-                        "[Export] inherited film base measured on the {} px proxy for {} (render-only)",
-                        PROXY_LONG_EDGE as u32, snapshot.file_path
-                    );
-                }
-                measured
-            } else {
-                inputs.base_color
-            };
+                eprintln!(
+                    "[Export] inherited film base and Roll mapping measured on the {} px proxy for {} (render-only)",
+                    PROXY_LONG_EDGE as u32, snapshot.file_path
+                );
+            }
             let persisted_pipeline_state = inputs.render_pipeline_state;
             let decoded = if snapshot.pipeline_state.contract == ProcessingContract::LegacyV1
                 || is_smart_auto_compatibility(&snapshot.pipeline_state)
@@ -25217,17 +25216,50 @@ mod export_readonly_contract_tests {
     use super::{
         clear_retired_legacy_domain, decode_scanner_profiled_estimate_image_buffer,
         encode_export_output, export_base_color_from_snapshot, export_render_inputs_from_snapshot,
-        load_image_state_from_connection, pipeline_resolver_input, resolve_pipeline,
-        state_from_resolution, write_export_output, DecodeMode, ExportFormat, ExportItemSnapshot,
-        PipelineImageKind, PipelineResolverInput, RAW_DECODE_VERSION,
+        inherited_film_base_render_mapping, load_image_state_from_connection,
+        pipeline_resolver_input, resolve_pipeline, state_from_resolution,
+        state_from_resolution_with_frame_base, write_export_output, DecodeMode, ExportFormat,
+        ExportItemSnapshot, PipelineImageKind, PipelineResolverInput, PROXY_LONG_EDGE,
+        RAW_DECODE_VERSION,
     };
     use crate::app_state::{
-        BaseColor, GeometryState, PipelineState, ProcessingContract, RenderMapping, RenderMode,
-        TuningParams,
+        BaseColor, DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorProvenance,
+        DensityAnchorScope, DensityAnchorSource, DensityAnchors, GeometryState, PipelineState,
+        ProcessingContract, RenderMapping, RenderMode, TuningParams,
+        DENSITY_ANCHOR_ALGORITHM_VERSION,
     };
     use crate::color_science::ColorSpaceId;
     use image::{ImageBuffer, Rgb};
     use rusqlite::types::ValueRef;
+
+    fn test_roll_anchors() -> DensityAnchors {
+        let provenance = DensityAnchorProvenance {
+            input_domain: DataDomain::ProPhotoEstimate,
+            algorithm_version: DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+            legacy: false,
+            ..Default::default()
+        };
+        DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: [0.18, 0.24, 0.30],
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll:base".to_string()),
+                provenance: provenance.clone(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: [1.75, 1.95, 2.20],
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll:full".to_string()),
+                provenance,
+            }),
+            highlight_fraction: Some(0.82),
+            ..Default::default()
+        }
+    }
 
     fn distinct_snapshot() -> (ExportItemSnapshot, BaseColor, RenderMapping) {
         let base_color = BaseColor {
@@ -25331,10 +25363,13 @@ mod export_readonly_contract_tests {
         snapshot.base_color = placeholder.clone();
         snapshot.pipeline_state.processing_report.base_source =
             crate::pipeline::INHERITED_FILM_BASE_SOURCE.to_string();
+        snapshot.pipeline_state.density_anchors = test_roll_anchors();
         snapshot.geom.calibration_points =
             Some([[0.05, 0.05], [0.95, 0.05], [0.95, 0.95], [0.05, 0.95]]);
 
-        let measured = export_base_color_from_snapshot(&snapshot);
+        let inputs = export_render_inputs_from_snapshot(&snapshot);
+        let measured = inputs.base_color.clone();
+        assert_eq!(measured, export_base_color_from_snapshot(&snapshot));
         assert_ne!(
             measured, placeholder,
             "export must replace the copied base with this frame's own measurement"
@@ -25351,6 +25386,42 @@ mod export_readonly_contract_tests {
             snapshot.pipeline_state.processing_report.base_source,
             crate::pipeline::INHERITED_FILM_BASE_SOURCE,
             "the persisted provenance must stay inherited until Develop re-measures it"
+        );
+
+        // The first open rebuilds the Roll mapping around the measured base.
+        // Export must produce that same render state while leaving the snapshot
+        // untouched.
+        let proxy = decode_scanner_profiled_estimate_image_buffer(
+            &snapshot.file_path,
+            DecodeMode::DevelopProxy,
+            snapshot.scanner_profile.as_ref(),
+            PROXY_LONG_EDGE as u32,
+        )
+        .unwrap();
+        let resolution = resolve_pipeline(&pipeline_resolver_input(
+            &snapshot.pipeline_state,
+            None,
+            &[],
+            &snapshot.file_path,
+            None,
+        ));
+        let frame_base = super::detect_frame_base_density(
+            &proxy,
+            super::pipeline_base_density(&snapshot.pipeline_state, &BaseColor::default()),
+        );
+        let first_open_state = state_from_resolution_with_frame_base(
+            &snapshot.pipeline_state,
+            &resolution,
+            frame_base,
+            None,
+        );
+        let measured_density = super::estimate_film_base_f32(&proxy, &snapshot.geom).density;
+        let expected_mapping =
+            inherited_film_base_render_mapping(&first_open_state, measured_density, None)
+                .expect("the first open derives the Roll mapping from the new base");
+        assert_eq!(
+            inputs.render_pipeline_state.render_mapping, expected_mapping,
+            "export and the first open must render the inherited frame with the same mapping"
         );
 
         std::fs::remove_dir_all(&temp).ok();
