@@ -2035,12 +2035,8 @@ const FILM_BASE_BAND_MIN_SAMPLES: usize = 64;
 const FILM_BASE_BAND_WIDTH: f32 = 0.010;
 /// Sample count the in-area low-density tail needs (matches `compute_auto_base_f32`).
 const FILM_BASE_TAIL_MIN_SAMPLES: usize = 8;
-/// Largest per-channel density difference a clear film base can show between its
-/// own channels before the candidate is describing scene content instead.
-const FILM_BASE_MAX_CHANNEL_SPREAD: f32 = 0.75;
 /// A clear base sits close to full transmission; anything denser is not a base.
 const FILM_BASE_MIN_DENSITY: f32 = 0.02;
-const FILM_BASE_MAX_DENSITY: f32 = 1.60;
 /// How far the rebate band may sit *denser* than the in-area tail and still
 /// describe the same physical base.
 ///
@@ -2063,16 +2059,8 @@ fn validate_film_base_candidate(
     if density.iter().any(|value| !value.is_finite()) {
         return Err("film_base_non_finite");
     }
-    if density
-        .iter()
-        .any(|value| *value < FILM_BASE_MIN_DENSITY || *value > FILM_BASE_MAX_DENSITY)
-    {
+    if density.iter().any(|value| *value < FILM_BASE_MIN_DENSITY) {
         return Err("film_base_out_of_range");
-    }
-    let maximum = density.iter().copied().fold(f32::MIN, f32::max);
-    let minimum = density.iter().copied().fold(f32::MAX, f32::min);
-    if maximum - minimum > FILM_BASE_MAX_CHANNEL_SPREAD {
-        return Err("film_base_channel_spread");
     }
     Ok(())
 }
@@ -10729,6 +10717,28 @@ fn positive_to_display_matrix(pipeline_state: &PipelineState) -> [f32; 9] {
         .unwrap_or_else(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb))
 }
 
+const CAMERA_DISPLAY_ROLLOFF_KNEE: f32 = 0.85;
+const CAMERA_DISPLAY_ROLLOFF_CEIL: f32 = 0.990;
+
+/// Keep the normalized positive's channel ratio through the camera matrix's
+/// highlight range. Values at or below the knee are returned unchanged; above
+/// it all three channels share one positive scale factor, so a bright sky does
+/// not desaturate towards white.
+fn rolloff_camera_display_rgb(rgb: [f32; 3]) -> [f32; 3] {
+    if rgb.iter().any(|value| !value.is_finite()) {
+        return [0.0; 3];
+    }
+    let rgb = rgb.map(|value| value.max(0.0));
+    let maximum = rgb[0].max(rgb[1]).max(rgb[2]);
+    if maximum <= CAMERA_DISPLAY_ROLLOFF_KNEE {
+        return rgb;
+    }
+    let span = CAMERA_DISPLAY_ROLLOFF_CEIL - CAMERA_DISPLAY_ROLLOFF_KNEE;
+    let excess = maximum - CAMERA_DISPLAY_ROLLOFF_KNEE;
+    let compressed = CAMERA_DISPLAY_ROLLOFF_KNEE + (span * excess) / (span + excess);
+    rgb.map(|value| value * (compressed / maximum))
+}
+
 fn render_shader_equivalent_core(
     source_width: u32,
     source_height: u32,
@@ -10738,6 +10748,30 @@ fn render_shader_equivalent_core(
     base_color: &BaseColor,
     pipeline_state: &PipelineState,
     lut: Option<&ParsedLut>,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    render_shader_equivalent_core_with_camera_rolloff(
+        source_width,
+        source_height,
+        sample,
+        params,
+        geom,
+        base_color,
+        pipeline_state,
+        lut,
+        true,
+    )
+}
+
+fn render_shader_equivalent_core_with_camera_rolloff(
+    source_width: u32,
+    source_height: u32,
+    sample: impl Fn([f32; 2]) -> Option<[f32; 3]> + Sync,
+    params: &TuningParams,
+    geom: &crate::app_state::GeometryState,
+    base_color: &BaseColor,
+    pipeline_state: &PipelineState,
+    lut: Option<&ParsedLut>,
+    apply_camera_rolloff: bool,
 ) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
     let crop = &geom.crop_rect;
     let output_width = (source_width as f32 * crop.width.clamp(0.0, 1.0))
@@ -10801,11 +10835,24 @@ fn render_shader_equivalent_core(
     };
     let smart_auto_to_srgb = smart_auto_compatibility
         .then(|| linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb));
+    let camera_native_matrix = (pipeline_state.contract != ProcessingContract::LegacyV1
+        && pipeline_state.contract != ProcessingContract::CaptureCorrectedV11
+        && !smart_auto_compatibility
+        && params.film_mode == FilmMode::Color)
+        .then(|| {
+            pipeline_state
+                .processing_report
+                .camera_to_display
+                .and_then(camera_display_matrix)
+        })
+        .flatten();
     let positive_to_display = (pipeline_state.contract != ProcessingContract::LegacyV1
         && pipeline_state.contract != ProcessingContract::CaptureCorrectedV11
         && !smart_auto_compatibility
         && params.film_mode == FilmMode::Color)
-        .then(|| positive_to_display_matrix(pipeline_state));
+        .then(|| {
+            camera_native_matrix.unwrap_or_else(|| positive_to_display_matrix(pipeline_state))
+        });
     let (bw_dmin, bw_dmax) = neutral_density_bounds(params.density.d_min, params.density.d_max);
     // The Master D-Min/D-Max sliders shift whichever endpoints the active
     // route derived. Keeping the shift separate lets a sampled Roll keep its
@@ -10917,11 +10964,12 @@ fn render_shader_equivalent_core(
             let normalized = if legacy_compatibility {
                 positive_linear
             } else {
-                positive_linear.map(|value| {
-                    value
-                        .clamp(0.0, 1.0)
-                        .powf(1.0 / params.density.gamma.max(1e-6))
-                })
+                let display_linear = if camera_native_matrix.is_some() && apply_camera_rolloff {
+                    rolloff_camera_display_rgb(positive_linear)
+                } else {
+                    positive_linear.map(|value| value.clamp(0.0, 1.0))
+                };
+                display_linear.map(|value| value.powf(1.0 / params.density.gamma.max(1e-6)))
             };
             let (saturation, temperature, tint) = if params.film_mode == FilmMode::Color {
                 (
@@ -11058,6 +11106,28 @@ fn render_f32_shader_equivalent(
     pipeline_state: &PipelineState,
     lut: Option<&ParsedLut>,
 ) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    render_f32_shader_equivalent_with_camera_rolloff(
+        source,
+        quality,
+        params,
+        geom,
+        base_color,
+        pipeline_state,
+        lut,
+        true,
+    )
+}
+
+fn render_f32_shader_equivalent_with_camera_rolloff(
+    source: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    quality: Option<&crate::raw_backend::QualityMask>,
+    params: &TuningParams,
+    geom: &crate::app_state::GeometryState,
+    base_color: &BaseColor,
+    pipeline_state: &PipelineState,
+    lut: Option<&ParsedLut>,
+    apply_camera_rolloff: bool,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
     // The core renderer crops and samples, but it does not place the frame: the
     // WebGL preview applies the quarter turns, flips and angle through its
     // geometry matrix, and this renderer has to do the same or a flipped frame
@@ -11069,7 +11139,7 @@ fn render_f32_shader_equivalent(
     } else {
         (source_width, source_height)
     };
-    render_shader_equivalent_core(
+    render_shader_equivalent_core_with_camera_rolloff(
         layout_width,
         layout_height,
         |uv| {
@@ -11081,6 +11151,7 @@ fn render_f32_shader_equivalent(
         base_color,
         pipeline_state,
         lut,
+        apply_camera_rolloff,
     )
 }
 
@@ -20697,10 +20768,11 @@ mod import_contract_tests {
             super::validate_film_base_candidate([0.0, 0.45, 0.6], 512, 64),
             Err("film_base_out_of_range")
         );
-        assert_eq!(
-            super::validate_film_base_candidate([1.4, 0.2, 0.3], 512, 64),
-            Err("film_base_channel_spread")
-        );
+        // Underexposure raises the whole base density and the camera-native
+        // channel spread. Those are physically valid film-base measurements,
+        // not evidence that the candidate is scene content.
+        assert!(super::validate_film_base_candidate([2.3, 2.6, 2.9], 512, 64).is_ok());
+        assert!(super::validate_film_base_candidate([1.4, 0.2, 0.3], 512, 64).is_ok());
         assert!(super::film_base_band_agrees(
             [0.30, 0.45, 0.60],
             [0.35, 0.50, 0.65]
@@ -26240,9 +26312,9 @@ mod export_readonly_contract_tests {
 #[cfg(test)]
 mod camera_native_basis_tests {
     use super::{
-        build_response_buffer_from_proxy_with_state, camera_native_working_buffer,
-        frame_needs_window_reanalysis, positive_to_display_matrix, render_f32_shader_equivalent,
-        smart_auto_working_basis,
+        base_color_from_density, build_response_buffer_from_proxy_with_state,
+        camera_native_working_buffer, frame_needs_window_reanalysis, positive_to_display_matrix,
+        render_f32_shader_equivalent, rolloff_camera_display_rgb, smart_auto_working_basis,
     };
     use crate::app_state::{
         BaseColor, DensityAnchorProvenance, FilmMode, GeometryState, PipelineState, RenderMapping,
@@ -26369,6 +26441,68 @@ mod camera_native_basis_tests {
         };
         state.processing_report.camera_to_display = camera_to_display;
         state
+    }
+
+    #[test]
+    fn camera_display_rolloff_is_identity_below_the_knee() {
+        for rgb in [[0.0, 0.0, 0.0], [0.2, 0.6, 0.8], [0.75, 0.85, 0.1]] {
+            assert_eq!(rolloff_camera_display_rgb(rgb), rgb);
+        }
+    }
+
+    #[test]
+    fn camera_display_rolloff_compresses_peak_without_changing_channel_ratios() {
+        let input = [0.75, 0.90, 1.25];
+        let output = rolloff_camera_display_rgb(input);
+        let maximum = output[0].max(output[1]).max(output[2]);
+        assert!(maximum < 0.990, "{output:?}");
+        assert!((output[0] / output[1] - input[0] / input[1]).abs() < 1.0e-5);
+        assert!((output[2] / output[1] - input[2] / input[1]).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn camera_native_display_is_unchanged_by_a_tenfold_exposure_drop() {
+        let normal_density = [1.2, 1.3, 1.1];
+        let normal = ImageBuffer::from_pixel(
+            2,
+            2,
+            Rgb([
+                10f32.powf(-normal_density[0]),
+                10f32.powf(-normal_density[1]),
+                10f32.powf(-normal_density[2]),
+            ]),
+        );
+        let underexposed = ImageBuffer::from_pixel(
+            2,
+            2,
+            Rgb(normal_density.map(|density| 0.1 * 10f32.powf(-density))),
+        );
+        let normal_base = [0.4, 0.5, 0.6];
+        let underexposed_base = normal_base.map(|density| density + 1.0);
+        let normal_window = ([0.7, 0.8, 0.9], [1.7, 1.8, 1.9]);
+        let underexposed_window = (
+            normal_window.0.map(|density| density + 1.0),
+            normal_window.1.map(|density| density + 1.0),
+        );
+        let render = |source: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+                      base: [f32; 3],
+                      window: ([f32; 3], [f32; 3])| {
+            let mut state = mapped_state(Some(UNIFORM_CAMERA_GAIN));
+            state.render_mapping.density_low = window.0;
+            state.render_mapping.density_high = window.1;
+            render_f32_shader_equivalent(
+                source,
+                None,
+                &TuningParams::default(),
+                &GeometryState::default(),
+                &base_color_from_density(base),
+                &state,
+                None,
+            )
+        };
+        let normal_render = render(&normal, normal_base, normal_window);
+        let under_render = render(&underexposed, underexposed_base, underexposed_window);
+        assert_eq!(normal_render.as_raw(), under_render.as_raw());
     }
 
     #[test]
@@ -26516,7 +26650,8 @@ mod fixture_sweep_tests {
         base_color_from_density, compute_content_limits_f32_with_bounds,
         decode_scanner_profiled_estimate_image_buffer,
         decode_scanner_profiled_estimate_with_matrix, estimate_film_base_f32, is_scanner_fff_tiff,
-        prepare_content_render_limits, render_f32_shader_equivalent, DecodeMode, PROXY_LONG_EDGE,
+        prepare_content_render_limits, render_f32_shader_equivalent,
+        render_f32_shader_equivalent_with_camera_rolloff, DecodeMode, PROXY_LONG_EDGE,
     };
     use crate::app_state::{DensityAnchors, GeometryState, PipelineState, TuningParams};
     use image::{ImageBuffer, Rgb};
@@ -26600,6 +26735,38 @@ mod fixture_sweep_tests {
             hasher.update(value.to_le_bytes());
         }
         format!("{:x}", hasher.finalize())
+    }
+
+    fn fit_render_long_edge(
+        image: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+        long_edge: u32,
+    ) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+        let current = image.width().max(image.height()).max(1);
+        if current <= long_edge {
+            return image.clone();
+        }
+        let ratio = long_edge as f32 / current as f32;
+        image::imageops::resize(
+            image,
+            ((image.width() as f32 * ratio).round() as u32).max(1),
+            ((image.height() as f32 * ratio).round() as u32).max(1),
+            image::imageops::FilterType::Lanczos3,
+        )
+    }
+
+    fn save_render_preview(path: &Path, image: &ImageBuffer<Rgb<u16>, Vec<u16>>) {
+        let eight_bit =
+            ImageBuffer::<Rgb<u8>, Vec<u8>>::from_fn(image.width(), image.height(), |x, y| {
+                let pixel = image.get_pixel(x, y).0;
+                Rgb([
+                    (pixel[0] / 257) as u8,
+                    (pixel[1] / 257) as u8,
+                    (pixel[2] / 257) as u8,
+                ])
+            });
+        eight_bit
+            .save(path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
     }
 
     #[test]
@@ -26750,5 +26917,232 @@ mod fixture_sweep_tests {
             entries.len(),
             output.display()
         );
+    }
+
+    #[test]
+    #[ignore = "manual colour/highlight A/B over local camera RAW fixtures"]
+    fn camera_rolloff_ab_diagnostic() {
+        const DIAGNOSTIC_LONG_EDGE: u32 = 1600;
+        const OLD_MAX_DENSITY: f32 = 1.60;
+        const OLD_MAX_CHANNEL_SPREAD: f32 = 0.75;
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
+        let output_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("camera-rolloff-ab");
+        std::fs::create_dir_all(&output_root).unwrap();
+
+        let mut paths = Vec::new();
+        collect_files(&root, &mut paths);
+        if let Ok(filter) = std::env::var("NEXFILM_DIAG_FILES") {
+            let selected: Vec<PathBuf> = filter
+                .split(';')
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from)
+                .collect();
+            if !selected.is_empty() {
+                paths = selected;
+            }
+        }
+        paths.sort();
+
+        let mut report = Vec::new();
+        for path in paths {
+            if !camera_raw(&path) {
+                continue;
+            }
+            let stem = path
+                .file_stem()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap_or_else(|| "frame".to_string());
+            let (working, matrix) = match decode_scanner_profiled_estimate_with_matrix(
+                path.to_string_lossy().as_ref(),
+                DecodeMode::DevelopProxy,
+                None,
+                DIAGNOSTIC_LONG_EDGE,
+            ) {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    eprintln!("[AB] skipped {}: {error}", path.display());
+                    continue;
+                }
+            };
+            let Some(matrix) = matrix else {
+                eprintln!(
+                    "[AB] skipped {}: no plausible camera matrix",
+                    path.display()
+                );
+                continue;
+            };
+            let mut geom = GeometryState::default();
+            if let Ok(legacy) = super::decode_image_buffer(
+                path.to_string_lossy().as_ref(),
+                DecodeMode::DevelopProxy,
+            ) {
+                let border = crate::film_border::detect_film_border(
+                    &image::DynamicImage::ImageRgb16(legacy),
+                );
+                if border.confidence == crate::film_border::DetectionConfidence::High {
+                    geom.calibration_points = Some(border.points);
+                }
+            }
+
+            for (condition, exposure_scale) in [("normal", 1.0f32), ("0.1x", 0.1f32)] {
+                let mut source = working.clone();
+                if exposure_scale != 1.0 {
+                    for value in source.as_mut() {
+                        *value *= exposure_scale;
+                    }
+                }
+                let estimate = estimate_film_base_f32(&source, &geom);
+                let new_usable = estimate.usable;
+                let spread = estimate.density.iter().copied().fold(f32::MIN, f32::max)
+                    - estimate.density.iter().copied().fold(f32::MAX, f32::min);
+                let old_usable = new_usable
+                    && estimate
+                        .density
+                        .iter()
+                        .all(|value| *value <= OLD_MAX_DENSITY)
+                    && spread <= OLD_MAX_CHANNEL_SPREAD;
+                let new_base = if new_usable {
+                    estimate.density
+                } else {
+                    [0.0; 3]
+                };
+                let old_base = if old_usable {
+                    estimate.density
+                } else {
+                    [0.0; 3]
+                };
+
+                let render = |base: [f32; 3], usable: bool, use_rolloff: bool| {
+                    let mut limits =
+                        compute_content_limits_f32_with_bounds(&source, None, &geom, base, None)
+                            .unwrap();
+                    let (offsets, _) = prepare_content_render_limits(
+                        &mut limits,
+                        &DensityAnchors::default(),
+                        base,
+                    );
+                    let mut state = PipelineState::smart_auto();
+                    state.processing_report.base_source = if usable {
+                        "detected_film_base"
+                    } else {
+                        "missing_film_base_reference"
+                    }
+                    .to_string();
+                    state.processing_report.camera_to_display = Some(matrix);
+                    state.render_mapping.density_low = limits.d_min;
+                    state.render_mapping.density_high = limits.d_max;
+                    state.render_mapping.channel_offsets = offsets;
+                    let mut params = TuningParams::default();
+                    params.density.d_min = limits.d_min;
+                    params.density.d_max = limits.d_max;
+                    render_f32_shader_equivalent_with_camera_rolloff(
+                        &source,
+                        None,
+                        &params,
+                        &geom,
+                        &base_color_from_density(base),
+                        &state,
+                        None,
+                        use_rolloff,
+                    )
+                };
+                let old_render = render(old_base, old_usable, false);
+                let new_render = render(new_base, new_usable, true);
+
+                let points = geom.calibration_points.unwrap_or([
+                    [0.0, 0.0],
+                    [1.0, 0.0],
+                    [1.0, 1.0],
+                    [0.0, 1.0],
+                ]);
+                let metrics = |image: &ImageBuffer<Rgb<u16>, Vec<u16>>| {
+                    let mut sum = [0.0f64; 3];
+                    let mut clipped = 0usize;
+                    let mut count = 0usize;
+                    let w = image.width().max(1);
+                    let h = image.height().max(1);
+                    for (x, y, pixel) in image.enumerate_pixels() {
+                        let uv = [(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32];
+                        if !super::point_in_film_area(uv, &points, 0.0) {
+                            continue;
+                        }
+                        count += 1;
+                        let rgb = pixel.0.map(|value| value as f32 / 65535.0);
+                        if rgb.iter().any(|value| *value >= 0.995) {
+                            clipped += 1;
+                        }
+                        for channel in 0..3 {
+                            sum[channel] += rgb[channel] as f64;
+                        }
+                    }
+                    let count = count.max(1);
+                    let mean = sum.map(|value| value / count as f64);
+                    serde_json::json!({
+                        "mean": mean,
+                        "r_over_g": mean[0] / mean[1].max(1.0e-9),
+                        "b_over_g": mean[2] / mean[1].max(1.0e-9),
+                        "highlight_ge_0995": clipped as f64 / count as f64,
+                    })
+                };
+                let old_metrics = metrics(&old_render);
+                let new_metrics = metrics(&new_render);
+                println!(
+                    "[AB] {stem} {condition}: old usable={old_usable} base={old_base:?} mean={:?} R/G={:.4} B/G={:.4} clip={:.4}%",
+                    old_metrics["mean"],
+                    old_metrics["r_over_g"].as_f64().unwrap_or(0.0),
+                    old_metrics["b_over_g"].as_f64().unwrap_or(0.0),
+                    100.0
+                        * old_metrics["highlight_ge_0995"]
+                            .as_f64()
+                            .unwrap_or(0.0),
+                );
+                println!(
+                    "[AB] {stem} {condition}: new usable={new_usable} base={new_base:?} mean={:?} R/G={:.4} B/G={:.4} clip={:.4}%",
+                    new_metrics["mean"],
+                    new_metrics["r_over_g"].as_f64().unwrap_or(0.0),
+                    new_metrics["b_over_g"].as_f64().unwrap_or(0.0),
+                    100.0
+                        * new_metrics["highlight_ge_0995"]
+                            .as_f64()
+                            .unwrap_or(0.0),
+                );
+
+                let old_tile = fit_render_long_edge(&old_render, DIAGNOSTIC_LONG_EDGE);
+                let new_tile = fit_render_long_edge(&new_render, DIAGNOSTIC_LONG_EDGE);
+                let width = old_tile.width() + 4 + new_tile.width();
+                let height = old_tile.height().max(new_tile.height());
+                let mut sheet =
+                    ImageBuffer::<Rgb<u16>, Vec<u16>>::from_pixel(width, height, Rgb([65535; 3]));
+                image::imageops::replace(&mut sheet, &old_tile, 0, 0);
+                image::imageops::replace(&mut sheet, &new_tile, old_tile.width() as i64 + 4, 0);
+                let image_name = format!("{stem}_{condition}_old-new.jpg");
+                let image_path = output_root.join(&image_name);
+                save_render_preview(&image_path, &sheet);
+                println!("[AB] wrote {}", image_path.display());
+
+                report.push(serde_json::json!({
+                    "file": path.strip_prefix(&root).unwrap_or(&path).to_string_lossy(),
+                    "condition": condition,
+                    "old_usable": old_usable,
+                    "new_usable": new_usable,
+                    "old_base": old_base,
+                    "new_base": new_base,
+                    "old": old_metrics,
+                    "new": new_metrics,
+                    "image": image_path.to_string_lossy(),
+                }));
+            }
+        }
+
+        let report_path = output_root.join("camera-rolloff-ab.json");
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec_pretty(&serde_json::json!({ "frames": report })).unwrap(),
+        )
+        .unwrap();
+        println!("[AB] wrote {}", report_path.display());
     }
 }

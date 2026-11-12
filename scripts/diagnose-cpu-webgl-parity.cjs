@@ -158,6 +158,7 @@ if (!gl) {
         gl.uniform1i(loc('u_invert_enabled'), 1);
         gl.uniform1i(loc('u_legacy_pipeline'), 0);
         gl.uniform1i(loc('u_capture_corrected_pipeline'), 0);
+        gl.uniform1i(loc('u_camera_native_display'), 1);
         gl.uniform3fv(loc('u_base_density'), u.base_density);
         gl.uniform3fv(loc('u_dmin'), u.dmin);
         gl.uniform3fv(loc('u_dmax'), u.dmax);

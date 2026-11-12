@@ -29,7 +29,11 @@ pub const DENSITY_ANCHOR_ALGORITHM_VERSION: &str = "density_anchor_v2";
 /// 4: camera RAWs decoded by LibRaw run the density stage in camera-native RGB
 /// instead of a gamut-compressed ProPhoto estimate, so their film base and
 /// endpoints are in a different channel basis and have to be re-derived.
-pub const DENSITY_WINDOW_RULE_VERSION: u32 = 4;
+///
+/// 5: the film-base gate no longer rejects physically valid high-density
+/// bases caused by underexposure, so frames analysed under rule 4 have to be
+/// re-derived before their base can be trusted again.
+pub const DENSITY_WINDOW_RULE_VERSION: u32 = 5;
 
 fn default_calibration_profile_payload_version() -> u32 {
     CALIBRATION_PROFILE_PAYLOAD_VERSION

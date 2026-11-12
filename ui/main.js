@@ -2075,6 +2075,7 @@ let u_curve_lut_loc;
 let u_has_curve_loc;
 let u_alpha_guard_loc;
 let u_positive_to_display_loc;
+let u_camera_native_display_loc;
 // 1x1 textures that keep every sampler of the base program bound to a texture
 // of the right type. WebGL raises INVALID_OPERATION on a draw when a sampler3D
 // finds a 2D texture on its unit (or the reverse), even if the branch that
@@ -2093,6 +2094,7 @@ const PROPHOTO_TO_LINEAR_SRGB = new Float32Array([
 ]);
 // The loaded proxy's positive -> linear sRGB matrix (column-major).
 let currentPositiveToDisplay = PROPHOTO_TO_LINEAR_SRGB;
+let currentCameraNativeDisplay = false;
 let proxyHasAnalyzedBase = false;
 let currentPipelineState = { contract: 'legacy_v1', density_anchors: {} };
 let currentPipelineContract = 'legacy_v1';
@@ -2282,6 +2284,9 @@ function initWebGL() {
     // estimate; a camera RAW whose density ran in camera-native RGB sends its
     // own camera -> sRGB matrix with the proxy instead.
     uniform mat3 u_positive_to_display;
+    // Flag 8 in the proxy header: the positive carries a camera-native
+    // display matrix and uses the hue-preserving highlight shoulder.
+    uniform int u_camera_native_display;
 
     const mat3 STATUS_M = mat3(
         1.0197, -0.0052, 0.0131,
@@ -2299,6 +2304,18 @@ function initWebGL() {
 
     float getLuma(vec3 c) {
         return dot(c, vec3(0.2126, 0.7152, 0.0722));
+    }
+
+    vec3 rolloffCameraDisplay(vec3 rgb) {
+        rgb = max(rgb, vec3(0.0));
+        float maximum = max(rgb.r, max(rgb.g, rgb.b));
+        const float knee = 0.85;
+        const float ceiling = 0.990;
+        if (maximum <= knee) return rgb;
+        float span = ceiling - knee;
+        float excess = maximum - knee;
+        float compressed = knee + (span * excess) / (span + excess);
+        return rgb * (compressed / maximum);
     }
 
     float curveLutCoord(float value, float size) {
@@ -2545,11 +2562,12 @@ function initWebGL() {
             positive_linear *= exp2(u_master_exposure);
         }
         float safe_gamma = max(u_gamma, 1e-6);
-        vec3 final_rgb = vec3(
-            pow(clamp(positive_linear.r, 0.0, 1.0), 1.0 / safe_gamma),
-            pow(clamp(positive_linear.g, 0.0, 1.0), 1.0 / safe_gamma),
-            pow(clamp(positive_linear.b, 0.0, 1.0), 1.0 / safe_gamma)
-        );
+        vec3 display_linear = clamp(positive_linear, 0.0, 1.0);
+        if (u_mode == 0 && u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0
+            && u_camera_native_display != 0) {
+            display_linear = rolloffCameraDisplay(positive_linear);
+        }
+        vec3 final_rgb = pow(display_linear, vec3(1.0 / safe_gamma));
         // The Tone Curve sits between the Printer Lights and the Aesthetics
         // stage, exactly where the panel puts it.
         final_rgb = applyToneCurves(final_rgb);
@@ -2700,6 +2718,7 @@ function initWebGL() {
     u_has_curve_loc = gl.getUniformLocation(shaderProgram, "u_has_curve");
     u_alpha_guard_loc = gl.getUniformLocation(shaderProgram, "u_alpha_guard");
     u_positive_to_display_loc = gl.getUniformLocation(shaderProgram, "u_positive_to_display");
+    u_camera_native_display_loc = gl.getUniformLocation(shaderProgram, "u_camera_native_display");
     
     gl.getExtension("OES_texture_float_linear");
 
@@ -3993,6 +4012,10 @@ function applyDevelopUniforms({ cropRect, scopeWarning, alphaGuard }) {
     baseUniform1f(u_highlight_threshold_loc, scopeHighlightLimit);
     baseUniform1i(u_alpha_guard_loc, alphaGuard ? 1 : 0);
     baseUniformMatrix3fv(u_positive_to_display_loc, false, currentPositiveToDisplay);
+    baseUniform1i(
+        u_camera_native_display_loc,
+        currentCameraNativeDisplay && mode === 0 ? 1 : 0
+    );
     baseUniform4f(u_crop_loc, cropRect.x, cropRect.y, cropRect.width, cropRect.height);
     
     const geometryUv = NexFilmGeometry.createInverseGeometryMatrix(
@@ -4333,6 +4356,7 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         // of the shader's mat3.
         let headerLength = dataView.byteLength >= 28 ? 28 : 24;
         let positiveToDisplay = PROPHOTO_TO_LINEAR_SRGB;
+        let cameraNativeDisplay = false;
         if ((flags & 8) !== 0 && dataView.byteLength >= 64) {
             const rowMajor = Array.from({ length: 9 }, (_, index) => dataView.getFloat32(28 + index * 4, true));
             if (rowMajor.every(Number.isFinite)) {
@@ -4341,6 +4365,7 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
                     rowMajor[1], rowMajor[4], rowMajor[7],
                     rowMajor[2], rowMajor[5], rowMajor[8]
                 ]);
+                cameraNativeDisplay = true;
             }
             headerLength = 64;
         }
@@ -4372,6 +4397,7 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         const previousTexture = tex;
         tex = nextTexture;
         currentPositiveToDisplay = positiveToDisplay;
+        currentCameraNativeDisplay = cameraNativeDisplay;
         proxyTextureRevision += 1;
         proxyPixels = pixels;
         proxyWidth = width;
