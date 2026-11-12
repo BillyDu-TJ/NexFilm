@@ -17,7 +17,7 @@ A recurring design flaw across legacy film scanning and negative inversion softw
 
 In version 1.1.0, the NexFilm Engine establishes an architectural principle: **the input file format determines only the input domain, while the underlying density mathematics remains globally unified**.
 
-Whether the incoming source is a camera lossless RAW file, a high-bit-depth LinearRaw scanner DNG, an FFF container embedding proprietary metadata, or a 16-bit TIFF with an embedded color management profile, the decoder responsibility is strictly confined to identifying chromatic primaries and electro-optical transfer characteristics. The decoded data is projected losslessly into a standardized 32-bit floating-point Linear ProPhoto workspace. Once linearized, all subsequent optical density operations—including film base subtraction, printer lights trimming, bounded channel span response, and display mapping—execute through identical mathematical pathways.
+High-bit-depth LinearRaw scanner DNGs, FFF containers embedding proprietary metadata, and 16-bit TIFF/JPEG files with embedded color management profiles are resolved into a 32-bit floating-point Linear ProPhoto Estimate. LibRaw camera RAWs are the recorded exception: they retain NormalizedAsShot Camera Native RGB through the density stage, and the camera→sRGB matrix is deferred until the positive is displayed. This prevents the matrix and gamut floor from rewriting the small blue channel of an orange-masked negative before the logarithm. Apart from this documented working-basis fork, base subtraction, endpoint derivation, and the downstream positive pipeline still use one density model.
 
 ```text
 Input File (RAW / FFF / TIFF / DNG / JPEG)
@@ -26,10 +26,12 @@ Input File (RAW / FFF / TIFF / DNG / JPEG)
 resolve_input_domain(path, scanner_profile)
        │  ← The sole permissible branching point
        ▼
-Unified workspace: linear ProPhoto f32 (reduces u16 quantization loss)
+Working buffer:
+  camera RAW -> NormalizedAsShot Camera Native RGB f32
+  other inputs -> Linear ProPhoto Estimate f32
        │
        ▼
-Unified Density Transform: D = -log10(max(T, epsilon))
+Unified Density Transform: D = -log10(max(T, epsilon)) in that basis
        │
        ▼
 Channel-Wise Base Subtraction: D_net = D_raw - D_base (shared origin, zero offset)
@@ -38,7 +40,12 @@ Channel-Wise Base Subtraction: D_net = D_raw - D_base (shared origin, zero offse
 Bounded Channel Span Response (1.15x deadzone / 1.35x cap / 3.0x truncated cap)
        │
        ▼
-Positive Linearization & Display Mapping: ProPhoto -> Output Gamut & Target LUT
+Positive display mapping:
+  camera RAW -> this frame's camera -> linear sRGB matrix
+  other inputs -> ProPhoto -> linear sRGB
+       │
+       ▼
+Gamma, curves, LUT and target output gamut
 ```
 
 This separation removes most of the gamut clipping and precision loss caused by the old intermediate step through 16-bit unsigned sRGB. Wide-latitude negatives from different capture hardware are then evaluated on the same optical footing.
@@ -59,6 +66,23 @@ To translate heterogeneous image captures into physical relative transmittance, 
    If all preceding criteria fail to match, the image data is interpreted under standard sRGB assumptions. The processing pipeline marks the record with an `estimated` diagnostic flag, alerting the user to review color accuracy in the inspection panel.
 
 Resolution outcomes are recorded with each frame in the project SQLite database under `PipelineProcessingReport::input_domain`, including primary coordinates, transfer functions, and diagnostic logs.
+
+## Camera-Native Working Basis & Display Matrix {#camera-native-display-basis}
+
+A camera→sRGB matrix describes how camera channels map to display chromaticities; it is not a physical channel separation of film transmittance. An orange-masked colour negative leaves very little blue transmission, and the matrix's negative green term plus a luma-relative gamut floor can rewrite exactly those pixels. Phase 4 therefore keeps the density stage of a LibRaw camera RAW in the camera's own channels:
+
+```text
+Camera Native RGB f32
+  -> D_raw = -log10(max(T, epsilon))
+  -> D_net = D_raw - D_base
+  -> normalized positive
+  -> camera_to_display
+  -> linear sRGB and the existing display pipeline
+```
+
+The frame stores that matrix in `PipelineProcessingReport::camera_to_display`: `Some` means the density stage ran in camera-native RGB, while `None` means the ProPhoto Estimate path and is also what records written before this field deserialize to. Identity matrices, non-finite values, degenerate rows, and unresolved LibRaw matrices are never persisted; preview, export, and CPU rendering all fall back to the ProPhoto display matrix for such a record. The M1 rawler matrix backfill and the M2 rawler pixel fallback still use the camera-native density basis.
+
+Preview flag `8` marks a camera-native texture and is followed by nine row-major `f32` matrix coefficients. Both WebGL render passes read `u_positive_to_display`, and CPU rendering/export use the same matrix source. Roll anchors also carry `working_basis`; an anchor sampled in another basis is rejected as `anchor_working_basis_mismatch`, and the UI asks the user to run Auto Invert again for the Roll. `DENSITY_WINDOW_RULE_VERSION` is now 4, while `RAW_DECODE_VERSION` remains 13.
 
 ## Film Base Sampling Priority & Quality Validation Thresholds {#film-base-sampling-priority}
 
@@ -95,7 +119,7 @@ This formulation rejects the arbitrary color leveling of the traditional gray-wo
 
 ## Quantitative Regression Verification & Diagnostic Benchmark Data {#quantitative-regression-verification}
 
-The stability of the unified density pipeline is verified through automated regression suites. The table below compiles pixel-level measurements executed via `density_pipeline_sample_report` across standardized real-world film captures, comparing whole-image red-to-green and blue-to-green channel ratios between legacy v1.0.2 processing and the unified pipeline:
+The stability of the unified density pipeline is verified through automated regression suites. The table below compiles pixel-level measurements executed via `density_pipeline_sample_report` across standardized real-world film captures, comparing whole-image red-to-green and blue-to-green channel ratios between legacy v1.0.2 processing and the unified pipeline. The camera-RAW rows are the baseline recorded before Phase 4 moved those inputs to the camera-native basis; the Phase 4 byte sweep and RAW A/B report are the current evidence for that path.
 
 | Test Sample & Capture Origin | Input Domain Resolution | Base Sampling Source | Legacy R/G · B/G | Unified R/G · B/G | Diagnostic Observations & Corrections |
 | --- | --- | --- | --- | --- | --- |

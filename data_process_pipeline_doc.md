@@ -1,6 +1,6 @@
 # NexFilm 数据处理与硬件校准管线
 
-> **实现状态（当前版本）**：Smart Auto = ProPhoto Estimate；Capture Corrected = 已验证 dark/open 的相对传输率实验路径；Capture Characterized = 在此基础上使用用户目标 patch 拟合并实际应用 `CaptureSeparation3x3`；Scanner Input Estimate/Characterized 是独立输入能力。当前没有 Density Calibrated、数字 mask、胶片 H-D 曲线或新的 Status M 矩阵。
+> **实现状态（当前版本）**：Smart Auto 对 LibRaw 相机 RAW 使用 NormalizedAsShot Camera Native RGB（含 M2 rawler 像素回退），对 DNG、扫描 FFF、TIFF、JPEG 等输入使用 ProPhoto Estimate；Capture Corrected = 已验证 dark/open 的相对传输率实验路径；Capture Characterized = 在此基础上使用用户目标 patch 拟合并实际应用 `CaptureSeparation3x3`；Scanner Input Estimate/Characterized 是独立输入能力。当前没有 Density Calibrated、数字 mask、胶片 H-D 曲线或新的 Status M 矩阵。
 
 ## 文档状态
 
@@ -716,3 +716,22 @@ Scanner Profile 是独立输入边界：Profile 绑定到 Roll 后，只对已�
 - **细节**：顺序为去朦胧 → 清晰度 → 纹理 → 锐化。去朦胧使用暗通道先验（Dark Channel Prior）：在四分之一分辨率上取通道最小值的方形窗口最小值作为暗通道，做盒式平滑得到透射率，再以显示白点作为大气光做 `J = (I - A) / t + A` 的还原；负值把透射率推向大于 1，等于加雾。清晰度是大半径的高反差保留并按中间调加权，纹理是中频高反差保留，锐化是半径控制的高反差保留，叠加一级细尺度项构成“细节”，并按亮度梯度阈值生成蒙版权重。锐化的模糊核、暗通道窗口与透射率平滑都使用与预览一致的可分离实现（高斯核半径 `ceil(2σ)`，权重 `exp(-i²/(2σ²)) / (√(2π)σ)`；最小值滤波行列可分且对矩形窗口精确）。
 - **分辨率一致性**：所有半径以长边 2560 像素为基准，按 `rendered_long_edge / 2560` 换算到实际渲染像素。预览代理与全分辨率导出因此得到相同观感；低于 0.4 像素的核被抬到 0.4，避免小尺寸代理上退化。导出对话框中的**输出锐化**是独立于细节分组的另一步，作用在重采样之后的输出像素上。
 - **锐化的诊断视图**：按住 <kbd>Alt</kbd> 拖动数量、半径、细节三个参数时，预览画布改为显示锐化信号（中间灰底上的边缘）；拖动蒙版时显示蒙版权重。这是显示层的替换，不进入管线：示波器读出的仍是基础成片，缩略图与导出仍是完整成片。
+
+### 13.2 相机 RAW 的相机原生密度基底
+
+相机翻拍彩色负片时，LibRaw 解出的 Camera Native RGB 现在直接进入密度阶段，不再先应用 camera→sRGB 矩阵和 `compress_linear_srgb_for_density()`。这一步只针对相机 RAW；DNG、扫描仪 FFF、TIFF、JPEG 仍先转成 Linear ProPhoto Estimate。分叉由 `smart_auto_working_basis(path)` 按输入类别决定，预览、分析、导出和 Roll 锚点共用同一条规则。
+
+```text
+Camera Native RGB f32
+  -> D_raw = -log10(max(T, epsilon))
+  -> D_net = D_raw - D_base(camera-native)
+  -> normalized positive
+  -> camera_to_display (camera -> linear sRGB)
+  -> gamma / curves / LUT / display
+```
+
+相机原生基不等于“已经是显示空间”。camera→sRGB 矩阵描述的是相机的显示色度转换，不是可测量的透射率通道分离；把它放在橙色色罩的对数之前会让蓝通道先被矩阵和 gamut 下限改写，再丢失蓝天和湖水的蓝色。矩阵只在正片端作用，并随帧记录在 `PipelineProcessingReport::camera_to_display`。`None` 表示 ProPhoto Estimate；`Some` 只在矩阵有限、行非退化且不是 LibRaw 的 identity/Unresolved 时写入。预览纹理头的 bit 3（`8`）携带根矩阵，WebGL 主 pass 与 Detail pass 都读取 `u_positive_to_display`；CPU 渲染与导出使用 `positive_to_display_matrix`。
+
+M1 路径保留 LibRaw 像素并用 rawler 相机数据库回填缺失矩阵；M2 在 LibRaw 解包失败时由 rawler 解码像素，仍使用相机原生密度基和同一显示矩阵。两者都不会退回 ProPhoto 密度阶段。导出只读持久化状态，但会重新解码源文件并通过本次解码取得同一矩阵，不写回帧记录。
+
+Roll 锚点的 provenance 新增 `working_basis`。ProPhoto 锚点不能用于 CameraNative 帧，反之亦然；解析器记录 `density_anchor_rejected|…|anchor_working_basis_mismatch`，UI 把它转成可读提示，提示用户重新对整卷执行自动反相。`DENSITY_WINDOW_RULE_VERSION` 因此从 3 升到 4，旧的逐帧端点会在下次自动反相时重算；`RAW_DECODE_VERSION` 保持 13，因为解码器字节没有变化。

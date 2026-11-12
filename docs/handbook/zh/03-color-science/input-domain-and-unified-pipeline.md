@@ -17,7 +17,7 @@ sinceVersion: "v1.1.0"
 
 NexFilm 引擎在 v1.1.0 确立了统一密度管线核心原则：**输入格式仅决定输入域，密度数学全局唯一**。
 
-无论源文件是数码相机无损压缩 RAW、扫描仪高位深度 LinearRaw DNG、封装专有元数据的 FFF 容器，还是附带专业色彩配置文件的 16-bit TIFF，解码器的工作仅限于识别并解析其物理色彩空间与光电转换特性，将其无损投射至统一的 32 位浮点线性 ProPhoto 工作域。一旦完成输入域线性化，后续的所有光学密度运算——包括片基扣除、印片光调节、有界通道跨度响应与显示映射——对所有文件类型完全同构。
+扫描仪高位深度 LinearRaw DNG、封装专有元数据的 FFF 容器，以及附带专业色彩配置文件的 16-bit TIFF/JPEG，会由解码器识别输入域并投射到 32 位浮点 Linear ProPhoto Estimate。LibRaw 解码的相机 RAW 是明确的例外：它保留 NormalizedAsShot Camera Native RGB 进入密度阶段，camera→sRGB 矩阵延后到正片显示，因此不会在橙色色罩的蓝通道上先施加矩阵和 gamut 压缩。除这个有记录的工作基分叉外，片基扣除、端点推导和正片管线仍使用同一套密度数学。
 
 ```text
 输入文件（RAW / FFF / TIFF / DNG / JPEG）
@@ -26,10 +26,12 @@ NexFilm 引擎在 v1.1.0 确立了统一密度管线核心原则：**输入格�
 resolve_input_domain(path, scanner_profile)
        │  ← 唯一允许分叉的输入解析阶段
        ▼
-统一工作空间：ProPhoto 线性 f32（减少 u16 中转量化损失）
+工作空间：
+  相机 RAW -> NormalizedAsShot Camera Native RGB f32
+  其他输入 -> Linear ProPhoto Estimate f32
        │
        ▼
-统一光学密度变换：D = -log10(max(T, epsilon))
+统一光学密度变换：D = -log10(max(T, epsilon))（在各自工作基中）
        │
        ▼
 逐通道片基扣除：D_net = D_raw - D_base（原点严格共享，零通道偏移）
@@ -38,7 +40,12 @@ resolve_input_domain(path, scanner_profile)
 有界通道跨度响应（死区 1.15× / 正常上限 1.35× / 截断上限 3.0×）
        │
        ▼
-正片线性化与显示映射：ProPhoto -> 输出色域与目标 LUT
+正片显示映射：
+  相机 RAW -> 该帧 camera -> linear sRGB 矩阵
+  其他输入 -> ProPhoto -> linear sRGB
+       │
+       ▼
+gamma、曲线、LUT 与目标输出色域
 ```
 
 这种架构消除了早期版本中将解码数据压缩至 16 位整数线性 sRGB 造成的严重色域截断，让高动态范围负片无论来自哪种设备，都能在统一的光学物理基底上展开调色。
@@ -59,6 +66,23 @@ resolve_input_domain(path, scanner_profile)
    若上述所有特征均未命中，系统将文件假定为标准 sRGB 空间，但在处理报告中打上 `estimated` 警告标记，提示用户在检查面板中关注色彩置信度。
 
 输入域解析结果随帧记录在工程数据库的 `PipelineProcessingReport::input_domain` 结构体中，包含基色坐标、传递函数曲线、归一化电平及详细诊断日志。
+
+## 相机原生工作基与显示矩阵 {#camera-native-display-basis}
+
+相机 RAW 的 camera→sRGB 矩阵描述的是相机通道到显示色度的映射，不是胶片透射率的物理通道分离。彩色负片的橙色色罩会让蓝通道透射率很小，而相机矩阵的负绿系数与基于亮度的 gamut 下限正好会在这类像素上改写蓝色。Phase 4 因此把 LibRaw 相机 RAW 的密度阶段留在相机自身通道中：
+
+```text
+Camera Native RGB f32
+  -> D_raw = -log10(max(T, epsilon))
+  -> D_net = D_raw - D_base
+  -> 归一化正片
+  -> camera_to_display
+  -> 线性 sRGB 与既有显示管线
+```
+
+帧的 `PipelineProcessingReport::camera_to_display` 保存该矩阵：`Some` 表示密度阶段使用相机原生基，`None` 表示 ProPhoto Estimate，旧记录缺少该字段时也按 `None` 读取。单位阵、非有限值、退化行和 LibRaw 未解析出矩阵的 identity/Unresolved 不会写入；预览、导出和 CPU 渲染都会回退到 ProPhoto 显示矩阵。M1 的 rawler 矩阵回填与 M2 的 rawler 像素回退仍使用相机原生基。
+
+预览纹理头的标志位 `8` 表示相机原生缓冲区，后接 9 个 row-major `f32` 矩阵系数。WebGL 主渲染与 Detail pass 都使用 `u_positive_to_display`，CPU 渲染和导出使用同一个矩阵来源。Roll 锚点也记录 `working_basis`；跨基锚点会被拒绝为 `anchor_working_basis_mismatch`，界面提示重新对整卷执行自动反相。`DENSITY_WINDOW_RULE_VERSION` 已升到 4，`RAW_DECODE_VERSION` 保持 13。
 
 ## 片基采样三级优先级与质量门限法则 {#film-base-sampling-priority}
 
@@ -95,7 +119,7 @@ NexFilm 建立了严格的三级片基采样优先级与质量门限过滤机制
 
 ## 量化回归数据与真实素材对照验证 {#quantitative-regression-verification}
 
-统一密度管线的可靠性建立在严格的工程回归测试集之上。以下数据摘自 NexFilm 自动化测试套件 `density_pipeline_sample_report` 在真实底片样本库上的逐像素量化测量结果。表中对比了旧版管线与统一密度管线在渲染后整幅画面的红/绿与蓝/绿通道均值比：
+统一密度管线的可靠性建立在严格的工程回归测试集之上。以下数据摘自 NexFilm 自动化测试套件 `density_pipeline_sample_report` 在真实底片样本库上的逐像素量化测量结果。表中对比了旧版管线与统一密度管线在渲染后整幅画面的红/绿与蓝/绿通道均值比。相机 RAW 行是 Phase 4 相机原生基接入前的基线；Phase 4 的逐字节 sweep 与 RAW A/B 另见交付报告，不能把下表当作相机原生路径的当前数值。
 
 | 样本文件与物理介质 | 输入域解析结果 | 片基采样来源 | 旧版 R/G · B/G | 统一管线 R/G · B/G | 算法介入与量化改善说明 |
 | --- | --- | --- | --- | --- | --- |

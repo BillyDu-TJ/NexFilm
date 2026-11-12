@@ -201,3 +201,27 @@ node scripts/verify-density-contract.cjs  （以及 scripts 下其余契约脚�
 - `visual_acceptance_v1_0_2_vs_v1_1`（`--ignored`）：把 14 张不同来源的样本渲染成「上=v1.0.2、下=当前构建」的对比图，写入 `target/visual-acceptance/`。
 - `density_pipeline_sample_report`（`--ignored`）：逐样本打印输入域、片基、窗口、`[STAT]` 对照与 `[COMPARE]`（一个共享跨度 vs 逐通道端点的差异像素数）。
 - 新增/改写的断言：`a_frame_keeps_its_own_co_sited_endpoints`、`a_short_channel_reaches_the_white_point`、`a_frame_wide_tint_is_absorbed_by_the_per_channel_window`、`partial_roll_anchor_keeps_content_derived_display_limits`；`prophoto_master_exposure_preserves_neutrality_with_channel_spans`、`linked_scanner_limits_preserve_co_sited_channel_bounds`、`one_roll_keeps_a_consistent_channel_ratio`、`input_class_and_provenance_never_change_the_density_mapping` 继续通过。
+
+## 十一、相机 RAW 的相机原生色彩基（窗口规则 4）
+
+Phase 4 修正的是相机翻拍彩色负片时的**密度输入基底**。在此之前，LibRaw 相机 RAW 先经过 camera→sRGB 矩阵和 `compress_linear_srgb_for_density()`，再取对数；橙色色罩下的蓝通道本来只有很小的透射率，矩阵中的负绿系数和 10% 亮度下限会在蓝天、湖水等本应偏蓝的区域把蓝通道压平。结果是反相后发青灰，而不是正常的蓝色。
+
+现在的分叉只发生在“工作缓冲区的色彩基”，不改变输入域解析：
+
+| 输入 | Smart Auto 工作缓冲区 | 正片显示矩阵 |
+| --- | --- | --- |
+| 相机 RAW（NEF、CR2/CR3、ARW、RAF 等；不含 DNG 和扫描 FFF） | NormalizedAsShot Camera Native RGB f32 | 该帧的 camera→linear sRGB |
+| DNG、扫描仪 FFF、TIFF、JPEG、PNG | Linear ProPhoto Estimate f32 | ProPhoto→linear sRGB |
+
+相机 RAW 的密度阶段直接使用 `D_raw = -log10(max(T_camera, epsilon))`，在取对数之前不应用 camera→sRGB 矩阵，也不做 sRGB gamut compression。片基、内容端点和 Roll 锚点都记录在这同一个相机原生基上；归一化后的正片再通过 `camera_to_display` 矩阵转到线性 sRGB，之后才进入现有的 gamma、曲线、LUT 和显示映射。非相机 RAW 输入继续使用原来的 ProPhoto 路径。
+
+矩阵随帧持久化在 `PipelineProcessingReport::camera_to_display`：
+
+- `Some(matrix)` 表示该帧的密度阶段运行在相机原生 RGB，正片必须用这个矩阵显示。
+- `None` 表示 ProPhoto Estimate，旧记录没有该字段时也反序列化为 `None`。
+- 单位阵、非有限值、行退化或 LibRaw 未解析出矩阵的 identity/Unresolved 结果不会写入，也不会作为纹理头里的有效矩阵；显示回退到 ProPhoto 路径，同时保留解码诊断。
+- M1（LibRaw 像素 + rawler 矩阵回填）和 M2（LibRaw 解包失败后由 rawler 解码像素）都走相机原生基；M2 不再回到 ProPhoto 密度阶段。
+
+预览头部的 bit 3（值 `8`）表示纹理是相机原生工作缓冲区，随后追加 9 个 row-major `f32` 矩阵系数。WebGL 的主渲染 pass 和 Detail pass 都通过 `u_positive_to_display` 使用该矩阵；CPU 渲染与导出使用同一矩阵。`scripts/diagnose-cpu-webgl-parity.cjs` 的 fixture 现在显式包含该矩阵，避免只验证 ProPhoto 路径。
+
+版本身份保持分开：`DENSITY_WINDOW_RULE_VERSION` 从 3 升到 4，让旧的 Smart Auto 帧在下一次自动反相时按新的色彩基重新推导端点；`RAW_DECODE_VERSION` 保持 13，因为解码字节没有变化。Roll 锚点新增 `working_basis` 来源；在另一个基上采样的锚点会被拒绝并记录 `anchor_working_basis_mismatch`，界面显示可读提示，用户重新对整卷执行自动反相即可在当前基上重建。

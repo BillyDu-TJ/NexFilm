@@ -26,6 +26,8 @@ For a discrete trichromatic imaging system, channel responses correspond to inte
 2. **Flat-Field Gain Normalization**: Compensating for lens cosine-fourth illumination falloff and backlight spatial chromaticity nonuniformity across the field of view.
 3. **Capture Separation Matrix**: Decoupling the overlapping spectral bands of camera Bayer dyes or scanner beam splitters, aligning the channels with the actual optical absorption bands of the cyan, magenta, and yellow film dyes.
 
+For camera RAWs, Phase 4 uses `NormalizedAsShot Camera Native RGB` as the pre-log density basis and does not treat the camera→sRGB display matrix as a capture separation matrix. An orange-masked colour negative leaves very little blue transmission; the matrix's negative green term and luma-relative gamut compression would rewrite the blue of skies and lakes before the logarithm. That matrix is applied after the positive is normalized and is persisted per frame as `camera_to_display`. Scanner DNGs, scanner FFF, TIFF, and JPEG still use the Linear ProPhoto Estimate.
+
 If channel separation is omitted at the capture stage, dye absorption signals remain entangled throughout all downstream operations. To prevent mathematical singularities during logarithmic mapping, the evaluated transmittance is clamped to a tiny positive threshold $\epsilon$:
 
 $$T_{\text{valid}} = \max(T, \epsilon), \quad \epsilon = 1.0 \times 10^{-6}$$
@@ -62,9 +64,9 @@ where $\gamma_c$ denotes the photographic development contrast factor for dye la
 
 Even after film base subtraction and printer lights balance, the net density vector represents an analytical measurement of physical absorption rather than a displayable positive image. The positive print and output domain is responsible for mapping inverted relative exposures into a standardized, colorimetrically defined linear workspace, followed by aesthetic tone reproduction and display-referred encoding.
 
-The NexFilm Engine utilizes Linear ProPhoto RGB (ROMM RGB with an identity linear transfer function) as its universal internal positive working space. Once inverted relative exposures are placed within this wide-gamut linear framework, subsequent grading and mastering proceed systematically:
+For non-camera-RAW inputs, the NexFilm Engine uses Linear ProPhoto RGB (ROMM RGB with an identity linear transfer function) as the positive working space. A camera RAW instead maps its normalized positive through that frame's camera→linear sRGB matrix before entering the same display and grading stages. In both cases the density inversion and normalization finish first; the display matrix never moves before the logarithm:
 
-1. **Working Space Linearization**: Converting normalized logarithmic density into linear positive exposure $E_{\text{pos}} = 10^{-\alpha \cdot D_{\text{graded}}}$, restoring radiant proportionality to the positive scene estimate.
+1. **Working Space Linearization**: Converting normalized logarithmic density into linear positive exposure $E_{\text{pos}} = 10^{-\alpha \cdot D_{\text{graded}}}$; camera RAW then applies `camera_to_display`, while ProPhoto inputs apply ProPhoto→sRGB before the display and delivery stages.
 2. **Per-Channel and Master Tone Curves**: Applying discrete red, green, and blue tone curves to shape shadow and highlight color balance, followed by a composite luminance curve modeling traditional print paper D-log-H characteristics.
 3. **Print Film Emulation 3D LUTs**: Evaluating verified three-dimensional lookup tables calibrated against motion picture print stocks (such as Kodak 2383 or Vision Premier 2393), conferring characteristic deep shadow d-max and rich dye separation.
 4. **Target Color Space Transform & OETF Encoding**: Projecting positive color coordinates into target output profiles (sRGB, Display P3, Adobe RGB, or ACEScg) and applying corresponding optical-electro transfer functions.
