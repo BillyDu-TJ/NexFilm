@@ -15,8 +15,8 @@ const MAX_DIAGONAL_RATIO: f64 = 3.0;
 const MIN_GRADIENT_PROMINENCE: f64 = 1.22;
 const MAX_ANALYSIS_EDGE: u32 = 640;
 const WORKING_EDGE: u32 = 1024;
-const AUTO_DETECTION_INSET_X: f32 = 0.01;
-const AUTO_DETECTION_INSET_Y: f32 = 0.02;
+const AUTO_LONG_EDGE_INSET: f32 = 0.02;
+const AUTO_SHORT_EDGE_INSET: f32 = 0.01;
 const STANDARD_FRAME_ASPECTS: [f64; 6] =
     [3.0 / 2.0, 1.0, 4.0 / 3.0, 6.0 / 7.0, 6.0 / 9.0, 65.0 / 24.0];
 const ASPECT_SCORE_SIGMA: f64 = 0.20;
@@ -1208,7 +1208,7 @@ fn detected_result(
         ]
     });
     if inset_automatic {
-        normalized = inset_automatic_points(normalized);
+        normalized = inset_automatic_points(normalized, width_scale, height_scale);
     }
     FilmBorderDetection {
         points: normalized,
@@ -1221,19 +1221,115 @@ fn detected_result(
     }
 }
 
-fn inset_automatic_points(points: [[f32; 2]; 4]) -> [[f32; 2]; 4] {
+fn inset_automatic_points(
+    points: [[f32; 2]; 4],
+    width_scale: f32,
+    height_scale: f32,
+) -> [[f32; 2]; 4] {
+    let pixels = points.map(|point| [point[0] * width_scale, point[1] * height_scale]);
+    let horizontal_span = ((pixels[0][0] - pixels[1][0]).hypot(pixels[0][1] - pixels[1][1])
+        + (pixels[3][0] - pixels[2][0]).hypot(pixels[3][1] - pixels[2][1]))
+        * 0.5;
+    let vertical_span = ((pixels[1][0] - pixels[2][0]).hypot(pixels[1][1] - pixels[2][1])
+        + (pixels[0][0] - pixels[3][0]).hypot(pixels[0][1] - pixels[3][1]))
+        * 0.5;
+    // Near-square detections stay on the historical landscape treatment; a
+    // one-pixel difference must not flip 135 full-frame and panoramic scans
+    // between the two inset axes.
+    if horizontal_span * 1.05 >= vertical_span {
+        // Keep the accepted landscape geometry byte-identical to 3.2.1:
+        // horizontal edges move 2% and vertical edges move 1% of the image.
+        let center = points.iter().fold([0.0f32; 2], |sum, point| {
+            [sum[0] + point[0], sum[1] + point[1]]
+        });
+        let center = [center[0] * 0.25, center[1] * 0.25];
+        let scale_x = 1.0 - 2.0 * AUTO_SHORT_EDGE_INSET;
+        let scale_y = 1.0 - 2.0 * AUTO_LONG_EDGE_INSET;
+        return points.map(|point| {
+            [
+                center[0] + (point[0] - center[0]) * scale_x,
+                center[1] + (point[1] - center[1]) * scale_y,
+            ]
+        });
+    }
+    inset_automatic_pixels(pixels).map(|point| {
+        [
+            (point[0] / width_scale).clamp(0.0, 1.0),
+            (point[1] / height_scale).clamp(0.0, 1.0),
+        ]
+    })
+}
+
+fn inset_automatic_pixels(points: [[f32; 2]; 4]) -> [[f32; 2]; 4] {
     let center = points.iter().fold([0.0f32; 2], |sum, point| {
         [sum[0] + point[0], sum[1] + point[1]]
     });
     let center = [center[0] * 0.25, center[1] * 0.25];
-    let scale_x = 1.0 - 2.0 * AUTO_DETECTION_INSET_X;
-    let scale_y = 1.0 - 2.0 * AUTO_DETECTION_INSET_Y;
-    points.map(|point| {
-        [
-            center[0] + (point[0] - center[0]) * scale_x,
-            center[1] + (point[1] - center[1]) * scale_y,
-        ]
+    let edge_lengths = [0, 1, 2, 3].map(|index| {
+        let start = points[index];
+        let end = points[(index + 1) % 4];
+        (end[0] - start[0]).hypot(end[1] - start[1])
+    });
+    let horizontal_span = (edge_lengths[0] + edge_lengths[2]) * 0.5;
+    let vertical_span = (edge_lengths[1] + edge_lengths[3]) * 0.5;
+    let long_edges_horizontal = horizontal_span >= vertical_span;
+    let long_span = horizontal_span.max(vertical_span).max(1.0e-6);
+    let short_span = horizontal_span.min(vertical_span).max(1.0e-6);
+    let long_edge_offset = AUTO_LONG_EDGE_INSET * short_span;
+    let short_edge_offset = AUTO_SHORT_EDGE_INSET * long_span;
+
+    let mut lines = [([0.0f32; 2], [0.0f32; 2]); 4];
+    for index in 0..4 {
+        let start = points[index];
+        let end = points[(index + 1) % 4];
+        let direction = [end[0] - start[0], end[1] - start[1]];
+        let length = direction[0].hypot(direction[1]).max(1.0e-6);
+        let mut normal = [-direction[1] / length, direction[0] / length];
+        let midpoint = [(start[0] + end[0]) * 0.5, (start[1] + end[1]) * 0.5];
+        let inward = [center[0] - midpoint[0], center[1] - midpoint[1]];
+        if normal[0] * inward[0] + normal[1] * inward[1] < 0.0 {
+            normal = [-normal[0], -normal[1]];
+        }
+        let is_long_edge = if long_edges_horizontal {
+            matches!(index, 0 | 2)
+        } else {
+            matches!(index, 1 | 3)
+        };
+        let offset = if is_long_edge {
+            long_edge_offset
+        } else {
+            short_edge_offset
+        };
+        lines[index] = (
+            [start[0] + normal[0] * offset, start[1] + normal[1] * offset],
+            direction,
+        );
+    }
+
+    [0, 1, 2, 3].map(|index| {
+        let previous = lines[(index + 3) % 4];
+        let current = lines[index];
+        line_intersection(previous, current).unwrap_or(points[index])
     })
+}
+
+fn line_intersection(
+    first: ([f32; 2], [f32; 2]),
+    second: ([f32; 2], [f32; 2]),
+) -> Option<[f32; 2]> {
+    let (start, direction) = first;
+    let (other_start, other_direction) = second;
+    let denominator = direction[0] * other_direction[1] - direction[1] * other_direction[0];
+    if denominator.abs() <= 1.0e-9 {
+        return None;
+    }
+    let delta = [other_start[0] - start[0], other_start[1] - start[1]];
+    let distance = (delta[0] * other_direction[1] - delta[1] * other_direction[0]) / denominator;
+    let point = [
+        start[0] + direction[0] * distance,
+        start[1] + direction[1] * distance,
+    ];
+    point.iter().all(|value| value.is_finite()).then_some(point)
 }
 
 fn inset_points(points: [[f32; 2]; 4], inset: f32) -> [[f32; 2]; 4] {
@@ -1570,6 +1666,53 @@ mod tests {
         for (point, expected) in result.points.iter().zip(expected) {
             assert!((point[0] - expected[0]).abs() < 1.0e-5);
             assert!((point[1] - expected[1]).abs() < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn automatic_detection_insets_a_portrait_frame_by_its_own_long_edge() {
+        let points = [
+            Point::new(0, 0),
+            Point::new(49, 0),
+            Point::new(49, 99),
+            Point::new(0, 99),
+        ];
+
+        let result = detected_result(points, 50, 100, "synthetic", 1.0, true);
+
+        let expected = [[0.02, 0.01], [0.98, 0.01], [0.98, 0.99], [0.02, 0.99]];
+        for (point, expected) in result.points.iter().zip(expected) {
+            assert!((point[0] - expected[0]).abs() < 1.0e-5);
+            assert!((point[1] - expected[1]).abs() < 1.0e-5);
+        }
+    }
+
+    #[test]
+    fn automatic_detection_insets_rotated_long_edges_toward_the_center() {
+        const HALF_LONG: f32 = 0.40;
+        const HALF_SHORT: f32 = 0.20;
+        let angle = 30.0f32.to_radians();
+        let along = [angle.cos(), angle.sin()];
+        let across = [-angle.sin(), angle.cos()];
+        let point = |along_scale: f32, across_scale: f32| {
+            [
+                0.5 + along[0] * HALF_LONG * along_scale + across[0] * HALF_SHORT * across_scale,
+                0.5 + along[1] * HALF_LONG * along_scale + across[1] * HALF_SHORT * across_scale,
+            ]
+        };
+        let points = [
+            point(-1.0, -1.0),
+            point(1.0, -1.0),
+            point(1.0, 1.0),
+            point(-1.0, 1.0),
+        ];
+        let result = inset_automatic_pixels(points);
+        for inset in result {
+            let offset = [inset[0] - 0.5, inset[1] - 0.5];
+            let along_offset = offset[0] * along[0] + offset[1] * along[1];
+            let across_offset = offset[0] * across[0] + offset[1] * across[1];
+            assert!((along_offset.abs() - 0.392).abs() < 1.0e-5);
+            assert!((across_offset.abs() - 0.192).abs() < 1.0e-5);
         }
     }
 
