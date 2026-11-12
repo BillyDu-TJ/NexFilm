@@ -1,0 +1,163 @@
+---
+import { getLatestRelease } from '../utils/github-releases';
+
+interface Props {
+  lang: 'zh' | 'en';
+  variant?: 'hero' | 'full';
+}
+
+const { lang, variant = 'full' } = Astro.props;
+
+const latestRelease = await getLatestRelease();
+const tagName = latestRelease.tagName;
+const tagUrl = latestRelease.htmlUrl;
+
+const winAsset = latestRelease.assets.winX64 || {
+  name: `NexFilm.Engine_${tagName.replace(/^v/, '')}_x64-setup.exe`,
+  downloadUrl: `https://github.com/BillyDu-TJ/NexFilm/releases/download/${tagName}/NexFilm.Engine_${tagName.replace(/^v/, '')}_x64-setup.exe`,
+  sizeFormatted: '5.34 MB',
+  sha256: '',
+};
+
+const macArmAsset = latestRelease.assets.macArm || {
+  name: `NexFilm.Engine_${tagName.replace(/^v/, '')}_aarch64.dmg`,
+  downloadUrl: `https://github.com/BillyDu-TJ/NexFilm/releases/download/${tagName}/NexFilm.Engine_${tagName.replace(/^v/, '')}_aarch64.dmg`,
+  sizeFormatted: '7.31 MB',
+  sha256: '',
+};
+
+const macIntelAsset = latestRelease.assets.macIntel || {
+  name: `NexFilm.Engine_${tagName.replace(/^v/, '')}_x64.dmg`,
+  downloadUrl: `https://github.com/BillyDu-TJ/NexFilm/releases/download/${tagName}/NexFilm.Engine_${tagName.replace(/^v/, '')}_x64.dmg`,
+  sizeFormatted: '7.57 MB',
+  sha256: '',
+};
+
+const items = [
+  {
+    id: 'card-mac-arm',
+    name: 'macOS Apple Silicon',
+    badge: 'M1 / M2 / M3 / M4',
+    archZh: 'Apple Silicon 架构',
+    archEn: 'Apple Silicon (M-Series)',
+    formatZh: 'DMG 磁盘映像',
+    formatEn: 'DMG Disk Image',
+    asset: macArmAsset,
+    icon: 'apple'
+  },
+  {
+    id: 'card-mac-intel',
+    name: 'macOS Intel',
+    badge: 'x86_64',
+    archZh: 'Intel 处理器',
+    archEn: 'Intel Core / Xeon (x86_64)',
+    formatZh: 'DMG 磁盘映像',
+    formatEn: 'DMG Disk Image',
+    asset: macIntelAsset,
+    icon: 'apple'
+  },
+  {
+    id: 'card-win-x64',
+    name: 'Windows 10 / 11',
+    badge: '64-bit',
+    archZh: '64 位 Windows 系统',
+    archEn: 'x64 (64-bit architecture)',
+    formatZh: 'NSIS 独立安装包',
+    formatEn: 'NSIS Standalone Installer',
+    asset: winAsset,
+    icon: 'windows'
+  }
+];
+
+const fallbackAssetsJson = JSON.stringify({
+  version: tagName,
+  tagUrl,
+  macArm: macArmAsset,
+  macIntel: macIntelAsset,
+  winX64: winAsset,
+});
+---
+
+<div class="download-container w-full" data-variant={variant} data-fallback-assets={fallbackAssetsJson}>
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+    {items.map((item) => (
+      <div 
+        id={item.id}
+        class="download-card relative flex flex-col justify-between p-6 rounded-xl border border-darkroom-line bg-darkroom-panel hover:bg-darkroom-raised hover:border-darkroom-line-strong transition-all duration-200 shadow-darkroom-card group"
+      >
+        <!-- Recommended badge (client-side dynamic detection) -->
+        <div class="recommended-badge hidden absolute -top-2.5 right-4 px-2.5 py-0.5 rounded-full bg-accent text-darkroom-canvas text-[10px] font-bold tracking-wide uppercase shadow-md">
+          {lang === 'zh' ? '推荐当前设备' : 'Recommended'}
+        </div>
+
+        <div>
+          <!-- Header icon & version tag -->
+          <div class="flex items-center justify-between mb-4">
+            <div class="w-10 h-10 rounded-lg bg-darkroom-canvas border border-darkroom-line flex items-center justify-center text-text-secondary group-hover:text-text-primary transition-colors">
+              {item.icon === 'windows' ? (
+                <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                  <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/>
+                </svg>
+              ) : (
+                <svg class="w-5 h-5 fill-current" viewBox="0 0 24 24">
+                  <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.61-.75 1.04-1.8 0.92-2.85-.9.04-2 .6-2.65 1.35-.58.66-1.09 1.74-.96 2.76 1.02.08 2.07-.52 2.69-1.26"/>
+                </svg>
+              )}
+            </div>
+            <div class="text-right">
+              <span data-card-version class="inline-block px-2 py-0.5 rounded bg-darkroom-canvas text-text-secondary border border-darkroom-line font-mono text-[11px]">
+                {tagName}
+              </span>
+              <div data-asset-size class="text-[11px] text-text-muted font-mono mt-0.5">{item.asset.sizeFormatted}</div>
+            </div>
+          </div>
+
+          <h3 class="font-bold text-text-primary text-base">
+            {item.name}
+          </h3>
+          <p class="text-xs text-text-secondary mt-1 font-mono">
+            {lang === 'zh' ? item.archZh : item.archEn}
+          </p>
+          <p data-asset-name class="text-[11px] text-text-muted font-mono mt-1 truncate" title={item.asset.name}>
+            {item.asset.name}
+          </p>
+        </div>
+
+        <!-- Download Action & Verification Details -->
+        <div class="mt-6 pt-4 border-t border-darkroom-line space-y-3">
+          <!-- Main Direct Download Button -->
+          <a
+            href={item.asset.downloadUrl}
+            download={item.asset.name}
+            data-asset-download
+            class="direct-download-btn w-full py-2.5 px-4 rounded-lg bg-accent hover:bg-accent-hover text-darkroom-canvas font-semibold text-xs tracking-wide flex items-center justify-center gap-2 transition-all shadow-sm"
+          >
+            <svg class="w-4 h-4 text-darkroom-canvas" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            <span>{lang === 'zh' ? '下载正式安装包' : 'Download Installer'}</span>
+          </a>
+
+          <!-- Official Release Tag Entrance -->
+          <div class="pt-1 text-[11px] font-mono text-text-muted">
+            <div class="flex items-center justify-between gap-2 px-0.5">
+              <span class="shrink-0 whitespace-nowrap text-text-muted">{lang === 'zh' ? '官方发布源' : 'Official Release'}</span>
+              <a 
+                href={tagUrl} 
+                target="_blank" 
+                rel="noopener noreferrer"
+                data-card-release-link
+                class="truncate min-w-0 text-accent hover:underline flex items-center gap-1"
+              >
+                <span class="truncate">GitHub Release ({tagName})</span>
+                <svg class="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                </svg>
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    ))}
+  </div>
+</div>

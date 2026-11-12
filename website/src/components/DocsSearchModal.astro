@@ -1,0 +1,359 @@
+---
+import { withBase } from '../utils/urls';
+
+interface Props {
+  lang: 'zh' | 'en';
+}
+
+const { lang } = Astro.props;
+const pagefindScriptUrl = withBase('/pagefind/pagefind.js');
+---
+
+<div
+  id="docs-search-modal"
+  class="fixed inset-0 z-50 flex items-start justify-center pt-16 sm:pt-24 px-4 bg-black/75 backdrop-blur-md opacity-0 pointer-events-none transition-opacity duration-200"
+  role="dialog"
+  aria-modal="true"
+  aria-label={lang === 'zh' ? '搜索文档' : 'Search documentation'}
+  data-pagefind-script={pagefindScriptUrl}
+  data-lang={lang}
+>
+  <div
+    id="docs-search-dialog"
+    class="relative w-full max-w-2xl bg-darkroom-bg border border-darkroom-line rounded-2xl shadow-2xl overflow-hidden transform scale-95 transition-transform duration-200"
+  >
+    <!-- Search Input Bar -->
+    <div class="flex items-center gap-3 px-4 py-3.5 border-b border-darkroom-line bg-darkroom-panel">
+      <svg class="w-5 h-5 text-accent shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+      </svg>
+      <input
+        type="search"
+        id="docs-search-input"
+        class="w-full bg-transparent text-sm sm:text-base text-text-primary placeholder:text-text-muted focus:outline-none font-sans"
+        placeholder={lang === 'zh' ? '搜索色彩科学、算法推导、印片光、快捷键...' : 'Search color science, derivations, printer lights, shortcuts...'}
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div class="flex items-center gap-1.5 shrink-0">
+        <kbd class="hidden sm:inline-block px-1.5 py-0.5 text-[10px] font-mono bg-darkroom-raised rounded border border-darkroom-line text-text-muted">ESC</kbd>
+        <button
+          type="button"
+          id="docs-search-close-btn"
+          class="p-1 rounded-lg text-text-muted hover:text-text-primary hover:bg-darkroom-raised transition-colors"
+          aria-label={lang === 'zh' ? '关闭搜索' : 'Close search'}
+        >
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- Results Container -->
+    <div
+      id="docs-search-results"
+      class="max-h-[60vh] overflow-y-auto p-3 space-y-2 scrollbar-thin"
+    >
+      <div id="docs-search-initial" class="py-12 text-center text-xs text-text-muted font-sans space-y-1">
+        <p>{lang === 'zh' ? '输入关键词以检索 18 篇技术白皮书与操作手册' : 'Type keywords to search across 18 technical whitepapers and manuals'}</p>
+        <p class="text-[11px] font-mono text-accent/80">{lang === 'zh' ? '支持中英文检索 · 实时毫秒级响应' : 'Supports English and Chinese · Instant millisecond response'}</p>
+      </div>
+      <div id="docs-search-empty" class="hidden py-12 text-center text-xs text-text-muted font-sans">
+        {lang === 'zh' ? '未找到相关结果，请尝试其他关键词' : 'No matching documentation found. Try another query.'}
+      </div>
+      <div id="docs-search-loading" class="hidden py-12 text-center text-xs text-text-muted font-sans flex items-center justify-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-accent animate-ping"></span>
+        <span>{lang === 'zh' ? '正在检索索引...' : 'Searching index...'}</span>
+      </div>
+      <ul id="docs-search-list" class="space-y-1.5 hidden" role="listbox"></ul>
+    </div>
+
+    <!-- Footer Status Bar -->
+    <div class="px-4 py-2 border-t border-darkroom-line bg-darkroom-canvas flex items-center justify-between text-[11px] font-mono text-text-muted">
+      <div class="flex items-center gap-3">
+        <span><kbd class="px-1 py-0.5 rounded bg-darkroom-panel border border-darkroom-line">↑</kbd> <kbd class="px-1 py-0.5 rounded bg-darkroom-panel border border-darkroom-line">↓</kbd> {lang === 'zh' ? '选择' : 'Navigate'}</span>
+        <span><kbd class="px-1.5 py-0.5 rounded bg-darkroom-panel border border-darkroom-line">↵</kbd> {lang === 'zh' ? '跳转' : 'Open'}</span>
+      </div>
+      <span class="text-accent/90">Pagefind Search</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  let pagefindInstance: any = null;
+  let pagefindLoadingPromise: Promise<any> | null = null;
+  let isSearchModalOpen = false;
+  let selectedIndex = -1;
+  let currentResultItems: HTMLElement[] = [];
+
+  function getModalElements() {
+    const modal = document.getElementById('docs-search-modal');
+    if (!modal) return null;
+    const dialog = document.getElementById('docs-search-dialog');
+    const input = document.getElementById('docs-search-input') as HTMLInputElement | null;
+    const closeBtn = document.getElementById('docs-search-close-btn');
+    const resultsContainer = document.getElementById('docs-search-results');
+    const initialView = document.getElementById('docs-search-initial');
+    const emptyView = document.getElementById('docs-search-empty');
+    const loadingView = document.getElementById('docs-search-loading');
+    const list = document.getElementById('docs-search-list') as HTMLUListElement | null;
+    return { modal, dialog, input, closeBtn, resultsContainer, initialView, emptyView, loadingView, list };
+  }
+
+  async function loadPagefind(scriptUrl: string) {
+    if (pagefindInstance) return pagefindInstance;
+    if (pagefindLoadingPromise) return pagefindLoadingPromise;
+
+    pagefindLoadingPromise = (async () => {
+      try {
+        const mod = await import(/* @vite-ignore */ scriptUrl);
+        if (mod.init) await mod.init();
+        pagefindInstance = mod;
+        return mod;
+      } catch (err) {
+        console.warn('[Pagefind] Could not load pagefind script:', err);
+        return null;
+      }
+    })();
+
+    return pagefindLoadingPromise;
+  }
+
+  export function openSearchModal() {
+    const els = getModalElements();
+    if (!els || !els.modal) return;
+    isSearchModalOpen = true;
+    els.modal.classList.remove('opacity-0', 'pointer-events-none');
+    els.modal.classList.add('opacity-100');
+    els.dialog?.classList.remove('scale-95');
+    els.dialog?.classList.add('scale-100');
+    els.input?.focus();
+
+    // Trigger pre-loading of pagefind
+    const scriptUrl = els.modal.dataset.pagefindScript || '/pagefind/pagefind.js';
+    loadPagefind(scriptUrl);
+  }
+
+  export function closeSearchModal() {
+    const els = getModalElements();
+    if (!els || !els.modal) return;
+    isSearchModalOpen = false;
+    els.modal.classList.add('opacity-0', 'pointer-events-none');
+    els.modal.classList.remove('opacity-100');
+    els.dialog?.classList.add('scale-95');
+    els.dialog?.classList.remove('scale-100');
+    if (els.input) els.input.value = '';
+    renderInitialState(els);
+  }
+
+  function renderInitialState(els: ReturnType<typeof getModalElements>) {
+    if (!els) return;
+    els.initialView?.classList.remove('hidden');
+    els.emptyView?.classList.add('hidden');
+    els.loadingView?.classList.add('hidden');
+    if (els.list) {
+      els.list.classList.add('hidden');
+      els.list.innerHTML = '';
+    }
+    selectedIndex = -1;
+    currentResultItems = [];
+  }
+
+  function updateSelection(index: number) {
+    if (currentResultItems.length === 0) {
+      selectedIndex = -1;
+      return;
+    }
+    if (index < 0) index = 0;
+    if (index >= currentResultItems.length) index = currentResultItems.length - 1;
+    selectedIndex = index;
+
+    currentResultItems.forEach((item, idx) => {
+      if (idx === selectedIndex) {
+        item.classList.add('bg-accent/15', 'border-accent/40', 'text-accent');
+        item.setAttribute('aria-selected', 'true');
+        item.scrollIntoView({ block: 'nearest' });
+      } else {
+        item.classList.remove('bg-accent/15', 'border-accent/40', 'text-accent');
+        item.setAttribute('aria-selected', 'false');
+      }
+    });
+  }
+
+  async function executeSearch(query: string) {
+    const els = getModalElements();
+    if (!els) return;
+
+    const trimmed = query.trim();
+    if (!trimmed) {
+      renderInitialState(els);
+      return;
+    }
+
+    els.initialView?.classList.add('hidden');
+    els.emptyView?.classList.add('hidden');
+    els.loadingView?.classList.remove('hidden');
+    if (els.list) {
+      els.list.classList.add('hidden');
+      els.list.innerHTML = '';
+    }
+
+    const scriptUrl = els.modal.dataset.pagefindScript || '/pagefind/pagefind.js';
+    const lang = els.modal.dataset.lang || 'zh';
+    const pagefind = await loadPagefind(scriptUrl);
+
+    if (!pagefind) {
+      els.loadingView?.classList.add('hidden');
+      if (els.emptyView) {
+        els.emptyView.textContent = lang === 'zh'
+          ? '搜索索引未加载。在生产构建后可用 (astro build && pagefind)'
+          : 'Search index not loaded. Available after production build (astro build && pagefind)';
+        els.emptyView.classList.remove('hidden');
+      }
+      return;
+    }
+
+    try {
+      const searchResponse = await pagefind.search(trimmed, {
+        filters: { lang }
+      });
+
+      els.loadingView?.classList.add('hidden');
+
+      if (!searchResponse || searchResponse.results.length === 0) {
+        if (els.emptyView) {
+          els.emptyView.textContent = lang === 'zh'
+            ? '未找到相关结果，请尝试其他关键词'
+            : 'No matching documentation found. Try another query.';
+          els.emptyView.classList.remove('hidden');
+        }
+        return;
+      }
+
+      // Load first 8 results to ensure fast snappy UI
+      const resultsToLoad = searchResponse.results.slice(0, 8);
+      const loadedData = await Promise.all(resultsToLoad.map((r: any) => r.data()));
+
+      if (els.list) {
+        els.list.innerHTML = '';
+        currentResultItems = [];
+
+        loadedData.forEach((item: any, itemIdx: number) => {
+          const li = document.createElement('li');
+          li.setAttribute('role', 'option');
+          li.setAttribute('id', `search-result-${itemIdx}`);
+          li.className = 'group p-3 rounded-xl border border-darkroom-line bg-darkroom-panel hover:bg-darkroom-raised transition-all cursor-pointer';
+
+          const title = item.meta?.title || 'Documentation Chapter';
+          const url = item.url;
+          const excerpt = item.excerpt || '';
+
+          li.innerHTML = `
+            <a href="${url}" class="block space-y-1">
+              <div class="flex items-center justify-between text-xs font-semibold text-text-primary group-hover:text-accent transition-colors">
+                <span class="truncate">${title}</span>
+                <span class="text-[10px] font-mono text-text-muted shrink-0 ml-2">Doc</span>
+              </div>
+              <div class="text-[11.5px] text-text-secondary leading-snug line-clamp-2 [&>mark]:bg-accent/30 [&>mark]:text-accent-hover [&>mark]:font-semibold [&>mark]:px-0.5 [&>mark]:rounded">
+                ${excerpt}
+              </div>
+            </a>
+          `;
+
+          li.addEventListener('click', (e) => {
+            closeSearchModal();
+          });
+
+          els.list!.appendChild(li);
+          currentResultItems.push(li);
+        });
+
+        els.list.classList.remove('hidden');
+        updateSelection(0);
+      }
+    } catch (err) {
+      console.error('[Pagefind] Search error:', err);
+      els.loadingView?.classList.add('hidden');
+      if (els.emptyView) {
+        els.emptyView.textContent = lang === 'zh' ? '搜索出错，请稍后重试' : 'Error performing search.';
+        els.emptyView.classList.remove('hidden');
+      }
+    }
+  }
+
+  let debounceTimer: any = null;
+
+  function initSearchModal() {
+    const els = getModalElements();
+    if (!els || !els.modal) return;
+
+    if (els.modal.dataset.bound === 'true') return;
+    els.modal.dataset.bound = 'true';
+
+    // Hook up triggers across document: #doc-search-placeholder-btn and .doc-search-trigger
+    const triggers = document.querySelectorAll('#doc-search-placeholder-btn, .doc-search-trigger, [data-search-trigger]');
+    triggers.forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        openSearchModal();
+      });
+    });
+
+    els.closeBtn?.addEventListener('click', closeSearchModal);
+
+    els.modal.addEventListener('click', (e) => {
+      if (e.target === els.modal) {
+        closeSearchModal();
+      }
+    });
+
+    els.input?.addEventListener('input', (e) => {
+      clearTimeout(debounceTimer);
+      const val = (e.target as HTMLInputElement).value;
+      debounceTimer = setTimeout(() => {
+        executeSearch(val);
+      }, 150);
+    });
+
+    els.input?.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        updateSelection(selectedIndex + 1);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        updateSelection(selectedIndex - 1);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        if (selectedIndex >= 0 && selectedIndex < currentResultItems.length) {
+          const anchor = currentResultItems[selectedIndex].querySelector('a');
+          if (anchor) {
+            closeSearchModal();
+            anchor.click();
+          }
+        }
+      }
+    });
+  }
+
+  // Global keyboard shortcut: Cmd+K / Ctrl+K and ESC
+  if (typeof window !== 'undefined' && !(window as any).__nexfilmSearchKeydownRegistered) {
+    (window as any).__nexfilmSearchKeydownRegistered = true;
+    window.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        const els = getModalElements();
+        if (!els) return;
+        if (isSearchModalOpen) {
+          closeSearchModal();
+        } else {
+          openSearchModal();
+        }
+      } else if (e.key === 'Escape' && isSearchModalOpen) {
+        closeSearchModal();
+      }
+    });
+  }
+
+  document.addEventListener('astro:page-load', initSearchModal);
+</script>

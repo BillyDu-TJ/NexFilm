@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000">
+  <defs>
+    <linearGradient id="fuji-base" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b85a22"/>
+      <stop offset="50%" stop-color="#c6682b"/>
+      <stop offset="100%" stop-color="#aa4b19"/>
+    </linearGradient>
+    <linearGradient id="fuji-neg-scene" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#182c3c"/>
+      <stop offset="50%" stop-color="#5a2e46"/>
+      <stop offset="100%" stop-color="#2d4033"/>
+    </linearGradient>
+    <filter id="fuji-grain" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" result="noise"/>
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.14 0" in="noise" result="coloredNoise"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="1000" fill="url(#fuji-base)"/>
+
+  <!-- Sprocket Holes -->
+  <g fill="#0b0b0c">
+    <rect x="60" y="28" width="56" height="74" rx="10"/>
+    <rect x="156" y="28" width="56" height="74" rx="10"/>
+    <rect x="252" y="28" width="56" height="74" rx="10"/>
+    <rect x="348" y="28" width="56" height="74" rx="10"/>
+    <rect x="444" y="28" width="56" height="74" rx="10"/>
+    <rect x="540" y="28" width="56" height="74" rx="10"/>
+    <rect x="636" y="28" width="56" height="74" rx="10"/>
+    <rect x="732" y="28" width="56" height="74" rx="10"/>
+    <rect x="828" y="28" width="56" height="74" rx="10"/>
+    <rect x="924" y="28" width="56" height="74" rx="10"/>
+    <rect x="1020" y="28" width="56" height="74" rx="10"/>
+    <rect x="1116" y="28" width="56" height="74" rx="10"/>
+    <rect x="1212" y="28" width="56" height="74" rx="10"/>
+    <rect x="1308" y="28" width="56" height="74" rx="10"/>
+    <rect x="1404" y="28" width="56" height="74" rx="10"/>
+    <rect x="1500" y="28" width="56" height="74" rx="10"/>
+    <rect x="60" y="898" width="56" height="74" rx="10"/>
+    <rect x="156" y="898" width="56" height="74" rx="10"/>
+    <rect x="252" y="898" width="56" height="74" rx="10"/>
+    <rect x="348" y="898" width="56" height="74" rx="10"/>
+    <rect x="444" y="898" width="56" height="74" rx="10"/>
+    <rect x="540" y="898" width="56" height="74" rx="10"/>
+    <rect x="636" y="898" width="56" height="74" rx="10"/>
+    <rect x="732" y="898" width="56" height="74" rx="10"/>
+    <rect x="828" y="898" width="56" height="74" rx="10"/>
+    <rect x="924" y="898" width="56" height="74" rx="10"/>
+    <rect x="1020" y="898" width="56" height="74" rx="10"/>
+    <rect x="1116" y="898" width="56" height="74" rx="10"/>
+    <rect x="1212" y="898" width="56" height="74" rx="10"/>
+    <rect x="1308" y="898" width="56" height="74" rx="10"/>
+    <rect x="1404" y="898" width="56" height="74" rx="10"/>
+    <rect x="1500" y="898" width="56" height="74" rx="10"/>
+  </g>
+
+  <!-- Fuji Edge Code -->
+  <g font-family="monospace" font-size="16" font-weight="bold" fill="#5c2006" opacity="0.85">
+    <text x="140" y="122">FUJIFILM SUPERIA 400</text>
+    <text x="620" y="122">X-TRA</text>
+    <text x="1000" y="122">▶ 28</text>
+    <text x="1360" y="122">SAFETY FILM</text>
+    <text x="180" y="880">FUJI CH-7</text>
+    <text x="640" y="880">28A</text>
+    <text x="1100" y="880">|||| | | || ||| || |</text>
+  </g>
+
+  <!-- Negative Frame: Tokyo Street & Lush Green Foliage (Green inverts to deep magenta/purple negative) -->
+  <g transform="translate(140, 140)">
+    <rect width="1320" height="720" rx="4" fill="url(#fuji-neg-scene)"/>
+
+    <!-- Architecture Silhouettes -->
+    <rect x="180" y="180" width="340" height="540" fill="#203444"/>
+    <rect x="580" y="100" width="420" height="620" fill="#182733"/>
+    <rect x="1060" y="240" width="220" height="480" fill="#2b3e4d"/>
+
+    <!-- Foliage / Trees in front of buildings (Negative of vibrant greens = Magenta/Violet density) -->
+    <path d="M 80,720 Q 220,440 380,720 Z" fill="#66204c" opacity="0.95"/>
+    <path d="M 320,720 Q 480,480 640,720 Z" fill="#752258" opacity="0.9"/>
+    <path d="M 880,720 Q 1040,420 1200,720 Z" fill="#611d47" opacity="0.95"/>
+
+    <!-- Neon sign highlights (dense negative black) -->
+    <rect x="630" y="220" width="40" height="180" fill="#080e14"/>
+    <rect x="710" y="300" width="120" height="30" fill="#0b1219"/>
+
+    <rect width="1320" height="720" filter="url(#fuji-grain)" opacity="0.4" pointer-events="none"/>
+  </g>
+</svg>

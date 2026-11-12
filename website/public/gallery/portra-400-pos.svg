@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000">
+  <defs>
+    <!-- Golden Hour Sky Gradient (Inverted Positive) -->
+    <linearGradient id="pos-sky" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#e8a87c"/>
+      <stop offset="35%" stop-color="#f3c99f"/>
+      <stop offset="70%" stop-color="#b8d5e5"/>
+      <stop offset="100%" stop-color="#8bb4ce"/>
+    </linearGradient>
+    <!-- Natural Skin Tone Gradient (Portra Endura warmth) -->
+    <radialGradient id="pos-skin" cx="48%" cy="46%" r="50%">
+      <stop offset="0%" stop-color="#fae1d0"/>
+      <stop offset="45%" stop-color="#f2cbb4"/>
+      <stop offset="85%" stop-color="#db9c7a"/>
+      <stop offset="100%" stop-color="#b6714e"/>
+    </radialGradient>
+    <linearGradient id="pos-hair" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#4d2f1d"/>
+      <stop offset="60%" stop-color="#2a160c"/>
+      <stop offset="100%" stop-color="#140a05"/>
+    </linearGradient>
+    <filter id="grain-pos" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="3" result="noise"/>
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.08 0" in="noise" result="coloredNoise"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+  </defs>
+
+  <!-- Clean Darkroom Border Framing -->
+  <rect width="1600" height="1000" fill="#121214"/>
+
+  <!-- Inner Active Photographic Print Area -->
+  <g transform="translate(140, 140)">
+    <!-- Sky & Background -->
+    <rect width="1320" height="720" rx="4" fill="url(#pos-sky)"/>
+
+    <!-- Gentle Mountain Hills / Warm Sunset Horizon -->
+    <path d="M 0,520 Q 280,380 620,440 T 1320,400 L 1320,720 L 0,720 Z" fill="#6a7d66" opacity="0.7"/>
+    <path d="M 0,580 Q 400,480 820,530 T 1320,510 L 1320,720 L 0,720 Z" fill="#46543f" opacity="0.85"/>
+
+    <!-- Soft Golden Sun / Backlight Rim -->
+    <circle cx="1060" cy="220" r="140" fill="#fff5e6" opacity="0.95"/>
+    <circle cx="1060" cy="220" r="80" fill="#ffffff"/>
+
+    <!-- Hair Silhouette -->
+    <ellipse cx="660" cy="380" rx="160" ry="195" fill="url(#pos-hair)"/>
+
+    <!-- Face & Neck -->
+    <ellipse cx="660" cy="380" rx="115" ry="135" fill="url(#pos-skin)"/>
+    <!-- Delicate Cheek Warmth -->
+    <ellipse cx="630" cy="380" rx="35" ry="30" fill="#e88975" opacity="0.35"/>
+    <ellipse cx="695" cy="380" rx="35" ry="30" fill="#e88975" opacity="0.35"/>
+
+    <!-- Soft Hair Details overlapping face -->
+    <path d="M 500,380 C 490,230 600,180 660,180 C 720,180 830,230 820,380 C 790,300 740,240 660,240 C 580,240 530,300 500,380 Z" fill="url(#pos-hair)"/>
+
+    <!-- Linen Coat / Warm Garment (Portra warm earth tones) -->
+    <path d="M 420,720 C 440,540 540,510 660,510 C 780,510 880,540 900,720 Z" fill="#9c7a59"/>
+    <!-- Fold shadows -->
+    <path d="M 640,530 L 630,720 L 680,720 L 670,530 Z" fill="#6d5137" opacity="0.6"/>
+
+    <!-- Warm Golden Light Wrap on Shoulders -->
+    <path d="M 780,540 C 840,580 880,640 890,720 L 900,720 C 880,640 840,570 780,530 Z" fill="#fed69e" opacity="0.8"/>
+
+    <!-- Film Grain Overlay -->
+    <rect width="1320" height="720" filter="url(#grain-pos)" opacity="0.5" pointer-events="none"/>
+  </g>
+
+  <!-- Subtle Minimal Film Margin Branding Badge -->
+  <g font-family="monospace" font-size="13" fill="#aaaab0" opacity="0.7">
+    <text x="140" y="890">KODAK PORTRA 400 · 35mm</text>
+    <text x="140" y="910" fill="#c4814f">PRINTED ON KODAK PORTRA ENDURA (COLOR EMULATION)</text>
+    <text x="1460" y="890" text-anchor="end">D_min: 0.24 / 0.59 / 0.96</text>
+    <text x="1460" y="910" text-anchor="end">UNIFIED DENSITY ENGINE</text>
+  </g>
+</svg>

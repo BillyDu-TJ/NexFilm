@@ -1,0 +1,265 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import DownloadButtons from '../../components/DownloadButtons.astro';
+import BeforeAfter from '../../components/BeforeAfter.astro';
+import WorkspaceShowcase from '../../components/WorkspaceShowcase.astro';
+import { getLatestRelease } from '../../utils/github-releases';
+import { withBase } from '../../utils/urls';
+
+const latestRelease = await getLatestRelease();
+const tagName = latestRelease.tagName;
+const defaultAsset = latestRelease.assets.macArm || latestRelease.allAssets[0];
+
+const fallbackData = JSON.stringify({
+  version: tagName,
+  tagUrl: latestRelease.htmlUrl,
+  macArm: latestRelease.assets.macArm,
+  macIntel: latestRelease.assets.macIntel,
+  winX64: latestRelease.assets.winX64,
+});
+---
+
+<BaseLayout title="NexFilm Engine - 科学级胶片密度域反转与校色工作台" lang="zh">
+  <!-- Hero Section -->
+  <section class="relative pt-12 pb-20 md:pt-20 md:pb-32 overflow-hidden">
+    <!-- Ambient Background Light -->
+    <div class="absolute top-1/4 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[350px] bg-accent/15 blur-[140px] rounded-full pointer-events-none -z-10"></div>
+    <div class="absolute top-1/3 right-1/4 w-[300px] h-[200px] bg-accent/10 blur-[120px] rounded-full pointer-events-none -z-10"></div>
+
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center max-w-4xl mx-auto space-y-6">
+        <!-- Release Badge -->
+        <div class="hero-reveal delay-0 inline-flex items-center gap-2 px-3.5 py-1 rounded-full border border-darkroom-line bg-darkroom-panel text-xs text-text-secondary">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span>NexFilm Engine <span data-hero-version class="font-mono text-accent">{tagName}</span> 稳定版已发布</span>
+          <a href={withBase('/zh/changelog/')} class="text-accent hover:underline ml-1">更新日志 →</a>
+        </div>
+
+        <!-- Main Title with Serif font & Original Signature Gradient -->
+        <h1 class="hero-reveal delay-80 text-4xl sm:text-5xl lg:text-6xl font-serif font-bold tracking-tight text-white leading-[1.2] max-w-4xl mx-auto">
+          <span class="inline-block">科学级</span> <span class="inline-block text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-sky-300 to-amber-300 pb-3 -mb-3 pt-1 -mt-1">胶片密度域反转</span> <span class="inline-block">工作台</span>
+        </h1>
+
+        <!-- Subtitle -->
+        <p class="hero-reveal delay-160 text-base sm:text-lg text-text-secondary leading-relaxed max-w-2xl mx-auto font-sans">
+          专为翻拍与扫描负片打造。基于物理光学密度模型反相，杜绝数码曲线硬拉导致的交叉偏色；支持整卷一致性校准与暗房印片光微调，全程本地离线运行。
+        </p>
+
+        <!-- CTA Buttons -->
+        <div class="hero-reveal delay-240 pt-2 flex flex-col sm:flex-row items-center justify-center gap-4">
+          <a 
+            href={defaultAsset?.downloadUrl || '#download-cards'} 
+            download={defaultAsset?.name}
+            id="hero-download-btn"
+            data-hero-download
+            data-fallback-assets={fallbackData}
+            class="w-full sm:w-auto px-6 py-3.5 rounded-xl font-semibold text-sm bg-accent hover:bg-accent-hover text-darkroom-canvas transition-all duration-200 flex items-center justify-center gap-2 group shadow-sm"
+          >
+            <svg class="w-5 h-5 transition-transform group-hover:translate-y-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            <span data-hero-download-text>直接下载 macOS 版 ({tagName})</span>
+          </a>
+
+          <a 
+            href={withBase('/zh/docs/')} 
+            class="w-full sm:w-auto px-6 py-3.5 rounded-xl font-semibold text-sm border border-darkroom-line bg-darkroom-panel hover:bg-darkroom-raised hover:border-accent text-text-primary transition-all flex items-center justify-center gap-2"
+          >
+            <svg class="w-5 h-5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+            </svg>
+            <span>图文文档与教程库</span>
+          </a>
+        </div>
+
+        <!-- Auxiliary Links: All Platforms & Release Entry -->
+        <div class="hero-reveal delay-320 pt-1 flex items-center justify-center gap-3 text-xs font-mono text-text-muted">
+          <a href={withBase('/zh/download/')} class="hover:text-accent underline underline-offset-4 decoration-darkroom-line-strong hover:decoration-accent transition-colors">
+            查看全部平台与校验和 →
+          </a>
+          <span>·</span>
+          <a href={latestRelease.htmlUrl} target="_blank" rel="noopener noreferrer" class="hover:text-accent underline underline-offset-4 decoration-darkroom-line-strong hover:decoration-accent transition-colors">
+            GitHub Release ({tagName})
+          </a>
+        </div>
+      </div>
+
+      <!-- Hero Visual: Zero-Lag Interactive Before/After -->
+      <div class="hero-reveal delay-400 mt-14 max-w-5xl mx-auto">
+        <BeforeAfter 
+          lang="zh"
+        />
+      </div>
+    </div>
+  </section>
+
+  <!-- P2.1: Core User-Oriented Highlights (4 Pillars aligned with Real Workflow) -->
+  <section id="core-capabilities" class="py-24 border-t border-darkroom-line bg-darkroom-canvas relative">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center max-w-3xl mx-auto mb-16">
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-darkroom-line bg-darkroom-panel text-xs font-mono text-accent mb-3">
+          <span class="w-1.5 h-1.5 rounded-full bg-accent"></span>
+          <span>CORE VALUES & CAPABILITIES</span>
+        </div>
+        <h3 class="text-3xl sm:text-4xl font-sans font-bold text-text-primary tracking-tight">专为胶片暗房摄影师打造的四大核心价值</h3>
+        <p class="text-text-secondary text-sm sm:text-base mt-3 leading-relaxed">
+          解决翻拍后极速调正、整卷零跳色、底片归纳建档与暗房调色输出的全部刚需。
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <!-- Feature 1: Instant Inversion & Zero Color-Hop Batch -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/50 hover:bg-darkroom-raised transition-all duration-300 group shadow-darkroom-card">
+          <div class="w-12 h-12 rounded-xl bg-darkroom-canvas border border-darkroom-line text-sky-400 flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
+            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M4 6h16M4 10h16M4 14h16M4 18h16M7 6v12M17 6v12" />
+            </svg>
+          </div>
+          <h4 class="text-lg font-sans font-bold text-text-primary mb-2">一键反相与整卷零跳色</h4>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            自动识别片基色罩与有效密度范围，单帧毫秒还原正片；支持整卷片基采样与共享白点标定，36 张批量反转同光线下绝无跳色。
+          </p>
+        </div>
+
+        <!-- Feature 2: Roll Archive & Contact Sheet -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/50 hover:bg-darkroom-raised transition-all duration-300 group shadow-darkroom-card">
+          <div class="w-12 h-12 rounded-xl bg-darkroom-canvas border border-darkroom-line text-accent flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
+            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+            </svg>
+          </div>
+          <h4 class="text-lg font-sans font-bold text-text-primary mb-2">胶卷归纳检索与接触印样</h4>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            三态直觉导入，支持按 135/120 全画幅、相机与日期快速检索；内置 40+ 款胶卷库，并可一键导出带拟真齿孔片边的实体接触印样。
+          </p>
+        </div>
+
+        <!-- Feature 3: WebGL Printer Lights & 14 Print LUTs -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/50 hover:bg-darkroom-raised transition-all duration-300 group shadow-darkroom-card">
+          <div class="w-12 h-12 rounded-xl bg-darkroom-canvas border border-darkroom-line text-emerald-400 flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
+            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" />
+            </svg>
+          </div>
+          <h4 class="text-lg font-sans font-bold text-text-primary mb-2">60fps 印片光与相纸模拟</h4>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            还原传统彩色放大机 RGB 互补印片光微调机制；配备四通道曲线、示波器与溢出预警；开箱内置 14 款 Kodak/Ilford 经典相纸 LUT。
+          </p>
+        </div>
+
+        <!-- Feature 4: Optical Density & 100% Local Air-Gap -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/50 hover:bg-darkroom-raised transition-all duration-300 group shadow-darkroom-card">
+          <div class="w-12 h-12 rounded-xl bg-darkroom-canvas border border-darkroom-line text-purple-400 flex items-center justify-center mb-5 group-hover:scale-105 transition-transform">
+            <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+            </svg>
+          </div>
+          <h4 class="text-lg font-sans font-bold text-text-primary mb-2">光学密度底座与本地安全</h4>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            基于对数光学密度物理定律 D = -log₁₀(T) 构建，RAW/TIFF 统一数学解析；原生 Rust + 本地 SQLite 驱动，源片只读，零网络上传。
+          </p>
+        </div>
+      </div>
+
+      <!-- Jump to Features Matrix Link -->
+      <div class="mt-14 text-center">
+        <a 
+          href={withBase('/zh/features/')} 
+          class="inline-flex items-center gap-2 px-6 py-3.5 rounded-xl border border-darkroom-line bg-darkroom-panel hover:bg-darkroom-raised hover:border-accent text-text-primary text-sm font-semibold transition-all group shadow-sm"
+        >
+          <span>查看四大分类完整功能矩阵与技术规格</span>
+          <span class="text-accent group-hover:translate-x-1 transition-transform">→</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Workspace Showcase Preview -->
+  <WorkspaceShowcase lang="zh" />
+
+  <!-- Format Support Matrix -->
+  <section class="py-20 border-t border-darkroom-line bg-darkroom-canvas">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="text-center max-w-2xl mx-auto mb-14">
+        <h2 class="text-xs font-mono uppercase tracking-widest text-accent mb-3">Broad Compatibility</h2>
+        <h3 class="text-3xl font-sans font-bold text-text-primary tracking-tight">全面的输入与专业交付格式</h3>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+        <!-- Input -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel shadow-darkroom-card flex flex-col justify-between">
+          <div>
+            <h4 class="text-base font-bold text-text-primary flex items-center gap-2 mb-4 font-sans">
+              <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+              输入格式支持
+            </h4>
+            <ul class="space-y-3 text-sm text-text-secondary font-sans mb-4">
+              <li class="flex items-start gap-2">
+                <span class="font-mono text-accent font-medium min-w-[90px]">相机 RAW:</span>
+                <span>DNG, ARW/SR2, CR2/CR3, NEF, RAF, RW2, ORF, PEF, 3FR, IIQ 等主流相机 RAW</span>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="font-mono text-accent font-medium min-w-[90px]">扫描仪原件:</span>
+                <span>Imacon / Flextight <code>.fff</code>，流式分行解码超大 FFF / TIFF</span>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="font-mono text-accent font-medium min-w-[90px]">光栅图像:</span>
+                <span>16-bit / 8-bit TIFF, PNG, JPEG</span>
+              </li>
+            </ul>
+          </div>
+          <div class="pt-3 border-t border-darkroom-line">
+            <a href={withBase('/zh/docs/import-formats-and-library/#format-matrix')} class="text-xs font-mono text-accent hover:underline flex items-center gap-1">
+              <span>查看完整输入格式矩阵与解码规格</span>
+              <span>→</span>
+            </a>
+          </div>
+        </div>
+
+        <!-- Output -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel shadow-darkroom-card flex flex-col justify-between">
+          <div>
+            <h4 class="text-base font-bold text-text-primary flex items-center gap-2 mb-4 font-sans">
+              <span class="w-2 h-2 rounded-full bg-accent"></span>
+              输出与色彩交付
+            </h4>
+            <ul class="space-y-3 text-sm text-text-secondary font-sans mb-4">
+              <li class="flex items-start gap-2">
+                <span class="font-mono text-accent font-medium min-w-[90px]">母带归档:</span>
+                <span>16 位线性 TIFF、线性 DNG、原样封装相机 RAW DNG</span>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="font-mono text-accent font-medium min-w-[90px]">色彩配置文件:</span>
+                <span>内嵌 sRGB, Display P3, Adobe RGB, Rec.2020, ProPhoto, ACEScg</span>
+              </li>
+              <li class="flex items-start gap-2">
+                <span class="font-mono text-accent font-medium min-w-[90px]">胶卷归档:</span>
+                <span>高精度 JPEG 接触印样、EXIF 拍摄元数据注入</span>
+              </li>
+            </ul>
+          </div>
+          <div class="pt-3 border-t border-darkroom-line">
+            <a href={withBase('/zh/docs/export-and-contact-sheets/#format-decision-matrix')} class="text-xs font-mono text-accent hover:underline flex items-center gap-1">
+              <span>查看六大导出格式决策表与 ICC 选型</span>
+              <span>→</span>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Download CTA Section with Direct Download Component -->
+  <section id="download-cards" class="py-24 border-t border-darkroom-line relative overflow-hidden scroll-mt-20 bg-darkroom-bg">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center space-y-8">
+      <div>
+        <h2 class="text-3xl sm:text-4xl font-sans font-bold text-text-primary tracking-tight">准备好体验纯粹的胶片质感了吗？</h2>
+        <p class="text-text-secondary text-sm mt-3 max-w-xl mx-auto">
+          免费、开源且尊重隐私。点击对应版本直接下载安装包，将你的底片数字库赋予新的生命。
+        </p>
+      </div>
+
+      <DownloadButtons lang="zh" variant="full" />
+    </div>
+  </section>
+</BaseLayout>

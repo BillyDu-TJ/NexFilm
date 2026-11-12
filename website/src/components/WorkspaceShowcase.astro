@@ -1,0 +1,185 @@
+---
+import { withBase } from '../utils/urls';
+
+interface Props {
+  lang?: 'zh' | 'en';
+}
+
+const { lang = 'zh' } = Astro.props;
+const iframeLang = lang === 'zh' ? 'zh-CN' : 'en';
+const demoUrl = withBase(`/workspace-demo/index.html?lang=${iframeLang}`);
+
+const t = {
+  zh: {
+    badge: 'LIVE WORKSPACE SANDBOX · 工业级工作台沙箱',
+    title: '专为暗房物理调色编排的工业级界面',
+    subtitle: '无需下载，直接在下方真实软件 HTML 沙箱中点击顶栏菜单、切换 Library / Rolls / Develop 视图、拖拽暗房印片光与曲线。',
+    statusBadge: '交互式真实界面预览 · 可直接点击体验菜单、视图切换与调色面板',
+    resetBtn: '复位演示台',
+    fullscreenBtn: '全屏体验',
+    mobileHint: '← 手机端可横向滑动浏览完整软件界面 →',
+    tips: [
+      '点击顶栏切换 Library / Develop / Rolls / Hardware Calibration 视图',
+      '点击 setting 菜单可自由切换深/浅色主题与中/英文',
+      '在 Develop 视图拖动 Printer Lights、曲线与 14 款相纸模拟'
+    ]
+  },
+  en: {
+    badge: 'LIVE WORKSPACE SANDBOX · INDUSTRIAL DARKROOM UI',
+    title: 'Engineered for Optical Darkroom Grading',
+    subtitle: 'No download required — interact directly with the native HTML/CSS/JS darkroom workspace. Test menus, switch views, drag printer lights & tone curves.',
+    statusBadge: 'Interactive Real UI Sandbox · Directly test menus, view switching & darkroom controls',
+    resetBtn: 'Reset Workspace',
+    fullscreenBtn: 'Fullscreen',
+    mobileHint: '← Swipe horizontally to explore the full desktop interface →',
+    tips: [
+      'Switch between Library, Develop, Rolls, and Hardware Calibration views',
+      'Toggle Dark/Light themes and EN/ZH in the top setting menu',
+      'Fine-tune Printer Lights, Tone Curves & 14 Print LUTs in Develop'
+    ]
+  }
+}[lang];
+---
+
+<section class="py-20 border-t border-darkroom-line bg-darkroom-bg relative overflow-hidden" id="workspace-showcase">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+    <!-- Header -->
+    <div class="text-center max-w-3xl mx-auto mb-10">
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-darkroom-line bg-darkroom-panel text-xs font-mono text-accent mb-3">
+        <span class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse"></span>
+        <span>{t.badge}</span>
+      </div>
+      <h2 class="text-3xl sm:text-4xl font-sans font-bold text-text-primary tracking-tight">
+        {t.title}
+      </h2>
+      <p class="text-text-secondary text-sm sm:text-base mt-3 leading-relaxed font-sans">
+        {t.subtitle}
+      </p>
+    </div>
+
+    <!-- Quick Interaction Feature Pills -->
+    <div class="flex flex-wrap items-center justify-center gap-2.5 mb-8 text-xs font-mono text-text-secondary">
+      {t.tips.map((tip) => (
+        <span class="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-darkroom-canvas border border-darkroom-line">
+          <span class="w-1.5 h-1.5 rounded-full bg-accent"></span>
+          <span>{tip}</span>
+        </span>
+      ))}
+    </div>
+
+    <!-- Mobile Scroll Tip -->
+    <div class="md:hidden text-center text-xs font-mono text-accent mb-3 animate-pulse">
+      {t.mobileHint}
+    </div>
+
+    <!-- Workspace Window Shell -->
+    <div id="workspace-window-shell" class="rounded-2xl border border-darkroom-line bg-darkroom-chrome shadow-2xl overflow-hidden transition-all duration-300">
+      <!-- Window Titlebar & Controls -->
+      <div class="bg-[#18181a] px-4 py-3 border-b border-darkroom-line flex flex-wrap items-center justify-between gap-3 select-none">
+        <!-- Window Traffic Lights & Version Badge -->
+        <div class="flex items-center gap-3">
+          <div class="flex items-center gap-1.5">
+            <span class="w-3 h-3 rounded-full bg-rose-500/80 inline-block"></span>
+            <span class="w-3 h-3 rounded-full bg-amber-600/80 inline-block"></span>
+            <span class="w-3 h-3 rounded-full bg-emerald-500/80 inline-block"></span>
+          </div>
+          <span class="text-xs text-text-muted font-mono hidden sm:inline">NexFilm Engine v1.1 · Web Sandbox</span>
+        </div>
+
+        <!-- Center Status Badge -->
+        <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-darkroom-canvas border border-darkroom-line text-[11px] font-mono text-text-secondary">
+          <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+          <span class="truncate max-w-[280px] sm:max-w-none">{t.statusBadge}</span>
+        </div>
+
+        <!-- Right Window Action Buttons -->
+        <div class="flex items-center gap-2">
+          <button 
+            type="button" 
+            id="btn-reset-workspace-demo" 
+            class="px-2.5 py-1 text-xs font-mono rounded bg-darkroom-panel border border-darkroom-line hover:border-accent text-text-secondary hover:text-text-primary transition-all flex items-center gap-1.5"
+            title="Reload Workspace Demo"
+          >
+            <svg class="w-3.5 h-3.5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <span>{t.resetBtn}</span>
+          </button>
+
+          <button 
+            type="button" 
+            id="btn-toggle-fullscreen" 
+            class="px-2.5 py-1 text-xs font-mono rounded bg-darkroom-panel border border-darkroom-line hover:border-accent text-text-secondary hover:text-text-primary transition-all flex items-center gap-1.5"
+            title="Toggle Fullscreen"
+          >
+            <svg class="w-3.5 h-3.5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+            </svg>
+            <span class="hidden sm:inline">{t.fullscreenBtn}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Iframe Outer Wrapper with Horizontal Scroll Guard for narrow mobile -->
+      <div class="overflow-x-auto w-full relative custom-scrollbar bg-[#121214]">
+        <div class="min-w-[960px] md:min-w-0 w-full h-[640px] md:h-[720px] lg:h-[780px] relative">
+          <iframe 
+            id="workspace-demo-iframe" 
+            src={demoUrl} 
+            class="w-full h-full border-0 bg-[#121214] block" 
+            style="color-scheme: dark; background-color: #121214;"
+            title="NexFilm Interactive Workspace" 
+            loading="lazy"
+          ></iframe>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<script>
+  function initWorkspaceShowcase() {
+    const iframe = document.getElementById('workspace-demo-iframe') as HTMLIFrameElement | null;
+    const resetBtn = document.getElementById('btn-reset-workspace-demo');
+    const fullscreenBtn = document.getElementById('btn-toggle-fullscreen');
+    const shell = document.getElementById('workspace-window-shell');
+
+    if (resetBtn && iframe) {
+      if (resetBtn.dataset.wsBound !== 'true') {
+        resetBtn.dataset.wsBound = 'true';
+        resetBtn.addEventListener('click', () => {
+          try {
+            if (iframe.contentWindow) {
+              iframe.contentWindow.location.reload();
+              return;
+            }
+          } catch {
+            // ignore cross-origin if any
+          }
+          const src = iframe.getAttribute('src') || iframe.src;
+          iframe.src = src;
+        });
+      }
+    }
+
+    if (fullscreenBtn && shell) {
+      if (fullscreenBtn.dataset.wsBound !== 'true') {
+        fullscreenBtn.dataset.wsBound = 'true';
+        fullscreenBtn.addEventListener('click', () => {
+          if (!document.fullscreenElement) {
+            shell.requestFullscreen().catch(err => {
+              console.warn('Fullscreen request failed:', err);
+            });
+          } else {
+            document.exitFullscreen().catch(err => {
+              console.warn('Exit fullscreen failed:', err);
+            });
+          }
+        });
+      }
+    }
+  }
+
+  // Initialize on Astro page load (with dataset idempotent locks)
+  document.addEventListener('astro:page-load', initWorkspaceShowcase);
+</script>

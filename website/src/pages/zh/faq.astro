@@ -1,0 +1,261 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { withBase } from '../../utils/urls';
+import { renderMathInHtml } from '../../utils/math';
+
+const categories = [
+  { id: 'all', name: '全部问题', nameEn: 'All Questions', count: 21 },
+  { id: 'setup', name: '安装与系统放行', nameEn: 'Setup & Security', count: 4 },
+  { id: 'formats', name: '翻拍设备与格式', nameEn: 'Scanning & Formats', count: 4 },
+  { id: 'calibration', name: '标定与避坑指南', nameEn: 'Calibration & Workflow', count: 4 },
+  { id: 'develop', name: '显色工作台调色', nameEn: 'Develop & Grading', count: 4 },
+  { id: 'export', name: '格式导出与交付', nameEn: 'Export & Color Space', count: 3 },
+  { id: 'privacy', name: '数据安全与隐私', nameEn: 'Data & Privacy', count: 2 },
+];
+
+const faqs = [
+  // Category 1: Setup & Security
+  {
+    category: 'setup',
+    q: '为什么安装后首次启动会有安全警告？',
+    a: `NexFilm Engine 是一个完全开源、非盈利的独立摄影工具项目，目前尚未每年向商业认证机构购买昂贵的代码签名证书。Windows SmartScreen 和 macOS Gatekeeper 会对未签名的开源二进制文件弹出安全警告。请按照文档指引正常放行运行权限。详见 <a href="${withBase('/zh/docs/overview-and-install/#security-clearance')}" class="text-accent underline">系统安全拦截与首次放行流程 →</a>`
+  },
+  {
+    category: 'setup',
+    q: 'macOS 提示“已损坏 / 无法验证开发者”如何通过终端一键解决？',
+    a: `macOS 对未公证应用默认添加隔离属性。你可以打开系统的“终端”应用，运行以下命令即可解除拦截：<br><code class="inline-block px-2 py-1 mt-1 rounded bg-darkroom-canvas text-accent font-mono text-xs border border-darkroom-line">xattr -cr "/Applications/NexFilm Engine.app"</code><br>详见 <a href="${withBase('/zh/docs/overview-and-install/#first-launch-authorization-on-macos')}" class="text-accent underline">macOS 首次放行指南 →</a>`
+  },
+  {
+    category: 'setup',
+    q: '软件是否有官方 Linux 安装包？如何本地构建？',
+    a: `目前 CI 自动构建流水线针对 Windows 与 macOS 进行了全面验证。Linux 用户可以通过 Cargo 源码本地构建，依赖 <code>webkit2gtk-4.1</code> 与 <code>libraw</code>。在主仓库根目录运行 <code>cargo build --release</code> 即可生成原生可执行文件。详见 <a href="${withBase('/zh/docs/overview-and-install/#package-selection')}" class="text-accent underline">平台支持说明 →</a>`
+  },
+  {
+    category: 'setup',
+    q: '升级到新版本时，已保存的胶卷工程和调色历史会被覆盖吗？',
+    a: `不会。NexFilm 采用架构分离设计，应用程序二进制文件与用户工程数据相互独立。你的所有胶卷索引、调色历史与裁切框完整保存在系统的 <code>nexfilm_user.db</code> 中，直接覆盖安装新版本会平滑无缝读取既有数据。详见 <a href="${withBase('/zh/docs/troubleshooting-and-appendix/#data-storage-and-backup')}" class="text-accent underline">数据存储目录与备份方案 →</a>`
+  },
+
+  // Category 2: Scanning & Formats
+  {
+    category: 'formats',
+    q: '为什么数码相机翻拍的色彩还原效果远比普通扫描仪 JPEG 更好？',
+    a: `JPEG 是经过扫描仪内部曲线映射与非线性伽马压缩后的有损 8 位文件，不仅严重丢失了感光动态范围，更失去了原始未曝光片基和乳剂物理透射率。而数码相机翻拍 RAW 具有传感器未插值的真实线性光子响应，能够精确测量染料对数透射率（$D = -\\log_{10}(T)$），从而还原出纯净、通透的真实色彩。详见 <a href="${withBase('/zh/docs/import-formats-and-library/#format-matrix')}" class="text-accent underline">格式支持矩阵与解码规格 →</a>`
+  },
+  {
+    category: 'formats',
+    q: 'Nikon Z8 / Z9 的 HE / HE* 高效率压缩 RAW 为什么无法导入？',
+    a: `NexFilm 底层使用的跨平台开源 RAW 解码库 LibRaw 暂不支持专有专利保护的 Nikon TicoRAW (HE/HE*) 算法。建议在相机菜单中将 RAW 录制格式设为“无损压缩 RAW”，或使用免费的 Adobe DNG Converter 批量转为 DNG 格式导入。详见 <a href="${withBase('/zh/docs/import-formats-and-library/#format-matrix')}" class="text-accent underline">RAW 格式限制与转 DNG 建议 →</a>`
+  },
+  {
+    category: 'formats',
+    q: '对数码相机翻拍所用的背光光源有什么硬性要求？',
+    a: `翻拍背光板是决定色彩成败的基石。强烈建议选用具备高显色指数（<strong>CRI ≥ 95 / TLCI ≥ 98</strong>）的专业观片灯箱或影视级 LED 摄影灯。普通百元级平板灯往往在红蓝光谱交界处存在断谱，会导致反相后出现无法通过印片光校正的局部顽固色偏。详见 <a href="${withBase('/zh/docs/scanning-best-practices/#optical-illumination')}" class="text-accent underline">背光源光学显色性与照度均匀度准则 →</a>`
+  },
+  {
+    category: 'formats',
+    q: '哈苏 Imacon / Flextight .fff 超大单张原件导入会卡顿或爆内存吗？',
+    a: `不会。自 v1.1.0 起，NexFilm 升级了<strong>流式逐行解码器</strong>，原生以扫描仪解算 .fff 原件并采用按需有界代理机制，杜绝内存崩溃。详见 <a href="${withBase('/zh/docs/import-formats-and-library/#bounded-proxy-architecture')}" class="text-accent underline">有界代理架构与内存设计 →</a>`
+  },
+
+  // Category 3: Calibration & Workflow
+  {
+    category: 'calibration',
+    q: '为什么一键反相后的画面整体发灰、发暗、毫无对比度？',
+    a: `根本原因在于<strong>胶片有效范围框包含了外露的白灯板或齿孔</strong>。观片灯箱的直接透光率为 100%，远高于底片上任何最薄弱的感光乳剂。一旦把灯板纳入计算框内，算法会将其误判为画面最亮白点，从而把整幅画面极度压暗。解决方法：进入“设置胶片范围”，向内收缩，坚决剔除白边。详见 <a href="${withBase('/zh/docs/troubleshooting-and-appendix/#tone-and-color-troubleshooting')}" class="text-accent underline">影调与色彩异常系统排障树 →</a>`
+  },
+  {
+    category: 'calibration',
+    q: '处理 120 中画幅胶卷没有片头全曝光黑块怎么办？',
+    a: `120 胶卷没有 135 胶卷开头的引片全曝光黑色片头。这种情况下完全无需执行片头标定，直接点击“自动反相”即可。NexFilm 的有界跨度补偿算法会自动根据乳剂的真实动态分布推算出最合理的黑白端点。详见 <a href="${withBase('/zh/docs/roll-vs-loose-workflows/#120-and-headless-fallback')}" class="text-accent underline">120 中画幅与无片头底片回退机制 →</a>`
+  },
+  {
+    category: 'calibration',
+    q: '一卷底片涵盖不同光照场景，应该单张反相还是整卷批处理？',
+    a: `如果整卷底片在相同光源与机位下翻拍，推荐采用<strong>整卷标定批处理</strong>：采样一次片基与片头，点击“整卷反相”。整卷会共享最亮帧的全局白点，确保全卷色调严格一致。若该卷包含极端混合光源，对特定偏差帧进行单独印片光微调即可。详见 <a href="${withBase('/zh/docs/roll-vs-loose-workflows/#whole-roll-batch-processing')}" class="text-accent underline">整卷批处理实操规范 →</a>`
+  },
+  {
+    category: 'calibration',
+    q: '翻拍底片边缘有轻微漏光或蓝边，会破坏色彩计算吗？',
+    a: `会产生一定干扰。边缘蓝边通常来自片夹边缘的反光或镜头暗角。建议在“设置胶片范围”中拖拽黄色四角手柄，适当往内收缩裁剪框，只框选纯净感光区域，确保分析数据纯粹。详见 <a href="${withBase('/zh/docs/film-area-and-geometry/#framing-pitfalls')}" class="text-accent underline">常见框选错误后果与光学机理 →</a>`
+  },
+
+  // Category 4: Develop & Grading
+  {
+    category: 'develop',
+    q: '暗房印片光与常规软件的色温/色调滑块有何本质区别？',
+    a: `印片光还原了工业光学暗房冲印机的物理加色原理。红、绿、蓝三个推子以对数密度为单位，独立控制红-青、绿-品红、蓝-黄互补色轴。与数字算法强行扭曲色相不同，印片光的调整完全遵循传统感光相纸三层乳剂的光学加减律，过渡更加醇厚自然。详见 <a href="${withBase('/zh/docs/density-grading-and-curves/#printer-lights-laws')}" class="text-accent underline">暗房印片灯光对数调色法则 →</a>`
+  },
+  {
+    category: 'develop',
+    q: '如何利用 Alt 键实时查看锐化蒙版通道？',
+    a: `在工作台的“细节”面板中，<strong>按住键盘 Alt 键（macOS 为 Option 键）拖动锐化数量、半径或细节滑块</strong>，画布会瞬间通过着色器切换为高反差黑白锐化蒙版通道。你可以直观看到哪些边缘被锐化增强、哪些平滑区域被保护，从而防止放大底片固有的银盐颗粒。详见 <a href="${withBase('/zh/docs/density-grading-and-curves/#curve-and-detail')}" class="text-accent underline">曲线与细节面板详解 →</a>`
+  },
+  {
+    category: 'develop',
+    q: '曲线面板四个通道（Master, R, G, B）的推荐调节先后顺序是什么？',
+    a: `暗房黄金法则：<strong>先大后小，先平衡后反差</strong>。第一步通过 Printer Lights 矫正全局色偏；第二步在 Master 主曲线上拉出理想的明暗反差与高光滚降；第三步若暗部或高光仍有微妙色偏，再进入对应的红、绿、蓝独立点曲线进行微雕。详见 <a href="${withBase('/zh/docs/density-grading-and-curves/#curve-and-detail')}" class="text-accent underline">四通道控制点曲线操作指南 →</a>`
+  },
+  {
+    category: 'develop',
+    q: '黑白胶片 (B&W) 反相有什么特别的调整技巧？',
+    a: `在右侧面板开启 B&W 模式后，软件会自动切换为单色光学反相通道，关闭彩色色罩逻辑，杜绝彩斑污染。配合内置的 7 款 Ilford MGFB 00~5 号经典银盐相纸 LUT，可还原纯正暗房可变反差相纸阶调。详见 <a href="${withBase('/zh/docs/print-film-emulation/#bw-darkroom-workflow')}" class="text-accent underline">纯粹银盐黑白暗房工作流 →</a>`
+  },
+
+  // Category 5: Export & Color Space
+  {
+    category: 'export',
+    q: '母带级导出推荐选用什么格式与位深？',
+    a: `对于需要导入 Lightroom、Photoshop 或 DaVinci Resolve 进行二次精细调色的摄影作品，强烈推荐导出为 <strong>16-bit TIFF 或 Linear DNG</strong>。16 位能够保留完整的 65,536 阶色阶深度，在大幅度拉伸高光与暗部时绝不会出现断层与伪色。若仅用于社交媒体分享，导出高质量 sRGB JPEG 即可。详见 <a href="${withBase('/zh/docs/export-and-contact-sheets/#format-decision-matrix')}" class="text-accent underline">六大导出格式决策对比表 →</a>`
+  },
+  {
+    category: 'export',
+    q: '“Linear Export”（线性透射率域导出）有什么独特用途？',
+    a: `开启该选项后，导出引擎会绕过任何显示 Gamma 与曲线映射，直接输出感光乳剂的物理光学线性反相数据并内嵌线性 ICC。这为影视调色师使用 ACES 或科学分析研究提供了未经任何色彩黑盒污染的原始物理母带。详见 <a href="${withBase('/zh/docs/export-and-contact-sheets/#format-decision-matrix')}" class="text-accent underline">线性交付与母带规格 →</a>`
+  },
+  {
+    category: 'export',
+    q: '批量导出时会压榨所有 CPU/GPU 核心吗？如何防止电脑卡顿？',
+    a: `NexFilm 基于 Rust 编写的多线程导出队列会自动探测 CPU 逻辑核心数，并根据系统负载动态平衡工作线程。即使在后台全速批处理导出整卷大图，系统主界面依然丝滑响应，零掉帧。详见 <a href="${withBase('/zh/docs/export-and-contact-sheets/#batch-export-queue')}" class="text-accent underline">整卷后台导出队列保障 →</a>`
+  },
+
+  // Category 6: Data & Privacy
+  {
+    category: 'privacy',
+    q: 'NexFilm 会把我的底片或任何使用数据上传到云端服务器吗？',
+    a: `<strong>绝对零上传、零网络依赖。</strong>NexFilm 采用 100% 本地离线架构，无任何远程遥测代码，不包含任何外部埋点。在断网或飞行模式下所有功能均完好运行，你的胶卷艺术资产只属于你的本地硬盘。详见 <a href="${withBase('/zh/docs/troubleshooting-and-appendix/#known-limitations')}" class="text-accent underline">已知限制与安全声明 →</a>`
+  },
+  {
+    category: 'privacy',
+    q: '软件的调色历史与胶卷数据库保存在哪里？如何手动完整备份？',
+    a: `所有胶卷索引、调色工程与裁切数据保存在系统本地 SQLite 数据库中。备份时务必同时备份原图磁盘目录与数据库文件：<br><span class="text-xs font-mono text-accent mt-1 inline-block">Windows: %APPDATA%\\NexFilm Engine\\nexfilm_user.db<br>macOS: ~/Library/Application Support/NexFilm Engine/nexfilm_user.db</span><br>详见 <a href="${withBase('/zh/docs/troubleshooting-and-appendix/#data-storage-and-backup')}" class="text-accent underline">跨平台数据目录与备份迁移方案 →</a>`
+  }
+];
+---
+
+<BaseLayout 
+  title="常见问题解答 · 6大分类题库 · NexFilm Engine" 
+  description="NexFilm 官方常见问题库：覆盖系统安装放行、RAW 格式兼容、整卷标定避坑、暗房印片光调色与母带级交付输出。"
+  lang="zh"
+>
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+    <!-- Header -->
+    <div class="text-center max-w-3xl mx-auto mb-14 space-y-4">
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-darkroom-line bg-darkroom-panel text-xs font-mono text-accent">
+        <span>FAQ & TROUBLESHOOTING</span>
+        <span>•</span>
+        <span>21 QUESTIONS</span>
+      </div>
+      <h1 class="text-3xl sm:text-5xl font-sans font-bold text-text-primary tracking-tight leading-tight">
+        常见问题与解答
+      </h1>
+      <p class="text-text-secondary text-base sm:text-lg leading-relaxed font-sans">
+        关于安装放行、RAW 格式支持、翻拍避坑、印片光调色与数据安全的系统解答库。
+      </p>
+    </div>
+
+    <!-- Category Filter Tabs -->
+    <div class="mb-10 flex flex-wrap items-center justify-center gap-2">
+      {categories.map((cat, idx) => (
+        <button 
+          type="button"
+          data-category-btn={cat.id}
+          class={`faq-tab-btn px-4 py-2 rounded-xl text-xs font-medium font-sans transition-all border ${
+            idx === 0 
+              ? 'bg-accent text-darkroom-canvas border-accent font-semibold shadow-sm' 
+              : 'bg-darkroom-panel text-text-secondary border-darkroom-line hover:text-text-primary hover:border-accent/40'
+          }`}
+        >
+          <span>{cat.name}</span>
+          <span class="ml-1.5 px-1.5 py-0.5 rounded-full bg-darkroom-canvas border border-darkroom-line text-[10px] font-mono">
+            {cat.count}
+          </span>
+        </button>
+      ))}
+    </div>
+
+    <!-- FAQ Accordion List -->
+    <div class="space-y-4" id="faq-list">
+      {faqs.map((item, idx) => (
+        <details 
+          data-faq-category={item.category}
+          class="faq-item group p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel open:bg-darkroom-raised open:border-accent/40 transition-all duration-200 shadow-darkroom-card"
+        >
+          <summary class="flex items-start justify-between cursor-pointer list-none text-base sm:text-lg font-sans font-semibold text-text-primary group-hover:text-accent transition-colors">
+            <span class="flex items-start gap-3">
+              <span class="text-accent font-mono text-xs sm:text-sm pt-0.5 font-normal">
+                Q{String(idx + 1).padStart(2, '0')}.
+              </span>
+              <span>{item.q}</span>
+            </span>
+            <span class="ml-4 flex-shrink-0 transition-transform duration-200 group-open:rotate-180 text-text-muted pt-1">
+              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </span>
+          </summary>
+          <div class="mt-4 pt-4 border-t border-darkroom-line text-xs sm:text-sm text-text-secondary leading-relaxed font-sans space-y-2 pl-8" set:html={renderMathInHtml(item.a)} />
+        </details>
+      ))}
+    </div>
+
+    <!-- Feedback Banner -->
+    <div class="mt-16 text-center p-8 sm:p-10 rounded-2xl border border-darkroom-line bg-darkroom-panel space-y-4 shadow-darkroom-card">
+      <h3 class="text-xl font-sans font-bold text-text-primary">仍有未覆盖的疑问？</h3>
+      <p class="text-xs sm:text-sm text-text-muted max-w-md mx-auto font-sans">
+        欢迎前往官方 GitHub Discussions 或提交 Issue，与软件作者及社区摄影师交流讨论。
+      </p>
+      <div class="pt-2 flex flex-col sm:flex-row items-center justify-center gap-3">
+        <a 
+          href={withBase('/zh/feedback/')} 
+          class="px-5 py-2.5 rounded-xl bg-accent hover:bg-accent-hover text-darkroom-canvas text-xs font-bold transition-all shadow-sm"
+        >
+          <span>前往反馈交流区</span>
+        </a>
+        <a 
+          href={withBase('/zh/docs/')} 
+          class="px-5 py-2.5 rounded-xl bg-darkroom-raised border border-darkroom-line text-text-primary text-xs font-medium hover:border-accent/50 transition-all"
+        >
+          <span>阅读综合图文教程库 →</span>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    function setupFaqTabs() {
+      const buttons = document.querySelectorAll<HTMLButtonElement>('.faq-tab-btn');
+      const items = document.querySelectorAll<HTMLElement>('.faq-item');
+      if (buttons.length === 0 || items.length === 0) return;
+
+      buttons.forEach((btn) => {
+        if (btn.dataset.faqBound === 'true') return;
+        btn.dataset.faqBound = 'true';
+
+        btn.addEventListener('click', () => {
+          const cat = btn.getAttribute('data-category-btn');
+
+          // Toggle active button style
+          buttons.forEach((b) => {
+            b.classList.remove('bg-accent', 'text-darkroom-canvas', 'border-accent', 'font-semibold', 'shadow-sm');
+            b.classList.add('bg-darkroom-panel', 'text-text-secondary', 'border-darkroom-line');
+          });
+          btn.classList.remove('bg-darkroom-panel', 'text-text-secondary', 'border-darkroom-line');
+          btn.classList.add('bg-accent', 'text-darkroom-canvas', 'border-accent', 'font-semibold', 'shadow-sm');
+
+          // Filter items
+          items.forEach((item) => {
+            const itemCat = item.getAttribute('data-faq-category');
+            if (cat === 'all' || itemCat === cat) {
+              item.style.display = '';
+            } else {
+              item.style.display = 'none';
+            }
+          });
+        });
+      });
+    }
+
+    document.addEventListener('astro:page-load', setupFaqTabs);
+  </script>
+</BaseLayout>

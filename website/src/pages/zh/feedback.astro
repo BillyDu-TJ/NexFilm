@@ -1,0 +1,129 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { withBase } from '../../utils/urls';
+---
+
+<BaseLayout title="反馈交流与赞助支持 · NexFilm Engine" lang="zh">
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+    <div class="text-center max-w-3xl mx-auto mb-16">
+      <span class="text-xs font-mono uppercase tracking-widest text-accent block mb-2">Community & Feedback</span>
+      <h1 class="text-3xl sm:text-5xl font-sans font-bold text-text-primary tracking-tight">反馈与社区交流</h1>
+      <p class="text-text-secondary text-base mt-4 font-sans">
+        NexFilm 是由胶片爱好者与独立工程师打造的开源项目。你的每一个反馈都在帮助它变得更完善。
+      </p>
+    </div>
+
+    <!-- Channels Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-20">
+      <!-- Bug Report -->
+      <a 
+        href="https://github.com/BillyDu-TJ/NexFilm/issues/new?template=bug_report.md" 
+        target="_blank" 
+        rel="noopener noreferrer"
+        class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-red-500/50 hover:bg-darkroom-raised transition-all group flex flex-col justify-between shadow-darkroom-card"
+      >
+        <div>
+          <div class="w-10 h-10 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 flex items-center justify-center mb-4">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <h3 class="text-base font-bold text-text-primary group-hover:text-red-400 transition-colors font-sans">报告故障</h3>
+          <p class="text-xs text-text-secondary mt-2 leading-relaxed">
+            遇到崩溃、RAW 解码异常或渲染错误？请在 GitHub 提交带复现步骤的 Issue。
+          </p>
+        </div>
+        <div class="mt-6 flex items-center text-xs font-medium text-red-400 group-hover:underline">
+          <span>提交 Issue →</span>
+        </div>
+      </a>
+
+      <!-- Feature Request -->
+      <a 
+        href="https://github.com/BillyDu-TJ/NexFilm/issues/new?template=feature_request.md" 
+        target="_blank" 
+        rel="noopener noreferrer"
+        class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/50 hover:bg-darkroom-raised transition-all group flex flex-col justify-between shadow-darkroom-card"
+      >
+        <div>
+          <div class="w-10 h-10 rounded-xl bg-accent-soft border border-accent/30 text-accent flex items-center justify-center mb-4">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+          </div>
+          <h3 class="text-base font-bold text-text-primary group-hover:text-accent transition-colors font-sans">功能建议</h3>
+          <p class="text-xs text-text-secondary mt-2 leading-relaxed">
+            期望支持新的胶卷预设、格式或批处理优化？欢迎告诉我们你的真实使用场景。
+          </p>
+        </div>
+        <div class="mt-6 flex items-center text-xs font-medium text-accent group-hover:underline">
+          <span>提议新功能 →</span>
+        </div>
+      </a>
+
+      <!-- Discussions -->
+      <a 
+        href="https://github.com/BillyDu-TJ/NexFilm/discussions" 
+        target="_blank" 
+        rel="noopener noreferrer"
+        class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-emerald-500/50 hover:bg-darkroom-raised transition-all group flex flex-col justify-between shadow-darkroom-card"
+      >
+        <div>
+          <div class="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center mb-4">
+            <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-2v4l-4-4H9a1.994 1.994 0 01-1.414-.586m0 0L11 14h4a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2v4l.586-.586z" />
+            </svg>
+          </div>
+          <h3 class="text-base font-bold text-text-primary group-hover:text-emerald-400 transition-colors font-sans">社区讨论</h3>
+          <p class="text-xs text-text-secondary mt-2 leading-relaxed">
+            与其他摄影师交流调色技巧、分享翻拍设备搭配方案，或寻求使用答疑。
+          </p>
+        </div>
+        <div class="mt-6 flex items-center text-xs font-medium text-emerald-400 group-hover:underline">
+          <span>参与讨论 →</span>
+        </div>
+      </a>
+    </div>
+
+    <!-- Sponsor Section -->
+    <div class="border-t border-darkroom-line pt-16">
+      <div class="text-center max-w-2xl mx-auto mb-12">
+        <span class="text-xs font-mono uppercase tracking-widest text-accent block mb-2">Support Independent Development</span>
+        <h2 class="text-2xl sm:text-3xl font-sans font-bold text-text-primary tracking-tight">赞赏与支持开发者</h2>
+        <p class="text-text-secondary text-sm mt-3 leading-relaxed font-sans">
+          如果 NexFilm 让你的胶卷工作流更顺畅，欢迎请开发者或 UI 设计师喝杯咖啡。赞赏完全自愿，不影响开源协议或问题处理优先级。
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-8 max-w-2xl mx-auto">
+        <!-- Author -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel text-center space-y-4 shadow-darkroom-card">
+          <div class="text-sm font-bold text-text-primary font-sans">软件架构与算法作者</div>
+          <div class="text-xs text-text-muted font-mono">Billy_Du (@BillyDu-TJ)</div>
+          <div class="w-48 h-48 mx-auto rounded-xl overflow-hidden border border-darkroom-line bg-white p-2">
+            <img 
+              src={withBase('/assets/author-sponsor-qr.jpg')} 
+              alt="Billy_Du 收款赞赏码" 
+              class="w-full h-full object-contain"
+            />
+          </div>
+          <p class="text-xs text-text-muted font-mono">联系邮箱: 790704944@qq.com</p>
+        </div>
+
+        <!-- UI Designer -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel text-center space-y-4 shadow-darkroom-card">
+          <div class="text-sm font-bold text-text-primary font-sans">UI 与视觉交互设计师</div>
+          <div class="text-xs text-text-muted font-mono">lonely-xmw (@lxmw44426-tech)</div>
+          <div class="w-48 h-48 mx-auto rounded-xl overflow-hidden border border-darkroom-line bg-white p-2">
+            <img 
+              src={withBase('/assets/uidesigner-sponsor-qr.jpg')} 
+              alt="lonely-xmw 收款赞赏码" 
+              class="w-full h-full object-contain"
+            />
+          </div>
+          <p class="text-xs text-text-muted font-mono">联系邮箱: lxmw44426@gmail.com</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</BaseLayout>

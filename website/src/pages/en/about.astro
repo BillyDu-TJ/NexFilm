@@ -1,0 +1,78 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="About & License · NexFilm Engine" lang="en">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+    <div class="text-center max-w-2xl mx-auto mb-16">
+      <span class="text-xs font-mono uppercase tracking-widest text-accent block mb-2">About & Philosophy</span>
+      <h1 class="text-3xl sm:text-5xl font-extrabold text-white tracking-tight">About NexFilm Engine</h1>
+      <p class="text-text-secondary text-base mt-4">
+        A transparent, physically grounded desktop workspace dedicated to analog film digitization.
+      </p>
+    </div>
+
+    <div class="space-y-12">
+      <!-- Mission -->
+      <section class="p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel space-y-4">
+        <h2 class="text-xl font-bold text-white tracking-tight">Origins & Vision</h2>
+        <div class="text-sm text-text-secondary leading-relaxed space-y-3">
+          <p>
+            For years, the film negative conversion ecosystem has been dominated by costly closed-source plugins and black-box neural presets. Such solutions often guess colors through arbitrary tone curves, leading to wild inconsistencies across varied exposures and copy stands.
+          </p>
+          <p>
+            NexFilm Engine was created to anchor negative conversion back into physical reality: unexposed film base subtraction, logarithmic optical transmission physics, and roll-wide white point calibration that keeps an entire roll cohesive.
+          </p>
+        </div>
+      </section>
+
+      <!-- Tech Stack -->
+      <section class="p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel space-y-4">
+        <h2 class="text-xl font-bold text-white tracking-tight">Technology & Architecture</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+          <div class="p-4 rounded-xl bg-darkroom-canvas border border-darkroom-line">
+            <span class="font-mono text-accent font-bold">Rust + Tauri 2:</span>
+            <p class="text-text-muted mt-1 text-xs">Blazing native performance with lightweight memory footprints, bypassing heavyweight Electron bundles.</p>
+          </div>
+          <div class="p-4 rounded-xl bg-darkroom-canvas border border-darkroom-line">
+            <span class="font-mono text-emerald-400 font-bold">WebGL 2.0 Shaders:</span>
+            <p class="text-text-muted mt-1 text-xs">GPU-accelerated pipeline providing fluid 60FPS real-time color grading and curve feedback.</p>
+          </div>
+          <div class="p-4 rounded-xl bg-darkroom-canvas border border-darkroom-line">
+            <span class="font-mono text-amber-400 font-bold">Local SQLite Database:</span>
+            <p class="text-text-muted mt-1 text-xs">All edit parameters, roll notes, and thumbnails persist locally without any telemetry or cloud dependencies.</p>
+          </div>
+          <div class="p-4 rounded-xl bg-darkroom-canvas border border-darkroom-line">
+            <span class="font-mono text-purple-400 font-bold">LibRaw Native Decoder:</span>
+            <p class="text-text-muted mt-1 text-xs">Cross-platform decoding for camera RAWs and gigabyte-scale Imacon/Flextight scanner formats.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Credits -->
+      <section class="p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel space-y-4">
+        <h2 class="text-xl font-bold text-white tracking-tight">Theoretical Credits</h2>
+        <p class="text-sm text-text-secondary leading-relaxed">
+          Special thanks to researchers <code class="text-accent font-mono">@黄昊Haosky</code> and <code class="text-accent font-mono">@V777</code> on Zhihu for openly sharing foundational insights into scientific orange-mask removal, logarithmic optical density calculations, and analog color science.
+        </p>
+      </section>
+
+      <!-- License -->
+      <section class="p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel space-y-4">
+        <h2 class="text-xl font-bold text-white tracking-tight">Open Source License (GPL-3.0)</h2>
+        <p class="text-sm text-text-secondary leading-relaxed">
+          NexFilm Engine is licensed under the <strong class="text-white">GNU General Public License v3.0</strong>. You are free to run, inspect, modify, and distribute the software, provided all derivative works remain open source under the same license terms.
+        </p>
+        <div class="pt-2">
+          <a 
+            href="https://github.com/BillyDu-TJ/NexFilm/blob/main/LICENSE" 
+            target="_blank" 
+            class="text-xs font-mono text-accent hover:underline"
+          >
+            Read the full GNU General Public License v3.0 →
+          </a>
+        </div>
+      </section>
+    </div>
+  </div>
+</BaseLayout>

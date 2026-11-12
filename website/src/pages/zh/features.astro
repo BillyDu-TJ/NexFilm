@@ -1,0 +1,367 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { withBase } from '../../utils/urls';
+import { renderBlockMath, renderInlineMath } from '../../utils/math';
+
+const formulaDensity = renderBlockMath('D = -\\log_{10}(T) \\quad \\Longleftrightarrow \\quad T = 10^{-D}');
+const formulaBase = renderInlineMath('T_{\\text{norm}} = \\frac{T - T_{\\text{base}}}{1 - T_{\\text{base}}}');
+
+const categoryNav = [
+  { id: 'section-batch', num: '01', title: '极速反转与批处理', en: 'Core Inversion & Batch' },
+  { id: 'section-archive', num: '02', title: '胶卷归纳与接触印样', en: 'Roll Archive & Contact Sheet' },
+  { id: 'section-darkroom', num: '03', title: '暗房精修与相纸模拟', en: 'Darkroom Grading & Print LUTs' },
+  { id: 'section-foundation', num: '04', title: '色彩科学与专业交付', en: 'Color Science & Pro Delivery' },
+];
+---
+
+<BaseLayout 
+  title="功能特性与工业暗房架构 · 四大核心业务板块 · NexFilm Engine" 
+  description="以真实胶片摄影刚需为核心：一键反相与整卷白点标定、多画幅胶卷归纳与接触印样、60fps WebGL 暗房印片光与 14 款经典相纸模拟、统一对数光学密度底座。"
+  lang="zh"
+>
+  <!-- Hero Section -->
+  <section class="relative pt-16 pb-12 border-b border-darkroom-line bg-darkroom-canvas">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center space-y-4">
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-darkroom-line bg-darkroom-panel text-xs font-mono text-accent">
+        <span class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse"></span>
+        <span>DARKROOM WORKFLOW · 暗房全流程架构</span>
+      </div>
+      <h1 class="text-3xl sm:text-5xl font-sans font-bold text-text-primary tracking-tight leading-tight">
+        NexFilm 全功能特性与技术规格
+      </h1>
+      <p class="text-text-secondary text-base sm:text-lg leading-relaxed font-sans max-w-3xl mx-auto">
+        覆盖从胶卷导入、单帧与整卷密度反相、暗房印片光调色，到多画幅归档与 16 位线性母带交付的完整工作流。
+      </p>
+    </div>
+  </section>
+
+  <!-- Sticky Category Navigation Bar -->
+  <nav class="sticky top-16 z-30 py-3 bg-darkroom-canvas/90 backdrop-blur-md border-b border-darkroom-line select-none" aria-label="Features Category Navigation">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-start sm:justify-center gap-2 sm:gap-4 overflow-x-auto custom-scrollbar pb-1 sm:pb-0">
+        {categoryNav.map((cat) => (
+          <a 
+            href={`#${cat.id}`} 
+            class="shrink-0 px-3 py-1.5 rounded-lg border border-darkroom-line bg-darkroom-panel hover:bg-darkroom-raised hover:border-accent text-xs font-mono text-text-secondary hover:text-text-primary transition-all flex items-center gap-2"
+          >
+            <span class="text-accent font-bold">{cat.num}</span>
+            <span>{cat.title}</span>
+          </a>
+        ))}
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Content Sections -->
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-16 space-y-24">
+
+    <!-- ========================================== -->
+    <!-- SECTION 01: CORE INVERSION & BATCH         -->
+    <!-- ========================================== -->
+    <section id="section-batch" class="scroll-mt-28 space-y-8">
+      <!-- Section Header -->
+      <div class="border-b border-darkroom-line pb-6">
+        <div class="flex items-center gap-2.5 text-xs font-mono text-accent mb-2">
+          <span class="px-2 py-0.5 rounded bg-darkroom-panel border border-darkroom-line font-bold">板块 01</span>
+          <span class="text-text-muted uppercase tracking-wider">WORKFLOW EFFICIENCY · 极速批处理</span>
+        </div>
+        <h2 class="text-2xl sm:text-3xl font-sans font-bold text-text-primary tracking-tight">
+          极速反转与整卷一致性工作流
+        </h2>
+        <p class="text-sm sm:text-base text-text-secondary mt-2 leading-relaxed flex flex-wrap items-center justify-between gap-2">
+          <span>毫秒级单帧自动反相，支持采样同卷片基与共享白点，批量处理整卷底片无跳色。</span>
+          <a href={withBase('/zh/docs/roll-vs-loose-workflows/')} class="text-xs font-mono text-accent hover:underline flex items-center gap-1">
+            <span>查阅整卷批处理手册</span>
+            <span>→</span>
+          </a>
+        </p>
+      </div>
+
+      <!-- Feature Grid -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- Feature 1.1 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-sky-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            01
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">单帧一键自动反相</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            自动识别底片有效感光区域，精准采样未曝光片基色罩与画面最亮/最暗端点。无需反复手动拉扯 RGB 反相曲线，毫秒级还原通透、不偏色的纯净正片。
+          </p>
+        </div>
+
+        <!-- Feature 1.2 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-accent flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            02
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">整卷标定与批量反转</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            支持采样同卷透明片基与曝光片头锁定化学极限，并根据全卷最亮画面标定共享白点（自动跳过标定帧）。一键下发反相全卷 36 张（135）或 12 张（120），同光照下影调整齐划一。
+          </p>
+        </div>
+
+        <!-- Feature 1.3 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-emerald-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            03
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">细粒度参数复制与片门同步</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            弹窗支持「全部 / 仅影调色彩 / 仅几何」快捷复制，或在扫描密度、印片光、美学影调、曲线、细节、几何变换、相纸模拟、齿孔设置等 10 大参数组中自由勾选；固定翻拍机位下一键同步有效片门。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SECTION 02: ROLL ARCHIVE & CONTACT SHEET   -->
+    <!-- ========================================== -->
+    <section id="section-archive" class="scroll-mt-28 space-y-8">
+      <!-- Section Header -->
+      <div class="border-b border-darkroom-line pb-6">
+        <div class="flex items-center gap-2.5 text-xs font-mono text-accent mb-2">
+          <span class="px-2 py-0.5 rounded bg-darkroom-panel border border-darkroom-line font-bold">板块 02</span>
+          <span class="text-text-muted uppercase tracking-wider">ASSET & ARCHIVE MANAGEMENT · 胶卷归档</span>
+        </div>
+        <h2 class="text-2xl sm:text-3xl font-sans font-bold text-text-primary tracking-tight">
+          胶卷数字化归纳管理与接触印样
+        </h2>
+        <p class="text-sm sm:text-base text-text-secondary mt-2 leading-relaxed flex flex-wrap items-center justify-between gap-2">
+          <span>支持 135、120 与大画幅底片分类管理，自动写入拍摄元数据，一键排版生成接触印样。</span>
+          <a href={withBase('/zh/docs/export-and-contact-sheets/#contact-sheet-generation')} class="text-xs font-mono text-accent hover:underline flex items-center gap-1">
+            <span>查阅接触印样与归档规范</span>
+            <span>→</span>
+          </a>
+        </p>
+      </div>
+
+      <!-- Feature Grid (2x2) -->
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- Feature 2.1 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-accent flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            01
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">三态导入与 40+ 胶卷型号词典</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            原生贴合胶片直觉：支持「按卷导入」、「散张快修」与「续编已有胶卷」。内置 40+ 款主流彩色负片（Portra / Gold / Ultramax / Ektar / Superia / Cinestill / Phoenix / 乐凯等）、黑白负片（Tri-X / T-Max / HP5+ / Delta / Acros II / Fomapan 等）及电影卷词典，并自动记忆用户自定义相机与胶卷。
+          </p>
+        </div>
+
+        <!-- Feature 2.2 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-sky-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            02
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">多维胶卷档案库检索</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            在 Rolls 档案库中，支持按全画幅系（135 全格/半格、APS、120 从 645 直至 6×17 宽幅、4×5 / 5×7 / 8×10 大画幅）、拍摄相机、拍摄/冲洗日期秒级交叉筛选。支持随时查阅与编辑每卷专属冲扫备注，并支持将散张随时升级归档入库。
+          </p>
+        </div>
+
+        <!-- Feature 2.3 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-emerald-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            03
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">一键生成专业接触印样</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            告别在 PS 里手动拼图的繁琐。NexFilm 一键生成整卷高清接触印样：135 格式自动排版拟真片齿孔、帧序号与条形码；120 格式自动绘制乳剂片边字码，底部居中印制胶卷名、相机、日期与拍摄总张数抬头，兼具暗房仪式感与高效选片。
+          </p>
+        </div>
+
+        <!-- Feature 2.4 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-purple-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            04
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">令牌化批量重命名与 EXIF 元数据注入</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            导出面板支持使用 <code>&#123;Roll&#125;</code>、<code>&#123;Camera&#125;</code>、<code>&#123;Film&#125;</code>、<code>&#123;Date&#125;</code>、<code>&#123;Original&#125;</code>、<code>&#123;Seq&#125;</code> 自由组合文件命名模板与自动冲突编号规则，并支持一键将胶卷型号、拍摄相机与冲扫日期写入导出图像的标准 EXIF 标签中。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SECTION 03: DARKROOM GRADING & PRINT LUTS  -->
+    <!-- ========================================== -->
+    <section id="section-darkroom" class="scroll-mt-28 space-y-8">
+      <!-- Section Header -->
+      <div class="border-b border-darkroom-line pb-6">
+        <div class="flex items-center gap-2.5 text-xs font-mono text-accent mb-2">
+          <span class="px-2 py-0.5 rounded bg-darkroom-panel border border-darkroom-line font-bold">板块 03</span>
+          <span class="text-text-muted uppercase tracking-wider">CREATIVE DARKROOM GRADING · 暗房微调</span>
+        </div>
+        <h2 class="text-2xl sm:text-3xl font-sans font-bold text-text-primary tracking-tight">
+          暗房光学微调、底片几何与经典相纸模拟
+        </h2>
+        <p class="text-sm sm:text-base text-text-secondary mt-2 leading-relaxed flex flex-wrap items-center justify-between gap-2">
+          <span>传承彩色放大机滤光片原理，提供 60fps 实时印片光微调，内置 14 款经典相纸与电影正片仿真。</span>
+          <a href={withBase('/zh/docs/print-film-emulation/')} class="text-xs font-mono text-accent hover:underline flex items-center gap-1">
+            <span>查阅 14 款相纸 LUT 全景图谱</span>
+            <span>→</span>
+          </a>
+        </p>
+      </div>
+
+      <!-- Feature Grid (3 columns) -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- Feature 3.1 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-sky-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            01
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">智能片门剔除、齿孔净边与几何校正</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Auto Area 一键识别有效画幅，精准剔除观片背光板高光白边与片夹黑框，防止白平衡与测光被干扰；配备齿孔取样消除、自由多比例裁切、正交拉直微调、透视形变与微距翻拍镜头桶形/枕形畸变补偿。
+          </p>
+        </div>
+
+        <!-- Feature 3.2 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-accent flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            02
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">60fps 实时暗房调色台与工业示波器</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            复刻传统彩色放大机红/绿/蓝互补印片光推子与中性灰吸管；配备 RGB 四通道控制点曲线、曝光/反差/高光/阴影/色温色调精修；集成实时直方图与工业波形图（含溢出 <code>!</code> 预警），按住 <code>Alt</code> 键实时预览边缘锐化蒙版通道与质感/清晰度/去朦胧。
+          </p>
+        </div>
+
+        <!-- Feature 3.3 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-emerald-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            03
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">内置 14 款经典相纸 LUT 与黑白流</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            开箱内置 7 款经典彩色电影印片与相纸 LUT（Kodak 2383 / 2393 工业电影印片，以及 Kodak Endura Premier、Portra Endura、Supra Endura、Ultra Endura、Ektacolor Edge）+ 7 款黑白银盐相纸 LUT（Ilford Multigrade FB 00–5 全号段反差）。支持 0–100% 强度混合、自定义 3D LUT 加载与一键纯粹黑白显影。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SECTION 04: COLOR SCIENCE & PRO DELIVERY   -->
+    <!-- ========================================== -->
+    <section id="section-foundation" class="scroll-mt-28 space-y-8">
+      <!-- Section Header -->
+      <div class="border-b border-darkroom-line pb-6">
+        <div class="flex items-center gap-2.5 text-xs font-mono text-accent mb-2">
+          <span class="px-2 py-0.5 rounded bg-darkroom-panel border border-darkroom-line font-bold">板块 04</span>
+          <span class="text-text-muted uppercase tracking-wider">COLOR SCIENCE & PRO DELIVERY · 色彩底座</span>
+        </div>
+        <h2 class="text-2xl sm:text-3xl font-sans font-bold text-text-primary tracking-tight">
+          光学色彩科学、硬件标定与专业母带交付
+        </h2>
+        <p class="text-sm sm:text-base text-text-secondary mt-2 leading-relaxed flex flex-wrap items-center justify-between gap-2">
+          <span>Rust 驱动的高性能光学密度管线，支持流式超大扫描切片、硬件校准与 16 位线性母带导出。</span>
+          <a href={withBase('/zh/docs/color-science/')} class="text-xs font-mono text-accent hover:underline flex items-center gap-1">
+            <span>查阅光学色彩科学白皮书</span>
+            <span>→</span>
+          </a>
+        </p>
+      </div>
+
+      <!-- Feature 4.1: Mathematical Foundation Card with KaTeX Formula -->
+      <div class="p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel shadow-darkroom-card space-y-6">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-darkroom-line pb-6">
+          <div>
+            <span class="text-xs font-mono text-accent font-semibold">[PHYSICS-CORE]</span>
+            <h3 class="text-xl font-bold text-text-primary mt-1">统一对数光学密度管线</h3>
+            <p class="text-xs text-text-secondary mt-1">基于光学透射物理定律，避免经验主义经验调色的色彩扭曲</p>
+          </div>
+          <!-- KaTeX display equation: Zero truncation, pure mathematical rendering -->
+          <div class="px-4 py-2.5 rounded-xl bg-darkroom-canvas border border-darkroom-line text-text-primary font-mono text-sm shadow-inner self-start sm:self-auto overflow-x-auto max-w-full" set:html={formulaDensity}>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs text-text-secondary leading-relaxed">
+          <div>
+            <h4 class="font-bold text-text-primary text-sm mb-2 font-sans flex items-center gap-2">
+              <span class="w-1.5 h-1.5 rounded-full bg-accent"></span>
+              为什么必须在光学密度域反相？
+            </h4>
+            <p>
+              传统软件在显示设备伽马域拉动反相曲线，会造成感光乳剂真实感光特性的非线性扭曲。在物理透射率域，光密度 <span set:html={renderInlineMath('D = -\\log_{10}(T)')}></span> 与底片曝光量呈严格线性对应。通过逐通道片基色罩归一化 <span set:html={formulaBase}></span>，数码相机拜耳 RAW、扫描仪 16-bit 线性 TIFF 与哈苏 Imacon <code>.fff</code> 均接入同一套严谨的物理管线，输出色彩可解释、可复现。
+            </p>
+          </div>
+
+          <div>
+            <h4 class="font-bold text-text-primary text-sm mb-2 font-sans flex items-center gap-2">
+              <span class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
+              有界通道跨度响应平衡算法
+            </h4>
+            <p>
+              不同品牌胶片（如彩色负片、黑白负片与电影卷）在红、绿、蓝三个通道的染料化学跨度各不相同。NexFilm 独创非刚性有界平衡算法，仅在三通道实际动态范围失衡时智能介入补偿，杜绝极端反差导致的阴影断阶与彩斑，还原自然高光滚降与深邃暗部。
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Feature Grid for 4.2, 4.3, 4.4 -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- Feature 4.2 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-emerald-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            01
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">百兆级流式分行解码与 7 大色域交付</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            流式分行读取数百 MB 的 <code>.fff</code> 与超大 16-bit TIFF；支持输出 16-bit/8-bit TIFF、PNG、JPEG，以及面向影视调色的 <code>16-bit Linear TIFF</code>、<code>Linear DNG</code>、<code>Camera RAW DNG</code>，内嵌 sRGB、Display P3、Adobe RGB、Rec.2020、ProPhoto RGB、ACEScg (AP1)、ACES2065-1 (AP0) 七大色彩空间。
+          </p>
+        </div>
+
+        <!-- Feature 4.3 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-accent flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            02
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">翻拍台硬件标定与扫描仪校准</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            配备专用的硬件校准工作台：支持暗场热噪扣除、光源与镜头暗角平场均匀度补偿、3×3 通道串扰分离矩阵拟合，以及专用扫描仪 ICC/配置参考映射。
+          </p>
+        </div>
+
+        <!-- Feature 4.4 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-purple-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            03
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">100% 本地离线与非破坏性数据安全</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Rust + Tauri + 本地 SQLite（<code>nexfilm_user.db</code>）架构。原始底片 RAW 永远只读不改，全部调色步骤与胶卷索引存放于本机数据库。无需联网激活，零云端上传，零隐私收集，长久保障工程资产安全。
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Bottom CTA: Ready to grade -->
+  <section class="py-20 border-t border-darkroom-line bg-darkroom-bg text-center">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
+      <h2 class="text-3xl font-sans font-bold text-text-primary tracking-tight">准备好体验纯粹的胶片质感了吗？</h2>
+      <p class="text-sm text-text-secondary max-w-xl mx-auto">
+        免费、开源且尊重隐私。点击下方直接下载安装包，或深入阅读图文使用手册。
+      </p>
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4 pt-2">
+        <a 
+          href={withBase('/zh/download/')} 
+          class="w-full sm:w-auto px-6 py-3.5 rounded-xl font-semibold text-sm bg-accent hover:bg-accent-hover text-darkroom-canvas transition-all flex items-center justify-center gap-2 shadow-sm"
+        >
+          <span>下载 NexFilm 桌面端</span>
+          <span>→</span>
+        </a>
+        <a 
+          href={withBase('/zh/docs/')} 
+          class="w-full sm:w-auto px-6 py-3.5 rounded-xl font-semibold text-sm border border-darkroom-line bg-darkroom-panel hover:bg-darkroom-raised hover:border-accent text-text-primary transition-all flex items-center justify-center gap-2"
+        >
+          <span>阅读图文教程与技术白皮书</span>
+        </a>
+      </div>
+    </div>
+  </section>
+</BaseLayout>

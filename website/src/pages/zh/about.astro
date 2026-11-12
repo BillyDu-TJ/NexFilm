@@ -1,0 +1,78 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+---
+
+<BaseLayout title="关于与开源许可 · NexFilm Engine" lang="zh">
+  <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+    <div class="text-center max-w-2xl mx-auto mb-16">
+      <span class="text-xs font-mono uppercase tracking-widest text-accent block mb-2">About & Philosophy</span>
+      <h1 class="text-3xl sm:text-5xl font-extrabold text-white tracking-tight">关于 NexFilm Engine</h1>
+      <p class="text-text-secondary text-base mt-4">
+        为胶片数字化提供完全透明、遵循物理法则的现代化桌面工作区。
+      </p>
+    </div>
+
+    <div class="space-y-12">
+      <!-- Mission -->
+      <section class="p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel space-y-4">
+        <h2 class="text-xl font-bold text-white tracking-tight">项目的初心与愿景</h2>
+        <div class="text-sm text-text-secondary leading-relaxed space-y-3">
+          <p>
+            长期以来，胶片负片数码反相领域被少数闭源、昂贵或笨重的插件垄断。许多现存方案将反相过程包装为黑盒机器学习或过度拟合的预设曲线，导致相同胶片在不同机位、不同曝光下色彩剧烈跳跃，用户难以追溯和精准微调。
+          </p>
+          <p>
+            NexFilm Engine 诞生的初衷，是让负片反转回归科学与物理常识：从未曝光片基采样出真实的色罩密度，基于负片乳剂对数光学透射率物理公式计算曝光，并通过整卷物理白点标定让整卷色彩保持恒定。
+          </p>
+        </div>
+      </section>
+
+      <!-- Tech Stack -->
+      <section class="p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel space-y-4">
+        <h2 class="text-xl font-bold text-white tracking-tight">技术架构与设计</h2>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
+          <div class="p-4 rounded-xl bg-darkroom-canvas border border-darkroom-line">
+            <span class="font-mono text-accent font-bold">Rust + Tauri 2:</span>
+            <p class="text-text-muted mt-1 text-xs">极致的原生性能与极低的内存占用，无需笨重 Electron 运行时。</p>
+          </div>
+          <div class="p-4 rounded-xl bg-darkroom-canvas border border-darkroom-line">
+            <span class="font-mono text-emerald-400 font-bold">WebGL 2.0 Shader:</span>
+            <p class="text-text-muted mt-1 text-xs">全流水线 GPU 硬件加速，印片光与曲线调色实现 60FPS 实时预览。</p>
+          </div>
+          <div class="p-4 rounded-xl bg-darkroom-canvas border border-darkroom-line">
+            <span class="font-mono text-amber-400 font-bold">SQLite 嵌入式存储:</span>
+            <p class="text-text-muted mt-1 text-xs">胶卷元数据与非破坏性参数严格持久化于用户本地，零云端泄露。</p>
+          </div>
+          <div class="p-4 rounded-xl bg-darkroom-canvas border border-darkroom-line">
+            <span class="font-mono text-purple-400 font-bold">LibRaw 内置解码:</span>
+            <p class="text-text-muted mt-1 text-xs">跨平台原生解码相机 RAW 与 Imacon/Flextight 专业流式扫描件。</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Credits -->
+      <section class="p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel space-y-4">
+        <h2 class="text-xl font-bold text-white tracking-tight">理论参考与致谢</h2>
+        <p class="text-sm text-text-secondary leading-relaxed">
+          衷心感谢知乎学者与胶片技术专家 <code class="text-accent font-mono">@黄昊Haosky</code> 与 <code class="text-accent font-mono">@V777</code> 在中文互联网上公开分享的科学去色罩理论、对数密度物理推导与胶卷色彩科学见解。这些宝贵的开放知识是 NexFilm 密度管线的重要基石。
+        </p>
+      </section>
+
+      <!-- License -->
+      <section class="p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel space-y-4">
+        <h2 class="text-xl font-bold text-white tracking-tight">开源许可协议 (GPL-3.0)</h2>
+        <p class="text-sm text-text-secondary leading-relaxed">
+          NexFilm Engine 基于 <strong class="text-white">GNU General Public License v3.0</strong> 独立发布。你可以自由运行、研究、修改与分发该软件，但任何衍生版本必须同样以 GPL-3.0 协议开源全部源代码。
+        </p>
+        <div class="pt-2">
+          <a 
+            href="https://github.com/BillyDu-TJ/NexFilm/blob/main/LICENSE" 
+            target="_blank" 
+            class="text-xs font-mono text-accent hover:underline"
+          >
+            查看 GNU General Public License v3.0 完整文本 →
+          </a>
+        </div>
+      </section>
+    </div>
+  </div>
+</BaseLayout>

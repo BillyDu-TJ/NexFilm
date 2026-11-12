@@ -1,0 +1,174 @@
+---
+import { galleryManifest } from '../data/gallery-manifest';
+
+interface Props {
+  beforeImg?: string;
+  afterImg?: string;
+  beforeLabel?: string;
+  afterLabel?: string;
+  aspect?: string;
+  filmName?: string;
+  camera?: string;
+  lang?: 'zh' | 'en';
+}
+
+const defaultSample = galleryManifest[0];
+
+const {
+  lang = 'zh',
+  beforeImg = defaultSample.negativeSrc,
+  afterImg = defaultSample.positiveSrc,
+  beforeLabel = lang === 'zh' ? '翻拍负片' : 'Negative Raw Scan',
+  afterLabel = lang === 'zh' ? 'NexFilm 密度反相' : 'Inverted Positive',
+  aspect = 'aspect-[16/10]',
+  filmName = lang === 'zh' ? defaultSample.title.zh : defaultSample.title.en,
+  camera = defaultSample.gear
+} = Astro.props;
+---
+
+<div 
+  class="before-after-wrapper relative rounded-2xl overflow-hidden border border-darkroom-line bg-darkroom-panel select-none group shadow-2xl focus:outline-none focus:ring-2 focus:ring-accent/60"
+  tabindex="0"
+  role="slider"
+  aria-label="Image comparison slider"
+  aria-valuenow="50"
+  aria-valuemin="0"
+  aria-valuemax="100"
+>
+  <!-- Image Container -->
+  <div 
+    class={`before-after-container relative w-full ${aspect} overflow-hidden cursor-ew-resize select-none touch-pan-y`}
+    style="touch-action: pan-y;"
+  >
+    <!-- After Image (Positive) -->
+    <div class="absolute inset-0 w-full h-full select-none pointer-events-none">
+      <img 
+        src={afterImg} 
+        alt="Inverted Positive" 
+        draggable="false"
+        class="w-full h-full object-cover select-none pointer-events-none"
+      />
+      <span class="absolute bottom-4 right-4 px-3 py-1 rounded-md bg-darkroom-canvas/85 border border-emerald-500/30 text-xs font-medium text-emerald-400 backdrop-blur-sm z-10 font-mono select-none pointer-events-none">
+        {afterLabel}
+      </span>
+    </div>
+
+    <!-- Before Image (Negative with clip-path, zero-lag, no fake invert filter) -->
+    <div 
+      class="before-clip-layer absolute inset-0 w-full h-full overflow-hidden select-none pointer-events-none"
+      style="clip-path: polygon(0 0, 50% 0, 50% 100%, 0 100%); will-change: clip-path;"
+    >
+      <img 
+        src={beforeImg} 
+        alt="Negative Scan" 
+        draggable="false"
+        class="w-full h-full object-cover select-none pointer-events-none"
+      />
+      <span class="absolute bottom-4 left-4 px-3 py-1 rounded-md bg-darkroom-canvas/85 border border-accent/40 text-xs font-medium text-accent backdrop-blur-sm z-10 font-mono select-none pointer-events-none">
+        {beforeLabel}
+      </span>
+    </div>
+
+    <!-- Slider Divider Bar (Zero latency) -->
+    <div 
+      class="slider-handle-bar absolute top-0 bottom-0 w-0.5 bg-accent shadow-[0_0_12px_rgba(196,129,79,0.85)] cursor-ew-resize z-20 pointer-events-none"
+      style="left: 50%; will-change: left;"
+    >
+      <!-- Draggable Knob -->
+      <div class="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-8 h-8 rounded-full bg-accent text-darkroom-canvas shadow-xl flex items-center justify-center border-2 border-darkroom-canvas pointer-events-none">
+        <svg class="w-4 h-4 text-darkroom-canvas" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M8 9l-4 3 4 3m8-6l4 3-4 3" />
+        </svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bottom Info Bar (Darkroom Canvas & Sans tokens) -->
+  <div class="px-5 py-3 bg-darkroom-canvas border-t border-darkroom-line flex items-center justify-between text-xs text-text-muted font-sans">
+    <div class="flex items-center gap-2">
+      <span class="w-2 h-2 rounded-full bg-accent animate-pulse"></span>
+      <span class="font-medium text-text-primary font-sans">{filmName}</span>
+      <span class="text-darkroom-line-strong">|</span>
+      <span class="font-mono text-[11px] text-text-muted">{camera}</span>
+    </div>
+    <div class="flex items-center gap-2 text-[11px] text-text-muted font-mono">
+      <span>{lang === 'zh' ? '左右拖拽或方向键微调对比' : 'Drag slider or use arrow keys to compare'}</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  function initBeforeAfter() {
+    const wrappers = document.querySelectorAll<HTMLElement>('.before-after-wrapper');
+    wrappers.forEach((wrapper) => {
+      if (wrapper.dataset.baBound === 'true') return;
+      wrapper.dataset.baBound = 'true';
+
+      const container = wrapper.querySelector('.before-after-container') as HTMLElement;
+      const clipLayer = wrapper.querySelector('.before-clip-layer') as HTMLElement;
+      const handleBar = wrapper.querySelector('.slider-handle-bar') as HTMLElement;
+      if (!container || !clipLayer || !handleBar) return;
+
+      let currentPercent = 50;
+      let activePointerId: number | null = null;
+
+      const setPercent = (percent: number) => {
+        currentPercent = Math.max(0, Math.min(100, percent));
+        wrapper.setAttribute('aria-valuenow', Math.round(currentPercent).toString());
+        clipLayer.style.clipPath = `polygon(0 0, ${currentPercent}% 0, ${currentPercent}% 100%, 0 100%)`;
+        handleBar.style.left = `${currentPercent}%`;
+      };
+
+      const updateFromPointer = (e: PointerEvent) => {
+        const rect = container.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        const percent = ((e.clientX - rect.left) / rect.width) * 100;
+        setPercent(percent);
+      };
+
+      container.addEventListener('pointerdown', (e: PointerEvent) => {
+        activePointerId = e.pointerId;
+        try {
+          container.setPointerCapture(e.pointerId);
+        } catch {
+          // ignore unsupported browsers
+        }
+        updateFromPointer(e);
+      });
+
+      container.addEventListener('pointermove', (e: PointerEvent) => {
+        if (activePointerId === e.pointerId) {
+          updateFromPointer(e);
+        }
+      });
+
+      const onPointerEnd = (e: PointerEvent) => {
+        if (activePointerId === e.pointerId) {
+          try {
+            container.releasePointerCapture(e.pointerId);
+          } catch {
+            // ignore
+          }
+          activePointerId = null;
+        }
+      };
+
+      container.addEventListener('pointerup', onPointerEnd);
+      container.addEventListener('pointercancel', onPointerEnd);
+
+      // Keyboard accessibility (ArrowLeft / ArrowRight)
+      wrapper.addEventListener('keydown', (e: KeyboardEvent) => {
+        if (e.key === 'ArrowLeft') {
+          e.preventDefault();
+          setPercent(currentPercent - 5);
+        } else if (e.key === 'ArrowRight') {
+          e.preventDefault();
+          setPercent(currentPercent + 5);
+        }
+      });
+    });
+  }
+
+  // Idempotent initialization on Astro page-load
+  document.addEventListener('astro:page-load', initBeforeAfter);
+</script>

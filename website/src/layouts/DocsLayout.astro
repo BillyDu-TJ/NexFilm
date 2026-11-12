@@ -1,0 +1,141 @@
+---
+import BaseLayout from './BaseLayout.astro';
+import DocsSidebar from '../components/DocsSidebar.astro';
+import DocsToc from '../components/DocsToc.astro';
+import DocsPager from '../components/DocsPager.astro';
+import DocsSearchModal from '../components/DocsSearchModal.astro';
+import { withBase } from '../utils/urls';
+import type { DocChapter, DocTrackGroup } from '../utils/docs';
+import '../styles/docs-prose.css';
+
+interface Props {
+  chapter: DocChapter;
+  groups: DocTrackGroup[];
+  prev: DocChapter | null;
+  next: DocChapter | null;
+  lang: 'zh' | 'en';
+  isAlias?: boolean;
+}
+
+const { chapter, groups, prev, next, lang, isAlias = false } = Astro.props;
+
+const docSuffix = lang === 'zh' ? '文档' : 'Docs';
+const pageTitle = `${chapter.title} · ${chapter.trackTitle} · ${docSuffix}`;
+const pageDesc = chapter.subtitle || (
+  lang === 'zh'
+    ? `${chapter.title} - NexFilm Engine 官方使用文档与技术手册`
+    : `${chapter.title} - NexFilm Engine Official Documentation & Manual`
+);
+
+const canonicalUrl = isAlias ? withBase(`/${lang}/docs/${chapter.id}/`) : undefined;
+---
+
+<BaseLayout title={pageTitle} description={pageDesc} lang={lang} canonicalUrl={canonicalUrl}>
+  <div class="max-w-[90rem] mx-auto px-4 sm:px-6 lg:px-8 py-8" id="top">
+    <!-- Three-Column Grid -->
+    <div class="flex flex-col lg:flex-row gap-8 items-start">
+      
+      <!-- Left Column: Sticky Sidebar (260px) -->
+      <DocsSidebar groups={groups} currentSlug={chapter.id} lang={lang} />
+
+      <!-- Middle Column: Golden Reading Width (max-w-3xl) -->
+      <main class="flex-1 min-w-0 max-w-3xl mx-auto w-full overflow-hidden">
+        <!-- Breadcrumb & Version Pill -->
+        <div class="flex flex-wrap items-center justify-between gap-3 pb-6 mb-6 border-b border-darkroom-line text-xs font-mono">
+          <nav class="flex items-center gap-1.5 text-text-muted" aria-label="Breadcrumb">
+            <a href={withBase(`/${lang}/docs/`)} class="hover:text-accent transition-colors">
+              {lang === 'zh' ? '文档首页' : 'Docs'}
+            </a>
+            <span>/</span>
+            <span class="text-text-secondary">{chapter.trackTitle}</span>
+            <span>/</span>
+            <span class="text-accent truncate max-w-[200px]">{chapter.title}</span>
+          </nav>
+          
+          <div class="flex items-center gap-2">
+            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[10.5px] font-mono bg-accent-soft border border-accent/30 text-accent">
+              {lang === 'zh' ? `适用于 ${chapter.sinceVersion}+` : `Applies to ${chapter.sinceVersion}+`}
+            </span>
+            <span class="text-text-muted text-[11px] font-mono">
+              {chapter.readingTime} {lang === 'zh' ? '分钟阅读' : 'min read'}
+            </span>
+          </div>
+        </div>
+
+        <!-- Chapter Header (H1 & Subtitle) -->
+        <header class="space-y-3 mb-10">
+          <div class="text-xs font-mono font-semibold uppercase tracking-wider text-accent">
+            {chapter.kicker}
+          </div>
+          <h1 class="text-3xl sm:text-4xl font-bold tracking-tight text-text-primary font-sans">
+            {chapter.title}
+          </h1>
+          {chapter.subtitle && (
+            <p class="text-sm sm:text-base text-text-secondary font-sans leading-relaxed">
+              {chapter.subtitle}
+            </p>
+          )}
+        </header>
+
+        <!-- Chapter Content Sections -->
+        <article
+          class="docs-prose space-y-12"
+          {...(!isAlias ? { 'data-pagefind-body': true, 'data-pagefind-filter': `lang:${lang}` } : {})}
+        >
+          {chapter.sections.map((section) => (
+            <section data-section-id={section.id} class="space-y-4">
+              <h2 id={section.id} class="scroll-mt-24 group">
+                <a href={`#${section.id}`} class="docs-anchor opacity-0 group-hover:opacity-100 transition-opacity" aria-label={`Anchor link for ${section.heading}`}>#</a>
+                <span>{section.heading}</span>
+              </h2>
+              <div class="section-content leading-relaxed" set:html={section.content} />
+            </section>
+          ))}
+        </article>
+
+        <!-- Chapter Pager (Prev / Next & GitHub source) -->
+        <DocsPager prev={prev} next={next} githubSourceUrl={chapter.githubSourceUrl} lang={lang} />
+      </main>
+
+      <!-- Right Column: Sticky Table of Contents (220px, xl+) -->
+      <DocsToc toc={chapter.toc} lang={lang} />
+
+    </div>
+  </div>
+
+  <DocsSearchModal lang={lang} />
+</BaseLayout>
+
+<script>
+  // Add interactive copy buttons to all code blocks
+  function attachCodeCopyButtons() {
+    const blocks = document.querySelectorAll<HTMLPreElement>('pre.doc-code-block');
+    blocks.forEach((pre) => {
+      if (pre.querySelector('.doc-copy-btn')) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'doc-copy-btn';
+      btn.textContent = 'Copy';
+      btn.setAttribute('aria-label', 'Copy code to clipboard');
+
+      btn.addEventListener('click', async () => {
+        const code = pre.querySelector('code')?.innerText || pre.innerText;
+        try {
+          await navigator.clipboard.writeText(code);
+          btn.textContent = 'Copied!';
+          btn.classList.add('text-accent');
+          setTimeout(() => {
+            btn.textContent = 'Copy';
+            btn.classList.remove('text-accent');
+          }, 2000);
+        } catch (e) {
+          btn.textContent = 'Failed';
+        }
+      });
+
+      pre.appendChild(btn);
+    });
+  }
+
+  document.addEventListener('astro:page-load', attachCodeCopyButtons);
+</script>

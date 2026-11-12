@@ -182,7 +182,17 @@
 
         if (!searchQuery) {
             if (countBadge) countBadge.textContent = t('documentation.chapterCount', { count: list.length });
-            list.forEach((chapter, index) => navList.appendChild(buildChapterNavItem(chapter, index + 1)));
+            let lastTrack = null;
+            list.forEach((chapter, index) => {
+                if (chapter.track && chapter.track !== lastTrack) {
+                    lastTrack = chapter.track;
+                    const group = document.createElement('div');
+                    group.className = 'documentation-nav-group-header';
+                    group.textContent = chapter.trackTitle || chapter.track;
+                    navList.appendChild(group);
+                }
+                navList.appendChild(buildChapterNavItem(chapter, index + 1));
+            });
             return;
         }
 

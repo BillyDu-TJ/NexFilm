@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000">
+  <defs>
+    <!-- Film Base Orange Mask Gradient -->
+    <linearGradient id="c41-base" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b65727"/>
+      <stop offset="50%" stop-color="#bf6330"/>
+      <stop offset="100%" stop-color="#ab4d20"/>
+    </linearGradient>
+    <!-- Negative Scene Gradients (Inverted Densities) -->
+    <radialGradient id="neg-sky" cx="50%" cy="30%" r="70%">
+      <stop offset="0%" stop-color="#142838"/>
+      <stop offset="60%" stop-color="#2a3d4d"/>
+      <stop offset="100%" stop-color="#6e553a"/>
+    </radialGradient>
+    <radialGradient id="neg-portrait" cx="50%" cy="52%" r="35%">
+      <stop offset="0%" stop-color="#2b4859"/>
+      <stop offset="40%" stop-color="#3c5b6e"/>
+      <stop offset="85%" stop-color="#7a5a3a"/>
+      <stop offset="100%" stop-color="#a45d2d"/>
+    </radialGradient>
+    <!-- Grain Filter -->
+    <filter id="grain" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.75" numOctaves="3" result="noise"/>
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.12 0" in="noise" result="coloredNoise"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+  </defs>
+
+  <!-- Full Film Strip Base with Orange Mask -->
+  <rect width="1600" height="1000" fill="url(#c41-base)"/>
+
+  <!-- Top Sprocket Holes Row -->
+  <g fill="#0b0b0c">
+    <rect x="60" y="28" width="56" height="74" rx="10"/>
+    <rect x="156" y="28" width="56" height="74" rx="10"/>
+    <rect x="252" y="28" width="56" height="74" rx="10"/>
+    <rect x="348" y="28" width="56" height="74" rx="10"/>
+    <rect x="444" y="28" width="56" height="74" rx="10"/>
+    <rect x="540" y="28" width="56" height="74" rx="10"/>
+    <rect x="636" y="28" width="56" height="74" rx="10"/>
+    <rect x="732" y="28" width="56" height="74" rx="10"/>
+    <rect x="828" y="28" width="56" height="74" rx="10"/>
+    <rect x="924" y="28" width="56" height="74" rx="10"/>
+    <rect x="1020" y="28" width="56" height="74" rx="10"/>
+    <rect x="1116" y="28" width="56" height="74" rx="10"/>
+    <rect x="1212" y="28" width="56" height="74" rx="10"/>
+    <rect x="1308" y="28" width="56" height="74" rx="10"/>
+    <rect x="1404" y="28" width="56" height="74" rx="10"/>
+    <rect x="1500" y="28" width="56" height="74" rx="10"/>
+  </g>
+
+  <!-- Bottom Sprocket Holes Row -->
+  <g fill="#0b0b0c">
+    <rect x="60" y="898" width="56" height="74" rx="10"/>
+    <rect x="156" y="898" width="56" height="74" rx="10"/>
+    <rect x="252" y="898" width="56" height="74" rx="10"/>
+    <rect x="348" y="898" width="56" height="74" rx="10"/>
+    <rect x="444" y="898" width="56" height="74" rx="10"/>
+    <rect x="540" y="898" width="56" height="74" rx="10"/>
+    <rect x="636" y="898" width="56" height="74" rx="10"/>
+    <rect x="732" y="898" width="56" height="74" rx="10"/>
+    <rect x="828" y="898" width="56" height="74" rx="10"/>
+    <rect x="924" y="898" width="56" height="74" rx="10"/>
+    <rect x="1020" y="898" width="56" height="74" rx="10"/>
+    <rect x="1116" y="898" width="56" height="74" rx="10"/>
+    <rect x="1212" y="898" width="56" height="74" rx="10"/>
+    <rect x="1308" y="898" width="56" height="74" rx="10"/>
+    <rect x="1404" y="898" width="56" height="74" rx="10"/>
+    <rect x="1500" y="898" width="56" height="74" rx="10"/>
+  </g>
+
+  <!-- Edge Code Markings (Latent Image Barcode & Text) -->
+  <g font-family="monospace" font-size="16" font-weight="bold" fill="#69280e" opacity="0.85">
+    <text x="140" y="122">KODAK PORTRA 400</text>
+    <text x="560" y="122">5036</text>
+    <text x="960" y="122">▶ 14A</text>
+    <text x="1360" y="122">SAFETY FILM</text>
+    <text x="180" y="880">KODAK 400-2</text>
+    <text x="640" y="880">14</text>
+    <text x="1100" y="880">||| | |||| || | |||</text>
+  </g>
+
+  <!-- Negative Active Emulsion Frame (135 Frame) -->
+  <g transform="translate(140, 140)">
+    <!-- Active Frame Background (Sky/Background Inverted) -->
+    <rect width="1320" height="720" rx="4" fill="url(#neg-sky)"/>
+
+    <!-- Negative Mountain / Landscape Silhouette (Dense in Highlight) -->
+    <path d="M 0,520 Q 280,380 620,440 T 1320,400 L 1320,720 L 0,720 Z" fill="#203444" opacity="0.85"/>
+    <path d="M 0,580 Q 400,480 820,530 T 1320,510 L 1320,720 L 0,720 Z" fill="#314552" opacity="0.9"/>
+
+    <!-- Negative Portrait Subject (Inverted complementary colors) -->
+    <!-- Head & Shoulders silhouette with soft inverted tonality -->
+    <ellipse cx="660" cy="380" rx="150" ry="190" fill="url(#neg-portrait)"/>
+    <!-- Hair Negative (Highlights in hair are dense dark-cyan) -->
+    <path d="M 500,380 C 490,230 600,180 660,180 C 720,180 830,230 820,380 C 810,340 760,260 660,260 C 560,260 510,340 500,380 Z" fill="#1b2e3b"/>
+    <!-- Face Highlights (Cheek / Forehead highlights inverted to dark cyans) -->
+    <ellipse cx="660" cy="370" rx="100" ry="120" fill="#2d4a5c" opacity="0.8"/>
+    <ellipse cx="630" cy="360" rx="40" ry="50" fill="#1e3747" opacity="0.9"/>
+    <!-- Torso / Garment (Warm clothing inverted to blue/cyan negative tones) -->
+    <path d="M 420,720 C 440,540 540,510 660,510 C 780,510 880,540 900,720 Z" fill="#284456"/>
+
+    <!-- Sunflare highlight in negative (dense black circle with halation) -->
+    <circle cx="1060" cy="220" r="110" fill="#101c24" opacity="0.88"/>
+    <circle cx="1060" cy="220" r="60" fill="#091016"/>
+
+    <!-- Film Grain Overlay -->
+    <rect width="1320" height="720" filter="url(#grain)" opacity="0.4" pointer-events="none"/>
+  </g>
+</svg>

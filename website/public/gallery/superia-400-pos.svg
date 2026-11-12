@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000">
+  <defs>
+    <linearGradient id="fuji-pos-sky" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#387cb4"/>
+      <stop offset="60%" stop-color="#72a8d1"/>
+      <stop offset="100%" stop-color="#b6d5e8"/>
+    </linearGradient>
+    <filter id="fuji-grain-pos" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.8" numOctaves="3" result="noise"/>
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.09 0" in="noise" result="coloredNoise"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="1000" fill="#121214"/>
+
+  <g transform="translate(140, 140)">
+    <!-- Crisp Tokyo Daytime Sky -->
+    <rect width="1320" height="720" rx="4" fill="url(#fuji-pos-sky)"/>
+
+    <!-- Modern Architecture in Daylight -->
+    <rect x="180" y="180" width="340" height="540" fill="#d4d7dc"/>
+    <rect x="580" y="100" width="420" height="620" fill="#e9ecf0"/>
+    <rect x="1060" y="240" width="220" height="480" fill="#ccd0d6"/>
+
+    <!-- Architectural Window Patterns -->
+    <g fill="#435263" opacity="0.8">
+      
+        <rect x="210" y="220" width="40" height="35" rx="2"/>
+        <rect x="270" y="220" width="40" height="35" rx="2"/>
+        <rect x="330" y="220" width="40" height="35" rx="2"/>
+        <rect x="390" y="220" width="40" height="35" rx="2"/>
+      
+
+        <rect x="210" y="280" width="40" height="35" rx="2"/>
+        <rect x="270" y="280" width="40" height="35" rx="2"/>
+        <rect x="330" y="280" width="40" height="35" rx="2"/>
+        <rect x="390" y="280" width="40" height="35" rx="2"/>
+      
+
+        <rect x="210" y="340" width="40" height="35" rx="2"/>
+        <rect x="270" y="340" width="40" height="35" rx="2"/>
+        <rect x="330" y="340" width="40" height="35" rx="2"/>
+        <rect x="390" y="340" width="40" height="35" rx="2"/>
+      
+
+        <rect x="210" y="400" width="40" height="35" rx="2"/>
+        <rect x="270" y="400" width="40" height="35" rx="2"/>
+        <rect x="330" y="400" width="40" height="35" rx="2"/>
+        <rect x="390" y="400" width="40" height="35" rx="2"/>
+      
+
+        <rect x="210" y="460" width="40" height="35" rx="2"/>
+        <rect x="270" y="460" width="40" height="35" rx="2"/>
+        <rect x="330" y="460" width="40" height="35" rx="2"/>
+        <rect x="390" y="460" width="40" height="35" rx="2"/>
+      
+
+        <rect x="210" y="520" width="40" height="35" rx="2"/>
+        <rect x="270" y="520" width="40" height="35" rx="2"/>
+        <rect x="330" y="520" width="40" height="35" rx="2"/>
+        <rect x="390" y="520" width="40" height="35" rx="2"/>
+      
+      
+        <rect x="620" y="140" width="50" height="40" rx="2"/>
+        <rect x="700" y="140" width="50" height="40" rx="2"/>
+        <rect x="780" y="140" width="50" height="40" rx="2"/>
+        <rect x="860" y="140" width="50" height="40" rx="2"/>
+      
+
+        <rect x="620" y="200" width="50" height="40" rx="2"/>
+        <rect x="700" y="200" width="50" height="40" rx="2"/>
+        <rect x="780" y="200" width="50" height="40" rx="2"/>
+        <rect x="860" y="200" width="50" height="40" rx="2"/>
+      
+
+        <rect x="620" y="260" width="50" height="40" rx="2"/>
+        <rect x="700" y="260" width="50" height="40" rx="2"/>
+        <rect x="780" y="260" width="50" height="40" rx="2"/>
+        <rect x="860" y="260" width="50" height="40" rx="2"/>
+      
+
+        <rect x="620" y="320" width="50" height="40" rx="2"/>
+        <rect x="700" y="320" width="50" height="40" rx="2"/>
+        <rect x="780" y="320" width="50" height="40" rx="2"/>
+        <rect x="860" y="320" width="50" height="40" rx="2"/>
+      
+
+        <rect x="620" y="380" width="50" height="40" rx="2"/>
+        <rect x="700" y="380" width="50" height="40" rx="2"/>
+        <rect x="780" y="380" width="50" height="40" rx="2"/>
+        <rect x="860" y="380" width="50" height="40" rx="2"/>
+      
+
+        <rect x="620" y="440" width="50" height="40" rx="2"/>
+        <rect x="700" y="440" width="50" height="40" rx="2"/>
+        <rect x="780" y="440" width="50" height="40" rx="2"/>
+        <rect x="860" y="440" width="50" height="40" rx="2"/>
+      
+
+        <rect x="620" y="500" width="50" height="40" rx="2"/>
+        <rect x="700" y="500" width="50" height="40" rx="2"/>
+        <rect x="780" y="500" width="50" height="40" rx="2"/>
+        <rect x="860" y="500" width="50" height="40" rx="2"/>
+      
+    </g>
+
+    <!-- Superia Iconic Crisp Greens (4th Color Layer richness) -->
+    <path d="M 80,720 Q 220,440 380,720 Z" fill="#2d6e3c" opacity="0.95"/>
+    <path d="M 120,720 Q 240,480 340,720 Z" fill="#3ea357" opacity="0.85"/>
+    <path d="M 320,720 Q 480,480 640,720 Z" fill="#265a32" opacity="0.95"/>
+    <path d="M 360,720 Q 500,520 600,720 Z" fill="#358b49" opacity="0.8"/>
+    <path d="M 880,720 Q 1040,420 1200,720 Z" fill="#286938" opacity="0.95"/>
+    <path d="M 940,720 Q 1060,460 1160,720 Z" fill="#46aa5f" opacity="0.85"/>
+
+    <!-- Vibrant Tokyo Street Signage (Red/Cyan pop) -->
+    <rect x="630" y="220" width="40" height="180" fill="#e03e36" rx="4"/>
+    <rect x="710" y="300" width="120" height="30" fill="#f59e0b" rx="3"/>
+
+    <rect width="1320" height="720" filter="url(#fuji-grain-pos)" opacity="0.5" pointer-events="none"/>
+  </g>
+
+  <g font-family="monospace" font-size="13" fill="#aaaab0" opacity="0.7">
+    <text x="140" y="890">FUJIFILM SUPERIA X-TRA 400 · 35mm</text>
+    <text x="140" y="910" fill="#c4814f">KODAK ENDURA PREMIER EMULATION (4TH COLOR LAYER BALANCE)</text>
+    <text x="1460" y="890" text-anchor="end">D_min: 0.28 / 0.64 / 1.02</text>
+    <text x="1460" y="910" text-anchor="end">UNIFIED DENSITY ENGINE</text>
+  </g>
+</svg>

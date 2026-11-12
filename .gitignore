@@ -20,11 +20,14 @@ test_picture/
 *.tiff
 *.png
 !docs/assets/nexfilm-v1.0-develop.png
+!docs/handbook/**
 !ui/assets/author-sponsor-qr.jpg
 !ui/assets/uidesigner-sponsor-qr.jpg
 !ui/assets/design-reference/import-roll.png
 !ui/assets/design-reference/import-loose.png
 !ui/assets/design-reference/import-continue.png
+!website/public/**
+!website/src/**
 *.nef
 *.db
 *.db-journal
@@ -33,9 +36,17 @@ test_picture/
 *.svg
 !ui/assets/design-reference/nexfilm-logo.svg
 !ui/assets/design-reference/nexfilm-logo-dark.svg
+!website/public/**
+!website/src/**
 
 reference_v777.md
-website
 
 # Python bytecode from diagnostic scripts
 __pycache__/
+
+# Website build & dependencies
+website/node_modules/
+website/dist/
+website/.astro/
+website/.pagefind/
+website/public/workspace-demo/

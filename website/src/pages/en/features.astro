@@ -1,0 +1,359 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { withBase } from '../../utils/urls';
+import { renderBlockMath, renderInlineMath } from '../../utils/math';
+
+const formulaDensity = renderBlockMath('D = -\\log_{10}(T) \\quad \\Longleftrightarrow \\quad T = 10^{-D}');
+const formulaBase = renderInlineMath('T_{\\text{norm}} = \\frac{T - T_{\\text{base}}}{1 - T_{\\text{base}}}');
+
+const categoryNav = [
+  { id: 'section-batch', num: '01', title: 'Core Inversion & Batch', zh: '极速反转与批处理' },
+  { id: 'section-archive', num: '02', title: 'Roll Archive & Contact Sheet', zh: '胶卷归纳与接触印样' },
+  { id: 'section-darkroom', num: '03', title: 'Darkroom Grading & Print LUTs', zh: '暗房精修与相纸模拟' },
+  { id: 'section-foundation', num: '04', title: 'Color Science & Pro Delivery', zh: '色彩科学与专业交付' },
+];
+---
+
+<BaseLayout 
+  title="Features & Darkroom Architecture · 4 Core Pillars · NexFilm Engine" 
+  description="Engineered around film photographers' real workflows: Auto Invert & roll-wide white point calibration, multi-format archive & contact sheets, 60fps WebGL printer lights, 14 print LUTs & optical density foundation."
+  lang="en"
+>
+  <!-- Hero Section -->
+  <section class="relative pt-16 pb-12 border-b border-darkroom-line bg-darkroom-canvas">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center space-y-4">
+      <div class="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-darkroom-line bg-darkroom-panel text-xs font-mono text-accent">
+        <span class="w-1.5 h-1.5 rounded-full bg-accent animate-pulse"></span>
+        <span>DARKROOM WORKFLOW · FULL ARCHITECTURE</span>
+      </div>
+      <h1 class="text-3xl sm:text-5xl font-sans font-bold text-text-primary tracking-tight leading-tight">
+        NexFilm Features & Technical Specifications
+      </h1>
+      <p class="text-text-secondary text-base sm:text-lg leading-relaxed font-sans max-w-3xl mx-auto">
+        A complete darkroom workflow from negative ingestion and roll-wide density inversion to printer light grading, archive management, and 16-bit linear master export.
+      </p>
+    </div>
+  </section>
+
+  <!-- Sticky Category Navigation Bar -->
+  <nav class="sticky top-16 z-30 py-3 bg-darkroom-canvas/90 backdrop-blur-md border-b border-darkroom-line select-none" aria-label="Features Category Navigation">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-start sm:justify-center gap-2 sm:gap-4 overflow-x-auto custom-scrollbar pb-1 sm:pb-0">
+        {categoryNav.map((cat) => (
+          <a 
+            href={`#${cat.id}`} 
+            class="shrink-0 px-3 py-1.5 rounded-lg border border-darkroom-line bg-darkroom-panel hover:bg-darkroom-raised hover:border-accent text-xs font-mono text-text-secondary hover:text-text-primary transition-all flex items-center gap-2"
+          >
+            <span class="text-accent font-bold">{cat.num}</span>
+            <span>{cat.title}</span>
+          </a>
+        ))}
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Content Sections -->
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-16 space-y-24">
+
+    <!-- ========================================== -->
+    <!-- SECTION 01: CORE INVERSION & BATCH         -->
+    <!-- ========================================== -->
+    <section id="section-batch" class="scroll-mt-28 space-y-8">
+      <div class="border-b border-darkroom-line pb-6">
+        <div class="flex items-center gap-2.5 text-xs font-mono text-accent mb-2">
+          <span class="px-2 py-0.5 rounded bg-darkroom-panel border border-darkroom-line font-bold">PILLAR 01</span>
+          <span class="text-text-muted uppercase tracking-wider">WORKFLOW EFFICIENCY · FAST BATCHING</span>
+        </div>
+        <h2 class="text-2xl sm:text-3xl font-sans font-bold text-text-primary tracking-tight">
+          Instant Inversion & Shift-Free Roll Batching
+        </h2>
+        <p class="text-sm sm:text-base text-text-secondary mt-2 leading-relaxed flex flex-wrap items-center justify-between gap-2">
+          <span>Fast single-frame auto invert, roll base sampling, and shared white point calibration for consistent 36-frame batch processing.</span>
+          <a href={withBase('/en/docs/roll-vs-loose-workflows/')} class="text-xs font-mono text-accent hover:underline flex items-center gap-1">
+            <span>Explore Roll Batching Guide</span>
+            <span>→</span>
+          </a>
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- Feature 1.1 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-sky-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            01
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">Single-Frame Auto Invert</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Instantly detects emulsion boundaries, samples the unexposed orange base mask, and calculates effective density span. Converts RAW negative to natural positive color in milliseconds without cross-channel color skew.
+          </p>
+        </div>
+
+        <!-- Feature 1.2 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-accent flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            02
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">Roll Calibration & Batch Inversion</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Samples the roll's clear film base and fully-exposed film leader to lock chemical density bounds. Analyzes the roll's brightest scene for a shared white point (auto-skipping calibration frames) to batch-invert 36 frames with zero color hops via Auto Invert Roll.
+          </p>
+        </div>
+
+        <!-- Feature 1.3 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-emerald-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            03
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">Selective Copy Settings & Batch Framing</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Dialog presets offer "All / Tone & Color Only / Geometry Only", or selective checkmarks across 10 granular parameter groups (density, printer lights, curves, detail, transforms, LUTs, sprockets); push framing to all frames in one click.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SECTION 02: ROLL ARCHIVE & CONTACT SHEET   -->
+    <!-- ========================================== -->
+    <section id="section-archive" class="scroll-mt-28 space-y-8">
+      <div class="border-b border-darkroom-line pb-6">
+        <div class="flex items-center gap-2.5 text-xs font-mono text-accent mb-2">
+          <span class="px-2 py-0.5 rounded bg-darkroom-panel border border-darkroom-line font-bold">PILLAR 02</span>
+          <span class="text-text-muted uppercase tracking-wider">ASSET & ARCHIVE MANAGEMENT · ROLL ARCHIVING</span>
+        </div>
+        <h2 class="text-2xl sm:text-3xl font-sans font-bold text-text-primary tracking-tight">
+          Roll Archive Management & Contact Sheets
+        </h2>
+        <p class="text-sm sm:text-base text-text-secondary mt-2 leading-relaxed flex flex-wrap items-center justify-between gap-2">
+          <span>Organize 135, 120, and large format film, embed shooting metadata, and export authentic contact sheets in one click.</span>
+          <a href={withBase('/en/docs/export-and-contact-sheets/#contact-sheet-generation')} class="text-xs font-mono text-accent hover:underline flex items-center gap-1">
+            <span>Explore Contact Sheet Specs</span>
+            <span>→</span>
+          </a>
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- Feature 2.1 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-accent flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            01
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">3-Way Import & 40+ Film Stock Library</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Aligned with analog photography instincts: "Import by Roll", "Loose Import" for quick single frames, and "Continue Roll" for appending new scans. Built-in dictionary covering 40+ color negative, B&W, slide, and motion picture stocks (Portra, Tri-X, HP5+, 5219, etc.) with automatic memory for user gear.
+          </p>
+        </div>
+
+        <!-- Feature 2.2 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-sky-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            02
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">Multi-Dimensional Roll Archive (Rolls View)</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Filter library instantly across full format spectrum: 135 (full and half frame), APS, 120 (645, 6x6, 6x7, 6x9, 6x12, 6x17), large format (4x5, 5x7, 8x10), camera bodies, and capture/processing dates. Includes Roll Notes editing and single-frame roll promotion.
+          </p>
+        </div>
+
+        <!-- Feature 2.3 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-emerald-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            03
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">One-Click Contact Sheet Generation</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            No Photoshop assembly needed. Generates high-res digital contact sheets with authentic 135 sprocket hole perforations, frame numbers, and latent barcodes, or 120 edge typography. Complete with roll title, camera, film, and date header for both darkroom ritual and curation.
+          </p>
+        </div>
+
+        <!-- Feature 2.4 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-purple-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            04
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">Tokenized Renaming & EXIF Injection</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Export dialog supports customizable filename patterns with <code>&#123;Roll&#125;</code>, <code>&#123;Camera&#125;</code>, <code>&#123;Film&#125;</code>, <code>&#123;Date&#125;</code>, <code>&#123;Original&#125;</code>, and <code>&#123;Seq&#125;</code> tokens. Automatically writes film stock, camera model, and dates directly into output EXIF metadata tags.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SECTION 03: DARKROOM GRADING & PRINT LUTS  -->
+    <!-- ========================================== -->
+    <section id="section-darkroom" class="scroll-mt-28 space-y-8">
+      <div class="border-b border-darkroom-line pb-6">
+        <div class="flex items-center gap-2.5 text-xs font-mono text-accent mb-2">
+          <span class="px-2 py-0.5 rounded bg-darkroom-panel border border-darkroom-line font-bold">PILLAR 03</span>
+          <span class="text-text-muted uppercase tracking-wider">CREATIVE DARKROOM GRADING · TONAL CONTROL</span>
+        </div>
+        <h2 class="text-2xl sm:text-3xl font-sans font-bold text-text-primary tracking-tight">
+          Darkroom Optics, Geometry & Print Simulation
+        </h2>
+        <p class="text-sm sm:text-base text-text-secondary mt-2 leading-relaxed flex flex-wrap items-center justify-between gap-2">
+          <span>Optical enlarger color filtration physics with 60fps real-time printer lights, tone curves, and 14 classic paper & cinema print LUTs.</span>
+          <a href={withBase('/en/docs/print-film-emulation/')} class="text-xs font-mono text-accent hover:underline flex items-center gap-1">
+            <span>Explore 14 Print Film LUTs</span>
+            <span>→</span>
+          </a>
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- Feature 3.1 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-sky-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            01
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">Auto Area, Sprocket Sampling & Lens Correction</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Auto Area identifies effective frame boundaries to eliminate backlight flare and holder edges; features Sprocket Sampling to neutralize sprocket bleed, multi-ratio crops, angle straightening, perspective adjustment, and lens barrel/pincushion distortion correction.
+          </p>
+        </div>
+
+        <!-- Feature 3.2 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-accent flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            02
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">60fps Printer Lights & Scopes</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Faithful optical enlarger additive RGB Printer Lights sliders with neutral gray eyedropper; 4-channel Tone Curves, exposure, contrast, highlights, shadows, temp, and tint; live histogram & waveform with clipping <code>!</code> alerts, and Alt-key detail mask channel with texture/clarity/dehaze.
+          </p>
+        </div>
+
+        <!-- Feature 3.3 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-emerald-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            03
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">14 Built-In Print LUTs & Pure B&W Flow</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Pre-loaded with 7 color print & paper LUTs (Kodak 2383/2393 cinema prints, Kodak Endura Premier, Portra Endura, Supra Endura, Ultra Endura, Ektacolor Edge) plus 7 B&W silver gelatin LUTs (Ilford Multigrade FB grades 00–5). Supports 0–100% opacity blending, external 3D LUTs, and pure B&W development.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========================================== -->
+    <!-- SECTION 04: COLOR SCIENCE & PRO DELIVERY   -->
+    <!-- ========================================== -->
+    <section id="section-foundation" class="scroll-mt-28 space-y-8">
+      <div class="border-b border-darkroom-line pb-6">
+        <div class="flex items-center gap-2.5 text-xs font-mono text-accent mb-2">
+          <span class="px-2 py-0.5 rounded bg-darkroom-panel border border-darkroom-line font-bold">PILLAR 04</span>
+          <span class="text-text-muted uppercase tracking-wider">COLOR SCIENCE & PRO DELIVERY · SCIENTIFIC BASE</span>
+        </div>
+        <h2 class="text-2xl sm:text-3xl font-sans font-bold text-text-primary tracking-tight">
+          Optical Color Science & Master Delivery
+        </h2>
+        <p class="text-sm sm:text-base text-text-secondary mt-2 leading-relaxed flex flex-wrap items-center justify-between gap-2">
+          <span>Rust-powered logarithmic optical density engine supporting streaming gigapixel scans, hardware profiling, and 16-bit master exports.</span>
+          <a href={withBase('/en/docs/color-science/')} class="text-xs font-mono text-accent hover:underline flex items-center gap-1">
+            <span>Read Color Science Whitepaper</span>
+            <span>→</span>
+          </a>
+        </p>
+      </div>
+
+      <!-- Feature 4.1: Mathematical Foundation Card with KaTeX Formula -->
+      <div class="p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel shadow-darkroom-card space-y-6">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-darkroom-line pb-6">
+          <div>
+            <span class="text-xs font-mono text-accent font-semibold">[PHYSICS-CORE]</span>
+            <h3 class="text-xl font-bold text-text-primary mt-1">Unified Logarithmic Optical Density Pipeline</h3>
+            <p class="text-xs text-text-secondary mt-1">Strict adherence to optical transmittance physics without black-box color warping</p>
+          </div>
+          <div class="px-4 py-2.5 rounded-xl bg-darkroom-canvas border border-darkroom-line text-text-primary font-mono text-sm shadow-inner self-start sm:self-auto overflow-x-auto max-w-full" set:html={formulaDensity}>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs text-text-secondary leading-relaxed">
+          <div>
+            <h4 class="font-bold text-text-primary text-sm mb-2 font-sans flex items-center gap-2">
+              <span class="w-1.5 h-1.5 rounded-full bg-accent"></span>
+              Why Inversion Must Occur in Optical Density
+            </h4>
+            <p>
+              Inverting curves in non-linear display gamma distorts the physical characteristic curve of silver halides. In the optical transmittance domain, optical density <span set:html={renderInlineMath('D = -\\log_{10}(T)')}></span> directly corresponds to photographic exposure. Channel-by-channel base normalization <span set:html={formulaBase}></span> unifies camera Bayer RAW, 16-bit linear TIFF, and Imacon <code>.fff</code> scans under one explainable pipeline.
+            </p>
+          </div>
+
+          <div>
+            <h4 class="font-bold text-text-primary text-sm mb-2 font-sans flex items-center gap-2">
+              <span class="w-1.5 h-1.5 rounded-full bg-sky-400"></span>
+              Bounded Channel Span Balance
+            </h4>
+            <p>
+              Emulsion chemistry varies widely between color negative, B&W, and cinema stocks. NexFilm's bounded span balance intervenes dynamically only when channel dynamic spans drift apart, preventing color fringing, banding, and shadow cast without flattening high-contrast highlights.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Feature Grid for 4.2, 4.3, 4.4 -->
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <!-- Feature 4.2 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-emerald-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            01
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">Streaming Scanline Decoding & 7 Color Spaces</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Line-by-line streaming reads massive multi-hundred megabyte <code>.fff</code> and 16-bit TIFF scans; exports 16-bit/8-bit TIFF, PNG, JPEG, plus cinema-ready <code>16-bit Linear TIFF</code>, <code>Linear DNG</code>, and <code>Camera RAW DNG</code> across sRGB, Display P3, Adobe RGB, Rec.2020, ProPhoto RGB, ACEScg (AP1), and ACES2065-1 (AP0).
+          </p>
+        </div>
+
+        <!-- Feature 4.3 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-accent flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            02
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">Hardware Calibration & Scanner Profiling</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Dedicated Hardware Calibration workspace: dark frame thermal noise subtraction, Flat Field lens and backlight vignetting correction, 3x3 channel crosstalk separation matrix fitting, and custom scanner profile ICC management.
+          </p>
+        </div>
+
+        <!-- Feature 4.4 -->
+        <div class="p-6 rounded-2xl border border-darkroom-line bg-darkroom-panel hover:border-accent/40 transition-all shadow-darkroom-card">
+          <div class="w-10 h-10 rounded-xl bg-darkroom-canvas border border-darkroom-line text-purple-400 flex items-center justify-center mb-4 font-mono font-bold text-sm">
+            03
+          </div>
+          <h3 class="text-base font-bold text-text-primary mb-2">100% Local Sovereignty & Data Safety</h3>
+          <p class="text-xs text-text-secondary leading-relaxed">
+            Rust + Tauri + local SQLite (<code>nexfilm_user.db</code>) architecture. Original camera RAW scans remain strictly read-only; all grading steps and roll indices reside in your local machine. Zero mandatory internet, zero cloud uploads, and zero tracking.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Bottom CTA: Ready to grade -->
+  <section class="py-20 border-t border-darkroom-line bg-darkroom-bg text-center">
+    <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 space-y-6">
+      <h2 class="text-3xl font-sans font-bold text-text-primary tracking-tight">Ready to Experience True Film Fidelity?</h2>
+      <p class="text-sm text-text-secondary max-w-xl mx-auto">
+        Free, open-source, and air-gapped. Download the installer below or explore our in-depth user documentation.
+      </p>
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-4 pt-2">
+        <a 
+          href={withBase('/en/download/')} 
+          class="w-full sm:w-auto px-6 py-3.5 rounded-xl font-semibold text-sm bg-accent hover:bg-accent-hover text-darkroom-canvas transition-all flex items-center justify-center gap-2 shadow-sm"
+        >
+          <span>Download NexFilm Desktop</span>
+          <span>→</span>
+        </a>
+        <a 
+          href={withBase('/en/docs/')} 
+          class="w-full sm:w-auto px-6 py-3.5 rounded-xl font-semibold text-sm border border-darkroom-line bg-darkroom-panel hover:bg-darkroom-raised hover:border-accent text-text-primary transition-all flex items-center justify-center gap-2"
+        >
+          <span>Read Documentation & Guides</span>
+        </a>
+      </div>
+    </div>
+  </section>
+</BaseLayout>

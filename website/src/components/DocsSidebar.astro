@@ -1,0 +1,188 @@
+---
+import { withBase } from '../utils/urls';
+import type { DocTrackGroup } from '../utils/docs';
+
+interface Props {
+  groups: DocTrackGroup[];
+  currentSlug: string;
+  lang: 'zh' | 'en';
+}
+
+const { groups, currentSlug, lang } = Astro.props;
+---
+
+<!-- Mobile Drawer Trigger Bar (Visible only on mobile/tablet < lg) -->
+<div class="lg:hidden sticky top-16 z-40 bg-darkroom-panel/95 backdrop-blur-md border-b border-darkroom-line px-4 py-2.5 flex items-center justify-between">
+  <button
+    id="docs-drawer-toggle"
+    type="button"
+    class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-darkroom-raised border border-darkroom-line text-xs font-medium text-text-primary hover:border-accent transition-colors"
+    aria-label={lang === 'zh' ? '展开文档目录' : 'Toggle documentation menu'}
+  >
+    <svg class="w-4 h-4 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7" />
+    </svg>
+    <span>{lang === 'zh' ? '文档目录导航' : 'Documentation Menu'}</span>
+  </button>
+  <button
+    type="button"
+    class="doc-search-trigger inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-darkroom-raised border border-darkroom-line text-xs font-mono text-text-muted hover:text-text-primary hover:border-accent transition-colors"
+    aria-label={lang === 'zh' ? '搜索文档' : 'Search docs'}
+  >
+    <svg class="w-3.5 h-3.5 text-accent" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+    </svg>
+    <span>{lang === 'zh' ? '搜索' : 'Search'}</span>
+  </button>
+</div>
+
+<!-- Mobile Drawer Modal Overlay -->
+<div id="docs-drawer-backdrop" class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm opacity-0 pointer-events-none transition-opacity duration-200 lg:hidden">
+  <div id="docs-drawer-panel" class="fixed inset-y-0 left-0 w-80 max-w-[85vw] bg-darkroom-bg border-r border-darkroom-line shadow-2xl p-5 overflow-y-auto transform -translate-x-full transition-transform duration-200">
+    <div class="flex items-center justify-between pb-4 border-b border-darkroom-line mb-4">
+      <div class="flex items-center gap-2">
+        <span class="w-2 h-2 rounded-full bg-accent"></span>
+        <span class="font-bold text-sm text-text-primary">{lang === 'zh' ? '文档目录' : 'Documentation'}</span>
+      </div>
+      <button id="docs-drawer-close" type="button" class="p-1 rounded-md text-text-muted hover:text-text-primary" aria-label="Close menu">
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+        </svg>
+      </button>
+    </div>
+
+    <!-- Mobile Navigation Groups -->
+    <nav class="space-y-6">
+      {groups.map((group) => (
+        <div class="space-y-2">
+          <div class="text-[10.5px] font-mono font-bold tracking-wider uppercase text-text-muted px-2 flex items-center justify-between">
+            <span>{group.title}</span>
+            <span class="text-[9px] text-accent/80 font-normal">{group.chapters.length}</span>
+          </div>
+          <ul class="space-y-1">
+            {group.chapters.map((ch) => {
+              const isActive = ch.id === currentSlug || (ch.aliases || []).includes(currentSlug);
+              return (
+                <li>
+                  <a
+                    href={withBase(ch.canonicalPath)}
+                    class={`flex items-start justify-between gap-2 px-2.5 py-2 rounded-lg text-xs font-sans transition-all ${
+                      isActive
+                        ? 'bg-accent-soft text-accent font-semibold border-l-2 border-accent'
+                        : 'text-text-secondary hover:text-text-primary hover:bg-darkroom-raised'
+                    }`}
+                  >
+                    <span class="truncate">{ch.title}</span>
+                    <span class="text-[10px] text-text-muted shrink-0 mt-0.5">{ch.readingTime}m</span>
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ))}
+    </nav>
+  </div>
+</div>
+
+<!-- Desktop Sticky Left Sidebar (260px) -->
+<aside class="hidden lg:block w-[260px] shrink-0 sticky top-20 self-start max-h-[calc(100vh-6rem)] overflow-y-auto pr-3 py-2 scrollbar-thin">
+  <!-- Search Placeholder (Phase 4 Pagefind Entry) -->
+  <div class="mb-5">
+    <button
+      type="button"
+      id="doc-search-placeholder-btn"
+      class="doc-search-trigger w-full flex items-center justify-between px-3 py-2 rounded-xl bg-darkroom-panel border border-darkroom-line hover:border-accent/50 text-text-muted hover:text-text-secondary text-xs transition-all shadow-inner"
+      title={lang === 'zh' ? '全局搜索 (⌘K / Ctrl+K)' : 'Search documentation (⌘K / Ctrl+K)'}
+    >
+      <div class="flex items-center gap-2">
+        <svg class="w-3.5 h-3.5 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+        <span>{lang === 'zh' ? '快速搜索手册...' : 'Quick search...'}</span>
+      </div>
+      <kbd class="px-1.5 py-0.5 text-[10px] font-mono bg-darkroom-raised rounded border border-darkroom-line text-text-muted">⌘K</kbd>
+    </button>
+  </div>
+
+  <!-- Documentation Tracks Tree -->
+  <nav class="space-y-6" aria-label={lang === 'zh' ? '文档侧边导航' : 'Documentation sidebar navigation'}>
+    {groups.map((group) => (
+      <div class="space-y-2">
+        <div class="text-[10.5px] font-mono font-bold tracking-wider uppercase text-text-muted px-2.5 flex items-center justify-between">
+          <span>{group.title}</span>
+          <span class="text-[9px] text-accent/70 font-normal">{lang === 'zh' ? `${group.chapters.length} 篇` : `${group.chapters.length}`}</span>
+        </div>
+        <ul class="space-y-1">
+          {group.chapters.map((ch) => {
+            const isActive = ch.id === currentSlug || (ch.aliases || []).includes(currentSlug);
+            return (
+              <li>
+                <a
+                  href={withBase(ch.canonicalPath)}
+                  class={`group flex items-start justify-between gap-2 px-3 py-2 rounded-lg text-xs font-sans transition-all ${
+                    isActive
+                      ? 'bg-accent-soft text-accent font-semibold shadow-sm border-l-2 border-accent'
+                      : 'text-text-secondary hover:text-text-primary hover:bg-darkroom-panel'
+                  }`}
+                >
+                  <span class="truncate group-hover:text-text-primary transition-colors">{ch.title}</span>
+                  <span class="text-[10px] text-text-muted shrink-0 mt-0.5 font-mono">{ch.readingTime}m</span>
+                </a>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    ))}
+  </nav>
+</aside>
+
+<script>
+  let drawerEscapeController: AbortController | null = null;
+
+  function initDocsDrawer() {
+    const toggleBtn = document.getElementById('docs-drawer-toggle');
+    const closeBtn = document.getElementById('docs-drawer-close');
+    const backdrop = document.getElementById('docs-drawer-backdrop');
+    const panel = document.getElementById('docs-drawer-panel');
+
+    if (!toggleBtn || !backdrop || !panel) return;
+    if (toggleBtn.dataset.drawerBound === 'true') return;
+    toggleBtn.dataset.drawerBound = 'true';
+
+    function openDrawer() {
+      backdrop?.classList.remove('opacity-0', 'pointer-events-none');
+      backdrop?.classList.add('opacity-100');
+      panel?.classList.remove('-translate-x-full');
+      panel?.classList.add('translate-x-0');
+    }
+
+    function closeDrawer() {
+      backdrop?.classList.add('opacity-0', 'pointer-events-none');
+      backdrop?.classList.remove('opacity-100');
+      panel?.classList.add('-translate-x-full');
+      panel?.classList.remove('translate-x-0');
+    }
+
+    toggleBtn.addEventListener('click', openDrawer);
+    closeBtn?.addEventListener('click', closeDrawer);
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop) closeDrawer();
+    });
+
+    if (drawerEscapeController) {
+      drawerEscapeController.abort();
+    }
+    drawerEscapeController = new AbortController();
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeDrawer();
+    }, { signal: drawerEscapeController.signal });
+
+    panel.querySelectorAll('a').forEach((link) => {
+      link.addEventListener('click', closeDrawer);
+    });
+  }
+
+  document.addEventListener('astro:page-load', initDocsDrawer);
+</script>

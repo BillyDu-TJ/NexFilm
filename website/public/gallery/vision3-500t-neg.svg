@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000">
+  <defs>
+    <linearGradient id="vision-base" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#b85926"/>
+      <stop offset="50%" stop-color="#c46630"/>
+      <stop offset="100%" stop-color="#a84b1d"/>
+    </linearGradient>
+    <radialGradient id="vision-neg-light" cx="65%" cy="40%" r="55%">
+      <stop offset="0%" stop-color="#0a141e"/>
+      <stop offset="35%" stop-color="#182c3c"/>
+      <stop offset="70%" stop-color="#4e352b"/>
+      <stop offset="100%" stop-color="#8c4e24"/>
+    </radialGradient>
+    <filter id="vision-grain" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="3" result="noise"/>
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.13 0" in="noise" result="coloredNoise"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="1000" fill="url(#vision-base)"/>
+
+  <!-- Cinema BH-1866 Perforations (Slightly narrower rounded curve perfs) -->
+  <g fill="#0b0b0c">
+    <rect x="60" y="28" width="52" height="74" rx="8"/>
+    <rect x="156" y="28" width="52" height="74" rx="8"/>
+    <rect x="252" y="28" width="52" height="74" rx="8"/>
+    <rect x="348" y="28" width="52" height="74" rx="8"/>
+    <rect x="444" y="28" width="52" height="74" rx="8"/>
+    <rect x="540" y="28" width="52" height="74" rx="8"/>
+    <rect x="636" y="28" width="52" height="74" rx="8"/>
+    <rect x="732" y="28" width="52" height="74" rx="8"/>
+    <rect x="828" y="28" width="52" height="74" rx="8"/>
+    <rect x="924" y="28" width="52" height="74" rx="8"/>
+    <rect x="1020" y="28" width="52" height="74" rx="8"/>
+    <rect x="1116" y="28" width="52" height="74" rx="8"/>
+    <rect x="1212" y="28" width="52" height="74" rx="8"/>
+    <rect x="1308" y="28" width="52" height="74" rx="8"/>
+    <rect x="1404" y="28" width="52" height="74" rx="8"/>
+    <rect x="1500" y="28" width="52" height="74" rx="8"/>
+    <rect x="60" y="898" width="52" height="74" rx="8"/>
+    <rect x="156" y="898" width="52" height="74" rx="8"/>
+    <rect x="252" y="898" width="52" height="74" rx="8"/>
+    <rect x="348" y="898" width="52" height="74" rx="8"/>
+    <rect x="444" y="898" width="52" height="74" rx="8"/>
+    <rect x="540" y="898" width="52" height="74" rx="8"/>
+    <rect x="636" y="898" width="52" height="74" rx="8"/>
+    <rect x="732" y="898" width="52" height="74" rx="8"/>
+    <rect x="828" y="898" width="52" height="74" rx="8"/>
+    <rect x="924" y="898" width="52" height="74" rx="8"/>
+    <rect x="1020" y="898" width="52" height="74" rx="8"/>
+    <rect x="1116" y="898" width="52" height="74" rx="8"/>
+    <rect x="1212" y="898" width="52" height="74" rx="8"/>
+    <rect x="1308" y="898" width="52" height="74" rx="8"/>
+    <rect x="1404" y="898" width="52" height="74" rx="8"/>
+    <rect x="1500" y="898" width="52" height="74" rx="8"/>
+  </g>
+
+  <!-- Eastman Kodak 5219 Keykode / Edge Marking -->
+  <g font-family="monospace" font-size="16" font-weight="bold" fill="#581e05" opacity="0.85">
+    <text x="140" y="122">EASTMAN 5219</text>
+    <text x="560" y="122">KJ 42 1892 0412</text>
+    <text x="1120" y="122">▶ +08</text>
+    <text x="1380" y="122">VISION3</text>
+    <text x="180" y="880">500T</text>
+    <text x="640" y="880">KODAK ECN-2</text>
+    <text x="1100" y="880">|| | |||| | ||| || ||</text>
+  </g>
+
+  <!-- Negative Active Frame (Night cinematic street / tungsten interior) -->
+  <g transform="translate(140, 140)">
+    <rect width="1320" height="720" rx="4" fill="url(#vision-neg-light)"/>
+
+    <!-- Neon Bar / Diner Frame (Negative deep cyan & halation rings) -->
+    <path d="M 220,160 L 1100,160 L 1100,640 L 220,640 Z" fill="none" stroke="#162c3e" stroke-width="18"/>
+    
+    <!-- Tungsten Lamp (In negative, extremely dense dark spot surrounded by slight orange halation fringe) -->
+    <!-- Halation fringe in negative -->
+    <circle cx="860" cy="320" r="105" fill="#8f3214" opacity="0.6"/>
+    <!-- Intense filament density -->
+    <circle cx="860" cy="320" r="60" fill="#081018"/>
+    <circle cx="860" cy="320" r="28" fill="#020406"/>
+
+    <!-- Actor in shadow / warm backlight (Negative complement) -->
+    <path d="M 460,720 C 470,520 540,460 620,440 C 690,440 760,490 780,720 Z" fill="#2a4254"/>
+    <ellipse cx="620" cy="370" rx="65" ry="85" fill="#38566b"/>
+    <!-- Rim light on profile (Dense negative line) -->
+    <path d="M 670,300 C 690,340 690,400 660,440" stroke="#081018" stroke-width="12" fill="none"/>
+
+    <rect width="1320" height="720" filter="url(#vision-grain)" opacity="0.45" pointer-events="none"/>
+  </g>
+</svg>

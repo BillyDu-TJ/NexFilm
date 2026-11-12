@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000">
+  <defs>
+    <linearGradient id="hp5-sky-neg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#141416"/>
+      <stop offset="60%" stop-color="#323238"/>
+      <stop offset="100%" stop-color="#64646e"/>
+    </linearGradient>
+    <filter id="hp5-grain" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.65" numOctaves="4" result="noise"/>
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.18 0" in="noise" result="coloredNoise"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+  </defs>
+
+  <!-- Clear Acetate / Polyester Film Rebate (B&W clear base with subtle fog) -->
+  <rect width="1600" height="1000" fill="#242426"/>
+
+  <!-- 120 Rebate Edge Markings -->
+  <g font-family="sans-serif" font-size="18" font-weight="bold" fill="#787882" opacity="0.75" letter-spacing="4">
+    <text x="160" y="80">ILFORD HP5 PLUS</text>
+    <text x="760" y="80">SAFETY FILM</text>
+    <text x="1360" y="80">8</text>
+    <text x="160" y="940">400</text>
+    <text x="760" y="940">▶ 8A</text>
+    <text x="1360" y="940">ILFORD</text>
+  </g>
+
+  <!-- Medium Format 6x6 Active Frame (Square Aspect within 1600x1000) -->
+  <g transform="translate(440, 140)">
+    <!-- Active 720x720 Square Frame -->
+    <rect width="720" height="720" fill="url(#hp5-sky-neg)"/>
+
+    <!-- Dramatic Architectural Arch in Negative (Highlights are dense black/charcoal) -->
+    <path d="M 120,720 L 120,380 C 120,180 600,180 600,380 L 600,720 L 460,720 L 460,420 C 460,280 260,280 260,420 L 260,720 Z" fill="#18181c"/>
+    
+    <!-- Center light beam (bright sunlight through arch = dense silver deposit) -->
+    <ellipse cx="360" cy="540" rx="140" ry="180" fill="#0f0f12" opacity="0.95"/>
+    <ellipse cx="360" cy="540" rx="80" ry="100" fill="#050506"/>
+
+    <!-- Deep shadow details (negative is clear base / light gray) -->
+    <rect x="0" y="640" width="720" height="80" fill="#54545e" opacity="0.8"/>
+
+    <rect width="720" height="720" filter="url(#hp5-grain)" opacity="0.6" pointer-events="none"/>
+  </g>
+</svg>

@@ -1,0 +1,31 @@
+---
+import DocsLayout from '../../../layouts/DocsLayout.astro';
+import { getAllChapters, getTrackGroups, getPager } from '../../../utils/docs';
+
+export async function getStaticPaths() {
+  const chapters = await getAllChapters('en');
+  const groups = await getTrackGroups('en');
+
+  const paths = [];
+  for (const chapter of chapters) {
+    const { prev, next } = getPager(chapters, chapter.id);
+    paths.push({
+      params: { slug: chapter.id },
+      props: { chapter, groups, prev, next, lang: 'en' as const, isAlias: false },
+    });
+
+    for (const alias of chapter.aliases || []) {
+      paths.push({
+        params: { slug: alias },
+        props: { chapter, groups, prev, next, lang: 'en' as const, isAlias: true },
+      });
+    }
+  }
+
+  return paths;
+}
+
+const { chapter, groups, prev, next, lang, isAlias = false } = Astro.props;
+---
+
+<DocsLayout chapter={chapter} groups={groups} prev={prev} next={next} lang={lang} isAlias={isAlias} />

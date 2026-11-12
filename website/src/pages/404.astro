@@ -1,0 +1,69 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import { withBase } from '../utils/urls';
+---
+
+<BaseLayout title="404 - Page Not Found / 页面未找到" lang="zh">
+  <div class="max-w-5xl mx-auto px-4 py-24 sm:py-28 font-sans">
+    <div class="text-center">
+    <div class="inline-flex items-center justify-center w-20 h-20 rounded-2xl bg-darkroom-panel border border-darkroom-line text-accent mb-6 shadow-darkroom-card">
+      <svg class="w-10 h-10" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+      </svg>
+    </div>
+    
+    <span class="text-xs font-mono uppercase tracking-widest text-accent block mb-2">Error 404 / Frame Blank</span>
+    <h1 class="text-3xl sm:text-4xl font-bold text-text-primary mb-4 font-sans">
+      <span lang="zh">这一帧画面似乎曝光失败了</span>
+      <span class="hidden" aria-hidden="true"> / </span>
+      <span lang="en" class="block mt-2 sm:mt-1 text-2xl sm:text-3xl">This frame appears to be missing</span>
+    </h1>
+    <p class="text-text-secondary text-sm sm:text-base max-w-xl mx-auto font-sans">
+      <span lang="zh">你访问的页面不存在或已被归档迁移。别担心，你的胶卷原片依然安全无损。</span>
+      <span lang="en" class="block mt-2">The page you requested does not exist or has moved. Your source scans remain safe and untouched.</span>
+    </p>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mt-10">
+      <section lang="zh" class="rounded-2xl border border-darkroom-line bg-darkroom-panel p-6 shadow-darkroom-card">
+        <span class="text-[10px] font-mono uppercase tracking-widest text-accent">简体中文</span>
+        <h2 class="text-lg font-bold text-text-primary mt-2 mb-2">页面未找到</h2>
+        <p class="text-xs text-text-secondary leading-relaxed mb-5">返回首页，或前往下载页面重新获取 NexFilm Engine。</p>
+        <div class="flex flex-wrap gap-3">
+          <a
+            href={withBase('/zh/')}
+            class="px-4 py-2 rounded-xl bg-accent hover:bg-accent-hover text-darkroom-canvas font-semibold text-xs transition-all shadow-sm"
+          >
+            返回官网首页
+          </a>
+          <a
+            href={withBase('/zh/download/')}
+            class="px-4 py-2 rounded-xl border border-darkroom-line bg-darkroom-raised hover:bg-darkroom-chrome text-text-primary font-medium text-xs transition-all"
+          >
+            前往软件下载
+          </a>
+        </div>
+      </section>
+
+      <section lang="en" class="rounded-2xl border border-darkroom-line bg-darkroom-panel p-6 shadow-darkroom-card">
+        <span class="text-[10px] font-mono uppercase tracking-widest text-accent">English</span>
+        <h2 class="text-lg font-bold text-text-primary mt-2 mb-2">Page not found</h2>
+        <p class="text-xs text-text-secondary leading-relaxed mb-5">Return to the homepage or visit Downloads to get NexFilm Engine.</p>
+        <div class="flex flex-wrap gap-3">
+          <a
+            href={withBase('/en/')}
+            class="px-4 py-2 rounded-xl bg-accent hover:bg-accent-hover text-darkroom-canvas font-semibold text-xs transition-all shadow-sm"
+          >
+            Back to home
+          </a>
+          <a
+            href={withBase('/en/download/')}
+            class="px-4 py-2 rounded-xl border border-darkroom-line bg-darkroom-raised hover:bg-darkroom-chrome text-text-primary font-medium text-xs transition-all"
+          >
+            Go to downloads
+          </a>
+        </div>
+      </section>
+    </div>
+  </div>
+</BaseLayout>

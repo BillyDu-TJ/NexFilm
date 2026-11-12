@@ -1,0 +1,116 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import DownloadButtons from '../../components/DownloadButtons.astro';
+import { getLatestRelease } from '../../utils/github-releases';
+import { withBase } from '../../utils/urls';
+
+const latestRelease = await getLatestRelease();
+const tagName = latestRelease.tagName;
+const tagUrl = latestRelease.htmlUrl;
+---
+
+<BaseLayout title="下载 NexFilm Engine · 官方正式版安装包" lang="zh">
+  <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
+    <!-- Header -->
+    <div class="text-center max-w-3xl mx-auto mb-12">
+      <span class="text-xs font-mono uppercase tracking-widest text-accent block mb-2">Official Downloads</span>
+      <h1 class="text-3xl sm:text-4xl font-bold text-text-primary tracking-tight">下载 NexFilm Engine</h1>
+      <p class="text-text-secondary text-sm mt-3">
+        当前稳定版 <span class="font-mono text-accent font-semibold">{tagName}</span>。点击对应平台卡片即可直接下载官方正式安装包。
+      </p>
+    </div>
+
+    <!-- Download Cards -->
+    <div class="mb-14">
+      <DownloadButtons lang="zh" variant="full" />
+    </div>
+
+    <!-- Official Releases Notice Banner -->
+    <div class="mb-14 p-5 rounded-xl border border-darkroom-line bg-darkroom-panel text-text-secondary text-xs flex items-start gap-3.5 shadow-sm">
+      <svg class="w-5 h-5 text-accent flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+      <div class="space-y-1">
+        <p class="font-semibold text-text-primary">官方构建产物说明</p>
+        <p class="leading-relaxed text-text-secondary font-sans">
+          安装包均由 GitHub Actions 官方持续集成流程自动编译并发布。请通过上方直链下载，请勿下载 GitHub 自动打包的 Source code 源码压缩包（源码包不包含已编译的可执行程序）。
+        </p>
+      </div>
+    </div>
+
+    <!-- First Launch Instructions (SmartScreen & Gatekeeper) -->
+    <div class="mb-14 space-y-6">
+      <div class="border-b border-darkroom-line pb-3">
+        <h2 class="text-xl font-bold text-text-primary tracking-tight">首次启动放行指引</h2>
+        <p class="text-xs text-text-muted mt-1 font-sans">
+          NexFilm 为开源免费项目，暂未购买商业代码签名证书，各操作系统初次启动可能会弹出安全放行提示，按以下步骤放行即可：
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <!-- Windows Guide -->
+        <div class="p-6 rounded-xl border border-darkroom-line bg-darkroom-panel space-y-4">
+          <div class="flex items-center gap-2.5">
+            <span class="p-2 rounded-lg bg-darkroom-canvas text-accent border border-darkroom-line">
+              <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                <path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/>
+              </svg>
+            </span>
+            <h3 class="font-bold text-text-primary text-base">Windows 10 / 11 SmartScreen</h3>
+          </div>
+          <ol class="space-y-2.5 text-xs text-text-secondary list-decimal list-inside leading-relaxed font-sans">
+            <li>运行下载的 <code>NexFilm.Engine_..._x64-setup.exe</code> 安装程序。</li>
+            <li>若系统弹出蓝色窗口提示 <strong>"Windows 已保护你的电脑"</strong>：</li>
+            <li>点击窗口中的文字链接 <strong>"更多信息"</strong>。</li>
+            <li>点击右下角出现的 <strong>"仍要运行"</strong> 按钮完成安装。</li>
+          </ol>
+        </div>
+
+        <!-- macOS Guide -->
+        <div class="p-6 rounded-xl border border-darkroom-line bg-darkroom-panel space-y-4">
+          <div class="flex items-center gap-2.5">
+            <span class="p-2 rounded-lg bg-darkroom-canvas text-accent border border-darkroom-line">
+              <svg class="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M15.97 6.37c.61-.75 1.04-1.8 0.92-2.85-.9.04-2 .6-2.65 1.35-.58.66-1.09 1.74-.96 2.76 1.02.08 2.07-.52 2.69-1.26"/>
+              </svg>
+            </span>
+            <h3 class="font-bold text-text-primary text-base">macOS Gatekeeper 公证放行</h3>
+          </div>
+          <ol class="space-y-2.5 text-xs text-text-secondary list-decimal list-inside leading-relaxed font-sans">
+            <li>打开 DMG 镜像，将 NexFilm Engine 拖入“应用程序”文件夹。</li>
+            <li>首次打开若提示 <strong>"无法打开，因为无法验证开发者"</strong>：</li>
+            <li>在访达中进入“应用程序”，<strong>按住 Control 键右键点击应用图标并选择“打开”</strong>。</li>
+            <li>或进入 <strong>系统设置 → 隐私与安全性</strong>，在底部点击 <strong>“仍要打开”</strong>。</li>
+            <li>终端一键解除属性指令：<code>xattr -cr "/Applications/NexFilm Engine.app"</code>。</li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <!-- History Releases Portal -->
+    <div class="p-6 rounded-xl border border-darkroom-line bg-darkroom-panel/60 flex flex-col sm:flex-row items-center justify-between gap-4">
+      <div>
+        <h4 class="font-bold text-text-primary text-sm">需要查看往期版本或校验完整发布记录？</h4>
+        <p class="text-xs text-text-muted mt-1 font-sans">
+          你可以前往更新日志页查看完整的版本演进历史，或直接访问 GitHub Releases 查看所有 Tag。
+        </p>
+      </div>
+      <div class="flex items-center gap-3">
+        <a 
+          href={withBase('/zh/changelog/')} 
+          class="px-3.5 py-1.5 rounded-lg bg-darkroom-canvas border border-darkroom-line hover:border-accent text-xs font-medium text-text-primary transition-all whitespace-nowrap"
+        >
+          查看更新日志 →
+        </a>
+        <a 
+          href={tagUrl} 
+          target="_blank" 
+          rel="noopener noreferrer"
+          class="px-3.5 py-1.5 rounded-lg bg-accent text-darkroom-canvas hover:bg-accent-hover text-xs font-semibold transition-all whitespace-nowrap"
+        >
+          Release ({tagName}) →
+        </a>
+      </div>
+    </div>
+  </div>
+</BaseLayout>

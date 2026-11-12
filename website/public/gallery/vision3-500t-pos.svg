@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" width="1600" height="1000">
+  <defs>
+    <!-- Cinematic Night Palette (Kodak 2383 rich blacks and teal/orange contrast) -->
+    <radialGradient id="vision-pos-light" cx="65%" cy="40%" r="65%">
+      <stop offset="0%" stop-color="#fff1d6"/>
+      <stop offset="25%" stop-color="#f8a245"/>
+      <stop offset="65%" stop-color="#1b303a"/>
+      <stop offset="100%" stop-color="#0a1217"/>
+    </radialGradient>
+    <filter id="vision-grain-pos" x="0%" y="0%" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.7" numOctaves="3" result="noise"/>
+      <feColorMatrix type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.1" in="noise" result="coloredNoise"/>
+      <feComposite operator="in" in2="SourceGraphic"/>
+    </filter>
+  </defs>
+
+  <rect width="1600" height="1000" fill="#121214"/>
+
+  <!-- Inverted Positive: Cinematic 35mm Frame with Kodak 2383 Look -->
+  <g transform="translate(140, 140)">
+    <rect width="1320" height="720" rx="4" fill="url(#vision-pos-light)"/>
+
+    <!-- Neon Bar Window Structure -->
+    <path d="M 220,160 L 1100,160 L 1100,640 L 220,640 Z" fill="none" stroke="#254b5e" stroke-width="18"/>
+
+    <!-- Iconic Tungsten Halation (Signature Kodak Vision3 Red Rim Glow) -->
+    <circle cx="860" cy="320" r="115" fill="#f43f1e" opacity="0.45"/>
+    <circle cx="860" cy="320" r="75" fill="#ff7a29" opacity="0.8"/>
+    <circle cx="860" cy="320" r="45" fill="#ffdf7a"/>
+    <circle cx="860" cy="320" r="22" fill="#ffffff"/>
+
+    <!-- Character in Dramatic Chiaroscuro Profile -->
+    <path d="M 460,720 C 470,520 540,460 620,440 C 690,440 760,490 780,720 Z" fill="#141a20"/>
+    <ellipse cx="620" cy="370" rx="65" ry="85" fill="#18222a"/>
+
+    <!-- Warm Amber Tungsten Rim Light on Profile -->
+    <path d="M 670,300 C 690,340 690,400 660,440" stroke="#f6993f" stroke-width="10" stroke-linecap="round" fill="none"/>
+    <path d="M 670,300 C 690,340 690,400 660,440" stroke="#fff4cf" stroke-width="4" stroke-linecap="round" fill="none"/>
+
+    <!-- Subtle Red Halation Glow along edge of character silhouette -->
+    <path d="M 676,295 C 700,340 700,405 666,448" stroke="#e11d48" stroke-width="16" opacity="0.5" stroke-linecap="round" fill="none"/>
+
+    <rect width="1320" height="720" filter="url(#vision-grain-pos)" opacity="0.45" pointer-events="none"/>
+  </g>
+
+  <g font-family="monospace" font-size="13" fill="#aaaab0" opacity="0.7">
+    <text x="140" y="890">KODAK VISION3 500T (5219) · 35mm</text>
+    <text x="140" y="910" fill="#c4814f">PRINTED WITH KODAK 2383 PRINT FILM EMULATION LUT</text>
+    <text x="1460" y="890" text-anchor="end">D_min: 0.22 / 0.54 / 0.91</text>
+    <text x="1460" y="910" text-anchor="end">UNIFIED DENSITY ENGINE</text>
+  </g>
+</svg>

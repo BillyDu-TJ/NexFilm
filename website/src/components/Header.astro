@@ -1,0 +1,345 @@
+---
+import { getLatestRelease } from '../utils/github-releases';
+import { withBase, isRouteActive } from '../utils/urls';
+
+interface Props {
+  lang: 'zh' | 'en';
+  switchLangPath: string;
+}
+
+const { lang, switchLangPath } = Astro.props;
+const currentPath = Astro.url.pathname;
+
+const latestRelease = await getLatestRelease();
+const latestTag = latestRelease?.tagName || 'v1.1.0';
+const latestUrl = latestRelease?.htmlUrl || `https://github.com/BillyDu-TJ/NexFilm/releases/tag/${latestTag}`;
+
+const primaryNav = [
+  { href: withBase(`/${lang}/`), label: lang === 'zh' ? '首页' : 'Home' },
+  { href: withBase(`/${lang}/features/`), label: lang === 'zh' ? '功能' : 'Features' },
+  { href: withBase(`/${lang}/gallery/`), label: lang === 'zh' ? '画廊' : 'Gallery' },
+  { href: withBase(`/${lang}/docs/`), label: lang === 'zh' ? '文档' : 'Docs' },
+  { href: withBase(`/${lang}/changelog/`), label: lang === 'zh' ? '更新日志' : 'Changelog' },
+];
+
+const communityNav = [
+  { 
+    href: withBase(`/${lang}/faq/`), 
+    label: lang === 'zh' ? '常见问题' : 'FAQ',
+    desc: lang === 'zh' ? '实战排坑与常见疑惑' : 'Frequently Asked Questions'
+  },
+  { 
+    href: withBase(`/${lang}/feedback/`), 
+    label: lang === 'zh' ? '反馈与赞赏' : 'Feedback & Sponsor',
+    desc: lang === 'zh' ? '问题反馈、建议与支持作者' : 'Report issues or support development'
+  },
+  { 
+    href: withBase(`/${lang}/about/`), 
+    label: lang === 'zh' ? '关于' : 'About',
+    desc: lang === 'zh' ? '项目初衷、架构与开源协议' : 'Philosophy, architecture & GPL-3.0'
+  },
+];
+
+const downloadPath = withBase(`/${lang}/download/`);
+const isDownloadActive = isRouteActive(currentPath, downloadPath);
+const isCommunityActive = communityNav.some(item => isRouteActive(currentPath, item.href));
+---
+
+<header class="sticky top-0 z-50 glass-nav transition-all duration-200">
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+    <!-- Brand Logo & Synchronized Version Badge -->
+    <div class="flex items-center gap-3">
+      <a href={withBase(`/${lang}/`)} class="flex items-center gap-2.5 group">
+        <img src={withBase('/nexfilm-logo.svg')} alt="NexFilm Logo" class="h-8 w-auto transition-transform group-hover:scale-105" />
+        <span class="font-bold text-lg tracking-tight text-text-primary group-hover:text-accent transition-colors font-sans">
+          NexFilm
+        </span>
+      </a>
+      <a 
+        href={latestUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-header-version-link
+        class="inline-flex items-center px-2 py-0.5 rounded-full bg-accent-soft border border-accent/30 text-accent hover:border-accent text-[11px] font-mono transition-colors"
+        title={lang === 'zh' ? '查看 GitHub Release 页面' : 'View GitHub Release'}
+      >
+        <span data-header-version>{latestTag}</span>
+      </a>
+    </div>
+
+    <!-- Desktop Primary Navigation: 首页 · 功能 · 画廊 · 文档 · 更新日志 · 社区 ▾ -->
+    <nav class="hidden lg:flex items-center gap-1.5 font-sans text-sm">
+      {primaryNav.map((link) => {
+        const active = isRouteActive(currentPath, link.href);
+        return (
+          <a 
+            href={link.href} 
+            class={`relative px-3.5 py-2 rounded-lg text-sm font-medium transition-all ${
+              active 
+                ? 'bg-darkroom-raised text-accent font-semibold shadow-sm' 
+                : 'text-text-secondary hover:text-text-primary hover:bg-darkroom-panel'
+            }`}
+          >
+            {link.label}
+            {active && (
+              <span class="absolute bottom-0.5 left-3 right-3 h-0.5 bg-accent rounded-full"></span>
+            )}
+          </a>
+        );
+      })}
+
+      <!-- Community Accessible Dropdown -->
+      <div class="relative" id="community-wrapper">
+        <button 
+          id="community-menu-btn"
+          type="button"
+          aria-haspopup="true"
+          aria-expanded="false"
+          class={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium transition-all ${
+            isCommunityActive 
+              ? 'bg-darkroom-raised text-accent font-semibold' 
+              : 'text-text-secondary hover:text-text-primary hover:bg-darkroom-panel'
+          }`}
+        >
+          <span>{lang === 'zh' ? '社区' : 'Community'}</span>
+          <svg id="community-chevron" class="w-3.5 h-3.5 opacity-60 transition-transform duration-200" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+
+        <!-- Dropdown Menu Layer -->
+        <div 
+          id="community-dropdown"
+          role="menu"
+          class="absolute right-0 top-full mt-1.5 w-60 rounded-xl border border-darkroom-line-strong bg-darkroom-panel/95 backdrop-blur-xl p-1.5 shadow-2xl opacity-0 invisible transition-all duration-150 z-50 pointer-events-none"
+        >
+          {communityNav.map((sub) => {
+            const subActive = isRouteActive(currentPath, sub.href);
+            return (
+              <a 
+                href={sub.href}
+                role="menuitem"
+                class={`block px-3.5 py-2.5 rounded-lg transition-colors ${
+                  subActive 
+                    ? 'bg-darkroom-raised text-accent' 
+                    : 'text-text-secondary hover:text-text-primary hover:bg-darkroom-raised'
+                }`}
+              >
+                <div class="text-sm font-medium text-text-primary">{sub.label}</div>
+                <div class="text-[11px] text-text-muted mt-0.5 truncate">{sub.desc}</div>
+              </a>
+            );
+          })}
+        </div>
+      </div>
+    </nav>
+
+    <!-- Right Actions Area: Native GitHub Star Badge + Language Switch + Sole Primary Download CTA -->
+    <div class="hidden sm:flex items-center gap-3">
+      <!-- Native Darkroom GitHub Star Badge -->
+      <a 
+        href="https://github.com/BillyDu-TJ/NexFilm" 
+        target="_blank" 
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-darkroom-line bg-darkroom-panel hover:bg-darkroom-raised hover:border-darkroom-line-strong text-text-secondary hover:text-text-primary transition-all text-xs font-mono group"
+        title="Star BillyDu-TJ/NexFilm on GitHub"
+      >
+        <svg class="w-3.5 h-3.5 fill-current text-text-muted group-hover:text-accent transition-colors" viewBox="0 0 16 16">
+          <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/>
+        </svg>
+        <span>Star</span>
+        <span 
+          data-github-stars 
+          class="px-1.5 py-0.5 rounded bg-darkroom-canvas border border-darkroom-line text-[10px] font-mono text-text-secondary"
+        >
+          110
+        </span>
+      </a>
+
+      <!-- Language Switch -->
+      <a 
+        href={switchLangPath} 
+        class="flex items-center justify-center px-2.5 py-1.5 rounded-lg border border-darkroom-line bg-darkroom-panel hover:bg-darkroom-raised text-xs font-mono text-text-secondary hover:text-text-primary transition-all"
+        title={lang === 'zh' ? 'Switch to English' : '切换到简体中文'}
+      >
+        <span>{lang === 'zh' ? 'EN' : '中'}</span>
+      </a>
+
+      <!-- Sole Highlight Action CTA: Download -->
+      <a 
+        href={downloadPath} 
+        class={`inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg font-semibold text-xs transition-all shadow-sm ${
+          isDownloadActive 
+            ? 'bg-accent-hover text-darkroom-canvas ring-2 ring-accent/60' 
+            : 'bg-accent hover:bg-accent-hover text-darkroom-canvas'
+        }`}
+      >
+        <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+        </svg>
+        <span>{lang === 'zh' ? '下载' : 'Download'}</span>
+      </a>
+    </div>
+
+    <!-- Mobile Trigger -->
+    <div class="flex items-center gap-2 lg:hidden">
+      <a 
+        href={switchLangPath} 
+        class="px-2 py-1 rounded border border-darkroom-line bg-darkroom-panel text-xs text-text-secondary font-mono sm:hidden"
+      >
+        {lang === 'zh' ? 'EN' : '中'}
+      </a>
+      <button 
+        id="mobile-menu-btn" 
+        type="button"
+        class="p-2 rounded-lg text-text-secondary hover:text-text-primary hover:bg-darkroom-panel"
+        aria-label="Toggle navigation menu"
+      >
+        <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Mobile Drawer Menu -->
+  <div id="mobile-menu" class="hidden lg:hidden border-b border-darkroom-line bg-darkroom-bg/95 backdrop-blur-xl px-4 pt-2 pb-6 space-y-4">
+    <!-- Primary Links -->
+    <div class="space-y-1">
+      {primaryNav.map((link) => (
+        <a 
+          href={link.href} 
+          class={`block px-3.5 py-2 rounded-lg text-sm font-medium ${
+            isRouteActive(currentPath, link.href)
+              ? 'bg-darkroom-raised text-accent font-semibold'
+              : 'text-text-secondary hover:text-text-primary hover:bg-darkroom-panel'
+          }`}
+        >
+          {link.label}
+        </a>
+      ))}
+    </div>
+
+    <!-- Community Section in Drawer -->
+    <div class="pt-2 border-t border-darkroom-line space-y-1">
+      <div class="px-3.5 text-[11px] font-mono text-text-muted uppercase tracking-wider">
+        {lang === 'zh' ? '社区与支持' : 'Community & Support'}
+      </div>
+      {communityNav.map((sub) => (
+        <a 
+          href={sub.href} 
+          class={`block px-3.5 py-2 rounded-lg text-xs ${
+            isRouteActive(currentPath, sub.href)
+              ? 'bg-darkroom-raised text-accent'
+              : 'text-text-secondary hover:text-text-primary hover:bg-darkroom-panel'
+          }`}
+        >
+          {sub.label}
+        </a>
+      ))}
+    </div>
+
+    <!-- Mobile Drawer Footer -->
+    <div class="pt-3 border-t border-darkroom-line flex items-center justify-between">
+      <a 
+        href="https://github.com/BillyDu-TJ/NexFilm" 
+        target="_blank" 
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-1.5 text-xs text-text-secondary hover:text-text-primary font-mono"
+      >
+        <svg class="w-4 h-4 fill-current" viewBox="0 0 16 16">
+          <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25Z"/>
+        </svg>
+        <span>GitHub Star</span>
+        <span data-github-stars class="px-1.5 py-0.5 rounded bg-darkroom-canvas border border-darkroom-line text-[10px]">110</span>
+      </a>
+
+      <a 
+        href={downloadPath} 
+        class="px-4 py-2 rounded-lg bg-accent text-darkroom-canvas font-semibold text-xs"
+      >
+        {lang === 'zh' ? '前往下载' : 'Download'}
+      </a>
+    </div>
+  </div>
+</header>
+
+<script>
+  function closeCommunityDropdown() {
+    const commBtn = document.getElementById('community-menu-btn');
+    const commDrop = document.getElementById('community-dropdown');
+    const chevron = document.getElementById('community-chevron');
+    if (!commBtn || !commDrop) return;
+    commBtn.setAttribute('aria-expanded', 'false');
+    commDrop.classList.remove('opacity-100', 'visible', 'pointer-events-auto');
+    commDrop.classList.add('opacity-0', 'invisible', 'pointer-events-none');
+    if (chevron) chevron.classList.remove('rotate-180');
+  }
+
+  function openCommunityDropdown() {
+    const commBtn = document.getElementById('community-menu-btn');
+    const commDrop = document.getElementById('community-dropdown');
+    const chevron = document.getElementById('community-chevron');
+    if (!commBtn || !commDrop) return;
+    commBtn.setAttribute('aria-expanded', 'true');
+    commDrop.classList.remove('opacity-0', 'invisible', 'pointer-events-none');
+    commDrop.classList.add('opacity-100', 'visible', 'pointer-events-auto');
+    if (chevron) chevron.classList.add('rotate-180');
+  }
+
+  function setupHeader() {
+    // Reset state on navigation
+    closeCommunityDropdown();
+    const menu = document.getElementById('mobile-menu');
+    if (menu) menu.classList.add('hidden');
+
+    const mobileBtn = document.getElementById('mobile-menu-btn');
+    if (mobileBtn && mobileBtn.dataset.bound !== 'true') {
+      mobileBtn.dataset.bound = 'true';
+      mobileBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        menu?.classList.toggle('hidden');
+      });
+    }
+
+    const commBtn = document.getElementById('community-menu-btn');
+    if (commBtn && commBtn.dataset.bound !== 'true') {
+      commBtn.dataset.bound = 'true';
+      commBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const isExpanded = commBtn.getAttribute('aria-expanded') === 'true';
+        if (isExpanded) {
+          closeCommunityDropdown();
+        } else {
+          openCommunityDropdown();
+        }
+      });
+    }
+
+    // Attach document singleton listeners only once
+    const win = window as any;
+    if (!win.__headerDocListenersAttached) {
+      win.__headerDocListenersAttached = true;
+
+      document.addEventListener('click', (e) => {
+        const commWrapper = document.getElementById('community-wrapper');
+        if (commWrapper && !commWrapper.contains(e.target as Node)) {
+          closeCommunityDropdown();
+        }
+      });
+
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          closeCommunityDropdown();
+          const currentMenu = document.getElementById('mobile-menu');
+          if (currentMenu && !currentMenu.classList.contains('hidden')) {
+            currentMenu.classList.add('hidden');
+          }
+        }
+      });
+    }
+  }
+
+  // Only bind via astro:page-load for View Transitions
+  document.addEventListener('astro:page-load', setupHeader);
+</script>
