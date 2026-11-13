@@ -12,7 +12,8 @@ const sourceParams = {
     ...currentParams, film_mode: 'BW', d_min: [0.2, 0.2, 0.2], exposure: 0.4,
     contrast: 0.25, saturation: 0.3, tint: 0.2, exp_r: 0.1, lut_path: 'film.cube', lut_opacity: 0.7,
     working_colorspace: 'acescg', sprocket_uv: [0.2, 0.8],
-    sprocket_tolerance: 0.2, sprocket_feather: 0.1
+    sprocket_tolerance: 0.2, sprocket_feather: 0.1,
+    sprocket_target_color: [0.2, 0.3, 0.4], sprocket_target_color_version: 2
 };
 const currentGeom = {
     crop_rect: { x: 0, y: 0, width: 1, height: 1 }, angle: 0, flip_h: false,
@@ -73,6 +74,19 @@ const perspectiveOnly = mergeCopyPayload(
     createCopyPayload(sourceParams, sourceGeom, ['perspective'])
 );
 assert.equal(perspectiveOnly.geom.lens_distortion, -32);
+
+const sprocketPoint = createCopyPayload(sourceParams, sourceGeom, ['sprocketPoint']);
+assert.deepEqual(sprocketPoint.params, {
+    sprocket_uv: [0.2, 0.8],
+    sprocket_target_color: [0.2, 0.3, 0.4],
+    sprocket_target_color_version: 2
+});
+const legacySprocketPoint = createCopyPayload(
+    { ...sourceParams, sprocket_target_color_version: undefined },
+    sourceGeom,
+    ['sprocketPoint']
+);
+assert.equal(legacySprocketPoint.params.sprocket_target_color_version, null);
 
 const contrastOnly = createCopyPayload(sourceParams, sourceGeom, ['contrast']);
 assert.deepEqual(contrastOnly.params, { contrast: 0.25 });

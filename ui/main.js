@@ -42,8 +42,9 @@ const {
     thumbnailPixelsAreUsable,
     updateMatchingThumbnails,
     getQuarterTurnAction,
-    decomposeRotationDegrees,
-    composeRotationDegrees,
+    roundRotationDegrees,
+    seekPrecisionRangeValue,
+    advancePrecisionRangeDrag,
 } = window.NexFilmInteractions;
 const {
     createExportInvokeArgs,
@@ -1480,7 +1481,8 @@ function captureEditState() {
             sprocket_uv: Array.from(currentSprocketUV),
             sprocket_tolerance: currentSprocketTolerance,
             sprocket_feather: currentSprocketFeather,
-            sprocket_target_color: currentSprocketTargetColor ? Array.from(currentSprocketTargetColor) : null
+            sprocket_target_color: currentSprocketTargetColor ? Array.from(currentSprocketTargetColor) : null,
+            sprocket_target_color_version: currentSprocketTargetColor ? currentSprocketTargetColorVersion : null
         },
         geom: JSON.parse(JSON.stringify(current_geom))
     };
@@ -1974,7 +1976,8 @@ function saveCurrentState() {
         sprocket_uv: Array.from(currentSprocketUV),
         sprocket_tolerance: currentSprocketTolerance,
         sprocket_feather: currentSprocketFeather,
-        sprocket_target_color: currentSprocketTargetColor ? Array.from(currentSprocketTargetColor) : null
+        sprocket_target_color: currentSprocketTargetColor ? Array.from(currentSprocketTargetColor) : null,
+        sprocket_target_color_version: currentSprocketTargetColor ? currentSprocketTargetColorVersion : null
     };
     imageStates.set(activeId, {
         params,
@@ -2103,6 +2106,7 @@ const shownPipelineWarnings = new Set();
 // Assuming a domain here would let a render run before the first parse and
 // interpret whatever texture is bound with the wrong decoder.
 let currentProxyDomain = null;
+const PROPHOTO_TRANSPORT_TARGET_COLOR_VERSION = 2;
 
 function pipelineHasCompleteRollAnchors(state = currentPipelineState) {
     const anchors = state?.density_anchors || {};
@@ -3950,6 +3954,21 @@ let currentSprocketUV = new Float32Array([-1.0, -1.0]);
 let currentSprocketTolerance = 0.10;
 let currentSprocketFeather = 0.05;
 let currentSprocketTargetColor = null;
+let currentSprocketTargetColorVersion = null;
+
+function migrateRetiredSprocketTargetColor() {
+    if (currentProxyDomain !== 'prophoto_estimate'
+        || !currentSprocketTargetColor
+        || currentSprocketTargetColorVersion >= PROPHOTO_TRANSPORT_TARGET_COLOR_VERSION) {
+        return;
+    }
+    currentSprocketTargetColor = new Float32Array(
+        Array.from(currentSprocketTargetColor, value =>
+            NexFilmColorScience.decodeProPhotoTransportSample((value + 1.0) * 0.25)
+        )
+    );
+    currentSprocketTargetColorVersion = PROPHOTO_TRANSPORT_TARGET_COLOR_VERSION;
+}
 
 function requestRender() {
     if (!webGLInitialized || renderRequested) return;
@@ -4275,6 +4294,28 @@ function renderWebGL() {
         const nextHeight = Math.max(1, Math.round(orientedSize.height * cropRect.height));
         if (gl.canvas.width !== nextWidth) gl.canvas.width = nextWidth;
         if (gl.canvas.height !== nextHeight) gl.canvas.height = nextHeight;
+    } else if (isCropMode) {
+        const viewport = getPreviewViewportSize();
+        const stage = NexFilmGeometry.getCropStageFrame(
+            proxyWidth,
+            proxyHeight,
+            viewport.width,
+            viewport.height,
+            current_geom,
+            CROP_STAGE_FIT_SCALE
+        );
+        passCrop = stage.frame;
+        const maxStageEdge = Math.max(
+            1,
+            Math.min(maximumPreviewProxyLongEdge(), Math.max(proxyWidth, proxyHeight) * 1.5)
+        );
+        const scale = Math.max(stage.pixelWidth, stage.pixelHeight) > maxStageEdge
+            ? maxStageEdge / Math.max(stage.pixelWidth, stage.pixelHeight)
+            : 1;
+        const nextWidth = Math.max(1, Math.round(stage.pixelWidth * scale));
+        const nextHeight = Math.max(1, Math.round(stage.pixelHeight * scale));
+        if (gl.canvas.width !== nextWidth) gl.canvas.width = nextWidth;
+        if (gl.canvas.height !== nextHeight) gl.canvas.height = nextHeight;
     } else {
         passCrop = { x: 0, y: 0, width: 1, height: 1 };
         const nextWidth = Math.max(1, Math.round(orientedSize.width));
@@ -4508,6 +4549,7 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         currentBaseDensity[1] = headerBaseDensity[1];
         currentBaseDensity[2] = headerBaseDensity[2];
         currentProxyDomain = headerDomain;
+        migrateRetiredSprocketTargetColor();
         // A proxy is a clear, linear negative until Auto Invert explicitly
         // computes and persists the film-base estimate. Do not clear the
         // per-image state when the same proxy is reloaded after analysis.
@@ -4618,6 +4660,12 @@ function updateUIFromParams(params, geom) {
     currentSprocketTolerance = (params.sprocket_tolerance !== undefined && params.sprocket_tolerance !== null) ? params.sprocket_tolerance : 0.10;
     currentSprocketFeather = (params.sprocket_feather !== undefined && params.sprocket_feather !== null) ? params.sprocket_feather : 0.05;
     currentSprocketTargetColor = params.sprocket_target_color ? new Float32Array(params.sprocket_target_color) : null;
+    currentSprocketTargetColorVersion = currentSprocketTargetColor
+        ? (params.sprocket_target_color_version != null
+            && Number.isFinite(Number(params.sprocket_target_color_version))
+            ? Number(params.sprocket_target_color_version)
+            : 1)
+        : null;
     
     sliders.sprocketTolerance.el.value = currentSprocketTolerance;
     sliders.sprocketFeather.el.value = currentSprocketFeather;
@@ -4629,6 +4677,7 @@ function updateUIFromParams(params, geom) {
     }
     updatePerspectiveUI();
     setMode(params.film_mode === 'BW' ? 'B&W' : 'Color');
+    if (activeProxyIsFull && proxyPixels) migrateRetiredSprocketTargetColor();
 }
 
 let backendSyncTimeout = null;
@@ -7989,11 +8038,41 @@ for (const key in sliders) updateSliderTrack(sliders[key].el);
 // Their overlays are stored in that same oriented space, so a crop box or a
 // film-area quad can be drawn at the coordinates it is stored with. Only the
 // finished view narrows the canvas down to the crop itself.
+const CROP_STAGE_FIT_SCALE = 0.84;
+
 function fullFrameEditView() {
     return isCropMode || isCalibrationMode;
 }
 
-function currentDisplayFrame() {
+function getPreviewViewportSize() {
+    const parent = previewViewport || canvasWrapper.parentElement;
+    if (!parent) return { width: 1, height: 1 };
+    const parentStyle = getComputedStyle(parent);
+    const horizontalPadding = (parseFloat(parentStyle.paddingLeft) || 0)
+        + (parseFloat(parentStyle.paddingRight) || 0);
+    const verticalPadding = (parseFloat(parentStyle.paddingTop) || 0)
+        + (parseFloat(parentStyle.paddingBottom) || 0);
+    return {
+        width: Math.max(1, parent.clientWidth - horizontalPadding),
+        height: Math.max(1, parent.clientHeight - verticalPadding),
+    };
+}
+
+function currentDisplayFrame(
+    width = currentImageWidth,
+    height = currentImageHeight,
+    viewport = getPreviewViewportSize()
+) {
+    if (isCropMode) {
+        return NexFilmGeometry.getCropStageFrame(
+            width,
+            height,
+            viewport.width,
+            viewport.height,
+            current_geom,
+            CROP_STAGE_FIT_SCALE
+        ).frame;
+    }
     return NexFilmGeometry.getDisplayFrame(current_geom, fullFrameEditView());
 }
 
@@ -8003,34 +8082,39 @@ function updateCanvasTransform(w, h) {
     const cw = currentImageWidth;
     const ch = currentImageHeight;
     const orientedSize = NexFilmGeometry.getOrientedDimensions(cw, ch, current_geom);
-    const displayFrame = currentDisplayFrame();
+    const viewport = getPreviewViewportSize();
+    const displayFrame = currentDisplayFrame(cw, ch, viewport);
 
     canvasWrapper.style.overflow = 'hidden';
     previewCanvas.style.position = 'absolute';
     previewCanvas.style.objectFit = 'fill'; 
 
-    let aspect = (orientedSize.width * displayFrame.width)
-        / (orientedSize.height * displayFrame.height);
-    if (isNaN(aspect) || aspect === 0) aspect = 1;
-
-    const parent = previewViewport || canvasWrapper.parentElement;
-    const parentStyle = getComputedStyle(parent);
-    const horizontalPadding = parseFloat(parentStyle.paddingLeft) + parseFloat(parentStyle.paddingRight);
-    const verticalPadding = parseFloat(parentStyle.paddingTop) + parseFloat(parentStyle.paddingBottom);
-    const availableW = Math.max(1, parent.clientWidth - horizontalPadding);
-    const availableH = Math.max(1, parent.clientHeight - verticalPadding);
-    
+    const availableW = viewport.width;
+    const availableH = viewport.height;
     let targetW, targetH;
-    if (availableW / availableH > aspect) {
-        targetH = availableH;
-        targetW = targetH * aspect;
-    } else {
+    if (isCropMode) {
+        // Keep the crop stage locked to the viewport so rotating only turns
+        // the picture behind a steady crop box without reshaping outer margins.
         targetW = availableW;
-        targetH = targetW / aspect;
+        targetH = availableH;
+    } else {
+        let aspect = (orientedSize.width * displayFrame.width)
+            / (orientedSize.height * displayFrame.height);
+        if (isNaN(aspect) || aspect === 0) aspect = 1;
+
+        if (availableW / availableH > aspect) {
+            targetH = availableH;
+            targetW = targetH * aspect;
+        } else {
+            targetW = availableW;
+            targetH = targetW / aspect;
+        }
     }
     
-    canvasWrapper.style.width = `${targetW}px`;
-    canvasWrapper.style.height = `${targetH}px`;
+    const nextCssW = `${targetW}px`;
+    const nextCssH = `${targetH}px`;
+    if (canvasWrapper.style.width !== nextCssW) canvasWrapper.style.width = nextCssW;
+    if (canvasWrapper.style.height !== nextCssH) canvasWrapper.style.height = nextCssH;
     canvasWrapper.style.transformOrigin = '50% 50%';
     dummyPusher.style.display = 'none';
     canvasWrapper.style.transform = getCanvasCompositeTransform({ zoom: zoomLevel, panX, panY });
@@ -8107,9 +8191,21 @@ function setCropMode(enabled) {
 btnCropMode.addEventListener('click', () => setCropMode(!isCropMode));
 btnCloseCrop.addEventListener('click', () => setCropMode(false));
 
+const FINE_ROTATION_PRECISION = 0.01;
+const FINE_ROTATION_KEY_STEP = 0.1;
+const FINE_ROTATION_SHIFT_MULTIPLIER = 0.1;
+let activeFineRotationDrag = null;
+let cropRotationInputUndoPushed = false;
+
+function currentFineRotationAngle() {
+    return roundRotationDegrees(current_geom.angle);
+}
+
 function updateCropRotationUI() {
-    const degrees = composeRotationDegrees(current_geom);
-    cropRotationInput.value = String(Math.round(degrees * 10) / 10);
+    const degrees = currentFineRotationAngle();
+    if (document.activeElement !== cropRotationInput) {
+        cropRotationInput.value = String(degrees);
+    }
     cropRotationRange.value = String(degrees);
     updateSliderTrack(cropRotationRange);
 }
@@ -8122,7 +8218,7 @@ function updateCropRotationUI() {
 function applyGeometryAngle(nextAngle) {
     const width = Math.max(1, currentImageWidth);
     const height = Math.max(1, currentImageHeight);
-    const angle = Number(nextAngle) || 0;
+    const angle = Math.max(-45, Math.min(45, roundRotationDegrees(Number(nextAngle) || 0)));
     const from = { ...current_geom };
     const to = { ...current_geom, angle };
     if (Math.abs((Number(from.angle) || 0) - angle) > 1e-9) {
@@ -8156,49 +8252,158 @@ function applyGeometryAngle(nextAngle) {
     current_geom.angle = angle;
 }
 
-function applyCropRotationDegrees(value) {
+function applyFineRotationAngle(nextAngle) {
     if (!activeId) return;
-    const degrees = clampRangeValue(
-        value,
-        cropRotationRange.min,
-        cropRotationRange.max,
-        cropRotationRange.step
-    );
-    const target = decomposeRotationDegrees(degrees, 2);
-    const currentQuarterTurns = Math.trunc(current_geom.rotate_90_count || 0);
-    const targetQuarterTurns = target.quarterTurns
-        + Math.round((currentQuarterTurns - target.quarterTurns) / 4) * 4;
-    let delta = targetQuarterTurns - currentQuarterTurns;
-    while (delta !== 0) {
-        const clockwise = delta > 0;
-        const transformed = NexFilmGeometry.transformGeometryForQuarterTurn(current_geom, clockwise);
-        current_geom.rotate_90_count += clockwise ? 1 : -1;
-        current_geom.crop_rect = transformed.cropRect;
-        updateSpatialSamples(transformed);
-        delta += clockwise ? -1 : 1;
-    }
-    applyGeometryAngle(target.angle);
+    const min = Number(cropRotationRange.min ?? -45);
+    const max = Number(cropRotationRange.max ?? 45);
+    const angle = clampRangeValue(nextAngle, min, max, FINE_ROTATION_PRECISION);
+    applyGeometryAngle(angle);
     refitCropToActiveAspect();
+    constrainPerspectiveScale();
     updatePerspectiveUI();
     updateCanvasTransform();
-    if (isCropMode) updateCropOverlay();
     requestRender();
 }
 
-cropRotationRange.addEventListener('pointerdown', event => {
-    if (event.detail <= 1) pushUndoState();
+function finishFineRotationDrag(syncGeometry = false) {
+    const drag = activeFineRotationDrag;
+    if (!drag) return;
+    activeFineRotationDrag = null;
+    sliderDragActive = false;
+    histogramReadbackReady = false;
+    requestRender();
+    if (syncGeometry && drag.changed) {
+        sendGeometrySync();
+    }
+}
+
+function attachFineRotationRangeDrag(rangeEl, onAngleChange) {
+    if (!rangeEl) return;
+    rangeEl.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || rangeEl.disabled) return;
+        // Suppress WebView2 native 1:1 thumb tracking on every drag so holding
+        // or releasing Shift at any point scales slider thumb travel cleanly.
+        event.preventDefault();
+        rangeEl.focus({ preventScroll: true });
+        sliderDragActive = true;
+        if (event.detail <= 1) pushUndoState();
+
+        const rect = rangeEl.getBoundingClientRect();
+        const seek = seekPrecisionRangeValue({
+            clientX: event.clientX,
+            rectLeft: rect.left,
+            rectWidth: rect.width || 200,
+            min: Number(rangeEl.min),
+            max: Number(rangeEl.max),
+            step: FINE_ROTATION_PRECISION,
+            currentValue: currentFineRotationAngle(),
+            shiftKey: event.shiftKey,
+        });
+
+        activeFineRotationDrag = {
+            rangeEl,
+            pointerId: event.pointerId,
+            lastX: event.clientX,
+            rawValue: seek.value,
+            lastAppliedValue: seek.value,
+            changed: seek.jumped,
+            onAngleChange,
+        };
+
+        if (seek.jumped) {
+            rangeEl.value = String(seek.value);
+            updateSliderTrack(rangeEl);
+            onAngleChange(seek.value);
+        }
+    });
+
+    rangeEl.addEventListener('keydown', event => {
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+        event.preventDefault();
+        if (rangeEl.disabled) return;
+        if (!event.repeat) pushUndoState();
+        const direction = (event.key === 'ArrowLeft' || event.key === 'ArrowDown') ? -1 : 1;
+        const step = event.shiftKey ? FINE_ROTATION_PRECISION : FINE_ROTATION_KEY_STEP;
+        const next = clampRangeValue(
+            currentFineRotationAngle() + direction * step,
+            rangeEl.min,
+            rangeEl.max,
+            FINE_ROTATION_PRECISION
+        );
+        rangeEl.value = String(next);
+        updateSliderTrack(rangeEl);
+        onAngleChange(next);
+        sendGeometrySync();
+    });
+}
+
+window.addEventListener('pointermove', event => {
+    const drag = activeFineRotationDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - drag.lastX;
+    drag.lastX = event.clientX;
+    if (deltaX === 0) return;
+
+    const rect = drag.rangeEl.getBoundingClientRect();
+    const stepped = advancePrecisionRangeDrag({
+        rawValue: drag.rawValue,
+        deltaX,
+        rangeWidth: rect.width || 200,
+        min: Number(drag.rangeEl.min),
+        max: Number(drag.rangeEl.max),
+        shiftKey: event.shiftKey,
+        fineMultiplier: FINE_ROTATION_SHIFT_MULTIPLIER,
+        step: FINE_ROTATION_PRECISION,
+    });
+    drag.rawValue = stepped.rawValue;
+    event.preventDefault();
+    if (stepped.value !== drag.lastAppliedValue) {
+        drag.lastAppliedValue = stepped.value;
+        drag.changed = true;
+        drag.rangeEl.value = String(stepped.value);
+        updateSliderTrack(drag.rangeEl);
+        drag.onAngleChange(stepped.value);
+    }
 });
-cropRotationRange.addEventListener('input', event => applyCropRotationDegrees(event.target.value));
+window.addEventListener('pointerup', event => {
+    if (!activeFineRotationDrag || activeFineRotationDrag.pointerId !== event.pointerId) return;
+    finishFineRotationDrag(true);
+});
+window.addEventListener('pointercancel', event => {
+    if (!activeFineRotationDrag || activeFineRotationDrag.pointerId !== event.pointerId) return;
+    finishFineRotationDrag(true);
+});
+window.addEventListener('blur', () => {
+    finishFineRotationDrag(true);
+});
+
+attachFineRotationRangeDrag(cropRotationRange, applyFineRotationAngle);
+cropRotationRange.addEventListener('input', event => {
+    applyFineRotationAngle(event.target.value);
+});
 cropRotationRange.addEventListener('change', sendGeometrySync);
-cropRotationInput.addEventListener('focus', pushUndoState);
+
+cropRotationInput.addEventListener('focus', () => {
+    cropRotationInputUndoPushed = false;
+});
 cropRotationInput.addEventListener('input', event => {
     if (event.target.value === '') return;
-    applyCropRotationDegrees(event.target.value);
+    const parsed = Number(event.target.value);
+    if (!Number.isFinite(parsed)) return;
+    if (!cropRotationInputUndoPushed) {
+        pushUndoState();
+        cropRotationInputUndoPushed = true;
+    }
+    applyFineRotationAngle(parsed);
 });
 cropRotationInput.addEventListener('change', event => {
-    if (event.target.value === '') {
+    if (event.target.value === '' || !Number.isFinite(Number(event.target.value))) {
         updateCropRotationUI();
         return;
+    }
+    if (!cropRotationInputUndoPushed) {
+        pushUndoState();
+        cropRotationInputUndoPushed = true;
     }
     const next = clampRangeValue(
         event.target.value,
@@ -8207,12 +8412,20 @@ cropRotationInput.addEventListener('change', event => {
         cropRotationInput.step
     );
     event.target.value = String(next);
-    applyCropRotationDegrees(next);
+    applyFineRotationAngle(next);
     sendGeometrySync();
+});
+cropRotationInput.addEventListener('blur', () => {
+    cropRotationInputUndoPushed = false;
+    updateCropRotationUI();
 });
 cropRotationInput.addEventListener('keydown', event => {
     if (event.key === 'Enter') {
         event.preventDefault();
+        cropRotationInput.blur();
+    } else if (event.key === 'Escape') {
+        event.preventDefault();
+        cropRotationInput.value = String(currentFineRotationAngle());
         cropRotationInput.blur();
     }
 });
@@ -8306,18 +8519,22 @@ function constrainPerspectiveScale() {
 }
 
 Object.entries(perspectiveControls).forEach(([key, control]) => {
-    control.el.addEventListener('pointerdown', event => {
-        if (event.detail <= 1) pushUndoState();
-    });
+    if (key === 'angle') {
+        attachFineRotationRangeDrag(control.el, applyFineRotationAngle);
+    } else {
+        control.el.addEventListener('pointerdown', event => {
+            if (event.detail <= 1) pushUndoState();
+        });
+    }
     control.el.addEventListener('input', event => {
         const rawValue = Number.parseFloat(event.target.value);
         if (key === 'angle') {
             // Straighten uses the same fine angle as the crop panel's rotation
-            // slider, so it has to keep the crop and film area anchored too.
-            applyGeometryAngle(rawValue);
-        } else {
-            current_geom[key] = key === 'perspective_scale' ? rawValue / 100 : rawValue;
+            // slider, so it keeps the crop, aspect lock, and film area anchored too.
+            applyFineRotationAngle(rawValue);
+            return;
         }
+        current_geom[key] = key === 'perspective_scale' ? rawValue / 100 : rawValue;
         constrainPerspectiveScale();
         updatePerspectiveUI();
         updateCanvasTransform();
@@ -9080,6 +9297,7 @@ document.getElementById('btn-reset-crop').addEventListener('click', async () => 
     setBatchApplyDisabled(false);
     currentSprocketUV = new Float32Array([-1.0, -1.0]);
     currentSprocketTargetColor = null;
+    currentSprocketTargetColorVersion = null;
     // Reset must also refresh the lightweight, pre-invert view. Previously
     // rendering was gated by hasProcessedActiveImage, leaving the old
     // rotated/scaled canvas visible until the first full development pass.
@@ -9530,6 +9748,9 @@ let dragStartCalibrationPoints = null;
 let dragStartSprocketUV = null;
 let dragCenter = { x: 0, y: 0 };
 let activeCropPointerId = null;
+let cropRotateAnchorRad = 0;
+let cropRotateAnchorAngle = 0;
+let cropRotateShiftFine = false;
 const MIN_CROP_SIZE = 0.01;
 
 function clampCropRect(rect) {
@@ -9564,6 +9785,7 @@ cropOverlay.addEventListener('pointerdown', (e) => {
 
     pushUndoState();
     isDraggingCrop = true; dragStartPos = { x: e.clientX, y: e.clientY };
+    if (dragType === 'rotate') sliderDragActive = true;
     dragStartRect = clampCropRect(current_geom.crop_rect); dragStartAngle = current_geom.angle;
     // Rotating re-anchors the crop and the film area, so a cancelled drag has to
     // put back the whole geometry, not just the angle.
@@ -9574,6 +9796,12 @@ cropOverlay.addEventListener('pointerdown', (e) => {
     cropOverlay.setPointerCapture(e.pointerId);
     const rect = canvasWrapper.getBoundingClientRect();
     dragCenter = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    cropRotateAnchorRad = Math.atan2(
+        dragStartPos.y - dragCenter.y,
+        dragStartPos.x - dragCenter.x
+    );
+    cropRotateAnchorAngle = dragStartAngle;
+    cropRotateShiftFine = e.shiftKey;
     cropGrid.style.opacity = '1';
     cropOverlay.classList.add('is-dragging');
     e.preventDefault();
@@ -9582,22 +9810,26 @@ cropOverlay.addEventListener('pointerdown', (e) => {
 window.addEventListener('pointermove', (e) => {
     if (!isDraggingCrop || e.pointerId !== activeCropPointerId) return;
     const renderRect = getRenderRect();
-    const dx = (e.clientX - dragStartPos.x) / renderRect.width;
-    const dy = (e.clientY - dragStartPos.y) / renderRect.height;
+    const displayFrame = currentDisplayFrame();
+    const dx = ((e.clientX - dragStartPos.x) / Math.max(1, renderRect.width)) * displayFrame.width;
+    const dy = ((e.clientY - dragStartPos.y) / Math.max(1, renderRect.height)) * displayFrame.height;
     let newRect = { ...dragStartRect };
 
     if (dragType === 'box') {
         newRect.x = Math.min(1 - newRect.width, Math.max(0, newRect.x + dx));
         newRect.y = Math.min(1 - newRect.height, Math.max(0, newRect.y + dy));
     } else if (dragType === 'rotate') {
-        const startRad = Math.atan2(dragStartPos.y - dragCenter.y, dragStartPos.x - dragCenter.x);
         const currentRad = Math.atan2(e.clientY - dragCenter.y, e.clientX - dragCenter.x);
-        let deltaDeg = (currentRad - startRad) * (180 / Math.PI);
-        if (e.shiftKey) deltaDeg *= 0.1;
-        applyGeometryAngle(Math.max(-45, Math.min(45, dragStartAngle - deltaDeg)));
-        updatePerspectiveUI();
-        updateCanvasTransform();
-        requestRender();
+        if (e.shiftKey !== cropRotateShiftFine) {
+            cropRotateAnchorRad = currentRad;
+            cropRotateAnchorAngle = current_geom.angle;
+            cropRotateShiftFine = e.shiftKey;
+        }
+        let deltaDeg = (currentRad - cropRotateAnchorRad) * (180 / Math.PI);
+        while (deltaDeg > 180) deltaDeg -= 360;
+        while (deltaDeg <= -180) deltaDeg += 360;
+        if (cropRotateShiftFine) deltaDeg *= FINE_ROTATION_SHIFT_MULTIPLIER;
+        applyFineRotationAngle(cropRotateAnchorAngle - deltaDeg);
         return;
     } else {
         const left = dragStartRect.x;
@@ -9634,12 +9866,17 @@ function finishCropDrag(e, persist) {
     if (cropOverlay.hasPointerCapture(e.pointerId)) {
         cropOverlay.releasePointerCapture(e.pointerId);
     }
+    const wasRotateDrag = dragType === 'rotate';
     isDraggingCrop = false;
     activeCropPointerId = null;
+    if (wasRotateDrag) {
+        sliderDragActive = false;
+        histogramReadbackReady = false;
+    }
     cropGrid.style.opacity = '';
     cropOverlay.classList.remove('is-dragging');
     if (!persist) {
-        if (dragType === 'rotate') {
+        if (wasRotateDrag) {
             current_geom = NexFilmGeometry.normalizeGeometryState(dragStartGeom);
             calibrationPoints = cloneCalibrationPoints(dragStartCalibrationPoints);
             currentSprocketUV = new Float32Array(dragStartSprocketUV);
@@ -10959,6 +11196,12 @@ previewViewport.addEventListener('mousedown', e => {
                 if (sourceUv && !sourceUv.some(value => !Number.isFinite(value) || value < 0 || value > 1)) {
                     const px = Math.min(proxyWidth - 1, Math.floor(sourceUv[0] * proxyWidth));
                     const py = Math.min(proxyHeight - 1, Math.floor(sourceUv[1] * proxyHeight));
+                    const isLegacy = currentPipelineContract === 'legacy_v1' || currentProxyDomain === 'legacy_linear_srgb';
+                    const isCaptureCorrected = currentProxyDomain === 'relative_transmission_rgb';
+                    const decodeTransport = !isLegacy && !isCaptureCorrected;
+                    const toSprocketTargetSample = decodeTransport
+                        ? sample => NexFilmColorScience.decodeProPhotoTransportSample(sample / 65535.0)
+                        : sample => sample / 65535.0;
                     let sumR = 0, sumG = 0, sumB = 0;
                     let count = 0;
                     const radius = 2;
@@ -10968,28 +11211,20 @@ previewViewport.addEventListener('mousedown', e => {
                             const ny = py + dy;
                             if (nx >= 0 && nx < proxyWidth && ny >= 0 && ny < proxyHeight) {
                                 const idx = (ny * proxyWidth + nx) * 4;
-                                sumR += proxyPixels[idx];
-                                sumG += proxyPixels[idx + 1];
-                                sumB += proxyPixels[idx + 2];
+                                sumR += toSprocketTargetSample(proxyPixels[idx]);
+                                sumG += toSprocketTargetSample(proxyPixels[idx + 1]);
+                                sumB += toSprocketTargetSample(proxyPixels[idx + 2]);
                                 count++;
                             }
                         }
                     }
                     if (count > 0) {
-                        const avgR = (sumR / count) / 65535.0;
-                        const avgG = (sumG / count) / 65535.0;
-                        const avgB = (sumB / count) / 65535.0;
-                        const isLegacy = currentPipelineContract === 'legacy_v1' || currentProxyDomain === 'legacy_linear_srgb';
-                        const isCaptureCorrected = currentProxyDomain === 'relative_transmission_rgb';
-                        if (!isLegacy && !isCaptureCorrected) {
-                            currentSprocketTargetColor = new Float32Array([
-                                avgR * 4.0 - 1.0,
-                                avgG * 4.0 - 1.0,
-                                avgB * 4.0 - 1.0,
-                            ]);
-                        } else {
-                            currentSprocketTargetColor = new Float32Array([avgR, avgG, avgB]);
-                        }
+                        currentSprocketTargetColor = new Float32Array([
+                            sumR / count,
+                            sumG / count,
+                            sumB / count,
+                        ]);
+                        currentSprocketTargetColorVersion = PROPHOTO_TRANSPORT_TARGET_COLOR_VERSION;
                     }
                 }
             }

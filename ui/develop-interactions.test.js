@@ -153,18 +153,128 @@ assert.deepEqual(
     { clockwise: true, turnDelta: 1 },
     'Rotate Clockwise must apply a clockwise quarter turn'
 );
-assert.equal(interactions.snapRotationDegrees(1.8), 0, 'rotation stops at zero within the snap range');
-assert.equal(interactions.snapRotationDegrees(88.5), 90, 'rotation stops at ninety degrees within the snap range');
-assert.equal(interactions.snapRotationDegrees(86), 86, 'rotation remains continuous outside the snap range');
+assert.equal(interactions.snapRotationDegrees(0.4), 0.4, 'zero does not magnetically snap by default');
+assert.equal(interactions.snapRotationDegrees(-0.5), -0.5, 'negative near-zero angles stay continuous');
+assert.equal(interactions.snapRotationDegrees(89.7), 89.7, 'near-quarter-turn angles stay continuous');
+assert.equal(interactions.snapRotationDegrees(0.4, 0.5), 0, 'explicit snap thresholds still work when requested');
 assert.deepEqual(
-    interactions.decomposeRotationDegrees(92),
+    interactions.decomposeRotationDegrees(0.1),
+    { degrees: 0.1, quarterTurns: 0, angle: 0.1 },
+    'default decomposition keeps fine zero-degree angles unsnapped'
+);
+assert.deepEqual(
+    interactions.decomposeRotationDegrees(90.05),
+    { degrees: 90.05, quarterTurns: 1, angle: 0.05 },
+    'default decomposition preserves hundredth-degree input'
+);
+assert.deepEqual(
+    interactions.decomposeRotationDegrees(90.4, 0.5),
     { degrees: 90, quarterTurns: 1, angle: 0 },
-    'a snapped quarter turn is stored without residual straighten angle'
+    'an explicit threshold still snaps when passed'
 );
 assert.equal(
     interactions.composeRotationDegrees({ angle: -3, rotate_90_count: 1 }),
     87,
-    'crop rotation input reflects quarter turns and residual angle together'
+    'composeRotationDegrees reflects quarter turns and residual angle together'
+);
+assert.equal(interactions.roundRotationDegrees(0.149), 0.15, 'rotation values retain two decimal places');
+
+assert.deepEqual(
+    interactions.seekPrecisionRangeValue({
+        clientX: 100,
+        rectLeft: 5,
+        rectWidth: 190,
+        min: -45,
+        max: 45,
+        step: 0.01,
+        currentValue: 0,
+        shiftKey: false,
+    }),
+    { value: 0, thumbCenterX: 100, jumped: false },
+    'grabbing the rotation thumb keeps the active angle anchored'
+);
+assert.deepEqual(
+    interactions.seekPrecisionRangeValue({
+        clientX: 145,
+        rectLeft: 5,
+        rectWidth: 190,
+        min: -45,
+        max: 45,
+        step: 0.01,
+        currentValue: 0,
+        shiftKey: true,
+    }),
+    { value: 0, thumbCenterX: 100, jumped: false },
+    'Shift-clicking the slider track never jumps before fine dragging'
+);
+assert.deepEqual(
+    interactions.seekPrecisionRangeValue({
+        clientX: 145,
+        rectLeft: 5,
+        rectWidth: 190,
+        min: -45,
+        max: 45,
+        step: 0.01,
+        currentValue: 0,
+        shiftKey: false,
+    }),
+    { value: 22.5, thumbCenterX: 100, jumped: true },
+    'plain clicking empty track away from the thumb seeks proportionally'
+);
+
+const normalDrag = interactions.advancePrecisionRangeDrag({
+    rawValue: 0,
+    deltaX: 10,
+    rangeWidth: 190,
+    min: -45,
+    max: 45,
+    shiftKey: false,
+});
+assert.deepEqual(
+    normalDrag,
+    { rawValue: 5, value: 5 },
+    'ordinary drag maps cursor travel 1:1 with the slider thumb'
+);
+
+const shiftMidDrag = interactions.advancePrecisionRangeDrag({
+    rawValue: normalDrag.rawValue,
+    deltaX: 10,
+    rangeWidth: 190,
+    min: -45,
+    max: 45,
+    shiftKey: true,
+});
+assert.deepEqual(
+    shiftMidDrag,
+    { rawValue: 5.5, value: 5.5 },
+    'engaging Shift mid-drag slows both angle and thumb travel 10x without jumping'
+);
+
+const releasedMidDrag = interactions.advancePrecisionRangeDrag({
+    rawValue: shiftMidDrag.rawValue,
+    deltaX: 10,
+    rangeWidth: 190,
+    min: -45,
+    max: 45,
+    shiftKey: false,
+});
+assert.deepEqual(
+    releasedMidDrag,
+    { rawValue: 10.5, value: 10.5 },
+    'releasing Shift mid-drag resumes 1:1 speed seamlessly from the current value'
+);
+
+assert.deepEqual(
+    interactions.advancePrecisionRangeDrag({
+        rawValue: 44.8,
+        deltaX: 50,
+        rangeWidth: 190,
+        min: -45,
+        max: 45,
+        shiftKey: false,
+    }),
+    { rawValue: 45, value: 45 },
+    'precision drag clamps cleanly at the rotation bounds'
 );
 
 console.log('Develop mouse interaction tests passed.');

@@ -549,18 +549,11 @@
                             <div>
                                 <label for="crop-rotation-input" data-i18n="develop.rotation">Rotation</label>
                                 <span class="crop-angle-field">
-                                    <input id="crop-rotation-input" type="number" min="-180" max="180" step="0.1" value="0" inputmode="decimal" disabled>
+                                    <input id="crop-rotation-input" type="number" min="-45" max="45" step="0.01" value="0" inputmode="decimal" disabled>
                                     <span aria-hidden="true">&deg;</span>
                                 </span>
                             </div>
-                            <input id="crop-rotation-range" type="range" min="-180" max="180" step="0.1" value="0" list="crop-rotation-stops" class="custom-range silver-track" disabled>
-                            <datalist id="crop-rotation-stops">
-                                <option value="-180"></option>
-                                <option value="-90"></option>
-                                <option value="0"></option>
-                                <option value="90"></option>
-                                <option value="180"></option>
-                            </datalist>
+                            <input id="crop-rotation-range" type="range" min="-45" max="45" step="0.01" value="0" class="custom-range silver-track" disabled>
                         </div>
                     </div>
                 </aside>

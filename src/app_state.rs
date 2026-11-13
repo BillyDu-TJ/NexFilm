@@ -1325,6 +1325,8 @@ pub struct SprocketParams {
     pub sprocket_feather: Option<f32>,
     #[serde(default)]
     pub sprocket_target_color: Option<Vec<f32>>,
+    #[serde(default)]
+    pub sprocket_target_color_version: Option<u32>,
 }
 
 impl Default for SprocketParams {
@@ -1334,6 +1336,7 @@ impl Default for SprocketParams {
             sprocket_tolerance: None,
             sprocket_feather: None,
             sprocket_target_color: None,
+            sprocket_target_color_version: None,
         }
     }
 }

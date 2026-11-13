@@ -82,6 +82,10 @@
             mergeSelectedKeys(selectedGeom, geom, fields.geom || []);
             mergeSelectedKeys(selectedExtra, extra, fields.extra || []);
         });
+        if (selectedSettings.includes('sprocketPoint') && selectedParams.sprocket_target_color) {
+            selectedParams.sprocket_target_color_version =
+                params?.sprocket_target_color_version ?? null;
+        }
 
         const result = {
             settings: selectedSettings,

@@ -342,6 +342,40 @@
         };
     }
 
+    // Keeps Crop mode on a fixed viewport-proportioned stage centered on the
+    // oriented image frame so rotating never morphs the outer canvas aspect or
+    // reallocates GPU buffers while still showing uncropped dark margins.
+    function getCropStageFrame(width, height, viewportWidth, viewportHeight, geom, marginScale = 0.84) {
+        const sourceWidth = Math.max(1, numberOrZero(width));
+        const sourceHeight = Math.max(1, numberOrZero(height));
+        const vpW = Math.max(1, numberOrZero(viewportWidth));
+        const vpH = Math.max(1, numberOrZero(viewportHeight));
+        const margin = Number.isFinite(Number(marginScale)) && Number(marginScale) > 0
+            ? Math.min(1, Number(marginScale))
+            : 0.84;
+
+        const turns = normalizedQuarterTurns(geom && geom.rotate_90_count);
+        const baseWidth = turns % 2 === 0 ? sourceWidth : sourceHeight;
+        const baseHeight = turns % 2 === 0 ? sourceHeight : sourceWidth;
+        const stageScale = Math.min(vpW / baseWidth, vpH / baseHeight) * margin;
+        const pixelWidth = vpW / Math.max(1e-9, stageScale);
+        const pixelHeight = vpH / Math.max(1e-9, stageScale);
+        const oriented = getOrientedDimensions(sourceWidth, sourceHeight, geom);
+        const frameWidth = pixelWidth / Math.max(1, oriented.width);
+        const frameHeight = pixelHeight / Math.max(1, oriented.height);
+
+        return {
+            frame: {
+                x: 0.5 - frameWidth / 2,
+                y: 0.5 - frameHeight / 2,
+                width: frameWidth,
+                height: frameHeight,
+            },
+            pixelWidth,
+            pixelHeight,
+        };
+    }
+
     function orientedPointToDisplay(point, frame) {
         const width = Math.abs(numberOrZero(frame && frame.width)) > 1e-6
             ? numberOrZero(frame.width)
@@ -745,6 +779,7 @@
         anchorQuadForAngleChange,
         anchorRectForAngleChange,
         getDisplayFrame,
+        getCropStageFrame,
         orientedPointToDisplay,
         displayPointToOriented,
         orientedRectToDisplay,

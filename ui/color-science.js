@@ -2,6 +2,12 @@
     const D50 = [0.3457, 0.3585];
     const D60 = [0.32168, 0.33767];
     const D65 = [0.3127, 0.3290];
+    const PROPHOTO_TRANSPORT = Object.freeze({
+        MIN: -1.0,
+        MAX: 3.0,
+        ZERO_SPLIT: 0.125,
+        LOG_MU: 4096.0,
+    });
     const SPACES = {
         'linear-srgb': { p: [[0.64, 0.33], [0.30, 0.60], [0.15, 0.06]], w: D65 },
         'linear-display-p3': { p: [[0.68, 0.32], [0.265, 0.69], [0.15, 0.06]], w: D65 },
@@ -76,7 +82,19 @@
         matrices.set(id, multiply(srgbXyzInverse, multiply(adapt(space.w, srgb.w), toXyz(space))));
     });
 
+    function decodeProPhotoTransportSample(encodedNorm) {
+        if (encodedNorm < PROPHOTO_TRANSPORT.ZERO_SPLIT) {
+            return encodedNorm / PROPHOTO_TRANSPORT.ZERO_SPLIT - 1.0;
+        }
+        const u = (encodedNorm - PROPHOTO_TRANSPORT.ZERO_SPLIT)
+            / (1.0 - PROPHOTO_TRANSPORT.ZERO_SPLIT);
+        const logRange = Math.log(1.0 + PROPHOTO_TRANSPORT.MAX * PROPHOTO_TRANSPORT.LOG_MU);
+        return (Math.exp(u * logRange) - 1.0) / PROPHOTO_TRANSPORT.LOG_MU;
+    }
+
     root.NexFilmColorScience = {
+        PROPHOTO_TRANSPORT,
+        decodeProPhotoTransportSample,
         getWorkingToSrgbMatrix(id) {
             const rowMajor = matrices.get(id) || matrices.get('linear-srgb');
             return new Float32Array([

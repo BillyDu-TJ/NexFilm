@@ -3,9 +3,10 @@
     if (typeof module === 'object' && module.exports) module.exports = api;
     root.NexFilmInteractions = api;
 }(typeof globalThis !== 'undefined' ? globalThis : this, function () {
-    function finite(value) {
+    function finite(value, fallback = 0) {
+        if (value === undefined || value === null || value === '') return fallback;
         const number = Number(value);
-        return Number.isFinite(number) ? number : 0;
+        return Number.isFinite(number) ? number : fallback;
     }
 
     function normalizeWheelDelta(event, pageSize = 800, lineHeight = 16) {
@@ -240,22 +241,102 @@
         return null;
     }
 
-    function snapRotationDegrees(value, threshold = 2) {
+    function roundRotationDegrees(value, decimalPlaces = 2) {
+        const places = Math.max(0, Math.min(10, Math.trunc(finite(decimalPlaces))));
+        const factor = 10 ** places;
+        const rounded = Math.round(finite(value) * factor) / factor;
+        return Object.is(rounded, -0) ? 0 : rounded;
+    }
+
+    function snapRotationDegrees(value, threshold = 0) {
         const degrees = Math.max(-180, Math.min(180, finite(value)));
         const snapDistance = Math.max(0, finite(threshold));
         const nearestQuarterTurn = Math.round(degrees / 90) * 90;
         return Math.abs(degrees - nearestQuarterTurn) <= snapDistance
-            ? nearestQuarterTurn
+            ? (Object.is(nearestQuarterTurn, -0) ? 0 : nearestQuarterTurn)
             : degrees;
     }
 
-    function decomposeRotationDegrees(value, threshold = 2) {
+    function decomposeRotationDegrees(value, threshold = 0) {
         const degrees = snapRotationDegrees(value, threshold);
         const quarterTurns = Math.round(degrees / 90);
         return {
             degrees,
             quarterTurns,
-            angle: degrees - quarterTurns * 90,
+            angle: roundRotationDegrees(degrees - quarterTurns * 90, 10),
+        };
+    }
+
+    function getStepDecimalPlaces(step) {
+        if (!(step > 0)) return 0;
+        const text = String(step);
+        const match = text.match(/\.(\d+)$/);
+        return match ? Math.min(10, match[1].length) : 0;
+    }
+
+    function clampPrecisionRangeValue(value, min = -45, max = 45, step = 0.01) {
+        const lo = Math.min(finite(min, -45), finite(max, 45));
+        const hi = Math.max(finite(min, -45), finite(max, 45));
+        const clamped = Math.max(lo, Math.min(hi, finite(value, lo)));
+        const stepSize = finite(step, 0.01);
+        if (!(stepSize > 0)) {
+            return Object.is(clamped, -0) ? 0 : clamped;
+        }
+        const places = Math.max(getStepDecimalPlaces(stepSize), getStepDecimalPlaces(lo));
+        const stepped = roundRotationDegrees(lo + Math.round((clamped - lo) / stepSize) * stepSize, places);
+        const bounded = Math.max(lo, Math.min(hi, stepped));
+        return Object.is(bounded, -0) ? 0 : bounded;
+    }
+
+    function seekPrecisionRangeValue(options = {}) {
+        const lo = Math.min(finite(options.min, -45), finite(options.max, 45));
+        const hi = Math.max(finite(options.min, -45), finite(options.max, 45));
+        const step = options.step === undefined ? 0.01 : finite(options.step, 0.01);
+        const currentValue = clampPrecisionRangeValue(options.currentValue ?? 0, lo, hi, step);
+        const thumbWidth = Math.max(0, finite(options.thumbWidth, 10));
+        const halfThumb = thumbWidth / 2;
+        const trackWidth = Math.max(1, finite(options.rectWidth, 1) - thumbWidth);
+        const span = hi - lo;
+        const ratio = span > 0 ? (currentValue - lo) / span : 0;
+        const rectLeft = finite(options.rectLeft);
+        const thumbCenterX = rectLeft + halfThumb + ratio * trackWidth;
+        const hitRadius = Math.max(0, finite(options.hitRadius, 12));
+
+        if (options.shiftKey || span <= 0 || Math.abs(finite(options.clientX) - thumbCenterX) <= hitRadius) {
+            return {
+                value: currentValue,
+                thumbCenterX,
+                jumped: false,
+            };
+        }
+
+        const clickRatio = Math.max(0, Math.min(1, (finite(options.clientX) - (rectLeft + halfThumb)) / trackWidth));
+        const nextValue = clampPrecisionRangeValue(lo + clickRatio * span, lo, hi, step);
+        return {
+            value: nextValue,
+            thumbCenterX,
+            jumped: nextValue !== currentValue,
+        };
+    }
+
+    function advancePrecisionRangeDrag(options = {}) {
+        const lo = Math.min(finite(options.min, -45), finite(options.max, 45));
+        const hi = Math.max(finite(options.min, -45), finite(options.max, 45));
+        const step = options.step === undefined ? 0.01 : finite(options.step, 0.01);
+        const thumbWidth = Math.max(0, finite(options.thumbWidth, 10));
+        const usableWidth = Math.max(1, finite(options.rangeWidth, 120) - thumbWidth);
+        const fineMultiplier = options.fineMultiplier === undefined
+            ? 0.1
+            : Math.max(0, finite(options.fineMultiplier, 0.1));
+        const span = hi - lo;
+        const rate = span > 0
+            ? (span / usableWidth) * (options.shiftKey ? fineMultiplier : 1)
+            : 0;
+        let rawValue = Math.max(lo, Math.min(hi, finite(options.rawValue) + finite(options.deltaX) * rate));
+        if (Object.is(rawValue, -0)) rawValue = 0;
+        return {
+            rawValue,
+            value: clampPrecisionRangeValue(rawValue, lo, hi, step),
         };
     }
 
@@ -281,8 +362,11 @@
         thumbnailPixelsAreUsable,
         updateMatchingThumbnails,
         getQuarterTurnAction,
+        roundRotationDegrees,
         snapRotationDegrees,
         decomposeRotationDegrees,
         composeRotationDegrees,
+        seekPrecisionRangeValue,
+        advancePrecisionRangeDrag,
     };
 }));

@@ -203,4 +203,31 @@ const fullFrameRect = geometry.orientedRectToDisplay(
     );
 });
 
+const flatStage = geometry.getCropStageFrame(3000, 2000, 1000, 700, flattened, 0.84);
+const tiltedStage = geometry.getCropStageFrame(3000, 2000, 1000, 700, tilted, 0.84);
+assert.ok(
+    Math.abs(flatStage.pixelWidth - tiltedStage.pixelWidth) < 1e-9
+        && Math.abs(flatStage.pixelHeight - tiltedStage.pixelHeight) < 1e-9,
+    'crop stage pixel dimensions stay invariant across fine rotation angles'
+);
+assert.ok(
+    Math.abs(tiltedStage.pixelWidth / tiltedStage.pixelHeight - 1000 / 700) < 1e-9,
+    'crop stage matches the outer viewport aspect ratio'
+);
+const centeredCrop = { x: 0, y: 0, width: 1, height: 1 };
+const centeredBefore = geometry.orientedRectToDisplay(centeredCrop, flatStage.frame);
+const anchoredCentered = geometry.anchorRectForAngleChange(centeredCrop, 3000, 2000, flattened, tilted);
+const centeredAfter = geometry.orientedRectToDisplay(anchoredCentered, tiltedStage.frame);
+['x', 'y', 'width', 'height'].forEach(key => {
+    assert.ok(
+        Math.abs(centeredAfter[key] - centeredBefore[key]) < 0.002,
+        'centered crop overlay stays stationary on the fixed crop stage while the picture rotates'
+    );
+});
+const turnedStage = geometry.getCropStageFrame(3000, 2000, 1000, 700, { rotate_90_count: 1, angle: 0 }, 0.84);
+assert.ok(
+    turnedStage.pixelHeight > flatStage.pixelHeight,
+    'quarter turns adapt the fixed stage scale to the upright portrait dimensions'
+);
+
 console.log('Calibration edge geometry tests passed.');

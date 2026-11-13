@@ -78,6 +78,7 @@ const PROPHOTO_TRANSPORT_MIN: f32 = -1.0;
 const PROPHOTO_TRANSPORT_MAX: f32 = 3.0;
 const PROPHOTO_TRANSPORT_ZERO_SPLIT: f32 = 0.125;
 const PROPHOTO_TRANSPORT_LOG_MU: f32 = 4096.0;
+const PROPHOTO_TRANSPORT_TARGET_COLOR_VERSION: u32 = 2;
 
 fn claim_development_generation(
     state: &EngineState,
@@ -10975,13 +10976,14 @@ fn render_shader_equivalent_core_with_camera_rolloff(
         .as_deref()
         .filter(|uv| uv.len() >= 2 && uv[0] >= 0.0)
         .map(|uv| [uv[0], uv[1]]);
-    let sprocket_target = params
+    let explicit_sprocket_target = params
         .sprocket
         .sprocket_target_color
         .as_deref()
         .filter(|c| c.len() >= 3)
-        .map(|c| [c[0], c[1], c[2]])
-        .or_else(|| sprocket_uv.and_then(|uv| sample(uv)));
+        .map(|c| [c[0], c[1], c[2]]);
+    let mut sprocket_target =
+        explicit_sprocket_target.or_else(|| sprocket_uv.and_then(|uv| sample(uv)));
     let tolerance = params.sprocket.sprocket_tolerance.unwrap_or(0.10);
     let feather = params.sprocket.sprocket_feather.unwrap_or(0.05);
     let lut_opacity = params.lut.lut_opacity.clamp(0.0, 1.0) * LUT_CONTROL_SCALE;
@@ -11002,6 +11004,20 @@ fn render_shader_equivalent_core_with_camera_rolloff(
         pipeline_state.contract == ProcessingContract::LegacyV1 || smart_auto_compatibility;
     let modern_pipeline =
         !legacy_compatibility && pipeline_state.contract != ProcessingContract::CaptureCorrectedV11;
+    if explicit_sprocket_target.is_some()
+        && modern_pipeline
+        && params.sprocket.sprocket_target_color_version.unwrap_or(0)
+            < PROPHOTO_TRANSPORT_TARGET_COLOR_VERSION
+    {
+        if let Some(target) = sprocket_target.as_mut() {
+            *target = target.map(|value| {
+                // Retired builds stored the average encoded sample after a
+                // linear [-1, 3] expansion. Invert that expansion before
+                // decoding so already-persisted samples keep working.
+                decode_prophoto_transport_sample((value + 1.0) * 0.25)
+            });
+        }
+    }
     let pipeline_exposure_offsets = if legacy_compatibility {
         channel_exposure_offsets.map(|value| value + master_exposure)
     } else {
@@ -24913,6 +24929,8 @@ mod export_contract_tests {
         let mut params = neutral_params();
         params.sprocket.sprocket_target_color =
             Some(vec![6554.0 / 65535.0, 6554.0 / 65535.0, 6554.0 / 65535.0]);
+        params.sprocket.sprocket_target_color_version =
+            Some(super::PROPHOTO_TRANSPORT_TARGET_COLOR_VERSION);
         params.sprocket.sprocket_tolerance = Some(0.1);
         params.sprocket.sprocket_feather = Some(0.05);
         let mut geom = GeometryState::default();
@@ -24921,6 +24939,91 @@ mod export_contract_tests {
         let output = render_shader_equivalent(&source, &params, &geom, &white_base(), None);
         assert_eq!(output.get_pixel(0, 0)[0], u16::MAX);
         assert!(output.get_pixel(1, 1)[0] < 40000);
+    }
+
+    #[test]
+    fn shader_equivalent_export_whitens_a_transport_encoded_bright_sprocket_target() {
+        let linear_background = 0.8f32;
+        let source_sample = (linear_background * 65535.0).round() as u16;
+        let encoded_sample =
+            (super::encode_prophoto_transport_sample(linear_background) * 65535.0).round() as u16;
+        let encoded_norm = encoded_sample as f32 / 65535.0;
+        let decoded_target = super::decode_prophoto_transport_sample(encoded_norm);
+        let source_linear = source_sample as f32 / 65535.0;
+        let legacy_target = encoded_norm * 4.0 - 1.0;
+
+        assert_eq!(
+            crate::core_math::sprocket_white_mask(source_linear - decoded_target, 0.10, 0.05),
+            1.0
+        );
+        assert_eq!(
+            crate::core_math::sprocket_white_mask(source_linear - legacy_target, 0.10, 0.05),
+            0.0
+        );
+
+        let source = ImageBuffer::from_pixel(4, 4, Rgb([source_sample; 3]));
+        let mut params = neutral_params();
+        params.sprocket.sprocket_uv = Some(vec![0.5, 0.5]);
+        params.sprocket.sprocket_target_color = Some(vec![decoded_target; 3]);
+        params.sprocket.sprocket_target_color_version =
+            Some(super::PROPHOTO_TRANSPORT_TARGET_COLOR_VERSION);
+        params.sprocket.sprocket_tolerance = Some(0.10);
+        params.sprocket.sprocket_feather = Some(0.05);
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]);
+
+        let output = super::render_shader_equivalent_with_state(
+            &source,
+            &params,
+            &geom,
+            &white_base(),
+            &PipelineState::smart_auto(),
+            None,
+        );
+        assert_eq!(output.get_pixel(0, 0)[0], u16::MAX);
+    }
+
+    #[test]
+    fn shader_equivalent_export_migrates_a_retired_sprocket_target() {
+        let linear_background = 0.8f32;
+        let source_sample = (linear_background * 65535.0).round() as u16;
+        let encoded_norm = super::encode_prophoto_transport_sample(linear_background);
+        let retired_target = encoded_norm * 4.0 - 1.0;
+
+        let source = ImageBuffer::from_pixel(4, 4, Rgb([source_sample; 3]));
+        let mut params = neutral_params();
+        params.sprocket.sprocket_uv = Some(vec![0.5, 0.5]);
+        params.sprocket.sprocket_target_color = Some(vec![retired_target; 3]);
+        params.sprocket.sprocket_target_color_version = None;
+        params.sprocket.sprocket_tolerance = Some(0.10);
+        params.sprocket.sprocket_feather = Some(0.05);
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]);
+
+        let output = super::render_shader_equivalent_with_state(
+            &source,
+            &params,
+            &geom,
+            &white_base(),
+            &PipelineState::smart_auto(),
+            None,
+        );
+        assert_eq!(output.get_pixel(0, 0)[0], u16::MAX);
+    }
+
+    #[test]
+    fn shader_equivalent_export_uv_fallback_keeps_the_linear_sample() {
+        let source_sample = (0.8f32 * 65535.0).round() as u16;
+        let source = ImageBuffer::from_pixel(4, 4, Rgb([source_sample; 3]));
+        let mut params = neutral_params();
+        params.sprocket.sprocket_uv = Some(vec![0.5, 0.5]);
+        params.sprocket.sprocket_tolerance = Some(0.10);
+        params.sprocket.sprocket_feather = Some(0.05);
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]]);
+
+        let output = render_shader_equivalent(&source, &params, &geom, &white_base(), None);
+        assert_eq!(output.get_pixel(0, 0)[0], u16::MAX);
     }
 
     #[test]
