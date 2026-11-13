@@ -50,6 +50,121 @@ pub fn normalize_density_channel(
     tone_normalized_channel(gamma_corrected, highlights, shadows)
 }
 
+/// Normalize a modern-pipeline density sample while preserving highlight
+/// headroom above the automatic D-Max.
+///
+/// The legacy path keeps the historical `[0, 1]` ceiling. The modern path needs
+/// the over-range samples so the linear highlight recovery and the display
+/// shoulder can reconstruct detail instead of receiving a flat white.
+#[inline]
+pub fn normalize_density_channel_unclamped_high(density: f32, d_min: f32, d_max: f32) -> f32 {
+    let range = d_max - d_min;
+    if !density.is_finite()
+        || !d_min.is_finite()
+        || !d_max.is_finite()
+        || !range.is_finite()
+        || range <= 1e-6
+    {
+        return 0.0;
+    }
+    ((density - d_min) / range).max(0.0)
+}
+
+pub const LINEAR_HIGHLIGHT_PIVOT: f32 = 0.62;
+pub const LINEAR_HIGHLIGHT_SLIDER_MAX: f32 = 0.75;
+pub const LINEAR_HIGHLIGHT_RECOVERY_GAIN: f32 = 1.45;
+pub const LINEAR_HIGHLIGHT_BOOST_GAIN: f32 = 1.25;
+
+/// Apply the Develop Highlights slider in linear light.
+///
+/// Recovery works independently on every channel above the pivot so neutral
+/// input stays neutral and one channel cannot lock the other two in place.
+/// Boost keeps the brightest channel in charge and scales all channels
+/// together, which lets a bright highlight approach the white point without
+/// changing its hue. Values at or below the pivot are returned exactly
+/// unchanged.
+#[inline]
+pub fn apply_linear_highlight_adjustment_rgb(rgb: [f32; 3], highlights: f32) -> [f32; 3] {
+    if rgb.iter().any(|value| !value.is_finite()) || !highlights.is_finite() {
+        return [0.0; 3];
+    }
+    let rgb = rgb.map(|value| value.max(0.0));
+    if highlights.abs() <= 1e-6 {
+        return rgb;
+    }
+    if highlights < 0.0 {
+        let amount = (-highlights / LINEAR_HIGHLIGHT_SLIDER_MAX).min(1.0);
+        let gain = LINEAR_HIGHLIGHT_RECOVERY_GAIN * amount;
+        return rgb.map(|value| {
+            if value <= LINEAR_HIGHLIGHT_PIVOT {
+                return value;
+            }
+            let distance = (value / LINEAR_HIGHLIGHT_PIVOT).ln();
+            let adjusted_distance = distance / (1.0 + gain * distance);
+            LINEAR_HIGHLIGHT_PIVOT * adjusted_distance.exp()
+        });
+    }
+
+    let maximum = rgb[0].max(rgb[1]).max(rgb[2]);
+    if maximum <= LINEAR_HIGHLIGHT_PIVOT {
+        return rgb;
+    }
+    let amount = (highlights / LINEAR_HIGHLIGHT_SLIDER_MAX).min(1.0);
+    let gain = LINEAR_HIGHLIGHT_BOOST_GAIN * amount;
+    let distance = (maximum / LINEAR_HIGHLIGHT_PIVOT).ln();
+    let adjusted_distance = distance * (1.0 + gain * distance / (1.0 + distance));
+    let adjusted_maximum = LINEAR_HIGHLIGHT_PIVOT * adjusted_distance.exp();
+    rgb.map(|value| value * (adjusted_maximum / maximum))
+}
+
+/// Apply a finite, per-channel highlight shoulder before the display matrix.
+///
+/// `knee` is the last value that passes through untouched and `2.0 - knee` is
+/// the first value that becomes pure white. The two parabolic pieces meet with
+/// matching value and slope, so the shoulder neither flattens ordinary
+/// highlights nor leaves an asymptote that can never reach white.
+#[inline]
+pub fn finite_soft_clip_highlights_rgb(rgb: [f32; 3], knee: f32) -> [f32; 3] {
+    if rgb.iter().any(|value| !value.is_finite()) || !knee.is_finite() || knee < 0.0 || knee >= 1.0
+    {
+        return [0.0; 3];
+    }
+    let clip = 2.0 - knee;
+    rgb.map(|value| {
+        let value = value.max(0.0);
+        if value <= knee {
+            value
+        } else if value >= clip {
+            1.0
+        } else {
+            let remaining = clip - value;
+            1.0 - (remaining * remaining) / (4.0 * (1.0 - knee))
+        }
+    })
+}
+
+/// Compress a linear highlight peak into a smooth shoulder while preserving
+/// the three channel ratios. Values at or below `knee` are bit-identical.
+#[inline]
+pub fn rolloff_highlight_shoulder_rgb(rgb: [f32; 3], knee: f32, ceiling: f32) -> [f32; 3] {
+    if rgb.iter().any(|value| !value.is_finite())
+        || !knee.is_finite()
+        || !ceiling.is_finite()
+        || ceiling <= knee
+    {
+        return [0.0; 3];
+    }
+    let rgb = rgb.map(|value| value.max(0.0));
+    let maximum = rgb[0].max(rgb[1]).max(rgb[2]);
+    if maximum <= knee {
+        return rgb;
+    }
+    let span = ceiling - knee;
+    let excess = maximum - knee;
+    let compressed = knee + (span * excess) / (span + excess);
+    rgb.map(|value| value * (compressed / maximum))
+}
+
 #[inline]
 pub fn neutral_density_bounds(d_min: [f32; 3], d_max: [f32; 3]) -> (f32, f32) {
     (density_luma(d_min), density_luma(d_max))
@@ -778,11 +893,14 @@ pub fn apply_detail_pixel(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_detail_pixel, apply_homography, apply_lens_distortion_uv, apply_perspective_uv,
-        apply_post_gamma_adjustments, contrast_channel, dehaze_restore, dehaze_transmission,
-        density_luma, neutral_density_bounds, neutralize_rgb, normalize_density_channel,
-        shader_homography, sharpening_mask_weight, sprocket_white_mask, trim_density_endpoints,
-        DetailSettings, ToneCurveSet,
+        apply_detail_pixel, apply_homography, apply_lens_distortion_uv,
+        apply_linear_highlight_adjustment_rgb, apply_perspective_uv, apply_post_gamma_adjustments,
+        contrast_channel, dehaze_restore, dehaze_transmission, density_luma,
+        finite_soft_clip_highlights_rgb, neutral_density_bounds, neutralize_rgb,
+        normalize_density_channel, normalize_density_channel_unclamped_high,
+        rolloff_highlight_shoulder_rgb, shader_homography, sharpening_mask_weight,
+        sprocket_white_mask, trim_density_endpoints, DetailSettings, ToneCurveSet,
+        LINEAR_HIGHLIGHT_PIVOT,
     };
 
     #[test]
@@ -798,6 +916,128 @@ mod tests {
     fn density_tone_curve_is_finite_for_degenerate_ranges() {
         let output = normalize_density_channel(1.0, 0.5, 0.5, 0.0, 0.0, 0.0);
         assert!(output.is_finite());
+    }
+
+    #[test]
+    fn modern_density_normalization_keeps_highlight_headroom() {
+        assert_eq!(
+            normalize_density_channel_unclamped_high(1.05, 0.0, 1.0),
+            1.05
+        );
+        assert_eq!(
+            normalize_density_channel_unclamped_high(1.80, 0.0, 1.0),
+            1.80
+        );
+        assert_eq!(
+            normalize_density_channel_unclamped_high(-0.2, 0.0, 1.0),
+            0.0
+        );
+        assert_eq!(
+            normalize_density_channel_unclamped_high(f32::NAN, 0.0, 1.0),
+            0.0
+        );
+        assert_eq!(normalize_density_channel_unclamped_high(1.0, 1.0, 1.0), 0.0);
+        // The legacy helper keeps its historical ceiling.
+        assert_eq!(normalize_density_channel(1.8, 0.0, 1.0, 0.0, 0.0, 1.0), 1.0);
+    }
+
+    #[test]
+    fn linear_highlight_adjustment_is_identity_at_and_below_the_pivot() {
+        for rgb in [[0.0, 0.0, 0.0], [0.35, 0.45, 0.62], [0.62; 3]] {
+            assert_eq!(apply_linear_highlight_adjustment_rgb(rgb, -0.75), rgb);
+            assert_eq!(apply_linear_highlight_adjustment_rgb(rgb, 0.60), rgb);
+        }
+        let clamped = apply_linear_highlight_adjustment_rgb([-0.2, 0.1, 0.3], -0.75);
+        assert_eq!(clamped, [0.0, 0.1, 0.3]);
+    }
+
+    #[test]
+    fn linear_highlight_recovery_is_monotonic_neutral_and_per_channel() {
+        let low = [0.30, LINEAR_HIGHLIGHT_PIVOT, 0.10];
+        let at_pivot = apply_linear_highlight_adjustment_rgb(low, -0.75);
+        assert_eq!(at_pivot, low);
+
+        let mut previous = LINEAR_HIGHLIGHT_PIVOT;
+        for value in [0.63, 0.90, 1.20, 1.80, 3.00] {
+            let input = [value; 3];
+            let output = apply_linear_highlight_adjustment_rgb(input, -0.75);
+            assert!(output[0] > previous && output[0] < value);
+            assert_eq!(output[0], output[1]);
+            assert_eq!(output[1], output[2]);
+            previous = output[0];
+        }
+
+        let mixed = apply_linear_highlight_adjustment_rgb([0.50, 0.90, 1.30], -0.75);
+        assert_eq!(mixed[0], 0.50);
+        assert!(mixed[1] < 0.90 && mixed[2] < 1.30);
+        assert!(mixed[1] / mixed[0] < 0.90 / 0.50);
+
+        let epsilon = 1e-5;
+        let below =
+            apply_linear_highlight_adjustment_rgb([LINEAR_HIGHLIGHT_PIVOT - epsilon; 3], -0.75);
+        let above =
+            apply_linear_highlight_adjustment_rgb([LINEAR_HIGHLIGHT_PIVOT + epsilon; 3], -0.75);
+        assert!((above[0] - below[0]).abs() < 4.0 * epsilon);
+    }
+
+    #[test]
+    fn linear_highlight_boost_never_overflows_or_inverts() {
+        let mut previous = LINEAR_HIGHLIGHT_PIVOT;
+        for maximum in [0.63, 0.65, 0.90, 1.30, 2.00] {
+            let input = [maximum, maximum * 0.50, maximum * 0.25];
+            let output = apply_linear_highlight_adjustment_rgb(input, 0.60);
+            assert!(output[0] > previous && output[0] > input[0]);
+            assert!(output.iter().all(|value| value.is_finite() && *value > 0.0));
+            for channel in 0..3 {
+                assert!((output[channel] / output[0] - input[channel] / input[0]).abs() < 1e-6);
+            }
+            previous = output[0];
+        }
+        let neutral = apply_linear_highlight_adjustment_rgb([0.9; 3], 0.60);
+        assert_eq!(neutral[0], neutral[1]);
+        assert_eq!(neutral[1], neutral[2]);
+    }
+
+    #[test]
+    fn finite_soft_clip_is_identity_below_the_knee_and_reaches_white() {
+        for rgb in [[0.0, 0.0, 0.0], [0.2, 0.6, 0.88], [0.88; 3]] {
+            assert_eq!(finite_soft_clip_highlights_rgb(rgb, 0.88), rgb);
+        }
+        let shoulder = finite_soft_clip_highlights_rgb([0.95, 1.0, 1.05], 0.88);
+        for (actual, expected) in shoulder.into_iter().zip([0.9397917, 0.97, 0.9897917]) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        assert_eq!(
+            finite_soft_clip_highlights_rgb([1.12, 1.3, 2.0], 0.88),
+            [1.0; 3]
+        );
+        let clamped = finite_soft_clip_highlights_rgb([-0.2, 0.5, 0.9], 0.88);
+        assert!((clamped[0] - 0.0).abs() < 1e-6);
+        assert!((clamped[1] - 0.5).abs() < 1e-6);
+        assert!((clamped[2] - 0.8991667).abs() < 1e-6);
+        assert_eq!(
+            finite_soft_clip_highlights_rgb([f32::NAN, 0.5, 0.9], 0.88),
+            [0.0; 3]
+        );
+    }
+
+    #[test]
+    fn highlight_shoulder_is_identity_below_the_knee() {
+        for rgb in [[0.0, 0.0, 0.0], [0.2, 0.6, 0.8], [0.75, 0.85, 0.1]] {
+            assert_eq!(rolloff_highlight_shoulder_rgb(rgb, 0.85, 0.990), rgb);
+        }
+    }
+
+    #[test]
+    fn highlight_shoulder_compresses_without_changing_channel_ratios() {
+        let input = [0.75, 0.90, 1.25];
+        let output = rolloff_highlight_shoulder_rgb(input, 0.85, 0.990);
+        let maximum = output[0].max(output[1]).max(output[2]);
+        assert!(maximum <= 0.990);
+        assert!(maximum > 0.85);
+        for channel in 0..3 {
+            assert!((output[channel] / output[1] - input[channel] / input[1]).abs() < 1e-6);
+        }
     }
 
     #[test]

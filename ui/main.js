@@ -2321,12 +2321,64 @@ function initWebGL() {
         return dot(c, vec3(0.2126, 0.7152, 0.0722));
     }
 
-    vec3 rolloffCameraDisplay(vec3 rgb) {
+    const float HIGHLIGHT_PIVOT = 0.62;
+    const float HIGHLIGHT_SLIDER_MAX = 0.75;
+    const float HIGHLIGHT_RECOVERY_GAIN = 1.45;
+    const float HIGHLIGHT_BOOST_GAIN = 1.25;
+
+    float recoverHighlightChannel(float value, float gain) {
+        if (value <= HIGHLIGHT_PIVOT) return value;
+        float distance = log(value / HIGHLIGHT_PIVOT);
+        float adjustedDistance = distance / (1.0 + gain * distance);
+        return HIGHLIGHT_PIVOT * exp(adjustedDistance);
+    }
+
+    vec3 applyLinearHighlights(vec3 rgb, float highlights) {
+        rgb = max(rgb, vec3(0.0));
+        if (abs(highlights) <= 1e-6) return rgb;
+        if (highlights < 0.0) {
+            float amount = min(-highlights / HIGHLIGHT_SLIDER_MAX, 1.0);
+            float gain = HIGHLIGHT_RECOVERY_GAIN * amount;
+            return vec3(
+                recoverHighlightChannel(rgb.r, gain),
+                recoverHighlightChannel(rgb.g, gain),
+                recoverHighlightChannel(rgb.b, gain)
+            );
+        }
+
+        float maximum = max(rgb.r, max(rgb.g, rgb.b));
+        if (maximum <= HIGHLIGHT_PIVOT) return rgb;
+        float amount = min(highlights / HIGHLIGHT_SLIDER_MAX, 1.0);
+        float gain = HIGHLIGHT_BOOST_GAIN * amount;
+        float logDistance = log(maximum / HIGHLIGHT_PIVOT);
+        float adjustedDistance = logDistance
+            * (1.0 + gain * logDistance / (1.0 + logDistance));
+        float adjustedMaximum = HIGHLIGHT_PIVOT * exp(adjustedDistance);
+        return rgb * (adjustedMaximum / maximum);
+    }
+
+    float finiteSoftClipChannel(float value, float knee, float clipPoint) {
+        if (value <= knee) return value;
+        if (value >= clipPoint) return 1.0;
+        float remaining = clipPoint - value;
+        return 1.0 - (remaining * remaining) / (4.0 * (1.0 - knee));
+    }
+
+    vec3 finiteSoftClipHighlights(vec3 rgb, float knee) {
+        rgb = max(rgb, vec3(0.0));
+        float clipPoint = 2.0 - knee;
+        return vec3(
+            finiteSoftClipChannel(rgb.r, knee, clipPoint),
+            finiteSoftClipChannel(rgb.g, knee, clipPoint),
+            finiteSoftClipChannel(rgb.b, knee, clipPoint)
+        );
+    }
+
+    vec3 rolloffHighlights(vec3 rgb, float knee, float ceiling) {
         rgb = max(rgb, vec3(0.0));
         float maximum = max(rgb.r, max(rgb.g, rgb.b));
-        const float knee = 0.85;
-        const float ceiling = 0.990;
         if (maximum <= knee) return rgb;
+        if (ceiling <= knee) return min(rgb, vec3(ceiling));
         float span = ceiling - knee;
         float excess = maximum - knee;
         float compressed = knee + (span * excess) / (span + excess);
@@ -2394,9 +2446,12 @@ function initWebGL() {
 
     float tonePostGamma(float value) {
         float clamped = clamp(value, 0.0, 1.0);
+        float highlights = (u_legacy_pipeline != 0 || u_capture_corrected_pipeline != 0)
+            ? u_highlights
+            : 0.0;
         return clamp(value
             + u_shadows * pow(1.0 - clamped, 2.0) * value
-            + u_highlights * pow(clamped, 2.0) * (1.0 - value), 0.0, 1.0);
+            + highlights * pow(clamped, 2.0) * (1.0 - value), 0.0, 1.0);
     }
 
     // Display-referred contrast around mid grey. The usable range stops at a
@@ -2591,21 +2646,24 @@ function initWebGL() {
         // exposed leader). Roll anchors only choose the endpoints.
         vec3 norm = mix(vec3(0.0), (density - effective_dmin) / safe_range, valid_range);
         
-        vec3 positive_linear = clamp(norm, 0.0, 1.0);
-        if (u_mode == 0 && u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0) {
-            positive_linear = u_positive_to_display * positive_linear;
-        }
+        bool modernPipeline = u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0;
+        bool cameraNativeDisplay = modernPipeline && u_mode == 0 && u_camera_native_display != 0;
+        vec3 work = modernPipeline ? max(norm, 0.0) : clamp(norm, 0.0, 1.0);
         if (u_legacy_pipeline == 0) {
-            positive_linear *= exp2(u_master_exposure);
+            work *= exp2(u_master_exposure);
+        }
+        if (modernPipeline) {
+            work = applyLinearHighlights(work, u_highlights);
+            work = finiteSoftClipHighlights(work, 0.88);
+            if (u_mode == 0) {
+                work = u_positive_to_display * work;
+            }
         }
         float safe_gamma = max(u_gamma, 1e-6);
-        vec3 display_linear = clamp(positive_linear, 0.0, 1.0);
-        if (u_mode == 0 && u_legacy_pipeline == 0 && u_capture_corrected_pipeline == 0
-            && u_camera_native_display != 0) {
-            display_linear = rolloffCameraDisplay(positive_linear);
-        }
-        vec3 final_rgb = (u_mode == 0 && u_legacy_pipeline == 0
-            && u_capture_corrected_pipeline == 0 && u_camera_native_display != 0)
+        vec3 display_linear = cameraNativeDisplay
+            ? rolloffHighlights(work, 0.85, 0.990)
+            : clamp(work, 0.0, 1.0);
+        vec3 final_rgb = cameraNativeDisplay
             ? applyCameraDisplayGamma(display_linear, 1.0 / safe_gamma)
             : pow(display_linear, vec3(1.0 / safe_gamma));
         // The Tone Curve sits between the Printer Lights and the Aesthetics

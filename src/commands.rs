@@ -27,10 +27,12 @@ use crate::color_science::{
     parse_output_space, ColorSpaceId, DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
 };
 use crate::core_math::{
-    apply_detail_pixel, apply_lens_distortion_uv, apply_perspective_uv,
-    apply_post_gamma_adjustments_with_luma, density_luma, detail_gradient, neutral_density_bounds,
-    normalize_density_channel, sprocket_white_mask, trim_density_endpoints, DetailSettings,
-    ToneCurveSet, DENSITY_LUMA_COEFFICIENTS, DETAIL_LOCAL_DOWNSCALE, DETAIL_REFERENCE_LONG_EDGE,
+    apply_detail_pixel, apply_lens_distortion_uv, apply_linear_highlight_adjustment_rgb,
+    apply_perspective_uv, apply_post_gamma_adjustments_with_luma, density_luma, detail_gradient,
+    finite_soft_clip_highlights_rgb, neutral_density_bounds, normalize_density_channel,
+    normalize_density_channel_unclamped_high, rolloff_highlight_shoulder_rgb, sprocket_white_mask,
+    trim_density_endpoints, DetailSettings, ToneCurveSet, DENSITY_LUMA_COEFFICIENTS,
+    DETAIL_LOCAL_DOWNSCALE, DETAIL_REFERENCE_LONG_EDGE,
 };
 use crate::persistence::{self, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
@@ -10896,18 +10898,11 @@ const CAMERA_DISPLAY_GAMMA_TOE: f32 = 0.018;
 /// it all three channels share one positive scale factor, so a bright sky does
 /// not desaturate towards white.
 fn rolloff_camera_display_rgb(rgb: [f32; 3]) -> [f32; 3] {
-    if rgb.iter().any(|value| !value.is_finite()) {
-        return [0.0; 3];
-    }
-    let rgb = rgb.map(|value| value.max(0.0));
-    let maximum = rgb[0].max(rgb[1]).max(rgb[2]);
-    if maximum <= CAMERA_DISPLAY_ROLLOFF_KNEE {
-        return rgb;
-    }
-    let span = CAMERA_DISPLAY_ROLLOFF_CEIL - CAMERA_DISPLAY_ROLLOFF_KNEE;
-    let excess = maximum - CAMERA_DISPLAY_ROLLOFF_KNEE;
-    let compressed = CAMERA_DISPLAY_ROLLOFF_KNEE + (span * excess) / (span + excess);
-    rgb.map(|value| value * (compressed / maximum))
+    rolloff_highlight_shoulder_rgb(
+        rgb,
+        CAMERA_DISPLAY_ROLLOFF_KNEE,
+        CAMERA_DISPLAY_ROLLOFF_CEIL,
+    )
 }
 
 /// Display gamma for the camera-native positive. Above the toe this is the
@@ -11005,6 +11000,8 @@ fn render_shader_equivalent_core_with_camera_rolloff(
     let roll_anchored = pipeline_state.render_mapping.mode == RenderMode::RollAnchored;
     let legacy_compatibility =
         pipeline_state.contract == ProcessingContract::LegacyV1 || smart_auto_compatibility;
+    let modern_pipeline =
+        !legacy_compatibility && pipeline_state.contract != ProcessingContract::CaptureCorrectedV11;
     let pipeline_exposure_offsets = if legacy_compatibility {
         channel_exposure_offsets.map(|value| value + master_exposure)
     } else {
@@ -11138,34 +11135,56 @@ fn render_shader_equivalent_core_with_camera_rolloff(
                 1.0
             };
             let normalize = |value: f32, low: f32, high: f32| {
-                normalize_density_channel(value, low, high, 0.0, 0.0, working_gamma)
+                if modern_pipeline {
+                    normalize_density_channel_unclamped_high(value, low, high)
+                } else {
+                    normalize_density_channel(value, low, high, 0.0, 0.0, working_gamma)
+                }
             };
             let normalized_working = [
                 normalize(density[0], d_min[0], d_max[0]),
                 normalize(density[1], d_min[1], d_max[1]),
                 normalize(density[2], d_min[2], d_max[2]),
             ];
-            let mut positive_linear = positive_to_display
-                .map(|matrix| apply_linear_matrix(normalized_working, matrix))
-                .unwrap_or(normalized_working);
-            if !legacy_compatibility {
+            let positive_linear = if modern_pipeline {
                 let exposure_gain = 2.0f32.powf(master_exposure);
-                positive_linear = positive_linear.map(|value| value * exposure_gain);
-            }
+                let work = normalized_working.map(|value| value.max(0.0) * exposure_gain);
+                let work = apply_linear_highlight_adjustment_rgb(work, params.tone.highlights);
+                let work = finite_soft_clip_highlights_rgb(work, 0.88);
+                positive_to_display
+                    .map(|matrix| apply_linear_matrix(work, matrix))
+                    .unwrap_or(work)
+            } else {
+                let positive_linear = positive_to_display
+                    .map(|matrix| apply_linear_matrix(normalized_working, matrix))
+                    .unwrap_or(normalized_working);
+                if legacy_compatibility {
+                    positive_linear
+                } else {
+                    positive_linear.map(|value| value * 2.0f32.powf(master_exposure))
+                }
+            };
             let normalized = if legacy_compatibility {
                 positive_linear
             } else {
-                let camera_native_display = camera_native_matrix.is_some() && apply_camera_rolloff;
-                let display_linear = if camera_native_display {
-                    rolloff_camera_display_rgb(positive_linear)
-                } else {
-                    positive_linear.map(|value| value.clamp(0.0, 1.0))
-                };
                 let inv_gamma = 1.0 / params.density.gamma.max(1e-6);
-                if camera_native_display {
-                    apply_camera_display_gamma(display_linear, inv_gamma)
+                if !modern_pipeline {
+                    // Capture-corrected keeps its historical display clamp.
+                    positive_linear.map(|value| value.clamp(0.0, 1.0).powf(inv_gamma))
                 } else {
-                    display_linear.map(|value| value.powf(inv_gamma))
+                    let camera_native_display = params.film_mode == FilmMode::Color
+                        && camera_native_matrix.is_some()
+                        && apply_camera_rolloff;
+                    let display_linear = if camera_native_display {
+                        rolloff_camera_display_rgb(positive_linear)
+                    } else {
+                        positive_linear.map(|value| value.clamp(0.0, 1.0))
+                    };
+                    if camera_native_display {
+                        apply_camera_display_gamma(display_linear, inv_gamma)
+                    } else {
+                        display_linear.map(|value| value.powf(inv_gamma))
+                    }
                 }
             };
             let (saturation, temperature, tint) = if params.film_mode == FilmMode::Color {
@@ -11178,9 +11197,14 @@ fn render_shader_equivalent_core_with_camera_rolloff(
                 (0.0, 0.0, 0.0)
             };
             let normalized = tone_curves.apply(normalized);
+            let post_gamma_highlights = if modern_pipeline {
+                0.0
+            } else {
+                params.tone.highlights
+            };
             let baseline = apply_post_gamma_adjustments_with_luma(
                 normalized,
-                params.tone.highlights,
+                post_gamma_highlights,
                 params.tone.shadows,
                 params.tone.contrast,
                 saturation,
@@ -11229,7 +11253,9 @@ fn render_shader_equivalent_core_with_camera_rolloff(
             }
 
             for channel in 0..3 {
-                out_pixel[channel] = (rendered[channel] * 65535.0).clamp(0.0, 65535.0) as u16;
+                // Match the WebGL framebuffer's rounding: a matrix result a
+                // few float ulps below one must still encode as pure white.
+                out_pixel[channel] = (rendered[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
             }
         });
     if !detail_is_neutral {
@@ -16310,6 +16336,8 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
     let smart_auto_compatibility = is_smart_auto_compatibility(&effective_pipeline);
     let legacy_compatibility =
         effective_pipeline.contract == ProcessingContract::LegacyV1 || smart_auto_compatibility;
+    let modern_pipeline = !legacy_compatibility
+        && effective_pipeline.contract != ProcessingContract::CaptureCorrectedV11;
     let pipeline_exposure_offsets = if legacy_compatibility {
         channel_exposure_offsets.map(|value| value + master_exposure)
     } else {
@@ -16396,31 +16424,44 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
             );
             let working_gamma = if legacy_compatibility { gamma } else { 1.0 };
             let normalize = |value: f32, low: f32, high: f32| {
-                normalize_density_channel(value, low, high, highlights, shadows, working_gamma)
+                if modern_pipeline {
+                    normalize_density_channel_unclamped_high(value, low, high)
+                } else {
+                    normalize_density_channel(value, low, high, highlights, shadows, working_gamma)
+                }
             };
             let normalized = [
                 normalize(density[0], effective_dmin[0], effective_dmax[0]),
                 normalize(density[1], effective_dmin[1], effective_dmax[1]),
                 normalize(density[2], effective_dmin[2], effective_dmax[2]),
             ];
-            let mut positive_linear = prophoto_to_srgb
-                .map(|matrix| apply_linear_matrix(normalized, matrix))
-                .unwrap_or(normalized);
-            if !legacy_compatibility {
-                let exposure_gain = 2.0f32.powf(master_exposure);
-                positive_linear = positive_linear.map(|value| value * exposure_gain);
-            }
             let gamma_corrected = if legacy_compatibility {
-                positive_linear
-            } else {
+                prophoto_to_srgb
+                    .map(|matrix| apply_linear_matrix(normalized, matrix))
+                    .unwrap_or(normalized)
+            } else if modern_pipeline {
+                let exposure_gain = 2.0f32.powf(master_exposure);
+                let work = normalized.map(|value| value.max(0.0) * exposure_gain);
+                let work = apply_linear_highlight_adjustment_rgb(work, highlights);
+                let work = finite_soft_clip_highlights_rgb(work, 0.88);
+                let positive_linear = prophoto_to_srgb
+                    .map(|matrix| apply_linear_matrix(work, matrix))
+                    .unwrap_or(work);
                 positive_linear.map(|value| value.clamp(0.0, 1.0).powf(1.0 / gamma.max(1e-6)))
+            } else {
+                let exposure_gain = 2.0f32.powf(master_exposure);
+                normalized.map(|value| {
+                    (value * exposure_gain)
+                        .clamp(0.0, 1.0)
+                        .powf(1.0 / gamma.max(1e-6))
+                })
             };
             // A fallback thumbnail still has to show the curve the user drew.
             let gamma_corrected = tone_curves.apply(gamma_corrected);
             let mut final_rgb = apply_post_gamma_adjustments_with_luma(
                 gamma_corrected,
                 0.0,
-                0.0,
+                if modern_pipeline { shadows } else { 0.0 },
                 params.tone.contrast,
                 saturation,
                 temperature,
@@ -20094,7 +20135,10 @@ mod import_contract_tests {
         params.tone.saturation = 0.15;
         params.tone.temperature = -0.25;
         params.tone.tint = 0.10;
-        params.tone.highlights = -0.10;
+        // Keep both requirements pinned in the browser harness: the wedge
+        // reaches norm > 1.0 and the strong negative slider exercises the
+        // linear recovery curve rather than the retired post-gamma formula.
+        params.tone.highlights = -0.60;
         params.tone.shadows = 0.15;
         params.curve.curve_rgb = vec![[0.0, 0.0], [0.25, 0.22], [0.75, 0.78], [1.0, 1.0]];
         params.curve.curve_red = vec![[0.0, 0.0], [0.5, 0.55], [1.0, 1.0]];
@@ -26759,11 +26803,12 @@ mod camera_native_basis_tests {
             base_g: u16::MAX,
             base_b: u16::MAX,
         };
-        // Densities 0.2 / 0.5 / 0.8 over a clear base.
+        // Densities 0.1 / 0.3 / 0.55 over a clear base stay below the display
+        // shoulder so this test isolates the persisted matrix.
         let source = ImageBuffer::from_pixel(
             2,
             2,
-            Rgb([10f32.powf(-0.2), 10f32.powf(-0.5), 10f32.powf(-0.8)]),
+            Rgb([10f32.powf(-0.1), 10f32.powf(-0.3), 10f32.powf(-0.55)]),
         );
         render_f32_shader_equivalent(
             &source,
@@ -26807,6 +26852,193 @@ mod camera_native_basis_tests {
         assert!(maximum < 0.990, "{output:?}");
         assert!((output[0] / output[1] - input[0] / input[1]).abs() < 1.0e-5);
         assert!((output[2] / output[1] - input[2] / input[1]).abs() < 1.0e-5);
+    }
+
+    fn render_modern_norm_pixels(
+        norms: &[[f32; 3]],
+        camera_native: bool,
+        highlights: f32,
+    ) -> Vec<[u16; 3]> {
+        let base_density = [0.40f32; 3];
+        let source = ImageBuffer::from_fn(norms.len() as u32, 1, |x, _| {
+            Rgb(std::array::from_fn(|channel| {
+                10.0f32.powf(-(base_density[channel] + norms[x as usize][channel]))
+            }))
+        });
+        let mut state = mapped_state(camera_native.then_some(NIKON_CAMERA_TO_SRGB));
+        state.processing_report.base_source = "test_measurement".to_string();
+        let mut params = TuningParams::default();
+        params.density.d_min = [0.0; 3];
+        params.density.d_max = [1.0; 3];
+        params.density.gamma = 2.2;
+        params.tone.highlights = highlights;
+        let rendered = render_f32_shader_equivalent(
+            &source,
+            None,
+            &params,
+            &GeometryState::default(),
+            &base_color_from_density(base_density),
+            &state,
+            None,
+        );
+        (0..norms.len() as u32)
+            .map(|x| rendered.get_pixel(x, 0).0)
+            .collect()
+    }
+
+    fn render_modern_norm_rows(camera_native: bool, highlights: f32) -> Vec<[u16; 3]> {
+        const NORMS: [f32; 7] = [0.35, 0.45, 0.62, 0.90, 1.05, 1.30, 1.80];
+        let norms: Vec<[f32; 3]> = NORMS.iter().map(|value| [*value; 3]).collect();
+        render_modern_norm_pixels(&norms, camera_native, highlights)
+    }
+
+    #[test]
+    fn modern_highlight_headroom_survives_camera_and_scanner_routes() {
+        for camera_native in [false, true] {
+            let neutral = render_modern_norm_rows(camera_native, 0.0);
+            assert!(
+                neutral[3][1] < neutral[4][1],
+                "{} route flattened norm 0.90 against 1.05: {:?}",
+                if camera_native { "camera" } else { "scanner" },
+                neutral
+            );
+            assert!(
+                neutral[4][1] <= neutral[5][1],
+                "{} route reversed norm 1.05 against 1.30: {:?}",
+                if camera_native { "camera" } else { "scanner" },
+                neutral
+            );
+            if camera_native {
+                assert!(
+                    neutral[6][1] < u16::MAX,
+                    "camera rolloff must keep its finite 0.990 shoulder"
+                );
+            } else {
+                assert_eq!(
+                    neutral[5],
+                    [u16::MAX; 3],
+                    "the scanner route must let norm 1.30 reach pure white"
+                );
+                assert_eq!(
+                    neutral[6],
+                    [u16::MAX; 3],
+                    "the scanner route must let norm 1.80 reach pure white"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn modern_linear_highlights_recover_only_above_the_pivot() {
+        for camera_native in [false, true] {
+            let baseline = render_modern_norm_rows(camera_native, 0.0);
+            let recovered = render_modern_norm_rows(camera_native, -0.75);
+            assert_eq!(
+                recovered[0], baseline[0],
+                "highlights changed a pixel below the pivot"
+            );
+            assert_eq!(
+                recovered[1], baseline[1],
+                "highlights changed the pivot pixel"
+            );
+            assert_eq!(
+                recovered[2], baseline[2],
+                "highlights changed a pixel just at the pivot"
+            );
+            for row in [3, 4, 5, 6] {
+                assert!(
+                    recovered[row][1] < baseline[row][1],
+                    "highlights did not pull down norm row {row}"
+                );
+                assert!(
+                    recovered[row].iter().all(|value| *value < u16::MAX),
+                    "highlight recovery left a clipped norm row {row}: {:?}",
+                    recovered[row]
+                );
+            }
+            for row in [3, 4, 5, 6] {
+                assert!(
+                    recovered[row][1] > recovered[row - 1][1],
+                    "highlight recovery reversed or flattened the order at row {row}"
+                );
+            }
+            for row in [3, 4, 5, 6] {
+                let pixel = recovered[row];
+                assert!(
+                    pixel.iter().max().unwrap() - pixel.iter().min().unwrap() <= 2,
+                    "highlight recovery tinted a neutral input: {pixel:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn modern_linear_highlight_boost_is_safe_and_neutral() {
+        for camera_native in [false, true] {
+            let baseline = render_modern_norm_rows(camera_native, 0.0);
+            let boosted = render_modern_norm_rows(camera_native, 0.60);
+            for row in [0, 1, 2] {
+                assert_eq!(
+                    boosted[row], baseline[row],
+                    "highlight boost changed a pixel at or below the pivot"
+                );
+            }
+            assert!(
+                boosted[3][1] > baseline[3][1],
+                "highlight boost did not visibly raise norm 0.90"
+            );
+            for row in [4, 5, 6] {
+                assert!(
+                    boosted[row][1] >= baseline[row][1],
+                    "highlight boost did not raise norm row {row}"
+                );
+            }
+            for row in [3, 4, 5, 6] {
+                assert!(
+                    boosted[row][1] >= boosted[row - 1][1],
+                    "highlight boost reversed or flattened the order at row {row}"
+                );
+                let pixel = boosted[row];
+                assert!(
+                    pixel.iter().max().unwrap() - pixel.iter().min().unwrap() <= 2,
+                    "highlight boost tinted a neutral input: {pixel:?}"
+                );
+            }
+            if !camera_native {
+                assert_eq!(
+                    boosted[5],
+                    [u16::MAX; 3],
+                    "the scanner route must allow a boosted 1.30 highlight to clip to white"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn extreme_low_dmax_highlights_white_out_without_neon_artifacts() {
+        let scenes = [[1.5, 2.5, 3.5], [3.3, 3.0, 2.9]];
+        let clipped = render_modern_norm_pixels(&scenes, false, 0.0);
+        for pixel in &clipped {
+            assert_eq!(
+                *pixel,
+                [u16::MAX; 3],
+                "an extreme low D-Max highlight must reach pure white through the scanner matrix"
+            );
+        }
+
+        let recovered = render_modern_norm_pixels(&scenes, false, -0.75);
+        for (scene, pixel) in scenes.iter().zip(&recovered) {
+            let minimum = *pixel.iter().min().unwrap();
+            let maximum = *pixel.iter().max().unwrap();
+            assert!(
+                minimum > (u16::MAX as f32 * 0.90) as u16,
+                "recovered scene {scene:?} was not bright and soft: {pixel:?}"
+            );
+            assert!(
+                maximum - minimum < (u16::MAX as f32 * 0.10) as u16,
+                "recovered scene {scene:?} carried an extreme colour cast: {pixel:?}"
+            );
+        }
     }
 
     #[test]
