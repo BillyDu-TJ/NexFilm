@@ -2296,10 +2296,25 @@ function initWebGL() {
 
     const float PROPHOTO_TRANSPORT_MIN = -1.0;
     const float PROPHOTO_TRANSPORT_MAX = 3.0;
+    const float PROPHOTO_TRANSPORT_ZERO_SPLIT = 0.125;
+    const float PROPHOTO_TRANSPORT_LOG_MU = 4096.0;
+
+    float decodeProPhotoTransportSample(float encoded) {
+        if (encoded < PROPHOTO_TRANSPORT_ZERO_SPLIT) {
+            return encoded / PROPHOTO_TRANSPORT_ZERO_SPLIT - 1.0;
+        }
+        float u = (encoded - PROPHOTO_TRANSPORT_ZERO_SPLIT)
+            / (1.0 - PROPHOTO_TRANSPORT_ZERO_SPLIT);
+        float log_range = log(1.0 + PROPHOTO_TRANSPORT_MAX * PROPHOTO_TRANSPORT_LOG_MU);
+        return (exp(u * log_range) - 1.0) / PROPHOTO_TRANSPORT_LOG_MU;
+    }
 
     vec3 decodeProPhotoTransport(vec3 encoded) {
-        return encoded * (PROPHOTO_TRANSPORT_MAX - PROPHOTO_TRANSPORT_MIN)
-            + PROPHOTO_TRANSPORT_MIN;
+        return vec3(
+            decodeProPhotoTransportSample(encoded.r),
+            decodeProPhotoTransportSample(encoded.g),
+            decodeProPhotoTransportSample(encoded.b)
+        );
     }
 
     float getLuma(vec3 c) {
@@ -2316,6 +2331,28 @@ function initWebGL() {
         float excess = maximum - knee;
         float compressed = knee + (span * excess) / (span + excess);
         return rgb * (compressed / maximum);
+    }
+
+    float applyCameraDisplayGammaChannel(float value, float inv_gamma) {
+        float x = clamp(value, 0.0, 1.0);
+        const float toe = 0.018;
+        if (x >= toe) return pow(x, inv_gamma);
+        if (x <= 0.0) return 0.0;
+        float t = x / toe;
+        float y0 = pow(toe, inv_gamma);
+        return y0 * t * (
+            0.25 * (1.0 - t) * (1.0 - t)
+            + t * (3.0 - 2.0 * t)
+            + inv_gamma * t * (t - 1.0)
+        );
+    }
+
+    vec3 applyCameraDisplayGamma(vec3 rgb, float inv_gamma) {
+        return vec3(
+            applyCameraDisplayGammaChannel(rgb.r, inv_gamma),
+            applyCameraDisplayGammaChannel(rgb.g, inv_gamma),
+            applyCameraDisplayGammaChannel(rgb.b, inv_gamma)
+        );
     }
 
     float curveLutCoord(float value, float size) {
@@ -2567,7 +2604,10 @@ function initWebGL() {
             && u_camera_native_display != 0) {
             display_linear = rolloffCameraDisplay(positive_linear);
         }
-        vec3 final_rgb = pow(display_linear, vec3(1.0 / safe_gamma));
+        vec3 final_rgb = (u_mode == 0 && u_legacy_pipeline == 0
+            && u_capture_corrected_pipeline == 0 && u_camera_native_display != 0)
+            ? applyCameraDisplayGamma(display_linear, 1.0 / safe_gamma)
+            : pow(display_linear, vec3(1.0 / safe_gamma));
         // The Tone Curve sits between the Printer Lights and the Aesthetics
         // stage, exactly where the panel puts it.
         final_rgb = applyToneCurves(final_rgb);

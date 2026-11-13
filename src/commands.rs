@@ -74,6 +74,8 @@ const MAX_PREVIEW_PROXY_LONG_EDGE: u32 = 4096;
 // Preserve a useful signed ProPhoto range instead of clipping it to display RGB.
 const PROPHOTO_TRANSPORT_MIN: f32 = -1.0;
 const PROPHOTO_TRANSPORT_MAX: f32 = 3.0;
+const PROPHOTO_TRANSPORT_ZERO_SPLIT: f32 = 0.125;
+const PROPHOTO_TRANSPORT_LOG_MU: f32 = 4096.0;
 
 fn claim_development_generation(
     state: &EngineState,
@@ -2266,18 +2268,44 @@ fn base_color_from_density(density: [f32; 3]) -> BaseColor {
     }
 }
 
+/// Map a signed linear transmission into the normalised `[0, 1]` transport
+/// domain. The negative half keeps its linear precision; the positive half is
+/// log-companded so a low transmission still gets thousands of `u16` steps.
+fn encode_prophoto_transport_sample(value: f32) -> f32 {
+    if value < 0.0 {
+        let clamped = value.clamp(PROPHOTO_TRANSPORT_MIN, 0.0);
+        PROPHOTO_TRANSPORT_ZERO_SPLIT * (clamped - PROPHOTO_TRANSPORT_MIN)
+            / (0.0 - PROPHOTO_TRANSPORT_MIN)
+    } else {
+        let clamped = value.clamp(0.0, PROPHOTO_TRANSPORT_MAX);
+        let u = (1.0 + PROPHOTO_TRANSPORT_LOG_MU * clamped).ln()
+            / (1.0 + PROPHOTO_TRANSPORT_MAX * PROPHOTO_TRANSPORT_LOG_MU).ln();
+        PROPHOTO_TRANSPORT_ZERO_SPLIT + (1.0 - PROPHOTO_TRANSPORT_ZERO_SPLIT) * u
+    }
+}
+
+fn decode_prophoto_transport_sample(encoded_norm: f32) -> f32 {
+    if encoded_norm < PROPHOTO_TRANSPORT_ZERO_SPLIT {
+        encoded_norm / PROPHOTO_TRANSPORT_ZERO_SPLIT - 1.0
+    } else {
+        let u =
+            (encoded_norm - PROPHOTO_TRANSPORT_ZERO_SPLIT) / (1.0 - PROPHOTO_TRANSPORT_ZERO_SPLIT);
+        let log_range = (1.0 + PROPHOTO_TRANSPORT_MAX * PROPHOTO_TRANSPORT_LOG_MU).ln();
+        ((u * log_range).exp() - 1.0) / PROPHOTO_TRANSPORT_LOG_MU
+    }
+}
+
 fn prophoto_estimate_to_transport_proxy(
     estimate: &ImageBuffer<Rgb<f32>, Vec<f32>>,
 ) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
     let mut transport = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(estimate.width(), estimate.height());
-    let span = PROPHOTO_TRANSPORT_MAX - PROPHOTO_TRANSPORT_MIN;
     transport
         .as_mut()
         .par_chunks_exact_mut(3)
         .zip(estimate.as_raw().par_chunks_exact(3))
         .for_each(|(target, source)| {
             for channel in 0..3 {
-                let encoded = (source[channel] - PROPHOTO_TRANSPORT_MIN) / span;
+                let encoded = encode_prophoto_transport_sample(source[channel]);
                 target[channel] = (encoded.clamp(0.0, 1.0) * 65535.0).round() as u16;
             }
         });
@@ -4495,6 +4523,127 @@ fn decode_profiled_tiff_prophoto_estimate(
     Ok(estimate)
 }
 
+fn fit_linear_transmission_long_edge(
+    mut estimate: ImageBuffer<Rgb<f32>, Vec<f32>>,
+    target_long_edge: u32,
+) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+    let (width, height) = estimate.dimensions();
+    let ratio = (target_long_edge as f32 / width.max(height).max(1) as f32).min(1.0);
+    if ratio < 0.999 {
+        estimate = image::imageops::resize(
+            &estimate,
+            (width as f32 * ratio).max(1.0) as u32,
+            (height as f32 * ratio).max(1.0) as u32,
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    estimate
+}
+
+/// Edge-aware chroma smoothing in the optical-density domain. The green
+/// density is the luminance carrier and is never filtered; only the two red
+/// and blue density differences are blended toward a bilateral neighbourhood.
+pub(crate) fn suppress_raw_density_chroma_noise(estimate: &mut ImageBuffer<Rgb<f32>, Vec<f32>>) {
+    let (width, height) = estimate.dimensions();
+    if width < 3 || height < 3 {
+        return;
+    }
+    let source = estimate.clone();
+    let source_pixels = source.as_raw();
+    let width_usize = width as usize;
+    let step = ((width.max(height) as f32 / 2048.0).clamp(1.0, 2.0).round()) as i32;
+    let mut kernel = Vec::with_capacity(25);
+    for dy in -2..=2 {
+        for dx in -2..=2 {
+            let spatial = (-(dx * dx + dy * dy) as f32 / (2.0 * 1.5 * 1.5)).exp();
+            kernel.push((dx, dy, spatial));
+        }
+    }
+
+    estimate
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .enumerate()
+        .for_each(|(index, pixel)| {
+            let x = (index % width_usize) as i32;
+            let y = (index / width_usize) as i32;
+            let base = index * 3;
+            let center = [
+                source_pixels[base],
+                source_pixels[base + 1],
+                source_pixels[base + 2],
+            ];
+            if center.iter().any(|value| !value.is_finite()) {
+                return;
+            }
+            let center_density = center.map(|value| -value.max(1.0e-5).log10());
+            let center_luma = 0.2126 * center_density[0]
+                + 0.7152 * center_density[1]
+                + 0.0722 * center_density[2];
+            let center_cr = center_density[0] - center_density[1];
+            let center_cb = center_density[2] - center_density[1];
+
+            let mut cr_sum = 0.0f32;
+            let mut cb_sum = 0.0f32;
+            let mut weight_sum = 0.0f32;
+            for (dx, dy, spatial) in &kernel {
+                let sample_x = x + dx * step;
+                let sample_y = y + dy * step;
+                if sample_x < 0
+                    || sample_y < 0
+                    || sample_x >= width as i32
+                    || sample_y >= height as i32
+                {
+                    continue;
+                }
+                let sample_base = (sample_y as usize * width_usize + sample_x as usize) * 3;
+                let sample = [
+                    source_pixels[sample_base],
+                    source_pixels[sample_base + 1],
+                    source_pixels[sample_base + 2],
+                ];
+                if sample.iter().any(|value| !value.is_finite()) {
+                    continue;
+                }
+                let density = sample.map(|value| -value.max(1.0e-5).log10());
+                let luma = 0.2126 * density[0] + 0.7152 * density[1] + 0.0722 * density[2];
+                let cr = density[0] - density[1];
+                let cb = density[2] - density[1];
+                let delta_l = (luma - center_luma).abs();
+                let delta_c = ((cr - center_cr).abs() + (cb - center_cb).abs()) * 0.5;
+                let edge = (-(delta_l / 0.045).powi(2) - (delta_c / 0.12).powi(2)).exp();
+                let weight = spatial * edge;
+                cr_sum += cr * weight;
+                cb_sum += cb * weight;
+                weight_sum += weight;
+            }
+            if weight_sum <= 0.0 {
+                return;
+            }
+
+            let t_min = center[0].min(center[1]).min(center[2]);
+            let alpha = if t_min <= 0.02 {
+                0.85
+            } else if t_min >= 0.12 {
+                0.35
+            } else {
+                let blend = (t_min - 0.02) / 0.10;
+                let smooth = blend * blend * (3.0 - 2.0 * blend);
+                0.85 + (0.35 - 0.85) * smooth
+            };
+            let cr_smooth = cr_sum / weight_sum;
+            let cb_smooth = cb_sum / weight_sum;
+            let cr_new = center_cr + (cr_smooth - center_cr) * alpha;
+            let cb_new = center_cb + (cb_smooth - center_cb) * alpha;
+            let density_g = center_density[1];
+            pixel[0] = 10.0f32.powf(-(density_g + cr_new));
+            // Keep the green density exact rather than round-tripping it
+            // through log10/powf, so detail and luminance noise stay untouched.
+            pixel[1] = center[1];
+            pixel[2] = 10.0f32.powf(-(density_g + cb_new));
+        });
+}
+
 fn decode_reduced_dng_for_working_space(
     path: &str,
     target_long_edge: u32,
@@ -4961,6 +5110,22 @@ fn decode_scanner_profiled_estimate_with_matrix(
     profile: Option<&crate::scanner_profile::ScannerInputProfile>,
     target_long_edge: u32,
 ) -> Result<(ImageBuffer<Rgb<f32>, Vec<f32>>, Option<[f32; 9]>), String> {
+    decode_scanner_profiled_estimate_with_matrix_options(
+        path,
+        mode,
+        profile,
+        target_long_edge,
+        true,
+    )
+}
+
+fn decode_scanner_profiled_estimate_with_matrix_options(
+    path: &str,
+    mode: DecodeMode,
+    profile: Option<&crate::scanner_profile::ScannerInputProfile>,
+    target_long_edge: u32,
+    suppress_chroma_noise: bool,
+) -> Result<(ImageBuffer<Rgb<f32>, Vec<f32>>, Option<[f32; 9]>), String> {
     // A Bayer capture belongs to LibRaw, and a scanner profile never applies to
     // one. Scanner FFF is the exception that only looks like a camera RAW: the
     // extension is shared, the container is a rendered page.
@@ -4970,11 +5135,16 @@ fn decode_scanner_profiled_estimate_with_matrix(
                 return Ok((linear_srgb_u16_to_prophoto_f32(&linear), None));
             }
         }
-        return decode_smart_auto_estimate_with_policy(
+        let (mut estimate, matrix) = decode_smart_auto_estimate_with_policy(
             path,
             mode,
             crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
-        );
+        )?;
+        estimate = fit_linear_transmission_long_edge(estimate, target_long_edge);
+        if suppress_chroma_noise {
+            suppress_raw_density_chroma_noise(&mut estimate);
+        }
+        return Ok((estimate, matrix));
     }
     let profile = profile.filter(|_| !is_dng_extension(path));
     // A profiled TIFF converts straight into the working space, exactly like
@@ -7610,7 +7780,7 @@ pub async fn prepare_proxy(
                                 &estimate,
                                 (width as f32 * ratio).max(1.0) as u32,
                                 (height as f32 * ratio).max(1.0) as u32,
-                                FilterType::Lanczos3,
+                                FilterType::Triangle,
                             );
                         }
                         return Ok(PreparedProxy {
@@ -7707,7 +7877,7 @@ pub async fn prepare_proxy(
                         &estimate,
                         (width as f32 * ratio).max(1.0) as u32,
                         (height as f32 * ratio).max(1.0) as u32,
-                        FilterType::Lanczos3,
+                        FilterType::Triangle,
                     );
                 }
                 let transport = prophoto_estimate_to_transport_proxy(&estimate);
@@ -7734,7 +7904,7 @@ pub async fn prepare_proxy(
                         &estimate,
                         (width as f32 * ratio).max(1.0) as u32,
                         (height as f32 * ratio).max(1.0) as u32,
-                        FilterType::Lanczos3,
+                        FilterType::Triangle,
                     );
                 }
                 return Ok(PreparedProxy {
@@ -10719,6 +10889,7 @@ fn positive_to_display_matrix(pipeline_state: &PipelineState) -> [f32; 9] {
 
 const CAMERA_DISPLAY_ROLLOFF_KNEE: f32 = 0.85;
 const CAMERA_DISPLAY_ROLLOFF_CEIL: f32 = 0.990;
+const CAMERA_DISPLAY_GAMMA_TOE: f32 = 0.018;
 
 /// Keep the normalized positive's channel ratio through the camera matrix's
 /// highlight range. Values at or below the knee are returned unchanged; above
@@ -10737,6 +10908,26 @@ fn rolloff_camera_display_rgb(rgb: [f32; 3]) -> [f32; 3] {
     let excess = maximum - CAMERA_DISPLAY_ROLLOFF_KNEE;
     let compressed = CAMERA_DISPLAY_ROLLOFF_KNEE + (span * excess) / (span + excess);
     rgb.map(|value| value * (compressed / maximum))
+}
+
+/// Display gamma for the camera-native positive. Above the toe this is the
+/// original power curve bit for bit; below it a cubic Hermite segment keeps the
+/// value and slope continuous while capping the zero-point noise gain.
+fn apply_camera_display_gamma(rgb: [f32; 3], inv_gamma: f32) -> [f32; 3] {
+    rgb.map(|value| {
+        let x = value.clamp(0.0, 1.0);
+        if x >= CAMERA_DISPLAY_GAMMA_TOE {
+            return x.powf(inv_gamma);
+        }
+        if x <= 0.0 {
+            return 0.0;
+        }
+        let t = x / CAMERA_DISPLAY_GAMMA_TOE;
+        let y0 = CAMERA_DISPLAY_GAMMA_TOE.powf(inv_gamma);
+        // The cubic's bracket satisfies F(1) = 1 and F'(1) = inv_gamma - 1,
+        // so the toe meets pow(x, inv_gamma) with value and slope at the knee.
+        y0 * t * (0.25 * (1.0 - t) * (1.0 - t) + t * (3.0 - 2.0 * t) + inv_gamma * t * (t - 1.0))
+    })
 }
 
 fn render_shader_equivalent_core(
@@ -10964,12 +11155,18 @@ fn render_shader_equivalent_core_with_camera_rolloff(
             let normalized = if legacy_compatibility {
                 positive_linear
             } else {
-                let display_linear = if camera_native_matrix.is_some() && apply_camera_rolloff {
+                let camera_native_display = camera_native_matrix.is_some() && apply_camera_rolloff;
+                let display_linear = if camera_native_display {
                     rolloff_camera_display_rgb(positive_linear)
                 } else {
                     positive_linear.map(|value| value.clamp(0.0, 1.0))
                 };
-                display_linear.map(|value| value.powf(1.0 / params.density.gamma.max(1e-6)))
+                let inv_gamma = 1.0 / params.density.gamma.max(1e-6);
+                if camera_native_display {
+                    apply_camera_display_gamma(display_linear, inv_gamma)
+                } else {
+                    display_linear.map(|value| value.powf(inv_gamma))
+                }
             };
             let (saturation, temperature, tint) = if params.film_mode == FilmMode::Color {
                 (
@@ -12257,7 +12454,7 @@ fn inherited_export_render_state(
             &proxy,
             (width as f32 * ratio).max(1.0) as u32,
             (height as f32 * ratio).max(1.0) as u32,
-            FilterType::Lanczos3,
+            FilterType::Triangle,
         );
     }
     let estimate =
@@ -16327,33 +16524,35 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 #[cfg(test)]
 mod import_contract_tests {
     use super::{
-        aggregate_roll_density_references, base_color_from_density,
+        aggregate_roll_density_references, apply_camera_display_gamma, base_color_from_density,
         build_response_buffer_from_proxy_with_state, clear_retired_legacy_domain,
         compute_auto_base, compute_auto_base_f32, compute_auto_color_limits,
         compute_content_limits_f32, compute_content_limits_f32_with_bounds,
         compute_frame_base_density_f32, decode_image_buffer, decode_import_preview_base64,
         decode_profiled_tiff_prophoto_estimate, decode_prophoto_estimate_image_buffer,
-        decode_prophoto_estimate_image_buffer_with_policy, decode_reduced_dng_for_working_space,
-        decode_reduced_tiff_for_working_space, decode_scanner_profiled_estimate_image_buffer,
-        decode_tiff_for_smart_auto, decode_uncompressed_tiff_reduced,
-        default_pipeline_state_for_import, density_luma, detect_frame_base_density,
-        detect_frame_highlight_fraction, embedded_input_profile, encode_export_buffer,
-        encoded_pixel_to_prophoto_estimate, estimate_film_base_f32, film_block_luma_profile,
-        fixed_roll_density_mapping, frame_needs_window_reanalysis, highlight_block_index,
-        is_better_preview_edge, is_dng_extension, is_lightweight_direct_preview,
-        is_noritsu_rendered_image, is_raw_extension, is_scanner_fff_tiff,
-        is_smart_auto_compatibility, is_tiff_extension, libraw_decode_error_message,
-        linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff, measure_roll_highlight_frames,
-        persist_import_batch, pipeline_base_density, pipeline_has_base, point_in_film_area,
-        prepare_content_render_limits, preserve_smart_auto_content_span,
-        prophoto_estimate_to_transport_proxy, raw_decode_failure_hint, reference_density_extreme,
-        render_f32_shader_equivalent, render_shader_equivalent, resolve_input_domain,
-        rgb16_image_from_bytes, roll_density_mapping_with_frame_base, roll_physical_density_span,
+        decode_prophoto_estimate_image_buffer_with_policy, decode_prophoto_transport_sample,
+        decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
+        decode_scanner_profiled_estimate_image_buffer, decode_tiff_for_smart_auto,
+        decode_uncompressed_tiff_reduced, default_pipeline_state_for_import, density_luma,
+        detect_frame_base_density, detect_frame_highlight_fraction, embedded_input_profile,
+        encode_export_buffer, encode_prophoto_transport_sample, encoded_pixel_to_prophoto_estimate,
+        estimate_film_base_f32, film_block_luma_profile, fixed_roll_density_mapping,
+        frame_needs_window_reanalysis, highlight_block_index, is_better_preview_edge,
+        is_dng_extension, is_lightweight_direct_preview, is_noritsu_rendered_image,
+        is_raw_extension, is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
+        libraw_decode_error_message, linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff,
+        measure_roll_highlight_frames, persist_import_batch, pipeline_base_density,
+        pipeline_has_base, point_in_film_area, prepare_content_render_limits,
+        preserve_smart_auto_content_span, prophoto_estimate_to_transport_proxy,
+        raw_decode_failure_hint, reference_density_extreme, render_f32_shader_equivalent,
+        render_shader_equivalent, resolve_input_domain, rgb16_image_from_bytes,
+        roll_density_mapping_with_frame_base, roll_physical_density_span,
         sample_reference_frame_path, sampled_frame_paths_from_anchors,
         share_smart_auto_density_scale, srgb_proxy_u16_to_prophoto_f32,
-        tiff_smart_auto_input_is_estimated, trim_density_endpoints, AutoColorLimits, DecodeMode,
+        suppress_raw_density_chroma_noise, tiff_smart_auto_input_is_estimated,
+        trim_density_endpoints, AutoColorLimits, DecodeMode, CAMERA_DISPLAY_GAMMA_TOE,
         CHANNEL_CONTROL_SCALE, IMPORT_PREVIEW_LONG_EDGE, MINIMUM_USABLE_CONTENT_SPAN,
-        PROPHOTO_TRANSPORT_MAX, PROPHOTO_TRANSPORT_MIN, PROXY_LONG_EDGE,
+        PROXY_LONG_EDGE,
     };
     use super::{
         export_base_color_from_snapshot, export_render_inputs_from_snapshot, ExportItemSnapshot,
@@ -17710,11 +17909,161 @@ mod import_contract_tests {
     fn prophoto_transport_preserves_signed_estimate_values_within_cache_range() {
         let source = ImageBuffer::from_raw(2, 1, vec![-1.0, 0.0, 1.0, 2.0, 2.5, 3.0]).unwrap();
         let transport = prophoto_estimate_to_transport_proxy(&source);
-        let span = PROPHOTO_TRANSPORT_MAX - PROPHOTO_TRANSPORT_MIN;
         for (encoded, original) in transport.as_raw().iter().zip(source.as_raw().iter()) {
-            let decoded = *encoded as f32 / 65535.0 * span + PROPHOTO_TRANSPORT_MIN;
-            assert!((decoded - original).abs() <= span / 65535.0 + 1e-6);
+            let decoded = decode_prophoto_transport_sample(*encoded as f32 / 65535.0);
+            let tolerance = if *original <= 0.0 { 1.0e-5 } else { 1.0e-4 };
+            assert!(
+                (decoded - original).abs() <= tolerance,
+                "transport changed {original} to {decoded}"
+            );
         }
+    }
+
+    #[test]
+    fn prophoto_transport_low_transmission_density_round_trip_is_precise() {
+        let transmissions: Vec<f32> = (0..=36)
+            .map(|index| 10.0f32.powf(-(2.0 + index as f32 / 36.0)))
+            .collect();
+        let source = ImageBuffer::from_raw(
+            transmissions.len() as u32,
+            1,
+            transmissions.iter().flat_map(|value| [*value; 3]).collect(),
+        )
+        .unwrap();
+        let transport = prophoto_estimate_to_transport_proxy(&source);
+        for (encoded, original) in transport
+            .as_raw()
+            .iter()
+            .step_by(3)
+            .zip(transmissions.iter())
+        {
+            let decoded = decode_prophoto_transport_sample(*encoded as f32 / 65535.0);
+            let density_error = (-decoded.log10()) - (-original.log10());
+            assert!(
+                density_error.abs() < 0.001,
+                "T={original} decoded to {decoded}, density error {density_error}"
+            );
+        }
+    }
+
+    #[test]
+    fn prophoto_transport_encoding_round_trips_the_full_cache_range() {
+        for value in [-1.0, -0.5, 0.0, 0.001, 0.01, 0.5, 1.0, 2.0, 3.0] {
+            let encoded = encode_prophoto_transport_sample(value);
+            assert!((0.0..=1.0).contains(&encoded));
+            let decoded = decode_prophoto_transport_sample(encoded);
+            assert!((decoded - value).abs() < 1.0e-4, "{value} -> {decoded}");
+        }
+    }
+
+    #[test]
+    fn camera_display_gamma_toe_is_c1_at_the_knee_and_identity_above_it() {
+        let inv_gamma = 1.0 / 2.2;
+        let knee = CAMERA_DISPLAY_GAMMA_TOE;
+        let toe = apply_camera_display_gamma([knee, 0.0, 0.5], inv_gamma);
+        assert!((toe[0] - knee.powf(inv_gamma)).abs() < 1.0e-6);
+        assert_eq!(toe[1], 0.0);
+        assert!((toe[2] - 0.5f32.powf(inv_gamma)).abs() < 1.0e-6);
+
+        let epsilon = 1.0e-5;
+        let left = apply_camera_display_gamma([knee - epsilon, 0.0, 0.0], inv_gamma)[0];
+        let right = apply_camera_display_gamma([knee + epsilon, 0.0, 0.0], inv_gamma)[0];
+        let slope = (right - left) / (2.0 * epsilon);
+        let expected = inv_gamma * knee.powf(inv_gamma - 1.0);
+        assert!((slope - expected).abs() < 1.0e-2, "{slope} != {expected}");
+
+        let near_zero = 1.0e-6;
+        let zero_slope =
+            apply_camera_display_gamma([near_zero, 0.0, 0.0], inv_gamma)[0] / near_zero;
+        let expected_zero_slope = 0.25 * knee.powf(inv_gamma) / knee;
+        assert!((zero_slope - expected_zero_slope).abs() < 1.0e-2);
+    }
+
+    #[test]
+    fn raw_density_chroma_suppression_leaves_green_and_edges_untouched() {
+        let mut estimate = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(9, 9);
+        for y in 0..9 {
+            for x in 0..9 {
+                let checker = if (x + y) % 2 == 0 { 0.03 } else { -0.03 };
+                let green = 0.01;
+                estimate.put_pixel(
+                    x,
+                    y,
+                    Rgb([
+                        green * 10.0f32.powf(-checker),
+                        green,
+                        green * 10.0f32.powf(checker),
+                    ]),
+                );
+            }
+        }
+        let before_green: Vec<f32> = estimate.pixels().map(|pixel| pixel[1]).collect();
+        let noise = |image: &ImageBuffer<Rgb<f32>, Vec<f32>>| {
+            let mut sum = 0.0f64;
+            let mut count = 0usize;
+            for y in 0..image.height() {
+                for x in 1..image.width() {
+                    let left = image
+                        .get_pixel(x - 1, y)
+                        .0
+                        .map(|value| -value.max(1e-5).log10());
+                    let right = image
+                        .get_pixel(x, y)
+                        .0
+                        .map(|value| -value.max(1e-5).log10());
+                    let delta_r = (left[0] - left[1]) - (right[0] - right[1]);
+                    let delta_b = (left[2] - left[1]) - (right[2] - right[1]);
+                    sum += f64::from(delta_r * delta_r + delta_b * delta_b);
+                    count += 1;
+                }
+            }
+            (sum / count.max(1) as f64).sqrt()
+        };
+        let before_noise = noise(&estimate);
+        suppress_raw_density_chroma_noise(&mut estimate);
+        let after_noise = noise(&estimate);
+        assert!(
+            after_noise < before_noise * 0.5,
+            "chroma noise {before_noise} -> {after_noise}"
+        );
+        for (pixel, green) in estimate.pixels().zip(before_green) {
+            assert_eq!(pixel[1], green);
+        }
+    }
+
+    #[test]
+    fn raw_density_chroma_suppression_keeps_mean_chroma() {
+        let mut estimate = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(32, 32);
+        for y in 0..32 {
+            for x in 0..32 {
+                let jitter = ((x * 13 + y * 7) % 9) as f32 / 8.0 - 0.5;
+                let green = 0.1;
+                estimate.put_pixel(
+                    x,
+                    y,
+                    Rgb([
+                        green * 10.0f32.powf(-jitter * 0.2),
+                        green,
+                        green * 10.0f32.powf(jitter * 0.2),
+                    ]),
+                );
+            }
+        }
+        let chroma_mean = |image: &ImageBuffer<Rgb<f32>, Vec<f32>>| {
+            let mut sum = [0.0f64; 2];
+            for pixel in image.pixels() {
+                let density = pixel.0.map(|value| -value.max(1e-5).log10());
+                sum[0] += f64::from(density[0] - density[1]);
+                sum[1] += f64::from(density[2] - density[1]);
+            }
+            let count = image.pixels().count() as f64;
+            [sum[0] / count, sum[1] / count]
+        };
+        let before = chroma_mean(&estimate);
+        suppress_raw_density_chroma_noise(&mut estimate);
+        let after = chroma_mean(&estimate);
+        assert!((after[0] - before[0]).abs() < 0.002);
+        assert!((after[1] - before[1]).abs() < 0.002);
     }
 
     #[test]
@@ -18353,7 +18702,7 @@ mod import_contract_tests {
                     &estimate,
                     (width as f32 * ratio).max(1.0) as u32,
                     (height as f32 * ratio).max(1.0) as u32,
-                    image::imageops::FilterType::Lanczos3,
+                    image::imageops::FilterType::Triangle,
                 );
             }
             let mut state = default_pipeline_state_for_import(true, "LOOSE_DEFAULT", &[]);
@@ -19224,7 +19573,7 @@ mod import_contract_tests {
                     &preview_est,
                     (width as f32 * ratio).max(1.0) as u32,
                     (height as f32 * ratio).max(1.0) as u32,
-                    image::imageops::FilterType::Lanczos3,
+                    image::imageops::FilterType::Triangle,
                 );
             }
         }
@@ -19245,7 +19594,7 @@ mod import_contract_tests {
             &export_est,
             preview_est.width(),
             preview_est.height(),
-            image::imageops::FilterType::Lanczos3,
+            image::imageops::FilterType::Triangle,
         );
         let (_, chroma_export_resampled) = parity_density_chroma(&export_at_preview);
         for (label, chroma) in [
@@ -19897,7 +20246,7 @@ mod import_contract_tests {
                     &preview_est,
                     (width as f32 * ratio).max(1.0) as u32,
                     (height as f32 * ratio).max(1.0) as u32,
-                    image::imageops::FilterType::Lanczos3,
+                    image::imageops::FilterType::Triangle,
                 );
             }
         }
@@ -20053,7 +20402,7 @@ mod import_contract_tests {
                     &estimate,
                     (width as f32 * ratio).max(1.0) as u32,
                     (height as f32 * ratio).max(1.0) as u32,
-                    image::imageops::FilterType::Lanczos3,
+                    image::imageops::FilterType::Triangle,
                 );
             }
         }
@@ -26649,9 +26998,11 @@ mod fixture_sweep_tests {
     use super::{
         base_color_from_density, compute_content_limits_f32_with_bounds,
         decode_scanner_profiled_estimate_image_buffer,
-        decode_scanner_profiled_estimate_with_matrix, estimate_film_base_f32, is_scanner_fff_tiff,
-        prepare_content_render_limits, render_f32_shader_equivalent,
-        render_f32_shader_equivalent_with_camera_rolloff, DecodeMode, PROXY_LONG_EDGE,
+        decode_scanner_profiled_estimate_with_matrix,
+        decode_scanner_profiled_estimate_with_matrix_options, estimate_film_base_f32,
+        is_scanner_fff_tiff, prepare_content_render_limits, render_f32_shader_equivalent,
+        render_f32_shader_equivalent_with_camera_rolloff, suppress_raw_density_chroma_noise,
+        DecodeMode, PROXY_LONG_EDGE,
     };
     use crate::app_state::{DensityAnchors, GeometryState, PipelineState, TuningParams};
     use image::{ImageBuffer, Rgb};
@@ -26967,6 +27318,19 @@ mod fixture_sweep_tests {
                     continue;
                 }
             };
+            let (working_before, _) = match decode_scanner_profiled_estimate_with_matrix_options(
+                path.to_string_lossy().as_ref(),
+                DecodeMode::DevelopProxy,
+                None,
+                DIAGNOSTIC_LONG_EDGE,
+                false,
+            ) {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    eprintln!("[AB] skipped {}: {error}", path.display());
+                    continue;
+                }
+            };
             let Some(matrix) = matrix else {
                 eprintln!(
                     "[AB] skipped {}: no plausible camera matrix",
@@ -26988,12 +27352,21 @@ mod fixture_sweep_tests {
             }
 
             for (condition, exposure_scale) in [("normal", 1.0f32), ("0.1x", 0.1f32)] {
-                let mut source = working.clone();
+                let mut source_before = working_before.clone();
                 if exposure_scale != 1.0 {
-                    for value in source.as_mut() {
+                    for value in source_before.as_mut() {
                         *value *= exposure_scale;
                     }
                 }
+                let source = if exposure_scale == 1.0 {
+                    working.clone()
+                } else {
+                    // Simulate the capture at 0.1x first, then run the same
+                    // decode-time chroma pass the production pipeline would.
+                    let mut underexposed = source_before.clone();
+                    suppress_raw_density_chroma_noise(&mut underexposed);
+                    underexposed
+                };
                 let estimate = estimate_film_base_f32(&source, &geom);
                 let new_usable = estimate.usable;
                 let spread = estimate.density.iter().copied().fold(f32::MIN, f32::max)
@@ -27015,9 +27388,12 @@ mod fixture_sweep_tests {
                     [0.0; 3]
                 };
 
-                let render = |base: [f32; 3], usable: bool, use_rolloff: bool| {
+                let render = |image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+                              base: [f32; 3],
+                              usable: bool,
+                              use_rolloff: bool| {
                     let mut limits =
-                        compute_content_limits_f32_with_bounds(&source, None, &geom, base, None)
+                        compute_content_limits_f32_with_bounds(image, None, &geom, base, None)
                             .unwrap();
                     let (offsets, _) = prepare_content_render_limits(
                         &mut limits,
@@ -27039,7 +27415,7 @@ mod fixture_sweep_tests {
                     params.density.d_min = limits.d_min;
                     params.density.d_max = limits.d_max;
                     render_f32_shader_equivalent_with_camera_rolloff(
-                        &source,
+                        image,
                         None,
                         &params,
                         &geom,
@@ -27049,8 +27425,9 @@ mod fixture_sweep_tests {
                         use_rolloff,
                     )
                 };
-                let old_render = render(old_base, old_usable, false);
-                let new_render = render(new_base, new_usable, true);
+                let old_render = render(&source, old_base, old_usable, false);
+                let before_render = render(&source_before, new_base, new_usable, true);
+                let new_render = render(&source, new_base, new_usable, true);
 
                 let points = geom.calibration_points.unwrap_or([
                     [0.0, 0.0],
@@ -27058,6 +27435,42 @@ mod fixture_sweep_tests {
                     [1.0, 1.0],
                     [0.0, 1.0],
                 ]);
+                let adjacent_chroma_noise = |image: &ImageBuffer<Rgb<u16>, Vec<u16>>| {
+                    let w = image.width().max(1);
+                    let h = image.height().max(1);
+                    let mut rg = Vec::new();
+                    let mut bg = Vec::new();
+                    for y in 0..h {
+                        let mut previous: Option<[f32; 3]> = None;
+                        for x in 0..w {
+                            let uv = [(x as f32 + 0.5) / w as f32, (y as f32 + 0.5) / h as f32];
+                            if !super::point_in_film_area(uv, &points, 0.0) {
+                                previous = None;
+                                continue;
+                            }
+                            let rgb = image.get_pixel(x, y).0.map(|value| value as f32 / 65535.0);
+                            if let Some(left) = previous {
+                                rg.push(f64::from(((left[0] - left[1]) - (rgb[0] - rgb[1])).abs()));
+                                bg.push(f64::from(((left[2] - left[1]) - (rgb[2] - rgb[1])).abs()));
+                            }
+                            previous = Some(rgb);
+                        }
+                    }
+                    let summarize = |mut values: Vec<f64>| {
+                        if values.is_empty() {
+                            return (0.0, 0.0);
+                        }
+                        let rms = (values.iter().map(|value| value * value).sum::<f64>()
+                            / values.len() as f64)
+                            .sqrt();
+                        values.sort_by(|left, right| left.total_cmp(right));
+                        let median = values[values.len() / 2];
+                        (rms, median)
+                    };
+                    let (rg_rms, rg_median) = summarize(rg);
+                    let (bg_rms, bg_median) = summarize(bg);
+                    (rg_rms, rg_median, bg_rms, bg_median)
+                };
                 let metrics = |image: &ImageBuffer<Rgb<u16>, Vec<u16>>| {
                     let mut sum = [0.0f64; 3];
                     let mut clipped = 0usize;
@@ -27080,14 +27493,23 @@ mod fixture_sweep_tests {
                     }
                     let count = count.max(1);
                     let mean = sum.map(|value| value / count as f64);
+                    let (rg_noise_rms, rg_noise_median, bg_noise_rms, bg_noise_median) =
+                        adjacent_chroma_noise(image);
                     serde_json::json!({
                         "mean": mean,
                         "r_over_g": mean[0] / mean[1].max(1.0e-9),
                         "b_over_g": mean[2] / mean[1].max(1.0e-9),
                         "highlight_ge_0995": clipped as f64 / count as f64,
+                        "chroma_noise": {
+                            "rg_rms": rg_noise_rms,
+                            "rg_median": rg_noise_median,
+                            "bg_rms": bg_noise_rms,
+                            "bg_median": bg_noise_median,
+                        },
                     })
                 };
                 let old_metrics = metrics(&old_render);
+                let before_metrics = metrics(&before_render);
                 let new_metrics = metrics(&new_render);
                 println!(
                     "[AB] {stem} {condition}: old usable={old_usable} base={old_base:?} mean={:?} R/G={:.4} B/G={:.4} clip={:.4}%",
@@ -27108,6 +27530,44 @@ mod fixture_sweep_tests {
                         * new_metrics["highlight_ge_0995"]
                             .as_f64()
                             .unwrap_or(0.0),
+                );
+                let before_rg = before_metrics["r_over_g"].as_f64().unwrap_or(0.0);
+                let before_bg = before_metrics["b_over_g"].as_f64().unwrap_or(0.0);
+                let new_rg = new_metrics["r_over_g"].as_f64().unwrap_or(0.0);
+                let new_bg = new_metrics["b_over_g"].as_f64().unwrap_or(0.0);
+                let before_noise = &before_metrics["chroma_noise"];
+                let new_noise = &new_metrics["chroma_noise"];
+                println!(
+                    "[AB] {stem} {condition}: before-denoise R/G={before_rg:.4} B/G={before_bg:.4} clip={:.4}% R-G noise rms={:.6} median={:.6} B-G noise rms={:.6} median={:.6}",
+                    100.0
+                        * before_metrics["highlight_ge_0995"]
+                            .as_f64()
+                            .unwrap_or(0.0),
+                    before_noise["rg_rms"].as_f64().unwrap_or(0.0),
+                    before_noise["rg_median"].as_f64().unwrap_or(0.0),
+                    before_noise["bg_rms"].as_f64().unwrap_or(0.0),
+                    before_noise["bg_median"].as_f64().unwrap_or(0.0),
+                );
+                println!(
+                    "[AB] {stem} {condition}: after-denoise  R/G={new_rg:.4} B/G={new_bg:.4} clip={:.4}% R-G noise rms={:.6} median={:.6} B-G noise rms={:.6} median={:.6} | ΔR/G={:.5} ΔB/G={:.5}",
+                    100.0
+                        * new_metrics["highlight_ge_0995"]
+                            .as_f64()
+                            .unwrap_or(0.0),
+                    new_noise["rg_rms"].as_f64().unwrap_or(0.0),
+                    new_noise["rg_median"].as_f64().unwrap_or(0.0),
+                    new_noise["bg_rms"].as_f64().unwrap_or(0.0),
+                    new_noise["bg_median"].as_f64().unwrap_or(0.0),
+                    (new_rg - before_rg).abs(),
+                    (new_bg - before_bg).abs(),
+                );
+                assert!(
+                    (new_rg - before_rg).abs() < 0.01 && (new_bg - before_bg).abs() < 0.01,
+                    "{stem} {condition}: chroma denoise moved the full-image R/G or B/G mean"
+                );
+                assert!(
+                    new_metrics["highlight_ge_0995"].as_f64().unwrap_or(0.0) == 0.0,
+                    "{stem} {condition}: chroma denoise introduced clipped highlights"
                 );
 
                 let old_tile = fit_render_long_edge(&old_render, DIAGNOSTIC_LONG_EDGE);
@@ -27131,9 +27591,77 @@ mod fixture_sweep_tests {
                     "old_base": old_base,
                     "new_base": new_base,
                     "old": old_metrics,
+                    "before_denoise": before_metrics,
                     "new": new_metrics,
                     "image": image_path.to_string_lossy(),
                 }));
+            }
+        }
+
+        for condition in ["normal", "0.1x"] {
+            let rows: Vec<&serde_json::Value> = report
+                .iter()
+                .filter(|row| row["condition"].as_str() == Some(condition))
+                .collect();
+            if rows.is_empty() {
+                continue;
+            }
+            let max_drg = rows
+                .iter()
+                .map(|row| {
+                    (row["new"]["r_over_g"].as_f64().unwrap_or(0.0)
+                        - row["before_denoise"]["r_over_g"].as_f64().unwrap_or(0.0))
+                    .abs()
+                })
+                .fold(0.0f64, f64::max);
+            let max_dbg = rows
+                .iter()
+                .map(|row| {
+                    (row["new"]["b_over_g"].as_f64().unwrap_or(0.0)
+                        - row["before_denoise"]["b_over_g"].as_f64().unwrap_or(0.0))
+                    .abs()
+                })
+                .fold(0.0f64, f64::max);
+            let mut rg_drops: Vec<f64> = rows
+                .iter()
+                .map(|row| {
+                    1.0 - row["new"]["chroma_noise"]["rg_rms"].as_f64().unwrap_or(0.0)
+                        / row["before_denoise"]["chroma_noise"]["rg_rms"]
+                            .as_f64()
+                            .unwrap_or(1.0)
+                            .max(1.0e-12)
+                })
+                .collect();
+            let mut bg_drops: Vec<f64> = rows
+                .iter()
+                .map(|row| {
+                    1.0 - row["new"]["chroma_noise"]["bg_rms"].as_f64().unwrap_or(0.0)
+                        / row["before_denoise"]["chroma_noise"]["bg_rms"]
+                            .as_f64()
+                            .unwrap_or(1.0)
+                            .max(1.0e-12)
+                })
+                .collect();
+            let mean = |values: &[f64]| values.iter().sum::<f64>() / values.len() as f64;
+            let mean_rg_drop = mean(&rg_drops);
+            let mean_bg_drop = mean(&bg_drops);
+            rg_drops.sort_by(|left, right| left.total_cmp(right));
+            bg_drops.sort_by(|left, right| left.total_cmp(right));
+            let median_rg_drop = rg_drops[rg_drops.len() / 2];
+            let median_bg_drop = bg_drops[bg_drops.len() / 2];
+            println!(
+                "[AB] summary {condition}: frames={} max|ΔR/G|={max_drg:.5} max|ΔB/G|={max_dbg:.5} R-G noise drop mean={:.1}% median={:.1}% B-G mean={:.1}% median={:.1}%",
+                rows.len(),
+                100.0 * mean_rg_drop,
+                100.0 * median_rg_drop,
+                100.0 * mean_bg_drop,
+                100.0 * median_bg_drop,
+            );
+            if condition == "0.1x" {
+                assert!(
+                    mean_rg_drop >= 0.40 && mean_bg_drop >= 0.40,
+                    "0.1x chroma noise reduction below 40%: R-G {mean_rg_drop}, B-G {mean_bg_drop}"
+                );
             }
         }
 
