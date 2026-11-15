@@ -54,12 +54,13 @@
 
 ### v1.2.0 更新内容
 
-这版主要解决日常使用里最影响出片和效率的几个痛点：相机 RAW 偏色、自动框选片门框不准、Contact Sheet 导出体验，以及几处修图手感问题。
+这版最核心的工作是**引入双源 RAW 解码**和**重做 RAW 反相与色彩保真**，并顺带补齐了框选、Contact Sheet 与几处高频修图手感的打磨：
 
-- **相机 RAW 原生反相与色彩保真**：相机 RAW 改在 Camera Native RGB 下直接反相算密度，再做高光滚降与欠曝保护，蓝天、高光高饱和部分更干净，不会提前偏青偏灰；双平台统一升级到 LibRaw 0.22.2，竖拍 RAW 的占位图、预览与导出方向一致，导出也严格读库里的已保存状态。
-- **自动胶片范围更稳，交互补齐**：检测升级到 640px 面积采样并结合同卷位置先验，自动向内微收一点防灯板漏进统计，算不准时退回居中 80% 安全框；新增 `[3:2]` `[1:1]` `[6:7]` `[自由]` 比例锁，支持整框拖动和单边微调。
-- **Contact Sheet 预览弹窗与高清拼版**：点导出先开大预览窗核对，支持自选文件名、保存目录、JPEG / 无损 PNG 与三档清晰度；自己保留了片边齿孔的底片可以关掉“绘制胶片边框”，按格子尺寸逐帧重绘高清正片再合成。
-- **裁切、曲线与尺孔顺手度提升**：裁切里的旋转去掉了卡顿感，按住 <kbd>Shift</kbd> 支持精细调节；曲线首尾点可自由横移（端点外拉平），拖动时显示输入/输出数值；修复尺孔采样和预览色偏不一致，跨帧粘贴有点位置偏差也不易漏孔。
+- **双源 RAW 解码（LibRaw 0.22.2 + rawler）**：Windows 与 macOS 统一升级到 LibRaw 0.22.2，并接入纯 Rust 的 `rawler` 作为辅助解码源。新机型缺少色彩矩阵时由 `rawler` 补齐矩阵（像素仍以 LibRaw 为准），LibRaw 无法解包的 Bayer RAW 自动切换至 `rawler` 通路；同时可识别 Nikon HE/HE* 压缩给出明确提示，并修复竖拍 RAW 占位图/预览/导出方向不一致及导出偶发偏黄问题（导出严格读取持久化状态）。
+- **RAW 反相与色彩保真优化**：相机 RAW 改在 Camera Native RGB（传感器原生色域）直接扣除片基与计算密度，再把色彩矩阵带到显示端；移除与曝光耦合的片基密度上限，配合保色高光滚降、线性高光恢复与欠曝暗部保护，蓝天、水面及高饱和/强对比画面的色彩层次显著更稳，不易偏青偏灰。
+- **自动胶片范围与框选交互**：检测改用 640px 面积均值降采样并结合同卷空间先验，识别边缘微收防灯板漏入，不确定时退回居中 80% 安全框；新增 `[3:2]` `[1:1]` `[6:7]` `[自由]` 比例锁，支持整框拖动与单边微调。
+- **Contact Sheet 预览弹窗与高清拼版**：点导出先打开预览弹窗确认排版，支持自选文件名、保存目录、JPEG / 无损 PNG 与 3000 / 4500 / 6000 px 三档清晰度；自带片边齿孔的底片可关闭“绘制胶片边框”，按格子尺寸逐帧重绘高清正片再合成。
+- **裁切、曲线、尺孔手感与界面精简**：裁切旋转统一为与拉直一致的顺滑体验，并支持按住 <kbd>Shift</kbd> 精细调节；曲线首尾点可横向自由拖动（端点外水平延展）并实时显示输入/输出读数；修复尺孔采样预览不一致及跨帧粘贴错位漏孔问题；同时移除内置离线文档视图，完整手册统一维护于官网与 `docs/handbook/`。
 
 ### v1.1.0 更新内容（历史）
 
@@ -274,12 +275,13 @@ The automatically generated <code>Source code</code> archives are not applicatio
 
 ### What's new in v1.2.0
 
-This update cleans up the rough edges that kept showing up on real rolls—RAW highlights and shadows shifting color, unreliable film-border detection, low-res Contact Sheet exports, and a few fiddly develop controls:
+This release focuses primarily on **dual-source RAW decoding** and **camera-native RAW inversion & color fidelity**, alongside tighter film-area framing, Contact Sheet previewing, develop-control polish, and a cleaner workspace:
 
-- **Camera-native RAW inversion & color headroom.** Camera RAWs now run base subtraction and density math directly in camera-native RGB instead of clipping blue channels in ProPhoto upfront, paired with hue-preserving highlight rolloff and underexposed shadow retention. Both platforms now ship on LibRaw 0.22.2 (with `rawler` fallback coverage), and rotated RAW placeholders, thumbnails, and exports stay upright instead of snapping sideways after load.
+- **Dual-source RAW decoding (LibRaw 0.22.2 + `rawler`).** Both Windows and macOS now ship on LibRaw 0.22.2 paired with `rawler` as an auxiliary Rust decoder: newer cameras missing a LibRaw matrix automatically pull calibration matrices from `rawler` while keeping LibRaw pixels, Bayer files that LibRaw cannot unpack fall back to `rawler` pixels, Nikon HE/HE* compression is identified with clear guidance, and rotated RAW placeholders/thumbnails/exports stay upright while exports read persisted state strictly.
+- **Improved RAW inversion & color fidelity.** Camera RAWs now run base subtraction and density math directly in camera-native RGB instead of clipping channels upfront in ProPhoto, paired with an uncoupled film-base ceiling, hue-preserving highlight rolloff, linear highlight recovery, and underexposed shadow retention so bright skies and saturated tones hold cleanly.
 - **Better film-area detection & framing controls.** Auto-detection moves to 640 px area-averaged sampling with roll-level spatial priors, tucks inward slightly to keep light tables out of the frame, and falls back to a centered 80% safe box instead of full-frame when uncertain. Added `3:2`, `1:1`, `6:7`, and free aspect locks, whole-box dragging, and single-edge pulls.
 - **Contact Sheet preview modal & full-quality export.** Opens a full preview dialog before saving where you can pick the filename, folder, JPEG quality or lossless PNG, and 3000/4500/6000 px output. If your scans already include real film borders and sprockets, uncheck film borders to lay them out cleanly without double borders; each cell is re-rendered from source at target resolution before compositing.
-- **Develop polish: crop rotation, free curve endpoints, and sprockets.** Unified crop rotation with the smooth straighten feel plus <kbd>Shift</kbd>-drag fine control. Tone-curve endpoints now slide horizontally across the input axis (holding flat beyond the endpoints) with a live In/Out readout. Fixed sprocket target-color decoding, auto-migrated older samples, and widened pasted edge tolerance so slight frame shifts don't break masking.
+- **Develop polish & streamlined UI.** Unified crop rotation with the smooth straighten feel plus <kbd>Shift</kbd>-drag fine control. Tone-curve endpoints now slide horizontally across the input axis (holding flat beyond the endpoints) with a live In/Out readout. Fixed sprocket target-color decoding, auto-migrated older samples, and widened pasted edge tolerance so slight frame shifts don't break masking. Removed the in-app documentation view in favor of the dedicated web documentation hub and `docs/handbook/`.
 
 ### What's new in v1.1.0 (previous release)
 
