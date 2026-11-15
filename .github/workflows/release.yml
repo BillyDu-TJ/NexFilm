@@ -123,7 +123,7 @@ jobs:
             - 硬件校正相关能力（Capture Corrected、Capture Characterized、扫描仪输入配置）仍为实验性。
             - 超大 JPEG/PNG 受解码器内存上限约束，可能提示解码失败，建议改用 TIFF 或 DNG。
             - 全分辨率导出大型扫描件需要较大的可用内存。
-            - Nikon Z8 / Z9 的 HE/HE* 专利压缩 RAW 文件因开源解码库（LibRaw / rawler）均暂不支持解码，目前无法直接导入（软件会提示改用标准/无损 NEF 或转换后导入）。
+            - Nikon **HE/HE*** 专利高效率压缩格式的 NEF 文件因开源解码库（LibRaw / `rawler`）均暂不支持解码，目前无法直接导入（软件会识别并提示改用标准/无损 NEF 或转换后导入）。
 
             ### 📥 下载指南 (Download)
             - **Windows 用户**：请下载包含 `nsis` 和 `x86_64` 的 `.exe` 安装程序。

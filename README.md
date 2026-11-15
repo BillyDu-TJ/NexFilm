@@ -62,34 +62,6 @@
 - **Contact Sheet 预览弹窗与高清拼版**：点导出先打开预览弹窗确认排版，支持自选文件名、保存目录、JPEG / 无损 PNG 与 3000 / 4500 / 6000 px 三档清晰度；自带片边齿孔的底片可关闭“绘制胶片边框”，按格子尺寸逐帧重绘高清正片再合成。
 - **裁切、曲线、尺孔手感与界面精简**：裁切旋转统一为与拉直一致的顺滑体验，并支持按住 <kbd>Shift</kbd> 精细调节；曲线首尾点可横向自由拖动（端点外水平延展）并实时显示输入/输出读数；修复尺孔采样预览不一致及跨帧粘贴错位漏孔问题；同时移除内置离线文档视图，完整手册统一维护于官网与 `docs/handbook/`。
 
-### v1.1.0 更新内容（历史）
-
-本版的主题是把**输入类型与密度数学分开**：输入类型只决定"这段数据属于什么输入域"，反相与密度计算全部使用同一套实现。相机 RAW、扫描仪 TIFF 与 Imacon/Flextight FFF 因此得到一致、可解释的结果。
-
-新功能：
-
-- **统一密度管线**：输入域（内嵌 ICC、扫描仪容器记录、RAW 元数据、机型识别或 sRGB 兜底）逐帧解析并记录在技术报告中；密度数学统一为逐通道扣除片基 → 光学密度 → 共享窗口原点 → 有界通道跨度响应。跨度响应只在三通道确实失衡时介入，正常素材不受影响。
-- **整卷白点与批量反相**：按整卷最亮的真实画面标定一次共享白点；片基与片头被采样的画面视为标定素材，自动排除在 Develop、白点测量与批量反相之外，并在进度中报告跳过数量。
-- **硬件校正（实验性）**：**该功能仍在开发，当前不稳定，请不要将其投入严肃使用。** 新增硬件校正视图与校正配置，可收集 dark / open gate / flat / 透射目标，生成带验证报告的配置并绑定到胶卷；Capture Corrected 让 dark/open 真正参与像素计算，Capture Separation 3×3 可由实测色卡拟合。条件不满足时自动回退到 Smart Auto 并说明原因。
-- **新的交付格式**：线性 16 位 TIFF、线性 DNG，以及原样封装扫描 RAW 的相机 RAW DNG。
-- **胶卷备注**：每卷可填写备注，显示在归档卡片与胶卷内容中。
-- **内置使用文档**：应用内新增 9 章中英双语文档，完全离线可读。
-
-修复与优化：
-
-- 扫描件改用按行流式解码：数百兆到 GB 级的 FFF、扫描仪 TIFF 与线性 DNG 都能打开，不再要求整幅图像驻留内存；大尺寸扫描件"Develop 能看、导出失败"的问题同时修复。
-- `.fff` 识别不再依赖 FlexColor 写下的设备字符串。缺少该标记的 Imacon/Flextight 扫描件不会再被误判为哈苏相机 RAW —— 这正是 1.0.2 中"导入 fff 无法解码"的原因。
-- 流式 TIFF 读取器增加几何与文件长度一致性校验：尺寸异常的头部现在给出明确错误，不再拖垮进程。
-- 反相：短调画面保持原有影调性格；拼接白边、白灯板与高光溢出不再参与窗口端点；从其他画面继承的片基会在本画面自己的像素上重新测量。
-- 散张导入与按卷未标定使用同一套密度数学，两者观感不再分叉。
-- 导入阶段不再解算 RAW：首次进入 Develop 时才生成有界代理，导入更快、内存更可控。
-- 界面：Develop 检查器重新分组，新增对比度并收紧曝光/高光/阴影范围；裁切与胶片范围共用同一画面坐标系；打开画面不再自动取消遮罩。
-- 数据改为每用户数据目录，胶卷元数据迁入 SQLite，散张导入同样持久化；修复旋转缩略图变形、裁切遮罩与缩放不同步、批量反相中断等回归。
-
-升级提示：
-
-- 升级后请对旧胶卷重新执行一次 **Auto Invert**。本次迁移会清除用旧密度配方渲染的缩略图，避免缩略图与实际渲染不一致。
-
 ### NexFilm 是什么
 
 NexFilm Engine 用于将相机翻拍或扫描仪输出的胶片负片转换为正片，并把导入、反相、校色、胶卷归档和输出组织在同一个工作区。应用采用 Rust、Tauri、SQLite 与 WebGL 构建；图库、编辑状态和胶卷资料均保存在本地，核心工作流不依赖云端服务。
@@ -140,7 +112,7 @@ Library 与 Develop 显示当前工作卷；历史胶卷保存在 **Rolls**。�
 输入选择器支持常见相机 RAW，包括 DNG、NEF/NRW、CR2/CR3、ARW/SRF/SR2、RAF、RW2、ORF/ORI、SRW、PEF、3FR、ERF、KDC/DCR、IIQ、MOS、MRW、X3F、RWL、FFF 和 RAW，以及 TIFF、JPEG、PNG。RAW 与 FFF 兼容性取决于内置解码器和具体设备；遇到问题时请在 [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) 中注明相机或扫描仪型号、文件格式与错误信息。
 
 > [!WARNING]
-> Nikon Z8 使用 **HE/HE*** 高效率 RAW 压缩格式拍摄的 NEF 文件目前无法导入，因为 LibRaw 暂不支持解码该格式。此限制当前无法在 NexFilm 内修复；如需导入，请在相机中改用 LibRaw 支持的 RAW 记录格式。
+> 使用 **HE/HE*** 高效率压缩格式拍摄的 Nikon NEF 文件目前无法导入（开源解码库 LibRaw 与 <code>rawler</code> 均暂不支持该专利压缩格式）。此限制当前无法在 NexFilm 内修复；如需导入，请在相机中改用无损压缩/标准 NEF 格式，或先转换为 TIFF/DNG 后再导入。
 
 由于 JPEG 难以获得线性数据，且扫描仪出图几乎没有片基部分，因此不能保证校色效果。请使用 JPEG 时注意校色效果，在效果较差时自行
 通过 RGB 补偿完成校色。
@@ -222,7 +194,7 @@ cargo tauri build --target x86_64-apple-darwin --bundles dmg
 
 - Windows 和 macOS 安装包尚未进行代码签名；macOS DMG 尚未经过 Apple 公证。
 - 不同 RAW 相机、扫描仪与 FFF 文件的兼容性仍需持续验证。
-- Nikon Z8 的 HE/HE* 高效率 RAW 压缩格式暂时无法由 LibRaw 解码。
+- Nikon HE/HE* 高效率 RAW 压缩格式暂无法由开源解码库（LibRaw / `rawler`）解码。
 - 硬件校正相关能力（Capture Corrected、Capture Characterized、扫描仪输入配置）仍为实验性，需要在真实设备素材上继续验证。
 - 超大 JPEG/PNG 受解码器内存上限约束，可能提示解码失败，建议改用 TIFF 或 DNG。
 - 全分辨率导出大型扫描件需要较大的可用内存。
@@ -283,35 +255,6 @@ This release focuses primarily on **dual-source RAW decoding** and **camera-nati
 - **Contact Sheet preview modal & full-quality export.** Opens a full preview dialog before saving where you can pick the filename, folder, JPEG quality or lossless PNG, and 3000/4500/6000 px output. If your scans already include real film borders and sprockets, uncheck film borders to lay them out cleanly without double borders; each cell is re-rendered from source at target resolution before compositing.
 - **Develop polish & streamlined UI.** Unified crop rotation with the smooth straighten feel plus <kbd>Shift</kbd>-drag fine control. Tone-curve endpoints now slide horizontally across the input axis (holding flat beyond the endpoints) with a live In/Out readout. Fixed sprocket target-color decoding, auto-migrated older samples, and widened pasted edge tolerance so slight frame shifts don't break masking. Removed the in-app documentation view in favor of the dedicated web documentation hub and `docs/handbook/`.
 
-### What's new in v1.1.0 (previous release)
-
-The theme of this release is separating **what the input is** from **how density is computed**. The input class now selects only the input domain; inversion and density use one shared implementation, which gives camera RAW, scanner TIFF, and Imacon/Flextight FFF files consistent and explainable results.
-
-New features:
-
-- **Unified density pipeline.** The input domain (embedded ICC, scanner container record, RAW metadata, device identity, or an sRGB fallback) is resolved per frame and recorded in the technical report. Density is computed the same way everywhere: per-channel film-base subtraction, optical density, a shared window origin, and a bounded per-channel span response that only engages when the channels are genuinely unbalanced.
-- **Roll white point and Roll auto invert.** One shared white point is measured on the brightest real photograph of the roll. Frames the base and leader were sampled from are treated as calibration material and stay out of Develop, out of the white-point measurement, and out of the Roll batch, which reports how many it skipped.
-- **Hardware calibration (experimental).** **This feature is still under development thus not stable. Please do NOT use it in serious application.** A calibration view and configuration profile collect dark / open-gate / flat / transmission-target references and produce a validated, digest-stamped profile bound to a roll. Capture Corrected makes dark/open correction part of the pixel math, and Capture Separation is fittable from measured patches. When the conditions are not met the pipeline falls back to Smart Auto and says why.
-- **Scanner input profiles** can be imported and bound to a roll, affecting both preview and export.
-- **New delivery formats**: linear 16-bit TIFF, linear DNG, and camera RAW DNG that re-wraps a scan's own mosaic.
-- **Per-roll notes**, shown on the roll card and in the roll contents.
-- **In-app documentation**: nine chapters, in Chinese and English, fully offline.
-
-Fixes and improvements:
-
-- Scanner files are decoded row by row, so FFF, scanner TIFF, and linear DNG files from hundreds of megabytes to gigabytes open without ever fitting in memory. The same readers are used for export, fixing large scans that used to render in Develop and then fail to export.
-- `.fff` classification no longer depends on the device string FlexColor writes. Imacon/Flextight scans without it are no longer mistaken for a Hasselblad camera back, which is what caused the "import fff cannot decode" reports against 1.0.2.
-- The streaming TIFF reader now validates declared geometry against the file size, so an abnormal header returns a clear error instead of taking the process down.
-- Inversion: short-tone frames keep their character, stitched white edges, light tables, and clipped highlights no longer set the window endpoints, and a film base inherited from another frame is re-measured on the frame's own pixels.
-- Loose import and uncalibrated roll import now share one density recipe, so their results no longer diverge.
-- Import no longer unpacks RAW: the bounded Develop proxy is built on first open, which makes imports faster and memory use more predictable.
-- Interface: the Develop inspector is regrouped, a contrast control was added, and the exposure/highlight/shadow ranges were tightened; crop and film area share one frame coordinate system; opening a frame no longer cancels its mask.
-- Data now lives in a per-user directory with roll metadata in SQLite, and loose imports persist across restarts. Rotated thumbnail deformation, crop-overlay desynchronization, and interrupted Roll batches were fixed.
-
-Upgrade note:
-
-- After upgrading, run **Auto Invert** once more on older rolls. This release's migration clears thumbnails rendered with the retired density recipe so the filmstrip cannot disagree with the actual render.
-
 ### What is NexFilm?
 
 NexFilm Engine converts camera-scanned or scanner-produced film negatives into positives while keeping import, inversion, grading, roll archiving, and output in one workspace. It is built with Rust, Tauri, SQLite, and WebGL. The library, edit state, and roll metadata remain local; the core workflow does not require a cloud service.
@@ -362,7 +305,7 @@ Library and Develop show the current working roll; previous rolls remain under *
 The input picker supports common camera RAW formats, including DNG, NEF/NRW, CR2/CR3, ARW/SRF/SR2, RAF, RW2, ORF/ORI, SRW, PEF, 3FR, ERF, KDC/DCR, IIQ, MOS, MRW, X3F, RWL, FFF, and RAW, plus TIFF, JPEG, and PNG. RAW and FFF compatibility depends on the bundled decoder and the specific device. Report failures through [Issues](https://github.com/BillyDu-TJ/NexFilm/issues) with the camera or scanner model, file format, and error.
 
 > [!WARNING]
-> Nikon Z8 NEF files recorded with **HE/HE*** high-efficiency RAW compression cannot currently be imported because LibRaw does not support decoding this format. NexFilm cannot work around this limitation at present; use a RAW recording format supported by LibRaw when import compatibility is required.
+> Nikon NEF files recorded with **HE/HE*** high-efficiency RAW compression cannot currently be imported because open-source RAW decoders (LibRaw and `rawler`) do not support this proprietary format yet. NexFilm cannot work around this limitation at present; record in Lossless Compressed / standard NEF in-camera or convert to TIFF/DNG before importing.
 
 Because JPEG is hard to get linear information, we DON'T guarantee the color calibration effect. So if you are unsatisfied about the result, please adjust Printer Light module to optimize. 
 
@@ -424,7 +367,7 @@ Before running it, confirm that <code>Cargo.toml</code>, <code>Cargo.lock</code>
 
 - Windows and macOS packages are unsigned; macOS DMGs are not Apple-notarized.
 - Compatibility still needs broader validation across RAW cameras, scanners, and FFF variants.
-- Nikon Z8 HE/HE* high-efficiency RAW compression is not currently decodable by LibRaw.
+- Nikon HE/HE* high-efficiency RAW compression is not currently decodable by open-source decoders (LibRaw / `rawler`).
 - Hardware calibration (Capture Corrected, Capture Characterized, scanner input profiles) is still experimental and needs validation on real hardware.
 - Very large JPEG/PNG files are limited by the decoder's memory ceiling and may report a decode failure; prefer TIFF or DNG for those.
 - Exporting a large scan at full resolution needs a substantial amount of free memory.

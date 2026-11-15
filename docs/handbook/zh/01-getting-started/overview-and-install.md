@@ -62,7 +62,7 @@ NexFilm 采用基于 Rust 与现代化 Web 渲染引擎的桌面架构，兼具�
     <div class="doc-callout-body">从 GitHub Releases 官方发布页获取安装文件时，必须选择上方表格中对应的安装包资产。请勿下载发布页底部由 Git 自动打包的 <code>Source code (zip)</code> 或 <code>Source code (tar.gz)</code> 源码压缩包。源码压缩包不包含预编译的系统二进制程序和前端运行时，无法直接双击运行。</div>
 </div>
 
-在图像格式支持方面，NexFilm 支持数码单反与无反相机拍摄的标准 RAW 文件（如索尼 `.ARW`、佳能 `.CR2` / `.CR3`、尼康 `.NEF`、富士 `.RAF` 等）、哈苏与易麦康（Imacon / Flextight）专业底片扫描仪生成的 `.fff` 格式、各型扫描仪输出的 16 位线性 TIFF，以及标准 8 位与 16 位 TIFF/PNG 图像。需要特别注意：由于当前底层 LibRaw 依赖库的技术限制，尼康 Z8 与 Z9 机身内录制的 **HE** 与 **HE\*** 高效率压缩 NEF 格式尚无法直接被解码读取。使用此类机身翻拍底片的用户，需在相机菜单中将 RAW 录制格式设置为无损压缩，或先借助 Adobe DNG Converter 批量转为标准线性 DNG 后再导入本软件。
+在图像格式支持方面，NexFilm 支持数码单反与无反相机拍摄的标准 RAW 文件（如索尼 `.ARW`、佳能 `.CR2` / `.CR3`、尼康 `.NEF`、富士 `.RAF` 等）、哈苏与易麦康（Imacon / Flextight）专业底片扫描仪生成的 `.fff` 格式、各型扫描仪输出的 16 位线性 TIFF，以及标准 8 位与 16 位 TIFF/PNG 图像。需要特别注意：由于当前底层开源解码器（LibRaw / `rawler`）尚不支持专利压缩算法，Nikon **HE** 与 **HE\*** 高效率压缩 NEF 格式目前无法直接被解码读取。使用支持该编码的 Nikon 机身翻拍底片时，需在相机菜单中将 RAW 录制格式设置为标准或无损压缩，或先借助 Adobe DNG Converter 批量转为标准线性 DNG 后再导入本软件。
 
 ## 系统安全拦截与首次放行流程 {#security-clearance}
 

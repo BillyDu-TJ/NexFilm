@@ -30,8 +30,8 @@ The matrix below provides complete specifications for all supported input file f
     </tbody>
 </table>
 
-> [!WARNING] Nikon Z8 / Z9 High-Efficiency NEF Restrictions
-> The integrated LibRaw decoder does not currently support high-efficiency `HE` or `HE*` compressed NEF files produced by the Nikon Z8 and Z9. When digitizing negatives with these cameras, set the camera RAW recording format to conventional Lossless Compressed RAW, or convert captures to linear DNG using the free Adobe DNG Converter utility prior to import.
+> [!WARNING] Nikon High-Efficiency (HE / HE*) NEF Restrictions
+> Built-in open-source decoders (LibRaw and `rawler`) do not currently support Nikon's proprietary high-efficiency `HE` or `HE*` compressed NEF files. When digitizing negatives, set your camera's RAW recording format to conventional Lossless Compressed or uncompressed RAW, or convert captures to linear DNG using the free Adobe DNG Converter utility prior to import.
 
 With 8-bit JPEG scans, non-linear gamma curves and harsh black/white clipping applied by scanning software often crush subtle shadow transitions and blur the distinction between orange mask dyes and dark details. When working with JPEGs, if the automatic inversion produces an unexpected color cast, use the Printer Lights panel to manually balance the RGB exposure offsets.
 

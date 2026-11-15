@@ -4745,7 +4745,7 @@ fn raw_decode_failure_hint(path: &str) -> Option<&'static str> {
         .to_ascii_lowercase();
     if extension == "nef" {
         Some(
-            "If this is a Nikon Z 8/Z 9 HE/HE* NEF, LibRaw does not support that compression yet; use a standard/lossless NEF recording option or convert the original to TIFF/DNG before importing.",
+            "If this is a Nikon HE/HE* NEF, LibRaw does not support that compression yet; use a standard/lossless NEF recording option or convert the original to TIFF/DNG before importing.",
         )
     } else {
         None
@@ -23615,7 +23615,7 @@ mod import_contract_tests {
     fn nikon_nef_decode_errors_include_high_efficiency_guidance() {
         assert!(raw_decode_failure_hint("frame.NEF")
             .unwrap()
-            .contains("Nikon Z 8/Z 9 HE/HE* NEF"));
+            .contains("Nikon HE/HE* NEF"));
         assert!(raw_decode_failure_hint("frame.raf").is_none());
 
         let message = libraw_decode_error_message("frame.NEF", "unsupported format");

@@ -39,7 +39,7 @@ When troubleshooting asset ingestion, raw parsing, and rendering performance, ap
 
 ### 1. Camera RAW or Flextight .fff Ingestion Failures
 - **Verify File Extension Authenticity**: Third-party utilities may alter raw file extensions. Ensure files originate directly from camera media or scanner exports.
-- **Nikon Z8 / Z9 High-Efficiency NEF Restrictions**: As documented, embedded LibRaw routines do not currently decode `HE` or `HE*` formats. Switch camera recording formats to standard Lossless Compressed RAW or convert files using the free Adobe DNG Converter.
+- **Nikon High-Efficiency (HE / HE*) NEF Restrictions**: As documented, open-source decoders (LibRaw and `rawler`) do not currently decode `HE` or `HE*` formats. Switch camera recording formats to standard Lossless Compressed RAW or convert files using the free Adobe DNG Converter.
 - **Hasselblad Flextight `.fff` Files**: As of v1.1.0, files decode natively as scanner transmission TIFFs without requiring modified hardware model strings. If parsing fails, verify that FlexColor did not export the file with non-standard proprietary tiling.
 
 ### 2. Large Scanner TIFFs (Multi-Gigabyte Files) and System RAM
@@ -105,7 +105,7 @@ Understanding the persistent file architecture across operating systems is essen
 In accordance with scientific and open-source principles, NexFilm transparently discloses known operational boundaries:
 
 1. **Unsigned Package Certificates**: Current Windows packages and macOS `.dmg` disk images are built via open-source automated CI workflows without commercial enterprise code signing certificates. The macOS disk image has not undergone Apple notarization, requiring manual first-launch authorization via system settings.
-2. **Nikon Z8 / Z9 High-Efficiency NEF Restrictions**: Due to decoder limitations, high-efficiency compressed NEF formats are not natively decoded. Convert captures to DNG prior to ingestion.
+2. **Nikon High-Efficiency (HE / HE*) NEF Restrictions**: Due to decoder limitations, high-efficiency compressed NEF formats are not natively decoded. Convert captures to DNG prior to ingestion.
 3. **Legacy Proprietary Scanner Formats**: Given the variety of legacy flatbed and drum scanning software, rare proprietary scanner formats continue to be tested for ongoing compatibility.
 4. **No Precompiled Linux GUI Releases**: While the underlying Rust core compiles cleanly across Unix environments, official distributed installers focus on Windows and macOS.
 5. **Path Dependency in Non-Destructive Storage**: Moving folders or unmounting external drives transitions frames into an offline state, requiring the Locate File tool to reconnect paths.
