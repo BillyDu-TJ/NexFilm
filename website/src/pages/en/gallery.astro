@@ -1,52 +1,55 @@
 ---
 import BaseLayout from '../../layouts/BaseLayout.astro';
-import BeforeAfter from '../../components/BeforeAfter.astro';
 import { galleryManifest } from '../../data/gallery-manifest';
+import { withBase } from '../../utils/urls';
 ---
 
 <BaseLayout title="Gallery · NexFilm Engine" lang="en">
   <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16">
     <div class="text-center max-w-3xl mx-auto mb-16">
       <span class="text-xs font-mono uppercase tracking-widest text-accent block mb-2">Film Inversion Showcase</span>
-      <h1 class="text-3xl sm:text-5xl font-extrabold text-white tracking-tight">Authentic Film Inversion Gallery</h1>
+      <h1 class="text-3xl sm:text-5xl font-extrabold text-white tracking-tight">Authentic Film Results Gallery</h1>
       <p class="text-text-secondary text-base mt-4 leading-relaxed">
-        All samples are converted directly from raw camera scans without third-party presets. Drag the slider to compare raw scans against physically inverted positives.
+        Every frame below is an authentic film photograph digitized on camera RAW and inverted directly inside NexFilm, presented uncropped with full sprockets and rebate edges. For an interactive negative-vs-positive split comparison, check out the
+        <a href={withBase('/en/')} class="text-accent hover:underline underline-offset-4">Fuji 400 showcase on the home page →</a>
       </p>
     </div>
 
-    <!-- Gallery Grid -->
-    <div class="space-y-16 max-w-5xl mx-auto">
+    <!-- Gallery Plates -->
+    <div class="space-y-20 max-w-3xl mx-auto">
       {galleryManifest.map((item, idx) => (
-        <div class="space-y-4">
-          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-darkroom-line pb-3">
-            <div>
+        <article class="space-y-4">
+          <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-2 border-b border-darkroom-line pb-3">
+            <div class="min-w-0">
               <span class="text-xs font-mono text-accent">0{idx + 1} / SAMPLE</span>
-              <h2 class="text-xl font-bold text-white">{item.title.en}</h2>
+              <h2 class="text-xl font-bold text-white mt-0.5">{item.title.en}</h2>
             </div>
-            <div class="flex items-center gap-3 text-xs font-mono text-text-muted">
-              <span>{item.gear}</span>
-              <span>·</span>
-              <span class="text-accent">{item.emulationLut}</span>
+            <div class="flex items-center gap-2 text-xs font-mono text-text-muted sm:shrink-0 sm:whitespace-nowrap">
+              <span>{item.gear.en}</span>
             </div>
           </div>
 
-          <BeforeAfter 
-            lang="en"
-            beforeImg={item.negativeSrc}
-            afterImg={item.positiveSrc}
-            filmName={item.title.en} 
-            camera={item.gear}
-            aspect={item.aspect}
-          />
+          <div class="rounded-2xl overflow-hidden border border-darkroom-line bg-darkroom-canvas shadow-2xl">
+            <img
+              src={item.positiveSrc}
+              alt={item.title.en}
+              width={item.width}
+              height={item.height}
+              loading={idx === 0 ? 'eager' : 'lazy'}
+              class="w-full h-auto block select-none"
+            />
+          </div>
 
-          <div class="text-sm text-text-secondary leading-relaxed bg-darkroom-panel p-4 rounded-xl border border-darkroom-line space-y-1.5">
+          <div class="text-sm text-text-secondary leading-relaxed bg-darkroom-panel p-4 rounded-xl border border-darkroom-line space-y-2">
             <p>{item.desc.en}</p>
-            <div class="text-xs font-mono text-text-muted flex flex-wrap gap-4 pt-1 border-t border-darkroom-line">
-              <span>Input Domain: <strong class="text-text-primary">{item.inputDomain}</strong></span>
-              <span>Built-in LUT: <strong class="text-accent">{item.emulationLut}</strong></span>
+            <div class="text-xs font-mono text-text-muted flex flex-wrap gap-x-5 gap-y-1.5 pt-2 border-t border-darkroom-line">
+              <span>Stock Type: <strong class="text-text-primary">{item.filmType.en}</strong></span>
+              <span>Camera: <strong class="text-text-primary">{item.camera}</strong></span>
+              <span>Scanner: <strong class="text-text-primary">{item.scanner}</strong></span>
+              <span>Domain: <strong class="text-accent">{item.inputDomain}</strong></span>
             </div>
           </div>
-        </div>
+        </article>
       ))}
     </div>
 
@@ -54,11 +57,12 @@ import { galleryManifest } from '../../data/gallery-manifest';
     <div class="mt-20 p-8 rounded-2xl border border-darkroom-line bg-darkroom-panel text-center max-w-3xl mx-auto space-y-4">
       <h3 class="text-lg font-bold text-white">Want to showcase your scans here?</h3>
       <p class="text-sm text-text-secondary">
-        If you inverted memorable rolls using NexFilm, share your before/after comparisons and sample RAWs on GitHub Discussions.
+        If you inverted memorable rolls using NexFilm, share your finished positives, camera notes, and feedback on GitHub Discussions.
       </p>
       <a 
         href="https://github.com/BillyDu-TJ/NexFilm/discussions" 
         target="_blank" 
+        rel="noopener noreferrer"
         class="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-darkroom-raised border border-accent/40 text-accent hover:text-white text-sm font-medium transition-all"
       >
         <span>Submit on GitHub Discussions</span>

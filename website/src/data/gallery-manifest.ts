@@ -1,15 +1,41 @@
 import { withBase } from '../utils/urls';
 
-export interface GallerySample {
+export interface HeroComparisonSample {
   slug: string;
   filmStock: string;
   format: '135' | '120';
-  gear: string;
+  gear: {
+    zh: string;
+    en: string;
+  };
   inputDomain: string;
-  emulationLut: string;
   negativeSrc: string;
   positiveSrc: string;
   aspect: string;
+  title: {
+    zh: string;
+    en: string;
+  };
+}
+
+export interface GallerySample {
+  slug: string;
+  filmStock: string;
+  filmType: {
+    zh: string;
+    en: string;
+  };
+  format: '135' | '120';
+  camera: string;
+  scanner: string;
+  gear: {
+    zh: string;
+    en: string;
+  };
+  inputDomain: string;
+  positiveSrc: string;
+  width: number;
+  height: number;
   title: {
     zh: string;
     en: string;
@@ -20,81 +46,104 @@ export interface GallerySample {
   };
 }
 
+export const heroSample: HeroComparisonSample = {
+  slug: 'fuji-400-35mm',
+  filmStock: 'Fuji 400',
+  format: '135',
+  gear: {
+    zh: 'Contax RTS II · Nikon D810 翻拍',
+    en: 'Contax RTS II · Nikon D810 Scan',
+  },
+  inputDomain: 'Camera Native RGB',
+  negativeSrc: withBase('/gallery/fuji-400-neg.webp'),
+  positiveSrc: withBase('/gallery/fuji-400-pos.webp'),
+  aspect: 'aspect-[1920/1701]',
+  title: {
+    zh: 'Fuji 400 (135 彩色负片)',
+    en: 'Fuji 400 (35mm Color Negative)',
+  },
+};
+
 export const galleryManifest: GallerySample[] = [
   {
-    slug: 'portra-400-35mm',
-    filmStock: 'Kodak Portra 400',
+    slug: 'kodak-gold-200-35mm',
+    filmStock: 'Kodak Gold 200',
+    filmType: {
+      zh: '彩色负片 (C-41)',
+      en: 'Color Negative (C-41)',
+    },
     format: '135',
-    gear: 'Nikon Z6 II + Nikkor Micro 105mm f/2.8',
-    inputDomain: 'CameraNative / Linear Bayer RAW',
-    emulationLut: 'Kodak Portra Endura',
-    negativeSrc: withBase('/gallery/portra-400-neg.webp'),
-    positiveSrc: withBase('/gallery/portra-400-pos.webp'),
-    aspect: 'aspect-[16/10]',
+    camera: 'Nikon F3',
+    scanner: 'Nikon D810',
+    gear: {
+      zh: 'Nikon F3 拍摄 · Nikon D810 翻拍',
+      en: 'Shot on Nikon F3 · Scanned with Nikon D810',
+    },
+    inputDomain: 'Camera Native RGB',
+    positiveSrc: withBase('/gallery/kodak-gold-200-pos.webp'),
+    width: 1920,
+    height: 1741,
     title: {
-      zh: 'Kodak Portra 400 (135 格式 · 35mm)',
-      en: 'Kodak Portra 400 (135 Format · 35mm)',
+      zh: 'Kodak Gold 200 · 135 彩色负片',
+      en: 'Kodak Gold 200 · 35mm Color Negative',
     },
     desc: {
-      zh: '经典人像彩色负片，温润肤色还原与细腻的高光过渡。NexFilm 统一密度管线在红黄通道的高光抑制非常自然，搭配内置 Kodak Portra Endura 相纸响应曲线，真实再现经典冲印质感。',
-      en: 'Legendary color negative portrait stock with subtle skin tones and forgiving highlight roll-off. Unified density inversion keeps the red/yellow highlight roll-off natural, finished with built-in Kodak Portra Endura paper tonality.',
+      zh: '实拍高原晴空下的经幡与草甸（KODAK GB 200-7）。Camera Native RGB 原生色域直接扣除片基反相，蓝天通透干净不发青，高光云层与经幡色彩过渡自然，完整保留片边编号与齿孔边框。',
+      en: 'Highland prayer flags and sunlit alpine grass shot on Kodak Gold 200 (KODAK GB 200-7). Inverted directly in Camera Native RGB without premapped gamut compression, keeping deep blue skies clean without cyan shift and preserving film rebate markings.',
     },
   },
   {
-    slug: 'superia-400-35mm',
-    filmStock: 'Fujifilm Superia X-TRA 400',
+    slug: 'kodak-5222-35mm',
+    filmStock: 'Kodak Eastman Double-X 5222',
+    filmType: {
+      zh: '黑白电影负片',
+      en: 'B&W Motion Picture Negative',
+    },
     format: '135',
-    gear: 'Sony A7R IV + FE 90mm f/2.8 Macro G',
-    inputDomain: 'CameraNative / Linear Bayer RAW',
-    emulationLut: 'Kodak Endura Premier',
-    negativeSrc: withBase('/gallery/superia-400-neg.webp'),
-    positiveSrc: withBase('/gallery/superia-400-pos.webp'),
-    aspect: 'aspect-[16/10]',
+    camera: 'Contax RTS II',
+    scanner: 'Nikon D810',
+    gear: {
+      zh: 'Contax RTS II 拍摄 · Nikon D810 翻拍',
+      en: 'Shot on Contax RTS II · Scanned with Nikon D810',
+    },
+    inputDomain: 'Camera Native RGB',
+    positiveSrc: withBase('/gallery/kodak-5222-pos.webp'),
+    width: 1920,
+    height: 1692,
     title: {
-      zh: 'Fujifilm Superia X-TRA 400 (135 格式 · 35mm)',
-      en: 'Fujifilm Superia X-TRA 400 (135 Format · 35mm)',
+      zh: 'Kodak Eastman Double-X 5222 · 135 黑白电影卷',
+      en: 'Kodak Eastman Double-X 5222 · 35mm B&W Cine Film',
     },
     desc: {
-      zh: '特有的第四感色层，绿色与青色阶调生动，微反差强烈。逐通道片基自动扣除后彻底消除橙褐色环境色干扰，有效还原街头阴影部的丰富细节。',
-      en: 'Fujifilm daylight emulsion featuring the proprietary 4th color layer. Crisp emerald greens, rich micro-contrast, and pristine shadow depth unlocked through per-channel film base subtraction.',
+      zh: '河岸林荫下的黑白电影底片实拍（5222+35）。基于对数光学密度映射还原银盐阶调，树冠暗部纹理扎实，水面强反光与建筑受光面高光滚降柔和，片边编码与齿孔锐利清晰。',
+      en: 'Riverside shade and sunlit architecture captured on Eastman Double-X 5222 (5222+35). Logarithmic density inversion retains crisp silver grain across deep foliage shadows while gently rolling off bright water reflections.',
     },
   },
   {
-    slug: 'hp5-plus-400-120',
-    filmStock: 'Ilford HP5 Plus 400',
-    format: '120',
-    gear: 'Hasselblad 500C/M + CF 80mm f/2.8 翻拍',
-    inputDomain: 'CameraNative / Linear Bayer RAW',
-    emulationLut: 'Ilford MGFB 2',
-    negativeSrc: withBase('/gallery/hp5-plus-400-neg.webp'),
-    positiveSrc: withBase('/gallery/hp5-plus-400-pos.webp'),
-    aspect: 'aspect-[16/10]',
-    title: {
-      zh: 'Ilford HP5 Plus 400 黑白负片 (120 中画幅 6x6)',
-      en: 'Ilford HP5 Plus 400 B&W (120 Medium Format 6x6)',
-    },
-    desc: {
-      zh: '厚重饱满的银盐颗粒与开阔的动态范围。单通道对数光学密度映射忠实还原乳剂厚度，搭配内置 Ilford Multigrade FB 2 号相纸特性曲线，暗部深邃有层次，高光如纯银般流淌。',
-      en: 'Iconic medium-format silver halide emulsion with rich grain and immense latitude. Single-channel logarithmic density inversion paired with built-in Ilford Multigrade FB Grade 2 silver gelatin paper response.',
-    },
-  },
-  {
-    slug: 'vision3-500t-35mm',
+    slug: 'kodak-5219-35mm',
     filmStock: 'Kodak Vision3 500T (5219)',
+    filmType: {
+      zh: '灯光型电影负片 (ECN-2)',
+      en: 'Tungsten Cinema Negative (ECN-2)',
+    },
     format: '135',
-    gear: 'Canon EOS R5 + RF 100mm f/2.8L Macro IS USM',
-    inputDomain: 'CameraNative / Linear Bayer RAW',
-    emulationLut: 'Kodak 2383',
-    negativeSrc: withBase('/gallery/vision3-500t-neg.webp'),
-    positiveSrc: withBase('/gallery/vision3-500t-pos.webp'),
-    aspect: 'aspect-[16/10]',
+    camera: 'Contax RTS II',
+    scanner: 'Nikon D810',
+    gear: {
+      zh: 'Contax RTS II 拍摄 · Nikon D810 翻拍',
+      en: 'Shot on Contax RTS II · Scanned with Nikon D810',
+    },
+    inputDomain: 'Camera Native RGB',
+    positiveSrc: withBase('/gallery/kodak-5219-pos.webp'),
+    width: 1920,
+    height: 1705,
     title: {
-      zh: 'Kodak Vision3 500T 电影胶卷 (5219 · 35mm)',
-      en: 'Kodak Vision3 500T Motion Picture Film (5219 · 35mm)',
+      zh: 'Kodak Vision3 500T (5219) · 135 电影负片',
+      en: 'Kodak Vision3 500T (5219) · 35mm Cinema Film',
     },
     desc: {
-      zh: '去碳后的钨丝灯电影负片，具备极高的高光宽容度与柔和光晕。通过暗房印片光调节与内置 Kodak 2383 电影印片正片 LUT，瞬间呈现经典好莱坞大银幕影调。',
-      en: 'Remjet-removed tungsten motion picture stock with extreme dynamic latitude. Controlled halation glow balanced through darkroom printer lights and iconic Kodak 2383 print film emulation.',
+      zh: '地下通道混合光源实拍（荧光灯顶光与红黄墙面照明）。密度反相完整保留了 5219 特有的青黄绿冷暖层次与红灯柔和晕光，顶灯高光与暗部通道过渡自然，保留完整片边与齿孔。',
+      en: 'Underground transit corridor under mixed fluorescent and tungsten illumination. Density inversion preserves the signature teal-green shadows, warm tile midtones, gentle highlight bloom around lamps, and natural 5219 grain with full film borders.',
     },
   },
 ];

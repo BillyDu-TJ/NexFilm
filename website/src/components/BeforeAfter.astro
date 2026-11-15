@@ -1,5 +1,5 @@
 ---
-import { galleryManifest } from '../data/gallery-manifest';
+import { heroSample } from '../data/gallery-manifest';
 
 interface Props {
   beforeImg?: string;
@@ -12,17 +12,15 @@ interface Props {
   lang?: 'zh' | 'en';
 }
 
-const defaultSample = galleryManifest[0];
-
 const {
   lang = 'zh',
-  beforeImg = defaultSample.negativeSrc,
-  afterImg = defaultSample.positiveSrc,
+  beforeImg = heroSample.negativeSrc,
+  afterImg = heroSample.positiveSrc,
   beforeLabel = lang === 'zh' ? '翻拍负片' : 'Negative Raw Scan',
   afterLabel = lang === 'zh' ? 'NexFilm 密度反相' : 'Inverted Positive',
-  aspect = 'aspect-[16/10]',
-  filmName = lang === 'zh' ? defaultSample.title.zh : defaultSample.title.en,
-  camera = defaultSample.gear
+  aspect = heroSample.aspect,
+  filmName = lang === 'zh' ? heroSample.title.zh : heroSample.title.en,
+  camera = lang === 'zh' ? heroSample.gear.zh : heroSample.gear.en
 } = Astro.props;
 ---
 
@@ -84,7 +82,7 @@ const {
   </div>
 
   <!-- Bottom Info Bar (Darkroom Canvas & Sans tokens) -->
-  <div class="px-5 py-3 bg-darkroom-canvas border-t border-darkroom-line flex items-center justify-between text-xs text-text-muted font-sans">
+  <div class="px-5 py-3 bg-darkroom-canvas border-t border-darkroom-line flex flex-wrap items-center justify-between gap-2 text-xs text-text-muted font-sans">
     <div class="flex items-center gap-2">
       <span class="w-2 h-2 rounded-full bg-accent animate-pulse"></span>
       <span class="font-medium text-text-primary font-sans">{filmName}</span>

@@ -38,7 +38,7 @@ export const ui = {
     'features.privacy_desc': '原生 Rust + Tauri + SQLite 构建。不上传任何原片，不依赖云端 API，零数据收集，随时随地专注胶片创作。',
 
     'gallery.title': '真实样片反转效果',
-    'gallery.subtitle': '拖动滑块直观对比负片原始扫描与 NexFilm 科学反转正片',
+    'gallery.subtitle': '实拍负片经 NexFilm 科学密度反相输出的真实正片成片画廊',
 
     'download.latest': '最新版本',
     'download.desc': '支持 Windows 10/11 与 macOS，全平台免配置开箱即用。',
@@ -83,7 +83,7 @@ export const ui = {
     'features.privacy_desc': 'Built with Rust, Tauri, and SQLite. Your scans never touch any cloud server. Completely offline, zero tracking, total control.',
 
     'gallery.title': 'Film Inversion Gallery',
-    'gallery.subtitle': 'Drag the slider to compare raw camera scans with NexFilm inverted positives.',
+    'gallery.subtitle': 'Authentic film negatives inverted directly into positives with NexFilm.',
 
     'download.latest': 'Latest Release',
     'download.desc': 'Available for Windows 10/11 x64 and macOS (Apple Silicon & Intel).',
