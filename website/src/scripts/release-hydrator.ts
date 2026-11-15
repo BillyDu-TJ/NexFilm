@@ -129,6 +129,8 @@ function hydrateHeaderVersion(release: any) {
   const tag = release.tag_name;
   if (!tag) return;
 
+  const tagUrl = release.html_url || `https://github.com/BillyDu-TJ/NexFilm/releases/tag/${tag}`;
+
   const badgeEls = document.querySelectorAll<HTMLElement>('[data-header-version]');
   badgeEls.forEach((el) => {
     el.textContent = tag;
@@ -136,7 +138,24 @@ function hydrateHeaderVersion(release: any) {
 
   const linkEls = document.querySelectorAll<HTMLAnchorElement>('[data-header-version-link]');
   linkEls.forEach((link) => {
-    link.href = release.html_url || `https://github.com/BillyDu-TJ/NexFilm/releases/tag/${tag}`;
+    link.href = tagUrl;
+  });
+
+  const heroReleaseLinks = document.querySelectorAll<HTMLAnchorElement>('[data-hero-release-link]');
+  heroReleaseLinks.forEach((link) => {
+    link.href = tagUrl;
+    link.textContent = `GitHub Release (${tag})`;
+  });
+
+  const latestVersionEls = document.querySelectorAll<HTMLElement>('[data-latest-version]');
+  latestVersionEls.forEach((el) => {
+    el.textContent = tag;
+  });
+
+  const latestReleaseLinks = document.querySelectorAll<HTMLAnchorElement>('[data-latest-release-link]');
+  latestReleaseLinks.forEach((link) => {
+    link.href = tagUrl;
+    link.textContent = `Release (${tag}) →`;
   });
 }
 
@@ -284,6 +303,9 @@ function hydrateDownloadCards(release: any) {
 
     const releaseLink = card.querySelector<HTMLAnchorElement>('[data-card-release-link]');
     if (releaseLink) releaseLink.href = tagUrl;
+
+    const releaseText = card.querySelector<HTMLElement>('[data-card-release-text]');
+    if (releaseText) releaseText.textContent = `GitHub Release (${tag})`;
   }
 
   const detected = detectPlatform();

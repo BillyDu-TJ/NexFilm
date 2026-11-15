@@ -16,7 +16,7 @@ const tagUrl = latestRelease.htmlUrl;
       <span class="text-xs font-mono uppercase tracking-widest text-accent block mb-2">Official Downloads</span>
       <h1 class="text-3xl sm:text-4xl font-bold text-text-primary tracking-tight">Download NexFilm Engine</h1>
       <p class="text-text-secondary text-sm mt-3">
-        Latest stable release <span class="font-mono text-accent font-semibold">{tagName}</span>. Select your platform below to download official installer packages.
+        Latest stable release <span data-latest-version class="font-mono text-accent font-semibold">{tagName}</span>. Select your platform below to download official installer packages.
       </p>
     </div>
 
@@ -106,6 +106,7 @@ const tagUrl = latestRelease.htmlUrl;
           href={tagUrl} 
           target="_blank" 
           rel="noopener noreferrer"
+          data-latest-release-link
           class="px-3.5 py-1.5 rounded-lg bg-accent text-darkroom-canvas hover:bg-accent-hover text-xs font-semibold transition-all whitespace-nowrap"
         >
           Release ({tagName}) →
