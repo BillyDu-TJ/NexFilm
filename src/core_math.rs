@@ -536,15 +536,11 @@ fn normalize_curve_points(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
     if deduplicated.is_empty() {
         return vec![[0.0, 0.0], [1.0, 1.0]];
     }
-    // The endpoints exist so the curve always spans the full input range. Only
-    // their output may move, which is how a lifted black point is expressed.
-    if deduplicated[0][0] > 1e-6 {
-        let first = deduplicated[0][1];
-        deduplicated.insert(0, [0.0, first]);
-    }
-    if deduplicated.last().map(|point| point[0]).unwrap_or(1.0) < 1.0 - 1e-6 {
-        let last = deduplicated.last().map(|point| point[1]).unwrap_or(1.0);
-        deduplicated.push([1.0, last]);
+    // The first and last points are the real curve endpoints. They can sit
+    // anywhere in the input range; evaluation extends them horizontally.
+    if deduplicated.len() == 1 {
+        let output = deduplicated[0][1];
+        return vec![[0.0, output], [1.0, output]];
     }
     deduplicated.truncate(MAX_TONE_CURVE_POINTS);
     deduplicated
@@ -602,6 +598,16 @@ fn monotone_curve_tangents(points: &[[f32; 2]]) -> Vec<f32> {
 fn evaluate_monotone_curve(points: &[[f32; 2]], tangents: &[f32], x: f32) -> f32 {
     if points.len() < 2 {
         return x;
+    }
+    if !x.is_finite() {
+        return points[0][1];
+    }
+    if x <= points[0][0] {
+        return points[0][1];
+    }
+    let last = points[points.len() - 1];
+    if x >= last[0] {
+        return last[1];
     }
     let clamped = x.clamp(points[0][0], points[points.len() - 1][0]);
     let mut segment = points.len() - 2;
@@ -897,10 +903,10 @@ mod tests {
         apply_linear_highlight_adjustment_rgb, apply_perspective_uv, apply_post_gamma_adjustments,
         contrast_channel, dehaze_restore, dehaze_transmission, density_luma,
         finite_soft_clip_highlights_rgb, neutral_density_bounds, neutralize_rgb,
-        normalize_density_channel, normalize_density_channel_unclamped_high,
-        rolloff_highlight_shoulder_rgb, shader_homography, sharpening_mask_weight,
-        sprocket_white_mask, trim_density_endpoints, DetailSettings, ToneCurveSet,
-        LINEAR_HIGHLIGHT_PIVOT,
+        normalize_curve_points, normalize_density_channel,
+        normalize_density_channel_unclamped_high, rolloff_highlight_shoulder_rgb,
+        shader_homography, sharpening_mask_weight, sprocket_white_mask, trim_density_endpoints,
+        DetailSettings, ToneCurveLut, ToneCurveSet, LINEAR_HIGHLIGHT_PIVOT,
     };
 
     #[test]
@@ -1242,6 +1248,85 @@ mod tests {
         }
         assert!(curves.apply([0.0; 3])[0].abs() < 2e-3);
         assert!((curves.apply([1.0; 3])[0] - 1.0).abs() < 2e-3);
+    }
+
+    #[test]
+    fn free_endpoint_curve_uses_flat_extensions_outside_its_control_domain() {
+        let points = [[0.18, 0.08], [0.42, 0.34], [0.68, 0.72], [0.86, 0.92]];
+        assert_eq!(normalize_curve_points(&points), points.to_vec());
+        let lut = ToneCurveLut::from_points(&points);
+        for index in [0, 64, 128] {
+            assert!(
+                (lut.samples()[index] - 0.08).abs() < 1e-6,
+                "left extension moved at {index}: {}",
+                lut.samples()[index]
+            );
+        }
+        for index in [900, 1023] {
+            assert!(
+                (lut.samples()[index] - 0.92).abs() < 1e-6,
+                "right extension moved at {index}: {}",
+                lut.samples()[index]
+            );
+        }
+        assert!((lut.sample(0.0) - 0.08).abs() < 1e-6);
+        assert!((lut.sample(1.0) - 0.92).abs() < 1e-6);
+    }
+
+    #[test]
+    fn single_curve_point_falls_back_to_flat_endpoints() {
+        let normalized = normalize_curve_points(&[[0.5, 0.4]]);
+        assert_eq!(normalized, vec![[0.0, 0.4], [1.0, 0.4]]);
+        let lut = ToneCurveLut::from_points(&[[0.5, 0.4]]);
+        for value in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            assert!((lut.sample(value) - 0.4).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn free_endpoint_tone_curve_set_stays_monotone_with_an_s_curve() {
+        let curves = ToneCurveSet::new(
+            &[[0.18, 0.08], [0.42, 0.34], [0.68, 0.72], [0.86, 0.92]],
+            &[[0.0, 0.0], [1.0, 1.0]],
+            &[[0.0, 0.0], [1.0, 1.0]],
+            &[[0.0, 0.0], [1.0, 1.0]],
+        );
+        let mut previous = -1.0;
+        for step in 0..=200 {
+            let x = step as f32 / 200.0;
+            let mapped = curves.apply([x, x, x])[0];
+            assert!(mapped >= previous - 1e-4, "curve decreased at {x}");
+            assert!(
+                (0.0..=1.0).contains(&mapped),
+                "{mapped} left the display range"
+            );
+            previous = mapped;
+        }
+        assert!((curves.apply([0.0; 3])[0] - 0.08).abs() < 2e-3);
+        assert!((curves.apply([1.0; 3])[0] - 0.92).abs() < 2e-3);
+    }
+
+    #[test]
+    fn free_endpoint_lut_matches_frontend_samples() {
+        let points = [[0.18, 0.08], [0.42, 0.34], [0.68, 0.72], [0.86, 0.92]];
+        let lut = ToneCurveLut::from_points(&points);
+        let expected = [
+            (0, 0.07999999821186066),
+            (64, 0.07999999821186066),
+            (128, 0.07999999821186066),
+            (333, 0.23107102513313293),
+            (512, 0.45339617133140564),
+            (700, 0.7254473567008972),
+            (900, 0.9200000166893005),
+            (1023, 0.9200000166893005),
+        ];
+        for (index, value) in expected {
+            assert!(
+                (lut.samples()[index] - value).abs() < 1e-4,
+                "frontend/Rust LUT mismatch at {index}: {} != {value}",
+                lut.samples()[index]
+            );
+        }
     }
 
     #[test]

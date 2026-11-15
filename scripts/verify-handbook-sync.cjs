@@ -7,16 +7,13 @@
  * - Exactly 19 canonical markdown files per language (5 + 7 + 4 + 3)
  * - Zero obsolete migration files
  * - Perfect symmetry in filename, id, track, trackOrder, chapterOrder, inApp, and section IDs
- * - Byte-for-byte synchronization with ui/documentation-data.js on disk
  */
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { execSync } = require('node:child_process');
 
 const rootDir = path.resolve(__dirname, '..');
 const docsRootDir = path.join(rootDir, 'docs', 'handbook');
-const uiDataFile = path.join(rootDir, 'ui', 'documentation-data.js');
 
 console.log('[verify-handbook-sync] Checking handbook dual-end synchronization...');
 
@@ -169,27 +166,4 @@ for (const [rel, pair] of relativeMap.entries()) {
 }
 
 console.log('✓ All 19 zh/en markdown pairs match symmetrically in metadata and section IDs.');
-
-// 3. Byte-for-byte check against disk ui/documentation-data.js
-if (!fs.existsSync(uiDataFile)) {
-  console.error(`❌ ui/documentation-data.js does not exist! Run compile-handbook.mjs first.`);
-  process.exit(1);
-}
-
-const diskContent = fs.readFileSync(uiDataFile, 'utf8');
-
-// Run compilation
-execSync(`node "${path.join(rootDir, 'scripts', 'compile-handbook.mjs')}"`, {
-  stdio: 'inherit'
-});
-
-const recompiledContent = fs.readFileSync(uiDataFile, 'utf8');
-
-if (diskContent !== recompiledContent) {
-  console.error(`❌ ui/documentation-data.js on disk differed from compiler output!`);
-  console.error(`   The checked-in ui/documentation-data.js was stale or manually modified.`);
-  process.exit(1);
-}
-
-console.log('✓ Byte-for-byte verification passed: ui/documentation-data.js is 100% deterministic and synchronized with SSOT handbook.');
 console.log('\n🎉 ALL HANDBOOK SYNC VERIFICATIONS PASSED (100% GREEN)!');

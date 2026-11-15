@@ -38,11 +38,11 @@
 ## 中文说明
 
 > [!IMPORTANT]
-> NexFilm Engine v1.1.0 是当前稳定版本。Windows 与 macOS 安装包目前未进行代码签名，macOS DMG 也未经过 Apple 公证。请只从本仓库的 Releases 下载，并始终保留原始扫描文件；正式批量输出前，建议先导出少量画面检查结果。
+> NexFilm Engine v1.2.0 是当前稳定版本。Windows 与 macOS 安装包目前未进行代码签名，macOS DMG 也未经过 Apple 公证。请只从本仓库的 Releases 下载，并始终保留原始扫描文件；正式批量输出前，建议先导出少量画面检查结果。
 
 ### 下载与安装
 
-从 [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest) 下载与电脑架构匹配的 v1.1.0 安装包：
+从 [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest) 下载与电脑架构匹配的 v1.2.0 安装包：
 
 | 平台 | 下载文件 | 安装方式 |
 | --- | --- | --- |
@@ -52,7 +52,16 @@
 
 不要下载 Releases 中自动生成的 <code>Source code</code> 压缩包，它们不是可直接运行的安装包。若 macOS 阻止首次启动，请先确认文件来自本仓库，再在 Finder 中右键应用并选择 **打开**，或前往 **系统设置 → 隐私与安全性** 允许启动。
 
-### v1.1.0 更新内容
+### v1.2.0 更新内容
+
+这版主要解决日常使用里最影响出片和效率的几个痛点：相机 RAW 偏色、自动框选片门框不准、Contact Sheet 导出体验，以及几处修图手感问题。
+
+- **相机 RAW 原生反相与色彩保真**：相机 RAW 改在 Camera Native RGB 下直接反相算密度，再做高光滚降与欠曝保护，蓝天、高光高饱和部分更干净，不会提前偏青偏灰；双平台统一升级到 LibRaw 0.22.2，竖拍 RAW 的占位图、预览与导出方向一致，导出也严格读库里的已保存状态。
+- **自动胶片范围更稳，交互补齐**：检测升级到 640px 面积采样并结合同卷位置先验，自动向内微收一点防灯板漏进统计，算不准时退回居中 80% 安全框；新增 `[3:2]` `[1:1]` `[6:7]` `[自由]` 比例锁，支持整框拖动和单边微调。
+- **Contact Sheet 预览弹窗与高清拼版**：点导出先开大预览窗核对，支持自选文件名、保存目录、JPEG / 无损 PNG 与三档清晰度；自己保留了片边齿孔的底片可以关掉“绘制胶片边框”，按格子尺寸逐帧重绘高清正片再合成。
+- **裁切、曲线与尺孔顺手度提升**：裁切里的旋转去掉了卡顿感，按住 <kbd>Shift</kbd> 支持精细调节；曲线首尾点可自由横移（端点外拉平），拖动时显示输入/输出数值；修复尺孔采样和预览色偏不一致，跨帧粘贴有点位置偏差也不易漏孔。
+
+### v1.1.0 更新内容（历史）
 
 本版的主题是把**输入类型与密度数学分开**：输入类型只决定"这段数据属于什么输入域"，反相与密度计算全部使用同一套实现。相机 RAW、扫描仪 TIFF 与 Imacon/Flextight FFF 因此得到一致、可解释的结果。
 
@@ -89,14 +98,14 @@ NexFilm Engine 用于将相机翻拍或扫描仪输出的胶片负片转换为�
 - **胶卷与散张工作流**：按画幅、相机、胶片型号、日期和备注导入整卷，也可直接拖入散张；备注用于区分同一款胶片的多卷素材，并显示在胶卷卡片与胶卷资料中；支持继续编辑、追加画面、修改胶卷信息、筛选归档、重定位缺失文件和删除记录。
 - **自动胶片范围识别**：自动检测有效成像区域，也可拖动四角或边缘手动修正；范围仅用于内容分析与边缘排除，不会自动改变画面透视。固定机位扫描时可将范围批量应用到同卷其他画面。
 - **密度域反相与自动校色**：基于线性透射率进行密度转换、片基扣除与统一的通道响应补偿，输入域逐帧记录；提供 Color / B&W、D-Min / D-Max、Printer Lights、曝光、Gamma、对比度、高光、阴影、饱和度、色温和色调控制。算法细节见 [统一密度管线说明](docs/unified-density-pipeline.md) 与 [数据处理管线说明](data_process_pipeline_doc.md)。
-- **曲线与细节**：印片光之后是四条控制点曲线（RGB 主曲线加红绿蓝分通道，带直方图背景，可拖动、加点、删点），观感调整之后是细节分组：锐化的数量 / 半径 / 细节 / 蒙版，以及纹理、清晰度、去朦胧。按住 <kbd>Alt</kbd> 拖动锐化参数可在预览中查看锐化信号或蒙版的灰度视图。半径按长边 2560 像素换算，预览与导出观感一致；每个分组标题右侧的三角可收起参数，状态全局保留。
+- **曲线与细节**：印片光之后是四条控制点曲线（RGB 主曲线加红绿蓝分通道，带直方图背景，可拖动、加点、删点；首尾端点可自由横移并显示实时坐标），观感调整之后是细节分组：锐化的数量 / 半径 / 细节 / 蒙版，以及纹理、清晰度、去朦胧。按住 <kbd>Alt</kbd> 拖动锐化参数可在预览中查看锐化信号或蒙版的灰度视图。半径按长边 2560 像素换算，预览与导出观感一致；每个分组标题右侧的三角可收起参数，状态全局保留。
 - **整卷标定与实验性硬件校正**：可按卷标定共享白点并整卷自动反相；硬件校正视图可管理采集校正配置（dark / open gate / flat / 透射目标）与扫描仪输入配置，用于固定的翻拍或扫描设备。该部分仍标记为实验性。
 - **实时 Develop 工作区**：WebGL 交互预览，支持裁切、拉直、透视、90 度旋转、水平/垂直翻转、缩放平移，以及直方图和波形图。
 - **设置复制与批处理**：可按类别选择要复制的校色、曲线、细节、LUT、齿孔和几何参数，再粘贴到其他相似画面。
 - **打印胶片模拟**：内置 Kodak 与 Ilford 打印胶片/相纸风格 LUT，支持载入自定义 <code>.cube</code> LUT 并调节强度。
 - **完整输出工具**：可导出选中画面或整卷，支持 16/8 位 TIFF、16 位 PNG、JPEG，以及线性 16 位 TIFF、线性 DNG 和相机 RAW DNG；提供输出色彩空间、尺寸、放大策略、锐化、JPEG 质量、命名模板、重名策略和可选 EXIF 胶卷信息。
-- **胶卷接触印样**：生成带胶片型号、拍摄日期、相机和画面编号的 JPEG Contact Sheet。
-- **本地化与主题**：提供中文/英文界面和浅色/深色主题；前端样式与使用文档均随安装包本地打包，可离线使用。
+- **胶卷接触印样**：导出前预览整卷排版，支持包含或省略片边的严格排布，并以逐帧高清渲染合成带胶片型号、拍摄日期、相机和画面编号的 JPEG / PNG Contact Sheet。
+- **本地化与主题**：提供中文/英文界面和浅色/深色主题；前端样式随安装包本地打包，可离线使用，完整使用手册维护在 [docs/handbook](docs/handbook) 与官网文档中心。
 
 ### 快速开始
 
@@ -111,7 +120,7 @@ Library 与 Develop 显示当前工作卷；历史胶卷保存在 **Rolls**。�
 #### 2. 确认范围并反相
 
 1. 在 **Library** 选择画面并进入 **Develop**。
-2. 首次编辑先选择 **Set Film Area → Auto Area**。检查检测结果，必要时拖动四角或边缘，再选择 **Save Area**。
+2. 首次编辑先选择 **Set Film Area → Auto Area**。检查检测结果，必要时拖动四角、边缘或整框调整范围，也可切换画幅比例锁，再选择 **Save Area**。
 3. 同卷画面位置一致时使用 **Batch Apply**；位置不一致时应逐张确认。
 4. 选择 **Auto Invert** 生成正片，再使用密度、印片光、曲线、观感调整、细节、色彩平衡和 LUT 完成调整。
 5. 齿孔或边框干扰校色时，可使用 **Sample Sprocket Hole** 采样；相似画面可通过 **Copy Settings / Paste Settings** 复用参数。
@@ -121,7 +130,7 @@ Library 与 Develop 显示当前工作卷；历史胶卷保存在 **Rolls**。�
 1. 在 Library 选择画面，或进入 Rolls 后使用 **Export Roll** 输出整卷。
 2. 在导出窗口设置格式、色彩空间、尺寸、锐化、命名模板与重名策略，然后选择目标文件夹。
 3. 导出在后台执行，可继续浏览和编辑。正式批量导出前请先检查一张样片。
-4. 在 **Rolls → Roll Contents** 中选择 **Export Contact Sheet** 可生成接触印样；源文件移动后使用 **Locate File** 重新关联。
+4. 在 **Rolls → Roll Contents** 中选择 **Export Contact Sheet** 可先预览排版与片边开关再生成接触印样；源文件移动后使用 **Locate File** 重新关联。
 
 16 位 TIFF 适合存档或继续精修；JPEG 适合日常分享。需要把结果交给其他软件继续调色时，可以选择线性 16 位 TIFF 或线性 DNG（线性光，不带显示曲线，并写入对应色彩空间）；需要原样归档扫描的 RAW 数据时，可以选择相机 RAW DNG，它不参与任何调整，仅适用于相机 RAW 素材，其余画面请改用线性 DNG。命名模板支持 <code>{Roll}</code>、<code>{Camera}</code>、<code>{Film}</code>、<code>{Date}</code>、<code>{Original}</code> 和 <code>{Seq}</code>。
 
@@ -202,11 +211,11 @@ cargo tauri build --target aarch64-apple-darwin --bundles dmg
 cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ~~~
 
-### 维护者：发布 v1.1.0
+### 维护者：发布 v1.2.0
 
-仓库使用单一的手动工作流 [Build and Release NexFilm 1.1.0](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml)。运行时输入标签 <code>v1.1.0</code>；工作流会先执行 Rust 与前端校验，随后并行构建 Windows x64、macOS Apple Silicon 和 macOS Intel 安装包，并发布为正式 GitHub Release。
+仓库使用单一的手动工作流 [Build and Release NexFilm 1.2.0](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml)。运行时输入标签 <code>v1.2.0</code>；工作流会先执行 Rust 与前端校验，随后并行构建 Windows x64、macOS Apple Silicon 和 macOS Intel 安装包，并发布为正式 GitHub Release。
 
-发布前请确认 <code>Cargo.toml</code>、<code>Cargo.lock</code> 与 <code>tauri.conf.json</code> 均为 <code>1.1.0</code>，应用内文档与 README 的版本号已同步，提交并推送全部发布文件，再从 Actions 手动运行一次工作流。当前配置为 <code>releaseDraft: false</code>、<code>prerelease: false</code>。
+发布前请确认 <code>Cargo.toml</code>、<code>Cargo.lock</code> 与 <code>tauri.conf.json</code> 均为 <code>1.2.0</code>，README 与发布说明已同步，提交并推送全部发布文件，再从 Actions 手动运行一次工作流。当前配置为 <code>releaseDraft: false</code>、<code>prerelease: false</code>。
 
 ### 已知限制
 
@@ -236,6 +245,7 @@ cargo tauri build --target x86_64-apple-darwin --bundles dmg
 - 问题反馈：[GitHub Issues](https://github.com/BillyDu-TJ/NexFilm/issues)
 - 软件作者：Billy_Du，GitHub [@BillyDu-TJ](https://github.com/BillyDu-TJ)，邮箱 [790704944@qq.com](mailto:790704944@qq.com) / [duzhongtao188@gmail.com](mailto:duzhongtao188@gmail.com)
 - UI 设计：lonely-xmw，GitHub [@lxmw44426-tech](https://github.com/lxmw44426-tech)，邮箱 [lxmw44426@gmail.com](mailto:lxmw44426@gmail.com)
+- 代码贡献：感谢 `jacky_tan`（[PR #10](https://github.com/BillyDu-TJ/NexFilm/pull/10) / [PR #12](https://github.com/BillyDu-TJ/NexFilm/pull/12)）贡献相机原生 RGB 反相主路径、显示矩阵传递与 RAW 预览方向修正
 - 理论参考：感谢知乎用户 <code>@黄昊Haosky</code> 与 <code>@V777</code> 对科学去色罩理论的分享
 - 开源许可：[GNU General Public License v3.0 only](LICENSE)
 
@@ -248,11 +258,11 @@ cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ## English
 
 > [!IMPORTANT]
-> NexFilm Engine v1.1.0 is the current stable release. Windows and macOS packages are currently unsigned, and macOS DMGs are not notarized by Apple. Download only from this repository's Releases page, keep the original scans, and test a small export before processing a full roll.
+> NexFilm Engine v1.2.0 is the current stable release. Windows and macOS packages are currently unsigned, and macOS DMGs are not notarized by Apple. Download only from this repository's Releases page, keep the original scans, and test a small export before processing a full roll.
 
 ### Download and install
 
-Download the v1.1.0 package for your system from [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest):
+Download the v1.2.0 package for your system from [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest):
 
 | Platform | Package | Installation |
 | --- | --- | --- |
@@ -262,7 +272,16 @@ Download the v1.1.0 package for your system from [GitHub Releases](https://githu
 
 The automatically generated <code>Source code</code> archives are not application installers. If macOS blocks the first launch, verify that the DMG came from this repository, then right-click the app in Finder and choose **Open**, or allow it under **System Settings → Privacy & Security**.
 
-### What's new in v1.1.0
+### What's new in v1.2.0
+
+This update cleans up the rough edges that kept showing up on real rolls—RAW highlights and shadows shifting color, unreliable film-border detection, low-res Contact Sheet exports, and a few fiddly develop controls:
+
+- **Camera-native RAW inversion & color headroom.** Camera RAWs now run base subtraction and density math directly in camera-native RGB instead of clipping blue channels in ProPhoto upfront, paired with hue-preserving highlight rolloff and underexposed shadow retention. Both platforms now ship on LibRaw 0.22.2 (with `rawler` fallback coverage), and rotated RAW placeholders, thumbnails, and exports stay upright instead of snapping sideways after load.
+- **Better film-area detection & framing controls.** Auto-detection moves to 640 px area-averaged sampling with roll-level spatial priors, tucks inward slightly to keep light tables out of the frame, and falls back to a centered 80% safe box instead of full-frame when uncertain. Added `3:2`, `1:1`, `6:7`, and free aspect locks, whole-box dragging, and single-edge pulls.
+- **Contact Sheet preview modal & full-quality export.** Opens a full preview dialog before saving where you can pick the filename, folder, JPEG quality or lossless PNG, and 3000/4500/6000 px output. If your scans already include real film borders and sprockets, uncheck film borders to lay them out cleanly without double borders; each cell is re-rendered from source at target resolution before compositing.
+- **Develop polish: crop rotation, free curve endpoints, and sprockets.** Unified crop rotation with the smooth straighten feel plus <kbd>Shift</kbd>-drag fine control. Tone-curve endpoints now slide horizontally across the input axis (holding flat beyond the endpoints) with a live In/Out readout. Fixed sprocket target-color decoding, auto-migrated older samples, and widened pasted edge tolerance so slight frame shifts don't break masking.
+
+### What's new in v1.1.0 (previous release)
 
 The theme of this release is separating **what the input is** from **how density is computed**. The input class now selects only the input domain; inversion and density use one shared implementation, which gives camera RAW, scanner TIFF, and Imacon/Flextight FFF files consistent and explainable results.
 
@@ -300,14 +319,14 @@ NexFilm Engine converts camera-scanned or scanner-produced film negatives into p
 - **Roll and loose-frame workflows** with format, camera, film stock, date, and note metadata. The note tells several rolls of the same film stock apart and appears on the roll card and in the roll details; drag-and-drop import, archived-roll editing, append, metadata editing, missing-file relocation, and deletion are all supported.
 - **Automatic film-area detection**, with manual corner/edge adjustment and batch reuse for consistently positioned scans. The detected area guides analysis and edge exclusion without automatically changing image perspective.
 - **Density-domain inversion and automatic grading** with per-channel film-base subtraction and one shared channel-response stage, with the input domain recorded per frame; Color / B&W modes, D-Min / D-Max, Printer Lights, exposure, gamma, contrast, highlights, shadows, saturation, temperature, and tint. See the [unified density pipeline](docs/unified-density-pipeline.md) and the [data-processing pipeline](data_process_pipeline_doc.md) for implementation details.
-- **Tone curve and Detail**: four point curves after Printer Lights (composite RGB plus red, green, and blue channels, drawn over the frame's histogram, with dragging, adding, and removing points), and a Detail group after Aesthetics covering sharpening (amount, radius, detail, masking) plus texture, clarity, and dehaze. Holding <kbd>Alt</kbd> while dragging a Sharpening control shows the sharpening signal or the mask as a grayscale view. Every radius is quoted at a 2560 px long edge, so the preview and the export show the same work; a triangle at the right of each section title folds the controls away and the state is remembered.
+- **Tone curve and Detail**: four point curves after Printer Lights (composite RGB plus red, green, and blue channels, drawn over the frame's histogram, with dragging, adding, removing, and freely movable endpoints with a live coordinate readout), and a Detail group after Aesthetics covering sharpening (amount, radius, detail, masking) plus texture, clarity, and dehaze. Holding <kbd>Alt</kbd> while dragging a Sharpening control shows the sharpening signal or the mask as a grayscale view. Every radius is quoted at a 2560 px long edge, so the preview and the export show the same work; a triangle at the right of each section title folds the controls away and the state is remembered.
 - **Roll calibration and experimental hardware calibration**: measure a shared roll white point and run Roll auto invert; the calibration view manages capture profiles (dark / open gate / flat / transmission target) and scanner input profiles for a fixed copy stand or scanner. This part is still marked experimental.
 - **Real-time Develop workspace** powered by WebGL, with crop, straighten, perspective, quarter-turn rotation, horizontal/vertical flip, zoom/pan, histogram, and waveform.
 - **Selective Copy Settings / Paste Settings** for grade, curve, detail, LUT, sprocket, and geometry groups.
 - **Print-film emulation** with bundled Kodak and Ilford print-film/paper LUTs, custom <code>.cube</code> LUT loading, and opacity control.
 - **Complete output tools** for selected frames or a full roll: 16/8-bit TIFF, 16-bit PNG, JPEG, linear 16-bit TIFF, linear DNG, and camera RAW DNG; output color space; resizing; optional enlargement; sharpening; JPEG quality; filename templates; conflict policies; and optional roll metadata in EXIF.
-- **JPEG contact sheets** labeled with film stock, date, camera, and frame number.
-- **English/Chinese UI and light/dark themes**, with the frontend styles and the documentation bundled for offline use.
+- **Contact sheet preview and export**, with strict layouts that include or omit film borders and per-frame high-quality rendering into JPEG or PNG, labeled with film stock, date, camera, and frame number.
+- **English/Chinese UI and light/dark themes**, with frontend styles bundled for offline use; full user manuals are maintained on the web docs hub and in [docs/handbook](docs/handbook).
 
 ### Quick start
 
@@ -322,7 +341,7 @@ Library and Develop show the current working roll; previous rolls remain under *
 #### 2. Confirm the film area and invert
 
 1. Select a frame in **Library** and open **Develop**.
-2. On first edit, choose **Set Film Area → Auto Area**. Review the result, adjust corners or edges if needed, then choose **Save Area**.
+2. On first edit, choose **Set Film Area → Auto Area**. Review the result, adjust corners, edges, the whole frame box, or aspect locks if needed, then choose **Save Area**.
 3. Use **Batch Apply** only when the scans share the same placement.
 4. Choose **Auto Invert**, then refine Density Limits, Printer Lights, the Tone Curve, Aesthetics, Detail, Color Balance, and LUT settings.
 5. Use **Sample Sprocket Hole** when perforations or borders affect the grade, and **Copy Settings / Paste Settings** for similar frames.
@@ -332,7 +351,7 @@ Library and Develop show the current working roll; previous rolls remain under *
 1. Select frames in Library, or use **Export Roll** from a roll view.
 2. Choose the format, color space, dimensions, sharpening, filename template, conflict policy, and destination.
 3. Export runs in the background. Check one test image before committing to a full batch.
-4. Use **Export Contact Sheet** under **Rolls → Roll Contents**; use **Locate File** if source scans have moved.
+4. Use **Export Contact Sheet** under **Rolls → Roll Contents** to preview the sheet layout and border toggle before exporting; use **Locate File** if source scans have moved.
 
 16-bit TIFF is recommended for archival output or further editing; JPEG is convenient for sharing. Filename tokens are <code>{Roll}</code>, <code>{Camera}</code>, <code>{Film}</code>, <code>{Date}</code>, <code>{Original}</code>, and <code>{Seq}</code>.
 
@@ -393,11 +412,11 @@ cargo tauri build --target aarch64-apple-darwin --bundles dmg
 cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ~~~
 
-### Maintainers: publish v1.1.0
+### Maintainers: publish v1.2.0
 
-The repository uses one manual workflow: [Build and Release NexFilm 1.1.0](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml). Run it with tag <code>v1.1.0</code>. It verifies the Rust and frontend sources, then builds Windows x64, macOS Apple Silicon, and macOS Intel packages in parallel and publishes a stable GitHub Release.
+The repository uses one manual workflow: [Build and Release NexFilm 1.2.0](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml). Run it with tag <code>v1.2.0</code>. It verifies the Rust and frontend sources, then builds Windows x64, macOS Apple Silicon, and macOS Intel packages in parallel and publishes a stable GitHub Release.
 
-Before running it, confirm that <code>Cargo.toml</code>, <code>Cargo.lock</code>, and <code>tauri.conf.json</code> contain version <code>1.1.0</code> and that the in-app documentation and README carry the same version, then commit and push every release file. The current workflow uses <code>releaseDraft: false</code> and <code>prerelease: false</code>.
+Before running it, confirm that <code>Cargo.toml</code>, <code>Cargo.lock</code>, and <code>tauri.conf.json</code> contain version <code>1.2.0</code> and that the README and release notes are synchronized, then commit and push every release file. The current workflow uses <code>releaseDraft: false</code> and <code>prerelease: false</code>.
 
 ### Known limitations
 
@@ -427,6 +446,7 @@ If NexFilm helps your film workflow, you may support the author and UI designer 
 - Support: [GitHub Issues](https://github.com/BillyDu-TJ/NexFilm/issues)
 - Author: Billy_Du, GitHub [@BillyDu-TJ](https://github.com/BillyDu-TJ), email [790704944@qq.com](mailto:790704944@qq.com) / [duzhongtao188@gmail.com](mailto:duzhongtao188@gmail.com)
 - UI design: lonely-xmw, GitHub [@lxmw44426-tech](https://github.com/lxmw44426-tech), email [lxmw44426@gmail.com](mailto:lxmw44426@gmail.com)
+- Code contributors: thanks to `jacky_tan` ([PR #10](https://github.com/BillyDu-TJ/NexFilm/pull/10) / [PR #12](https://github.com/BillyDu-TJ/NexFilm/pull/12)) for the camera-native RGB inversion path, display-matrix transport, and RAW preview upright fix
 - Theory references: thanks to Zhihu users <code>@黄昊Haosky</code> and <code>@V777</code> for sharing work on scientific film-mask removal
 - License: [GNU General Public License v3.0 only](LICENSE)
 

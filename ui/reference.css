@@ -2833,84 +2833,6 @@ body[data-theme="dark"] .import-choice-art {
     background: transparent !important;
 }
 
-/* Documentation uses the same page-toolbar rhythm as Library, Rolls, and Calibration. */
-#view-documentation {
-    gap: var(--ui-gap);
-    overflow: visible !important;
-    background: transparent !important;
-}
-
-#view-documentation > .documentation-toolbar {
-    width: 100% !important;
-    min-height: 52px !important;
-    height: 52px !important;
-    padding: 6px clamp(12px, 1.25vw, 18px) !important;
-    border: 0 !important;
-    border-radius: var(--ui-radius) !important;
-    background: var(--ui-surface-soft) !important;
-    box-shadow: var(--ui-shadow) !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: space-between !important;
-}
-
-#view-documentation > .documentation-toolbar > .documentation-toolbar-lead > h1 {
-    margin: 0;
-    color: var(--ui-brand) !important;
-    font-size: 18px !important;
-    font-weight: 800 !important;
-    letter-spacing: 0 !important;
-}
-
-#view-documentation > .documentation-toolbar > .documentation-toolbar-lead > p {
-    margin: 2px 0 0 !important;
-    color: var(--ui-muted) !important;
-    font-size: 11px !important;
-    line-height: 1.2 !important;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-#view-documentation > .documentation-layout {
-    padding: 0 !important;
-    gap: var(--ui-gap) !important;
-    background: transparent !important;
-}
-
-#view-documentation .documentation-nav-panel,
-#view-documentation .documentation-content-panel {
-    background: var(--ui-surface) !important;
-    border: 1px solid var(--ui-line) !important;
-    border-radius: var(--ui-radius) !important;
-    box-shadow: var(--ui-shadow) !important;
-}
-
-#view-documentation .documentation-search-input {
-    height: 32px !important;
-    min-height: 32px !important;
-    border: 1px solid var(--ui-line) !important;
-    border-radius: 6px !important;
-    background: var(--ui-surface) !important;
-    color: var(--ui-text) !important;
-    font-size: 12px !important;
-    padding: 0 12px !important;
-}
-
-#view-documentation .documentation-search-input:focus {
-    border-color: var(--ui-brand) !important;
-}
-
-/* The manual is a reading surface: its text must stay selectable even though
-   the rest of the application shell disables selection on UI copy. */
-body #view-documentation .documentation-content-panel,
-body #view-documentation .documentation-content-panel *,
-body #view-documentation .documentation-article,
-body #view-documentation .documentation-article * {
-    -webkit-user-select: text;
-    user-select: text;
-}
-
 /* Shared command typography across top-level work surfaces. */
 :is(
     body > header .export-actions > button,
@@ -3167,8 +3089,22 @@ body[data-theme] #view-develop > #develop-inspector {
 #develop-inspector .tone-curve-footer {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-end;
     gap: 8px;
+}
+
+#develop-inspector .tone-curve-readout {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--ui-text);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .01em;
+    white-space: nowrap;
+}
+
+#develop-inspector .tone-curve-readout[hidden] {
+    display: none;
 }
 
 #develop-inspector button.tone-curve-reset {

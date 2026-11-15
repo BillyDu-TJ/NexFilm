@@ -9840,9 +9840,9 @@ fn should_apply_sprocket_mask(crop_uv: [f32; 2], bounds: [f32; 4], sprocket_uv: 
     let horizontal_edge = sprocket_uv[0].min(1.0 - sprocket_uv[0]);
     let vertical_edge = sprocket_uv[1].min(1.0 - sprocket_uv[1]);
     if vertical_edge <= horizontal_edge {
-        crop_uv[1].min(1.0 - crop_uv[1]) <= (vertical_edge * 1.75).clamp(0.08, 0.24)
+        crop_uv[1].min(1.0 - crop_uv[1]) <= (vertical_edge * 1.75).clamp(0.16, 0.24)
     } else {
-        crop_uv[0].min(1.0 - crop_uv[0]) <= (horizontal_edge * 1.75).clamp(0.08, 0.24)
+        crop_uv[0].min(1.0 - crop_uv[0]) <= (horizontal_edge * 1.75).clamp(0.16, 0.24)
     }
 }
 
@@ -12539,6 +12539,303 @@ fn export_base_color_from_snapshot(snapshot: &ExportItemSnapshot) -> BaseColor {
         .unwrap_or_else(|| snapshot.base_color.clone())
 }
 
+fn load_export_snapshot_from_connection(
+    connection: &rusqlite::Connection,
+    id: String,
+    roll_id: String,
+    file_path: String,
+) -> Result<ExportItemSnapshot, String> {
+    let (params, geom, base_color, mut pipeline_state) =
+        load_image_state_from_connection(connection, &roll_id, &file_path)?
+            .map(|(_, params, geom, base_color, pipeline_state)| {
+                (params, geom, base_color, pipeline_state)
+            })
+            .ok_or_else(|| {
+                format!("Persisted edit state is missing for {roll_id} image {file_path}")
+            })?;
+    clear_retired_legacy_domain(&mut pipeline_state);
+    Ok(ExportItemSnapshot {
+        id,
+        file_path,
+        roll_id,
+        params,
+        geom,
+        base_color,
+        pipeline_state,
+        resolver_input: PipelineResolverInput {
+            persisted_contract: ProcessingContract::LegacyV1,
+            roll_profile_id: None,
+            profile: None,
+            image_kind: PipelineImageKind::Unsupported,
+            density_anchors: DensityAnchors::default(),
+            raw_decode_version: RAW_DECODE_VERSION,
+            working_basis: Default::default(),
+            runtime_failure: None,
+        },
+        capture_profile: None,
+        scanner_profile: None,
+        output_path: std::path::PathBuf::new(),
+        export_metadata: None,
+    })
+}
+
+fn resize_contact_sheet_frame(
+    frame: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    target_long_edge: u32,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    let (width, height) = frame.dimensions();
+    let source_long_edge = width.max(height);
+    if source_long_edge == 0 || source_long_edge == target_long_edge {
+        return frame;
+    }
+    let scale = target_long_edge as f64 / source_long_edge as f64;
+    image::imageops::resize(
+        &frame,
+        ((width as f64 * scale).round() as u32).max(1),
+        ((height as f64 * scale).round() as u32).max(1),
+        FilterType::Lanczos3,
+    )
+}
+
+/// Render one contact-sheet cell from the same frozen persisted inputs and
+/// shader-equivalent path `batch_export_images` uses. This function is pure
+/// with respect to application state: it decodes the source, renders the
+/// persisted edits, and resizes the finished frame, but never measures or
+/// writes the film base back to the database.
+fn render_contact_sheet_snapshot(
+    snapshot: &ExportItemSnapshot,
+    parsed_lut: Option<&ParsedLut>,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+    let inputs = export_render_inputs_from_snapshot(snapshot);
+    let params = inputs.params;
+    let geom = inputs.geom;
+    let base_color = inputs.base_color;
+    let mut render_pipeline_state = inputs.render_pipeline_state;
+
+    let rendered = if snapshot.pipeline_state.contract == ProcessingContract::LegacyV1
+        || is_smart_auto_compatibility(&snapshot.pipeline_state)
+    {
+        let mut transformed = decode_export_source(&snapshot.file_path)?;
+        if geom.angle.abs() > 0.01 {
+            let angle_rad = geom.angle.to_radians();
+            let (width, height) = transformed.dimensions();
+            let cos_a = angle_rad.cos();
+            let sin_a = angle_rad.sin();
+            let new_width =
+                (width as f32 * cos_a.abs() + height as f32 * sin_a.abs()).ceil() as u32;
+            let new_height =
+                (width as f32 * sin_a.abs() + height as f32 * cos_a.abs()).ceil() as u32;
+            let diagonal = ((width as f32).hypot(height as f32)).ceil() as u32;
+            let mut expanded = ImageBuffer::from_pixel(diagonal, diagonal, image::Rgb([0, 0, 0]));
+            image::imageops::overlay(
+                &mut expanded,
+                &transformed,
+                (diagonal as i64 - width as i64) / 2,
+                (diagonal as i64 - height as i64) / 2,
+            );
+            let rotated = imageproc::geometric_transformations::rotate_about_center(
+                &expanded,
+                angle_rad,
+                imageproc::geometric_transformations::Interpolation::Bicubic,
+                image::Rgb([0, 0, 0]),
+            );
+            transformed = image::imageops::crop_imm(
+                &rotated,
+                diagonal.saturating_sub(new_width) / 2,
+                diagonal.saturating_sub(new_height) / 2,
+                new_width,
+                new_height,
+            )
+            .to_image();
+        }
+        transformed = match geom.rotate_90_count.rem_euclid(4) {
+            1 => image::imageops::rotate90(&transformed),
+            2 => image::imageops::rotate180(&transformed),
+            3 => image::imageops::rotate270(&transformed),
+            _ => transformed,
+        };
+        if geom.flip_h {
+            transformed = image::imageops::flip_horizontal(&transformed);
+        }
+        if geom.flip_v {
+            transformed = image::imageops::flip_vertical(&transformed);
+        }
+        render_shader_equivalent(&transformed, &params, &geom, &base_color, parsed_lut)
+    } else {
+        let decoded_f32 =
+            if snapshot.pipeline_state.contract == ProcessingContract::CaptureCorrectedV11 {
+                let capture_result = snapshot
+                    .capture_profile
+                    .as_ref()
+                    .ok_or_else(|| "verified Capture Profile is missing".to_string())
+                    .and_then(|profile| {
+                        decode_capture_corrected_image_buffer(&snapshot.file_path, profile)
+                    });
+                match capture_result {
+                    Ok(capture) => Ok((capture.image, Some(capture.quality), None)),
+                    Err(error) => {
+                        let mut fallback_input = snapshot.resolver_input.clone();
+                        fallback_input.runtime_failure = Some(error);
+                        let fallback = resolve_pipeline(&fallback_input);
+                        render_pipeline_state =
+                            state_from_resolution(&snapshot.pipeline_state, &fallback);
+                        decode_scanner_profiled_estimate_with_matrix(
+                            &snapshot.file_path,
+                            DecodeMode::ExportFull,
+                            snapshot.scanner_profile.as_ref(),
+                            u32::MAX,
+                        )
+                        .map(|(estimate, matrix)| (estimate, None, matrix))
+                    }
+                }
+            } else {
+                decode_scanner_profiled_estimate_with_matrix(
+                    &snapshot.file_path,
+                    DecodeMode::ExportFull,
+                    snapshot.scanner_profile.as_ref(),
+                    u32::MAX,
+                )
+                .map(|(estimate, matrix)| (estimate, None, matrix))
+            }?;
+        let (input, quality_mask, camera_to_display) = decoded_f32;
+        render_pipeline_state.processing_report.camera_to_display = camera_to_display;
+        render_f32_shader_equivalent(
+            &input,
+            quality_mask.as_ref(),
+            &params,
+            &geom,
+            &base_color,
+            &render_pipeline_state,
+            parsed_lut,
+        )
+    };
+
+    Ok(resize_contact_sheet_frame(rendered, target_long_edge))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContactSheetFrameResult {
+    width: u32,
+    height: u32,
+    data_url: String,
+}
+
+/// Render one full-quality contact-sheet frame after the preview modal is open.
+/// Opening the modal only reads thumbnails; this command is called by the
+/// explicit export action, one frame at a time, so the fast preview path stays
+/// light.
+#[tauri::command]
+pub async fn render_contact_sheet_frame(
+    roll_id: String,
+    file_path: String,
+    target_long_edge: u32,
+    state: State<'_, EngineState>,
+) -> Result<ContactSheetFrameResult, String> {
+    if !(256..=16384).contains(&target_long_edge) {
+        return Err("Contact sheet frame size must be between 256 and 16384 pixels".to_string());
+    }
+    let rolls = read_lock(&state.rolls).clone();
+    let calibration_profiles = tokio::task::spawn_blocking(load_calibration_profile_views)
+        .await
+        .map_err(|error| format!("Calibration profile worker failed: {error}"))??;
+    let roll = rolls
+        .iter()
+        .find(|roll| roll.roll_id == roll_id)
+        .cloned()
+        .ok_or_else(|| format!("Roll is no longer available: {roll_id}"))?;
+    let scanner_profile_id = roll.scanner_profile_id.clone();
+
+    let mut snapshot = tokio::task::spawn_blocking(move || {
+        let mut connection = persistence::open_connection()
+            .map_err(|error| format!("Failed to open contact sheet database: {error}"))?;
+        connection
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .map_err(|error| format!("Failed to configure contact sheet snapshot: {error}"))?;
+        let scanner_profile = scanner_profile_id
+            .as_deref()
+            .and_then(|profile_id| {
+                persistence::load_scanner_profiles(&connection)
+                    .ok()
+                    .and_then(|records| {
+                        records
+                            .into_iter()
+                            .find(|record| record.profile.profile_id == profile_id)
+                    })
+            })
+            .filter(|record| record_is_current(record))
+            .map(|record| record.profile);
+        let transaction = connection
+            .transaction()
+            .map_err(|error| format!("Failed to start contact sheet snapshot: {error}"))?;
+        let mut snapshot = load_export_snapshot_from_connection(
+            &transaction,
+            format!("contact-sheet:{roll_id}:{file_path}"),
+            roll_id,
+            file_path,
+        )?;
+        transaction
+            .commit()
+            .map_err(|error| format!("Failed to finalize contact sheet snapshot: {error}"))?;
+        snapshot.scanner_profile = scanner_profile;
+        Ok::<_, String>(snapshot)
+    })
+    .await
+    .map_err(|error| format!("Contact sheet snapshot worker failed: {error}"))??;
+
+    snapshot.resolver_input = pipeline_resolver_input(
+        &snapshot.pipeline_state,
+        Some(&roll),
+        &calibration_profiles,
+        &snapshot.file_path,
+        None,
+    );
+    let resolution = resolve_pipeline(&snapshot.resolver_input);
+    snapshot.pipeline_state = state_from_resolution(&snapshot.pipeline_state, &resolution);
+    if snapshot.pipeline_state.contract == ProcessingContract::CaptureCorrectedV11 {
+        let profile_id = resolution
+            .resolved_profile_id
+            .as_deref()
+            .ok_or_else(|| "Resolver omitted the Capture Profile id".to_string())?;
+        snapshot.capture_profile = calibration_profiles
+            .iter()
+            .find(|view| {
+                view.profile.profile_id == profile_id
+                    && view.availability == CalibrationProfileAvailability::Available
+                    && view.profile.payload.capture_is_verified(RAW_DECODE_VERSION)
+            })
+            .map(|view| view.profile.clone());
+    }
+    let lut_path = snapshot.params.lut.lut_path.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let parsed_lut = lut_path
+            .as_deref()
+            .map(parse_lut)
+            .transpose()
+            .map_err(|error| format!("Cannot load contact sheet LUT: {error}"))?;
+        let frame =
+            render_contact_sheet_snapshot(&snapshot, parsed_lut.as_ref(), target_long_edge)?;
+        let (width, height) = frame.dimensions();
+        let rgb8 = image::DynamicImage::ImageRgb16(frame).to_rgb8();
+        let mut png = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(rgb8)
+            .write_to(&mut png, ImageOutputFormat::Png)
+            .map_err(|error| format!("Contact sheet PNG encode failed: {error}"))?;
+        Ok::<_, String>(ContactSheetFrameResult {
+            width,
+            height,
+            data_url: format!(
+                "data:image/png;base64,{}",
+                general_purpose::STANDARD.encode(png.into_inner())
+            ),
+        })
+    })
+    .await
+    .map_err(|error| format!("Contact sheet frame worker failed: {error}"))?
+}
+
 #[tauri::command]
 pub async fn batch_export_images(
     export_ids: Vec<String>,
@@ -15094,11 +15391,84 @@ mod calibration_profile_contract_tests {
     }
 }
 
+fn contact_sheet_stem(filename: &str) -> String {
+    let file_stem = std::path::Path::new(filename)
+        .file_stem()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    sanitize_export_file_stem(&file_stem)
+}
+
+fn reserve_contact_sheet_path(
+    output_dir: &std::path::Path,
+    filename: &str,
+    format: ExportFormat,
+    policy: ExportConflictPolicy,
+) -> Result<std::path::PathBuf, String> {
+    if !output_dir.is_dir() {
+        return Err(format!(
+            "Contact sheet export directory does not exist: {}",
+            output_dir.display()
+        ));
+    }
+    let stem = contact_sheet_stem(filename);
+    let extension = format.extension();
+    let base = output_dir.join(format!("{stem}.{extension}"));
+    match policy {
+        ExportConflictPolicy::Overwrite => return Ok(base),
+        ExportConflictPolicy::Skip if base.exists() => {
+            return Err(format!("Contact sheet already exists: {}", base.display()))
+        }
+        ExportConflictPolicy::Unique if !base.exists() => return Ok(base),
+        ExportConflictPolicy::Skip | ExportConflictPolicy::Unique => {}
+    }
+
+    for suffix in 1..=100_000 {
+        let candidate = output_dir.join(format!("{stem}_{suffix}.{extension}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err("Could not find an available contact sheet filename".to_string())
+}
+
+fn write_contact_sheet_to_directory(
+    image_data: &[u8],
+    output_dir: &std::path::Path,
+    filename: &str,
+    format: ExportFormat,
+    conflict_policy: ExportConflictPolicy,
+) -> Result<std::path::PathBuf, String> {
+    if image_data.is_empty() {
+        return Err("Contact sheet image is empty".to_string());
+    }
+    let path = reserve_contact_sheet_path(output_dir, filename, format, conflict_policy)?;
+    write_bytes_atomically(&path, image_data)?;
+    Ok(path)
+}
+
 #[tauri::command]
 pub async fn save_contact_sheet(
     data_url: String,
-    filename: Option<String>,
+    output_dir: String,
+    filename: String,
+    format: String,
+    quality: Option<u32>,
+    conflict_policy: Option<String>,
 ) -> Result<String, String> {
+    let export_format = ExportFormat::parse(&format)?;
+    if !matches!(export_format, ExportFormat::Jpeg | ExportFormat::Png) {
+        return Err("Contact sheets can be saved as JPEG or PNG only".to_string());
+    }
+    let quality = quality.unwrap_or(95);
+    if !(1..=100).contains(&quality) {
+        return Err("JPEG quality must be between 1 and 100".to_string());
+    }
+    // `canvas.toDataURL` has already encoded the JPEG in the webview. Keep the
+    // parameter in the IPC contract for compatibility, but do not encode again
+    // here; writing the supplied bytes unchanged avoids a second lossy pass.
+    let conflict_policy =
+        ExportConflictPolicy::parse(conflict_policy.as_deref().unwrap_or("unique"))?;
     let b64_data = if data_url.starts_with("data:image/") {
         if let Some(idx) = data_url.find("base64,") {
             &data_url[idx + 7..]
@@ -15109,30 +15479,21 @@ pub async fn save_contact_sheet(
         &data_url
     }
     .to_string();
-    let default_name = filename.unwrap_or_else(|| "contact_sheet.jpg".to_string());
-
-    let file_path = tauri::async_runtime::spawn_blocking(move || {
-        FileDialog::new()
-            .set_file_name(&default_name)
-            .add_filter("JPEG Image", &["jpg", "jpeg"])
-            .save_file()
+    tauri::async_runtime::spawn_blocking(move || {
+        let image_data = general_purpose::STANDARD
+            .decode(b64_data)
+            .map_err(|error| format!("Base64 decode failed: {error}"))?;
+        let path = write_contact_sheet_to_directory(
+            &image_data,
+            std::path::Path::new(&output_dir),
+            &filename,
+            export_format,
+            conflict_policy,
+        )?;
+        Ok(path.to_string_lossy().to_string())
     })
     .await
-    .map_err(|e| format!("Dialog error: {:?}", e))?;
-
-    if let Some(path) = file_path {
-        tauri::async_runtime::spawn_blocking(move || {
-            let image_data = general_purpose::STANDARD
-                .decode(b64_data)
-                .map_err(|error| format!("Base64 decode failed: {error}"))?;
-            write_bytes_atomically(&path, &image_data)?;
-            Ok(path.to_string_lossy().to_string())
-        })
-        .await
-        .map_err(|error| format!("Contact sheet worker failed: {error}"))?
-    } else {
-        Err("Cancelled".into())
-    }
+    .map_err(|error| format!("Contact sheet worker failed: {error}"))?
 }
 
 #[derive(Default, Serialize)]
@@ -24840,6 +25201,31 @@ mod export_contract_tests {
     }
 
     #[test]
+    fn full_frame_sprocket_mask_keeps_a_small_edge_displacement_inside_the_band() {
+        let full_bounds = [0.0, 0.0, 1.0, 1.0];
+        assert!(should_apply_sprocket_mask(
+            [0.5, 0.15],
+            full_bounds,
+            [0.5, 0.05],
+        ));
+        assert!(should_apply_sprocket_mask(
+            [0.15, 0.5],
+            full_bounds,
+            [0.05, 0.5],
+        ));
+        assert!(!should_apply_sprocket_mask(
+            [0.5, 0.18],
+            full_bounds,
+            [0.5, 0.05],
+        ));
+        assert!(!should_apply_sprocket_mask(
+            [0.5, 0.5],
+            full_bounds,
+            [0.05, 0.5],
+        ));
+    }
+
+    #[test]
     fn parallel_gaussian_blur_matches_reference_filter() {
         let mut source = ImageBuffer::new(11, 7);
         for (index, pixel) in source.pixels_mut().enumerate() {
@@ -26801,6 +27187,215 @@ mod export_readonly_contract_tests {
             );
         }
 
+        std::fs::remove_dir_all(&temp).ok();
+    }
+}
+
+#[cfg(test)]
+mod contact_sheet_export_tests {
+    use super::{
+        clear_retired_legacy_domain, load_export_snapshot_from_connection,
+        load_image_state_from_connection, pipeline_resolver_input, render_contact_sheet_snapshot,
+        resolve_pipeline, state_from_resolution, write_contact_sheet_to_directory,
+        ExportConflictPolicy, ExportFormat, PipelineImageKind, PipelineResolverInput,
+        RAW_DECODE_VERSION,
+    };
+    use crate::app_state::{
+        BaseColor, GeometryState, PipelineState, ProcessingContract, RenderMapping, TuningParams,
+    };
+    use image::{ImageBuffer, Rgb};
+    use rusqlite::types::ValueRef;
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "nexfilm-contact-sheet-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn contact_sheet_files_use_the_selected_format_and_keep_existing_files() {
+        let temp = temp_dir("files");
+        let jpeg = write_contact_sheet_to_directory(
+            &[0xff, 0xd8, 0xff, 0xd9],
+            &temp,
+            "contact_sheet.jpg",
+            ExportFormat::Jpeg,
+            ExportConflictPolicy::Unique,
+        )
+        .unwrap();
+        assert_eq!(
+            jpeg.extension().and_then(|value| value.to_str()),
+            Some("jpg")
+        );
+        assert!(jpeg.is_file());
+
+        let numbered = write_contact_sheet_to_directory(
+            &[0xff, 0xd8, 0xff, 0xd9],
+            &temp,
+            "contact_sheet.jpg",
+            ExportFormat::Jpeg,
+            ExportConflictPolicy::Unique,
+        )
+        .unwrap();
+        assert_eq!(
+            numbered.file_name().and_then(|value| value.to_str()),
+            Some("contact_sheet_1.jpg")
+        );
+        assert!(numbered.is_file());
+
+        let png = write_contact_sheet_to_directory(
+            &[0x89, b'P', b'N', b'G'],
+            &temp,
+            "contact_sheet.png",
+            ExportFormat::Png,
+            ExportConflictPolicy::Unique,
+        )
+        .unwrap();
+        assert_eq!(
+            png.extension().and_then(|value| value.to_str()),
+            Some("png")
+        );
+        assert!(png.is_file());
+
+        let missing = temp.join("missing");
+        let error = write_contact_sheet_to_directory(
+            &[1, 2, 3],
+            &missing,
+            "contact_sheet.jpg",
+            ExportFormat::Jpeg,
+            ExportConflictPolicy::Unique,
+        )
+        .unwrap_err();
+        assert!(error.contains("does not exist"), "{error}");
+
+        std::fs::remove_dir_all(&temp).ok();
+    }
+
+    #[test]
+    fn contact_sheet_render_reads_the_persisted_row_without_writing_it() {
+        let temp = temp_dir("readonly");
+        let frame_path = temp.join("frame.tif");
+        let mut source = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(32, 24);
+        for (x, y, pixel) in source.enumerate_pixels_mut() {
+            let value = ((x * 2731 + y * 4369) % 65535) as u16;
+            *pixel = Rgb([value, (value / 2).max(1), (value / 3).max(1)]);
+        }
+        source.save(&frame_path).unwrap();
+        let frame_path_string = frame_path.to_string_lossy().to_string();
+
+        let connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persistence::init_schema(&connection).unwrap();
+        let mut persisted_pipeline = PipelineState::default();
+        persisted_pipeline.contract = ProcessingContract::RollAnchoredProPhotoV11;
+        persisted_pipeline.render_mapping = RenderMapping {
+            density_low: [0.21, 0.31, 0.41],
+            density_high: [2.05, 2.15, 2.25],
+            ..RenderMapping::default()
+        };
+        let mut persisted_params = TuningParams::default();
+        persisted_params.exposure.exposure = -0.15;
+        connection
+            .execute(
+                "INSERT INTO image_states (roll_id, file_path, thumbnail_base64, params, geom, base_color, pipeline_state)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                rusqlite::params![
+                    "roll-contact",
+                    frame_path_string,
+                    "contact-thumb",
+                    serde_json::to_string(&persisted_params).unwrap(),
+                    serde_json::to_string(&GeometryState::default()).unwrap(),
+                    serde_json::to_string(&BaseColor {
+                        base_r: 20115,
+                        base_g: 30397,
+                        base_b: 22986,
+                    })
+                    .unwrap(),
+                    serde_json::to_string(&persisted_pipeline).unwrap(),
+                ],
+            )
+            .unwrap();
+
+        let read_row = |connection: &rusqlite::Connection| -> Vec<(String, Option<Vec<u8>>)> {
+            let mut statement = connection
+                .prepare("SELECT * FROM image_states WHERE roll_id = ?1 AND file_path = ?2")
+                .unwrap();
+            let names: Vec<String> = statement
+                .column_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            let mut rows = statement
+                .query(rusqlite::params!["roll-contact", frame_path_string])
+                .unwrap();
+            let row = rows.next().unwrap().expect("contact-sheet row");
+            names
+                .into_iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    let bytes = match row.get_ref(index).unwrap() {
+                        ValueRef::Null => None,
+                        ValueRef::Integer(value) => Some(value.to_le_bytes().to_vec()),
+                        ValueRef::Real(value) => Some(value.to_le_bytes().to_vec()),
+                        ValueRef::Text(text) => Some(text.to_vec()),
+                        ValueRef::Blob(blob) => Some(blob.to_vec()),
+                    };
+                    (name, bytes)
+                })
+                .collect()
+        };
+        let before = read_row(&connection);
+
+        let (_, params, geom, base_color, mut pipeline_state) =
+            load_image_state_from_connection(&connection, "roll-contact", &frame_path_string)
+                .unwrap()
+                .unwrap();
+        clear_retired_legacy_domain(&mut pipeline_state);
+        let mut snapshot = load_export_snapshot_from_connection(
+            &connection,
+            "contact-frame".to_string(),
+            "roll-contact".to_string(),
+            frame_path_string.clone(),
+        )
+        .unwrap();
+        snapshot.params = params;
+        snapshot.geom = geom;
+        snapshot.base_color = base_color;
+        snapshot.pipeline_state = pipeline_state;
+        snapshot.resolver_input = PipelineResolverInput {
+            persisted_contract: ProcessingContract::LegacyV1,
+            roll_profile_id: None,
+            profile: None,
+            image_kind: PipelineImageKind::Unsupported,
+            density_anchors: Default::default(),
+            raw_decode_version: RAW_DECODE_VERSION,
+            working_basis: Default::default(),
+            runtime_failure: None,
+        };
+        snapshot.resolver_input = pipeline_resolver_input(
+            &snapshot.pipeline_state,
+            None,
+            &[],
+            &snapshot.file_path,
+            None,
+        );
+        let resolution = resolve_pipeline(&snapshot.resolver_input);
+        snapshot.pipeline_state = state_from_resolution(&snapshot.pipeline_state, &resolution);
+
+        let rendered = render_contact_sheet_snapshot(&snapshot, None, 48).unwrap();
+        assert_eq!(rendered.width().max(rendered.height()), 48);
+
+        let after = read_row(&connection);
+        assert_eq!(
+            before, after,
+            "contact-sheet rendering must not write the frame row"
+        );
         std::fs::remove_dir_all(&temp).ok();
     }
 }

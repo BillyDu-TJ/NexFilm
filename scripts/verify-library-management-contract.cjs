@@ -71,8 +71,13 @@ assert.match(
 // up as the Develop preview shows it, and the filmstrip thumbnail must match.
 assert.match(
     commandSource,
-    /fn render_f32_shader_equivalent\([\s\S]{0,1200}?map_oriented_uv_to_source\(uv, source_width, source_height, geom\)/,
-    'The export renderer must apply the frame geometry',
+    /fn render_f32_shader_equivalent\([\s\S]{0,900}?render_f32_shader_equivalent_with_camera_rolloff\(/,
+    'The export renderer must delegate to the camera-rolloff renderer',
+);
+assert.match(
+    commandSource,
+    /fn render_f32_shader_equivalent_with_camera_rolloff\([\s\S]{0,1600}?map_oriented_uv_to_source\(uv, source_width, source_height, geom\)/,
+    'The export renderer must apply the frame geometry while sampling',
 );
 assert.match(
     commandSource,

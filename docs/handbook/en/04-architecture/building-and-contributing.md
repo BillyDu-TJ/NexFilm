@@ -107,8 +107,7 @@ NexFilm enforces an engineering culture centered on machine-verified regression 
    - `node scripts/verify-runtime-assets.cjs`: Confirms the presence of runtime LUTs, icons, and shader assets.
    - `node scripts/verify-ui-startup-order.cjs`: Verifies script tag declaration order inside `index.html`.
    - `node scripts/verify-slider-contract.cjs`: Verifies UI slider ranges, steps, and default values.
-3. **Dual-End Handbook Consistency**:  
-   Running `node scripts/compile-handbook.mjs && node scripts/verify-handbook-sync.cjs` verifies that the compiled desktop data (`ui/documentation-data.js`) matches the Markdown sources byte for byte.
+3. **Bilingual Handbook Symmetry**: Running `node scripts/verify-handbook-sync.cjs` verifies that all 19 Markdown handbook pairs across `docs/handbook/{zh,en}/` stay symmetric in filenames, frontmatter metadata, and section IDs.
 
 > [!IMPORTANT]
 > All automated contract suites must pass cleanly with zero failures before opening a pull request. Altering contract tests to mask algorithmic defects or regressions is strictly prohibited.
@@ -144,6 +143,6 @@ In Stage 2, GitHub Actions launches a three-way concurrent runner matrix targeti
 NexFilm is distributed under the **GNU General Public License version 3 (GPL-3.0)**. Contributors are welcomed into the development community under the following governance principles:
 
 1. **Copyleft Governance**: GPL-3.0 requires that any distributed modification or derivative work incorporating NexFilm code must remain open source under the GPL-3.0 license. Packaging core optical algorithms into closed-source commercial software violates this license.
-2. **Single Source of Truth (SSOT) Documentation**: All documentation originates from the Markdown files within `docs/handbook/{zh,en}/`. Never modify `ui/documentation-data.js` manually. Documentation updates must be compiled via `node scripts/compile-handbook.mjs`.
+2. **Single Source of Truth (SSOT) Documentation**: All documentation originates from the Markdown files within `docs/handbook/{zh,en}/`, rendered directly by the `website/` portal. After editing documentation, run `node scripts/verify-handbook-sync.cjs` to confirm bilingual frontmatter and section-anchor symmetry.
 3. **Commit Standards & Pull Requests**: Contributors should use Conventional Commits formatting (`feat:`, `fix:`, `docs:`, `refactor:`, `test:`). Pull requests should outline the engineering motivation, affected modules, and automated test output confirming zero regressions.
 4. **Code Quality and Architectural Alignment**: New contributions must preserve existing comments and documentation integrity. Avoid introducing external dependencies when native implementations suffice. Every pull request undergoes peer review and automated continuous integration before merging into main.

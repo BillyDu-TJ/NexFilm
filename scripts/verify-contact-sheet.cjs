@@ -2,13 +2,19 @@ const assert = require('node:assert/strict');
 const {
     getContactSheetFormat,
     getContactSheetLayout,
+    getContactSheetPageLayout,
+    getContactSheetPreviewSize,
     getPerforationLayout,
     draw135EdgeCodes,
     get120EdgeCode,
     draw120EdgeCodes,
     drawNexfilmLockup,
+    drawContactSheet,
     contactSheetTheme,
     createContactSheetFilename,
+    createContactSheetFilenameStem,
+    validateContactSheetFilename,
+    contactSheetExtension,
 } = require('../ui/contact-sheet.js');
 
 const format135 = getContactSheetLayout('135');
@@ -148,6 +154,7 @@ assert.deepEqual(
         is120: true,
         framesPerRow: 2,
         aspect: 1 / 2,
+        fullFrameAspect: 0.552,
         frameGapRatio: 0.035,
         borderRatio: 0.052,
         verticalGapRatio: 0.11,
@@ -159,6 +166,7 @@ assert.deepEqual(
         is120: true,
         framesPerRow: 1,
         aspect: 6 / 17,
+        fullFrameAspect: (6 / 17) * 1.104,
         frameGapRatio: 0.035,
         borderRatio: 0.052,
         verticalGapRatio: 0.11,
@@ -210,5 +218,241 @@ assert.equal(
     createContactSheetFilename({ roll_id: 'roll:42', camera: 'Mamiya/RZ 67' }),
     'contact_sheet_roll_42_Mamiya_RZ_67.jpg'
 );
+assert.equal(
+    createContactSheetFilename({ roll_id: 'roll_42', camera: 'Contax RTS 2' }, 'png'),
+    'contact_sheet_roll_42_Contax_RTS_2.png'
+);
+assert.equal(
+    createContactSheetFilenameStem({ roll_id: 'roll_42', camera: 'Contax RTS 2' }),
+    'contact_sheet_roll_42_Contax_RTS_2'
+);
+assert.equal(contactSheetExtension('png'), 'png');
+assert.equal(contactSheetExtension('jpeg'), 'jpg');
+assert.deepEqual(validateContactSheetFilename('  contact_sheet_01  ', 'jpeg'), {
+    valid: true,
+    code: '',
+    stem: 'contact_sheet_01',
+    filename: 'contact_sheet_01.jpg',
+    extension: 'jpg',
+});
+assert.equal(validateContactSheetFilename('', 'jpeg').code, 'empty');
+assert.equal(validateContactSheetFilename('bad/name', 'jpeg').code, 'invalidCharacters');
+assert.equal(validateContactSheetFilename('bad.', 'jpeg').code, 'trailingDotOrSpace');
+assert.equal(validateContactSheetFilename('CON', 'jpeg').code, 'reservedName');
+
+// Borderless mode uses the same frame + inter-frame packing as the film strip,
+// but the cell height comes from the complete strip ratio: the exposure
+// aperture plus the physical rebate above and below it.
+const bordered135 = getContactSheetLayout('135', 3000, 100);
+const borderless135 = getContactSheetLayout('135', 3000, 100, { borderless: true });
+assert.ok(borderless135.horizontalGap > 0, 'borderless 135 frames must keep the film gap');
+assert.equal(borderless135.framesPerRow, bordered135.framesPerRow);
+assert.equal(borderless135.imageWidth, bordered135.imageWidth);
+assert.equal(borderless135.horizontalGap, bordered135.horizontalGap);
+assert.ok(Math.abs(
+    borderless135.imageHeight / borderless135.imageWidth - 35 / 36
+) < 1e-12, 'borderless 135 cells must use the full 35 mm film strip height');
+assert.ok(Math.abs(
+    borderless135.imageWidth * 6 + borderless135.horizontalGap * 5 - (3000 - 200)
+) < 1e-9, 'six frames and five gaps must fill the row width exactly');
+
+const borderedPage = getContactSheetPageLayout({
+    format: '135',
+    canvasWidth: 3000,
+    frameCount: 14,
+});
+const borderlessPage = getContactSheetPageLayout({
+    format: '135',
+    canvasWidth: 3000,
+    frameCount: 14,
+    borderless: true,
+});
+assert.equal(borderlessPage.rows, borderedPage.rows, 'borderless mode must not change row wrapping');
+assert.ok(Math.abs(borderlessPage.canvasHeight - borderedPage.canvasHeight) < 1e-9);
+assert.equal(
+    borderlessPage.rowLayouts[0].height,
+    borderlessPage.layout.imageHeight,
+    'borderless rows must be exactly as tall as the packed frames'
+);
+for (let row = 0; row < borderlessPage.rows; row += 1) {
+    assert.ok(
+        Math.abs(borderlessPage.rowLayouts[row].top - borderedPage.rowLayouts[row].top) < 1e-9
+    );
+}
+for (let column = 1; column < borderlessPage.layout.framesPerRow; column += 1) {
+    const previous = borderlessPage.slots[column - 1];
+    const current = borderlessPage.slots[column];
+    assert.ok(
+        Math.abs(
+            (current.x - (previous.x + previous.width)) - borderlessPage.layout.horizontalGap
+        ) < 1e-9,
+        'adjacent borderless 135 frames must keep the 2 mm inter-frame gap'
+    );
+}
+
+const borderless120 = getContactSheetLayout('120 (6x7)', 3000, 100, { borderless: true });
+assert.ok(borderless120.horizontalGap > 0, 'borderless 120 frames must keep the film gap');
+assert.equal(borderless120.framesPerRow, 3);
+assert.ok(
+    Math.abs(borderless120.imageHeight / borderless120.imageWidth - (6 / 7) * 1.104) < 1e-12,
+    'borderless 120 frames must include the physical rebate'
+);
+
+function recordingContext() {
+    const calls = {
+        fillRect: [],
+        roundRect: [],
+        fillText: [],
+        drawImage: [],
+        shadowColor: '',
+        shadowBlur: 0,
+        shadowOffsetY: 0,
+    };
+    return {
+        calls,
+        save() {},
+        restore() {},
+        beginPath() {},
+        closePath() {},
+        rect() {},
+        clip() {},
+        translate() {},
+        rotate() {},
+        fill() {},
+        stroke() {},
+        moveTo() {},
+        lineTo() {},
+        fillRect(x, y, width, height) { calls.fillRect.push({ x, y, width, height }); },
+        roundRect(x, y) { calls.roundRect.push({ x, y }); },
+        fillText(text) { calls.fillText.push(String(text)); },
+        drawImage(...args) { calls.drawImage.push(args); },
+        measureText(text) { return { width: String(text).length * 8 }; },
+        set shadowColor(value) { calls.shadowColor = value; },
+        set shadowBlur(value) { calls.shadowBlur = value; },
+        set shadowOffsetY(value) { calls.shadowOffsetY = value; },
+    };
+}
+
+const borderlessContext = recordingContext();
+drawContactSheet(borderlessContext, {
+    format: '135',
+    canvasWidth: 3000,
+    frameCount: 6,
+    borderless: true,
+    images: Array.from({ length: 6 }, () => ({ width: 600, height: 400 })),
+    roll: {
+        roll_id: 'roll_1',
+        format: '135',
+        film_stock: 'Kodak Portra 400',
+        camera: 'Contax RTS II',
+        date: '2026-11-13',
+    },
+});
+assert.equal(
+    borderlessContext.calls.fillRect.length,
+    2,
+    'borderless drawing must paint the paper and one shadowed film-base strip'
+);
+assert.ok(
+    Math.abs(borderlessContext.calls.fillRect[1].width - borderlessPage.stripWidth) < 1e-9
+        && Math.abs(borderlessContext.calls.fillRect[1].height - borderlessPage.layout.rowHeight) < 1e-9,
+    'the borderless film-base strip must provide the black frame gaps'
+);
+assert.equal(
+    borderlessContext.calls.shadowColor,
+    'rgba(18, 18, 20, 0.28)',
+    'borderless frames must keep the same strip shadow as bordered frames'
+);
+assert.ok(borderlessContext.calls.shadowBlur > 0);
+assert.equal(
+    borderlessContext.calls.roundRect.length,
+    0,
+    'borderless drawing must not draw sprocket perforations'
+);
+assert.equal(
+    borderlessContext.calls.fillText.includes('1A'),
+    false,
+    'borderless drawing must not draw 135 edge codes'
+);
+assert.equal(
+    borderlessContext.calls.drawImage.length,
+    6,
+    'borderless drawing must place every available frame into the same slots'
+);
+const packedDraw = borderlessContext.calls.drawImage[0];
+assert.ok(
+    packedDraw[3] >= borderlessPage.slots[0].width - 1e-9
+        && Math.abs(packedDraw[4] - borderlessPage.slots[0].height) < 1e-9,
+    'borderless frames must fill their full-strip cells while preserving the gap'
+);
+
+const tallPreview = getContactSheetPreviewSize({
+    intrinsicWidth: 1800,
+    intrinsicHeight: 7000,
+    availableWidth: 1400,
+    availableHeight: 600,
+});
+assert.ok(tallPreview.width <= 1400, 'a tall preview must still fit the available width');
+assert.ok(tallPreview.height > 600, 'a many-row preview must scroll instead of shrinking to fit');
+
+const fullSheetPreview = getContactSheetPreviewSize({
+    intrinsicWidth: 1800,
+    intrinsicHeight: 830,
+    availableWidth: 1400,
+    availableHeight: 600,
+});
+assert.ok(Math.abs(fullSheetPreview.width / fullSheetPreview.height - 1800 / 830) < 1e-2);
+assert.ok(fullSheetPreview.height <= 600, 'a normal contact sheet should fit without scrolling');
+assert.equal(fullSheetPreview.scrollsVertically, false);
+
+let aspectDraw = null;
+const aspectContext = recordingContext();
+aspectContext.drawImage = (...args) => { aspectDraw = args; };
+drawContactSheet(aspectContext, {
+    format: '135',
+    canvasWidth: 3000,
+    frameCount: 1,
+    borderless: true,
+    images: [{ width: 600, height: 300 }],
+    roll: { roll_id: 'roll_1', format: '135', film_stock: 'Kodak Portra 400' },
+});
+assert.ok(aspectDraw, 'borderless drawing must place the frame image');
+assert.ok(
+    Math.abs(aspectDraw[3] / aspectDraw[4] - 2) < 1e-9,
+    'borderless frames must preserve the source image aspect ratio'
+);
+assert.ok(
+    aspectDraw[3] > borderlessPage.slots[0].width + 1e-9
+        && Math.abs(aspectDraw[4] - borderlessPage.slots[0].height) < 1e-9,
+    'a non-standard source must fill the cell before its excess edge is cropped'
+);
+
+let portraitRotation = 0;
+const portraitContext = recordingContext();
+portraitContext.rotate = angle => { portraitRotation += angle; };
+drawContactSheet(portraitContext, {
+    format: '135',
+    canvasWidth: 3000,
+    frameCount: 1,
+    borderless: true,
+    images: [{ width: 400, height: 700 }],
+    roll: { roll_id: 'roll_1', format: '135', film_stock: 'Kodak Portra 400' },
+});
+assert.ok(
+    Math.abs(portraitRotation - Math.PI / 2) < 1e-12,
+    'portrait frames must still turn clockwise 90 degrees in borderless mode'
+);
+
+const borderedContext = recordingContext();
+drawContactSheet(borderedContext, {
+    format: '135',
+    canvasWidth: 3000,
+    frameCount: 6,
+    images: Array.from({ length: 6 }, () => ({ width: 600, height: 400 })),
+    roll: { roll_id: 'roll_1', format: '135', film_stock: 'Kodak Portra 400' },
+});
+assert.ok(borderedContext.calls.fillRect.length > 1, 'bordered drawing must paint the film base');
+assert.ok(borderedContext.calls.roundRect.length > 0, 'bordered drawing must paint sprockets');
+assert.ok(borderedContext.calls.fillText.includes('1A'), 'bordered drawing must paint edge codes');
 
 console.log('Contact sheet layout and filename contract verified.');

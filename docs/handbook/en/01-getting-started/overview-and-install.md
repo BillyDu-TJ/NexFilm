@@ -148,7 +148,7 @@ The NexFilm user interface is structured around darkroom ergonomics, prioritizin
         <tr>
             <td><strong>Top Header &amp; Action Bar</strong></td>
             <td>Centered view navigation tabs flanked by global action buttons on the right</td>
-            <td>Provides access to five primary views: <strong>Library</strong>, <strong>Develop</strong>, <strong>Rolls</strong>, <strong>Hardware Calibration</strong>, and <strong>Documentation</strong>. The permanent global action buttons—<strong>Export Roll</strong>, <strong>Import Roll</strong>, and <strong>Export</strong>—remain accessible across all views.</td>
+            <td>Provides access to four primary views: <strong>Library</strong>, <strong>Develop</strong>, <strong>Rolls</strong>, and <strong>Hardware Calibration</strong> (alongside Sponsor). The permanent global action buttons—<strong>Export Roll</strong>, <strong>Import Roll</strong>, and <strong>Export</strong>—remain accessible across all views.</td>
         </tr>
         <tr>
             <td><strong>Main Workspace</strong></td>

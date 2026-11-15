@@ -9,12 +9,12 @@ const convertFileSrc = tauriCore?.convertFileSrc ?? ((path, protocol) =>
 const i18n = window.NexFilmI18n;
 const i18nText = (key, vars = {}) => i18n?.t(key, vars) ?? key;
 const {
-    getContactSheetLayout,
-    draw135EdgeCodes,
-    draw120EdgeCodes,
-    drawNexfilmLockup,
-    contactSheetTheme,
-    createContactSheetFilename,
+    getContactSheetPageLayout,
+    getContactSheetPreviewSize,
+    drawContactSheet,
+    createContactSheetFilenameStem,
+    validateContactSheetFilename,
+    contactSheetExtension,
 } = window.NexFilmContactSheet;
 const { getNeutralExposureOffsets } = window.NexFilmDensity;
 const {
@@ -64,13 +64,11 @@ const navHistory = document.getElementById('nav-history');
 const navLibrary = document.getElementById('nav-library');
 const navDevelop = document.getElementById('nav-develop');
 const navCalibration = document.getElementById('nav-calibration');
-const navDocumentation = document.getElementById('nav-documentation');
 const navSponsor = document.getElementById('nav-sponsor');
 const viewHistory = document.getElementById('view-history');
 const viewLibrary = document.getElementById('view-library');
 const viewDevelop = document.getElementById('view-develop');
 const viewCalibration = document.getElementById('view-calibration');
-const viewDocumentation = document.getElementById('view-documentation');
 
 // DOM: Calibration Config Profiles
 const calibrationProfileList = document.getElementById('calibration-profile-list');
@@ -204,6 +202,31 @@ const exportNamePreview = document.getElementById('export-name-preview');
 const exportConflictPolicy = document.getElementById('export-conflict-policy');
 const exportWriteExif = document.getElementById('export-write-exif');
 
+// DOM: Contact Sheet Modal
+const contactSheetModal = document.getElementById('contact-sheet-modal');
+const contactSheetModalContent = document.getElementById('contact-sheet-modal-content');
+const btnCloseContactSheet = document.getElementById('btn-close-contact-sheet');
+const btnCancelContactSheet = document.getElementById('btn-cancel-contact-sheet');
+const btnExportContactSheetConfirm = document.getElementById('btn-export-contact-sheet-confirm');
+const btnChooseContactSheetDir = document.getElementById('btn-choose-contact-sheet-dir');
+const contactSheetSubtitle = document.getElementById('contact-sheet-subtitle');
+const contactSheetPreviewStatus = document.getElementById('contact-sheet-preview-status');
+const contactSheetPreviewScroll = document.getElementById('contact-sheet-preview-scroll');
+const contactSheetPreviewCanvas = document.getElementById('contact-sheet-preview-canvas');
+const contactSheetPreviewEmpty = document.getElementById('contact-sheet-preview-empty');
+const contactSheetFilename = document.getElementById('contact-sheet-filename');
+const contactSheetFilenameExtension = document.getElementById('contact-sheet-filename-extension');
+const contactSheetNamePreview = document.getElementById('contact-sheet-name-preview');
+const contactSheetFilenameError = document.getElementById('contact-sheet-filename-error');
+const contactSheetOutputDir = document.getElementById('contact-sheet-output-dir');
+const contactSheetIncludeBorders = document.getElementById('contact-sheet-include-borders');
+const contactSheetFormat = document.getElementById('contact-sheet-format');
+const contactSheetResolution = document.getElementById('contact-sheet-resolution');
+const contactSheetQualityGroup = document.getElementById('contact-sheet-quality-group');
+const contactSheetQuality = document.getElementById('contact-sheet-quality');
+const contactSheetQualityValue = document.getElementById('contact-sheet-quality-val');
+const contactSheetExportStatus = document.getElementById('contact-sheet-export-status');
+
 const btnModeColor = document.getElementById('btn-mode-color');
 const btnModeBw = document.getElementById('btn-mode-bw');
 
@@ -278,6 +301,7 @@ const copySettingsGroups = Array.from(document.querySelectorAll('.copy-settings-
 // DOM: Tone Curve & Detail
 const toneCurveCanvas = document.getElementById('tone-curve-canvas');
 const toneCurveChannels = document.getElementById('tone-curve-channels');
+const toneCurveReadout = document.getElementById('tone-curve-readout');
 const btnResetCurve = document.getElementById('btn-reset-curve');
 const curveChannelButtons = toneCurveChannels
     ? Array.from(toneCurveChannels.querySelectorAll('.tone-curve-channel'))
@@ -301,6 +325,8 @@ let curveLutTexture = null;
 let hasCurveLut = false;
 let curveDragIndex = null;
 let curveHoverPoint = null;
+let curveDragUndoCaptured = false;
+let curveDragChanged = false;
 let curveHistogramCache = { key: null, bins: null };
 
 let currentDMin = [0.1, 0.1, 0.1];
@@ -1229,8 +1255,7 @@ function switchView(viewName) {
         { name: 'history', nav: navHistory, el: viewHistory },
         { name: 'library', nav: navLibrary, el: viewLibrary },
         { name: 'develop', nav: navDevelop, el: viewDevelop },
-        { name: 'calibration', nav: navCalibration, el: viewCalibration },
-        { name: 'documentation', nav: navDocumentation, el: viewDocumentation }
+        { name: 'calibration', nav: navCalibration, el: viewCalibration }
     ];
 
     views.forEach(v => {
@@ -1281,9 +1306,6 @@ function switchView(viewName) {
     } else if (viewName === 'calibration') {
         renderCalibrationWorkspace();
         disableUI();
-    } else if (viewName === 'documentation') {
-        window.NexFilmDocumentation?.render();
-        disableUI();
     } else {
         // When leaving develop view, disable all tuning UI to prevent
         // orphaned slider event handlers from firing on stale state.
@@ -1299,7 +1321,6 @@ navLibrary.addEventListener('click', () => {
 });
 navDevelop.addEventListener('click', () => switchView('develop'));
 navCalibration?.addEventListener('click', () => switchView('calibration'));
-navDocumentation?.addEventListener('click', () => switchView('documentation'));
 
 const moduleNavButtons = developModuleNav
     ? Array.from(developModuleNav.querySelectorAll('.module-nav-btn'))
@@ -2710,7 +2731,7 @@ function initWebGL() {
                 float vertical_edge = min(effective_sprocket_uv.y, 1.0 - effective_sprocket_uv.y);
                 bool sampled_horizontal_edge = vertical_edge <= horizontal_edge;
                 float sampled_edge = sampled_horizontal_edge ? vertical_edge : horizontal_edge;
-                float edge_band = clamp(sampled_edge * 1.75, 0.08, 0.24);
+                float edge_band = clamp(sampled_edge * 1.75, 0.16, 0.24);
                 float pixel_edge = sampled_horizontal_edge
                     ? min(v_texcoord.y, 1.0 - v_texcoord.y)
                     : min(v_texcoord.x, 1.0 - v_texcoord.x);
@@ -3955,6 +3976,65 @@ let currentSprocketTolerance = 0.10;
 let currentSprocketFeather = 0.05;
 let currentSprocketTargetColor = null;
 let currentSprocketTargetColorVersion = null;
+
+function sampleSprocketTargetColorFromProxy(sourceUv) {
+    if (!proxyPixels || proxyWidth <= 0 || proxyHeight <= 0
+        || (!Array.isArray(sourceUv) && !ArrayBuffer.isView(sourceUv))
+        || sourceUv.length < 2
+        || !Number.isFinite(Number(sourceUv[0]))
+        || !Number.isFinite(Number(sourceUv[1]))
+        || sourceUv[0] < 0 || sourceUv[0] > 1
+        || sourceUv[1] < 0 || sourceUv[1] > 1) {
+        return null;
+    }
+    const px = Math.min(proxyWidth - 1, Math.floor(sourceUv[0] * proxyWidth));
+    const py = Math.min(proxyHeight - 1, Math.floor(sourceUv[1] * proxyHeight));
+    const isLegacy = currentPipelineContract === 'legacy_v1'
+        || currentProxyDomain === 'legacy_linear_srgb';
+    const isCaptureCorrected = currentProxyDomain === 'relative_transmission_rgb';
+    const decodeTransport = !isLegacy && !isCaptureCorrected;
+    const toSprocketTargetSample = decodeTransport
+        ? sample => NexFilmColorScience.decodeProPhotoTransportSample(sample / 65535.0)
+        : sample => sample / 65535.0;
+    let sumR = 0, sumG = 0, sumB = 0;
+    let count = 0;
+    const radius = 2;
+    for (let dy = -radius; dy <= radius; dy++) {
+        for (let dx = -radius; dx <= radius; dx++) {
+            const nx = px + dx;
+            const ny = py + dy;
+            if (nx >= 0 && nx < proxyWidth && ny >= 0 && ny < proxyHeight) {
+                const idx = (ny * proxyWidth + nx) * 4;
+                sumR += toSprocketTargetSample(proxyPixels[idx]);
+                sumG += toSprocketTargetSample(proxyPixels[idx + 1]);
+                sumB += toSprocketTargetSample(proxyPixels[idx + 2]);
+                count++;
+            }
+        }
+    }
+    if (count === 0) return null;
+    return new Float32Array([sumR / count, sumG / count, sumB / count]);
+}
+
+function completeLegacySprocketTargetColorFromProxy() {
+    if (currentSprocketUV[0] < 0
+        || currentSprocketTargetColor
+        || !activeProxyIsFull
+        || !proxyPixels) {
+        return false;
+    }
+    const sourceUv = NexFilmGeometry.mapOrientedPointToSource(
+        currentSprocketUV,
+        proxyWidth,
+        proxyHeight,
+        current_geom
+    );
+    const sampled = sampleSprocketTargetColorFromProxy(sourceUv);
+    if (!sampled) return false;
+    currentSprocketTargetColor = sampled;
+    currentSprocketTargetColorVersion = PROPHOTO_TRANSPORT_TARGET_COLOR_VERSION;
+    return true;
+}
 
 function migrateRetiredSprocketTargetColor() {
     if (currentProxyDomain !== 'prophoto_estimate'
@@ -5220,19 +5300,37 @@ function drawCurveHistogram(context, projection) {
 function drawCurveLine(context, projection, points, color, lineWidth, dashed) {
     const normalized = NexFilmToneCurve.normalizePoints(points);
     const tangents = null;
+    if (normalized.length < 2) return;
     context.save();
     context.strokeStyle = color;
     context.lineWidth = lineWidth;
+    context.lineCap = 'round';
+    context.lineJoin = 'round';
     if (dashed) context.setLineDash([4, 4]);
     context.beginPath();
+    // The input range outside the first and last control points is a flat
+    // extension. Drawing those runs explicitly keeps the endpoint shoulders
+    // crisp even when the control points move away from the canvas corners.
+    const [leftX, leftY] = curveToPixel(projection, 0, normalized[0][1]);
+    context.moveTo(leftX, leftY);
+    const [firstX, firstY] = curveToPixel(
+        projection,
+        normalized[0][0],
+        normalized[0][1]
+    );
+    context.lineTo(firstX, firstY);
     const steps = Math.max(32, Math.round(projection.size / 4));
+    const firstInput = normalized[0][0];
+    const last = normalized[normalized.length - 1];
+    const inputSpan = last[0] - firstInput;
     for (let step = 0; step <= steps; step += 1) {
-        const x = step / steps;
+        const x = firstInput + inputSpan * (step / steps);
         const y = NexFilmToneCurve.evaluate(normalized, x, tangents);
         const [pixelX, pixelY] = curveToPixel(projection, x, y);
-        if (step === 0) context.moveTo(pixelX, pixelY);
-        else context.lineTo(pixelX, pixelY);
+        context.lineTo(pixelX, pixelY);
     }
+    const [rightX, rightY] = curveToPixel(projection, 1, last[1]);
+    context.lineTo(rightX, rightY);
     context.stroke();
     context.restore();
 }
@@ -5306,10 +5404,31 @@ function drawToneCurve() {
     context.restore();
 }
 
+function updateCurveReadout(point = null) {
+    if (!toneCurveReadout) return;
+    if (!point) {
+        toneCurveReadout.hidden = true;
+        toneCurveReadout.textContent = '';
+        return;
+    }
+    const input = Math.round(point[0] * 255);
+    const output = Math.round(point[1] * 255);
+    toneCurveReadout.hidden = false;
+    toneCurveReadout.textContent = `${i18nText('curve.in')}: ${input} · ${i18nText('curve.out')}: ${output}`;
+}
+
+function updateCurveHover(points, x, y) {
+    curveHoverPoint = NexFilmToneCurve.findPointIndex(points, x, y);
+    toneCurveCanvas.style.cursor = curveHoverPoint >= 0 ? 'grab' : 'crosshair';
+    updateCurveReadout(curveHoverPoint >= 0 ? points[curveHoverPoint] : null);
+    return curveHoverPoint;
+}
+
 function setCurveChannel(channel) {
     if (!NexFilmToneCurve.CHANNELS.includes(channel)) return;
     curveChannel = channel;
     curveHoverPoint = null;
+    updateCurveReadout();
     curveChannelButtons.forEach(button => {
         const isActive = button.dataset.curveChannel === channel;
         button.classList.toggle('is-active', isActive);
@@ -5336,23 +5455,39 @@ curveChannelButtons.forEach(button => {
 btnResetCurve?.addEventListener('click', () => {
     if (!NexFilmToneCurve.isIdentity(activeCurvePoints())) pushUndoState();
     curvePoints[curveChannel] = NexFilmToneCurve.identityPoints();
+    curveHoverPoint = null;
+    updateCurveReadout();
     commitCurveEdit();
 });
 
 toneCurveCanvas?.addEventListener('pointerdown', (event) => {
     if (!activeId) return;
+    if (event.button !== 0) return;
     const projection = curveCanvasProjection();
     const [x, y] = pixelToCurve(projection, event.clientX, event.clientY);
     const points = NexFilmToneCurve.normalizePoints(activeCurvePoints());
-    const hit = NexFilmToneCurve.findPointIndex(points, x, y, 0.05);
-    pushUndoState();
+    const hit = NexFilmToneCurve.findPointIndex(points, x, y);
+    let insertedNewPoint = false;
     if (hit >= 0) {
         curveDragIndex = hit;
+        curveDragUndoCaptured = false;
+        curveDragChanged = false;
+        curveHoverPoint = hit;
+        updateCurveReadout(points[hit]);
+        drawToneCurve();
     } else {
         const inserted = NexFilmToneCurve.insertPoint(points, x, y);
         if (!inserted) return;
+        const insertedIndex = NexFilmToneCurve.findPointIndex(inserted, x, y);
+        if (insertedIndex < 0) return;
+        pushUndoState();
         curvePoints[curveChannel] = inserted;
-        curveDragIndex = NexFilmToneCurve.findPointIndex(inserted, x, y, 0.05);
+        curveDragIndex = insertedIndex;
+        curveDragUndoCaptured = true;
+        curveDragChanged = true;
+        curveHoverPoint = insertedIndex;
+        updateCurveReadout(inserted[insertedIndex]);
+        insertedNewPoint = true;
     }
     // A curve drag is a slider drag as far as the rest of the workspace is
     // concerned: the scope readback and the filmstrip capture stay out of the
@@ -5368,7 +5503,7 @@ toneCurveCanvas?.addEventListener('pointerdown', (event) => {
         console.debug('Curve drag capture skipped', error);
     }
     event.preventDefault();
-    commitCurveEdit({ persist: false });
+    if (insertedNewPoint) commitCurveEdit({ persist: false });
 });
 
 toneCurveCanvas?.addEventListener('pointermove', (event) => {
@@ -5376,49 +5511,58 @@ toneCurveCanvas?.addEventListener('pointermove', (event) => {
     const projection = curveCanvasProjection();
     const [x, y] = pixelToCurve(projection, event.clientX, event.clientY);
     if (curveDragIndex === null) {
-        const hover = NexFilmToneCurve.findPointIndex(activeCurvePoints(), x, y, 0.05);
-        if (hover !== curveHoverPoint) {
-            curveHoverPoint = hover;
-            const hovered = NexFilmToneCurve.normalizePoints(activeCurvePoints());
-            toneCurveCanvas.style.cursor = hover < 0
-                ? 'crosshair'
-                : (hover === 0 || hover === hovered.length - 1 ? 'ns-resize' : 'grab');
-            drawToneCurve();
-        }
+        const points = NexFilmToneCurve.normalizePoints(activeCurvePoints());
+        const previousHover = curveHoverPoint;
+        const hover = updateCurveHover(points, x, y);
+        if (hover !== previousHover) drawToneCurve();
         return;
     }
     const points = NexFilmToneCurve.normalizePoints(activeCurvePoints());
-    const isEndpoint = curveDragIndex === 0 || curveDragIndex === points.length - 1;
-    if (isEndpoint) {
-        // The endpoints keep their input value, the way Lightroom's point curve
-        // does. Pulling one sideways instead grows a new control point that
-        // follows the pointer, so a horizontal drag is never a dead end.
-        const endpointX = curveDragIndex === 0 ? 0 : 1;
-        if (Math.abs(x - endpointX) > 0.06) {
-            const inserted = NexFilmToneCurve.insertPoint(points, x, y);
-            if (inserted) {
-                curvePoints[curveChannel] = inserted;
-                curveDragIndex = NexFilmToneCurve.findPointIndex(inserted, x, y, 0.08);
-                commitCurveEdit({ persist: false });
-                return;
-            }
-        }
+    const current = points[curveDragIndex];
+    if (!current) {
+        finishCurveDrag();
+        return;
     }
-    curvePoints[curveChannel] = NexFilmToneCurve.movePoint(
-        activeCurvePoints(),
-        curveDragIndex,
-        x,
-        y
-    );
+    const moved = NexFilmToneCurve.movePoint(points, curveDragIndex, x, y);
+    const nextPoint = moved[curveDragIndex];
+    const changed = Math.abs(nextPoint[0] - current[0]) > 1e-9
+        || Math.abs(nextPoint[1] - current[1]) > 1e-9;
+    if (!changed) {
+        updateCurveReadout(nextPoint);
+        return;
+    }
+    if (!curveDragUndoCaptured) {
+        pushUndoState();
+        curveDragUndoCaptured = true;
+    }
+    curveDragChanged = true;
+    curvePoints[curveChannel] = moved;
+    curveHoverPoint = curveDragIndex;
+    updateCurveReadout(nextPoint);
     commitCurveEdit({ persist: false });
 }, { passive: true });
 
-function finishCurveDrag() {
+function finishCurveDrag(event) {
     if (curveDragIndex === null) return;
+    const changed = curveDragChanged;
     curveDragIndex = null;
+    curveDragUndoCaptured = false;
+    curveDragChanged = false;
     sliderDragActive = false;
+    if (Number.isFinite(event?.clientX) && Number.isFinite(event?.clientY)) {
+        const projection = curveCanvasProjection();
+        const [x, y] = pixelToCurve(projection, event.clientX, event.clientY);
+        updateCurveHover(NexFilmToneCurve.normalizePoints(activeCurvePoints()), x, y);
+    } else {
+        curveHoverPoint = null;
+        updateCurveReadout();
+        toneCurveCanvas.style.cursor = 'crosshair';
+    }
+    if (!changed) {
+        drawToneCurve();
+        return;
+    }
     histogramReadbackReady = false;
-    toneCurveCanvas.style.cursor = 'crosshair';
     requestRender();
     commitCurveEdit();
 }
@@ -5428,9 +5572,36 @@ toneCurveCanvas?.addEventListener('pointercancel', finishCurveDrag);
 window.addEventListener('pointerup', finishCurveDrag);
 window.addEventListener('pointercancel', finishCurveDrag);
 toneCurveCanvas?.addEventListener('pointerleave', () => {
-    if (curveHoverPoint === null) return;
+    if (curveDragIndex !== null) return;
     curveHoverPoint = null;
+    updateCurveReadout();
+    toneCurveCanvas.style.cursor = 'crosshair';
     drawToneCurve();
+});
+
+toneCurveCanvas?.addEventListener('dblclick', (event) => {
+    if (!activeId) return;
+    const projection = curveCanvasProjection();
+    const [x, y] = pixelToCurve(projection, event.clientX, event.clientY);
+    const points = NexFilmToneCurve.normalizePoints(activeCurvePoints());
+    const hit = NexFilmToneCurve.findPointIndex(points, x, y);
+    if (hit < 0) return;
+    let updated;
+    if (hit === 0) {
+        updated = NexFilmToneCurve.movePoint(points, hit, 0, 0);
+    } else if (hit === points.length - 1) {
+        updated = NexFilmToneCurve.movePoint(points, hit, 1, 1);
+    } else {
+        updated = NexFilmToneCurve.removePoint(points, hit);
+    }
+    if (JSON.stringify(updated) === JSON.stringify(points)) return;
+    event.preventDefault();
+    pushUndoState();
+    curvePoints[curveChannel] = updated;
+    curveHoverPoint = null;
+    updateCurveReadout();
+    toneCurveCanvas.style.cursor = 'crosshair';
+    commitCurveEdit();
 });
 
 toneCurveCanvas?.addEventListener('contextmenu', (event) => {
@@ -5438,12 +5609,14 @@ toneCurveCanvas?.addEventListener('contextmenu', (event) => {
     const projection = curveCanvasProjection();
     const [x, y] = pixelToCurve(projection, event.clientX, event.clientY);
     const points = NexFilmToneCurve.normalizePoints(activeCurvePoints());
-    const hit = NexFilmToneCurve.findPointIndex(points, x, y, 0.05);
+    const hit = NexFilmToneCurve.findPointIndex(points, x, y);
     if (hit <= 0 || hit >= points.length - 1) return;
     event.preventDefault();
     pushUndoState();
     curvePoints[curveChannel] = NexFilmToneCurve.removePoint(points, hit);
     curveHoverPoint = null;
+    updateCurveReadout();
+    toneCurveCanvas.style.cursor = 'crosshair';
     commitCurveEdit();
 });
 
@@ -7716,6 +7889,13 @@ function readExportPreferences() {
         namingTemplate: '{Roll}_{Seq}',
         conflictPolicy: 'unique',
         writeExif: false,
+        outputDir: '',
+        contactSheet: {
+            format: 'jpeg',
+            resolution: 4500,
+            quality: 95,
+            includeBorders: true,
+        },
     };
     try {
         const saved = JSON.parse(localStorage.getItem(EXPORT_SETTINGS_KEY) || '{}');
@@ -7735,6 +7915,7 @@ function persistExportPreferences(settings) {
 
 function applyExportPreferences() {
     const saved = readExportPreferences();
+    exportOutputDirectory = typeof saved.outputDir === 'string' ? saved.outputDir : '';
     if (saved.format === 'jpeg100') saved.format = 'jpeg';
     if (saved.format === 'tiff16_uncompressed') saved.format = 'tiff16';
     if (exportFormat.querySelector('option[value="' + saved.format + '"]')) exportFormat.value = saved.format;
@@ -7786,6 +7967,7 @@ function exportFileExtension(format) {
 }
 
 function collectExportSettings() {
+    const saved = readExportPreferences();
     return {
         format: exportFormat.value,
         colorSpace: exportColorSpace.value,
@@ -7797,6 +7979,8 @@ function collectExportSettings() {
         namingTemplate: exportNaming.value,
         conflictPolicy: exportConflictPolicy.value,
         writeExif: exportWriteExif.checked,
+        outputDir: exportOutputDirectory,
+        contactSheet: saved.contactSheet,
     };
 }
 
@@ -7952,6 +8136,7 @@ btnChooseExportDir.addEventListener('click', async () => {
     });
     if (selected) {
         exportOutputDirectory = selected;
+        persistExportPreferences(collectExportSettings());
         updateExportDialogState();
     }
 });
@@ -10120,6 +10305,9 @@ btnConfirmCopySettings.addEventListener('click', () => {
         showToast("Select at least one setting.", "error");
         return;
     }
+    if (settings.includes('sprocketPoint')) {
+        completeLegacySprocketTargetColorFromProxy();
+    }
     const params = saveCurrentState();
     if (!params) return;
     const extra = {
@@ -10152,10 +10340,15 @@ btnPasteSettings.addEventListener('click', async () => {
         current_geom = nextGeom;
         updateUIFromParams(nextParams, nextGeom);
         if (settings.has('lut')) await restoreLutForImage(nextParams);
+        // updateUIFromParams migrates a retired target colour and registers the
+        // upgraded value in memory. Persist the same values instead of the
+        // pre-migration copy, otherwise the next render would migrate them a
+        // second time against a different proxy domain.
+        const synchronizedParams = saveCurrentState() || nextParams;
         // Geometry and density limits are persisted before the film base is
         // installed: the backend measures this frame's own film base, and that
         // measurement has to use the Film Area the frame will render with.
-        await updateBackendParams(targetId, nextParams);
+        await updateBackendParams(targetId, synchronizedParams);
         if (geometryChanged) await persistGeometryQueued(targetId, nextGeom);
         if (settings.has('filmBase') && copiedSettings.extra?.base_density) {
             // The film base belongs to one frame's own clear film. A base
@@ -10201,8 +10394,9 @@ btnPasteSettings.addEventListener('click', async () => {
         current_geom = previousGeom;
         updateUIFromParams(previousParams, previousGeom);
         await restoreLutForImage(previousParams);
+        const rollbackParams = saveCurrentState() || previousParams;
         try {
-            await updateBackendParams(targetId, previousParams);
+            await updateBackendParams(targetId, rollbackParams);
             if (geometryChanged) await persistGeometryQueued(targetId, previousGeom);
         } catch (rollbackError) {
             console.error("Failed to roll back pasted settings", rollbackError);
@@ -10296,202 +10490,442 @@ previewCanvas.addEventListener('click', (e) => {
     }
 });
 
-// Contact Sheet Generator Logic
-document.getElementById('btn-export-contact-sheet').addEventListener('click', async () => {
-    if (!historyRollViewId) return;
-    const btnExportContactSheet = document.getElementById('btn-export-contact-sheet');
-    
+// Contact sheet preview and high-quality export.
+const CONTACT_SHEET_PREVIEW_WIDTH = 1800;
+const CONTACT_SHEET_MAX_CANVAS_DIMENSION = 32767;
+const CONTACT_SHEET_MAX_CANVAS_AREA = 268435456;
+let contactSheetSession = null;
+let contactSheetPreviewFrame = null;
+let contactSheetExportInProgress = false;
+
+function readContactSheetPreferences() {
+    const saved = readExportPreferences().contactSheet || {};
+    const format = saved.format === 'png' ? 'png' : 'jpeg';
+    const resolution = [3000, 4500, 6000].includes(Number(saved.resolution))
+        ? Number(saved.resolution)
+        : 4500;
+    return {
+        format,
+        resolution,
+        quality: Math.min(100, Math.max(60, Number(saved.quality) || 95)),
+        includeBorders: saved.includeBorders !== false,
+    };
+}
+
+function collectContactSheetPreferences() {
+    return {
+        format: contactSheetFormat.value,
+        resolution: Number(contactSheetResolution.value),
+        quality: Number(contactSheetQuality.value),
+        includeBorders: contactSheetIncludeBorders.checked,
+    };
+}
+
+function persistContactSheetPreferences() {
+    const preferences = readExportPreferences();
+    preferences.outputDir = exportOutputDirectory;
+    preferences.contactSheet = collectContactSheetPreferences();
+    persistExportPreferences(preferences);
+}
+
+function contactSheetValidationMessage(validation) {
+    const keys = {
+        empty: 'contactSheet.filenameEmpty',
+        invalidCharacters: 'contactSheet.filenameInvalidCharacters',
+        trailingDotOrSpace: 'contactSheet.filenameTrailing',
+        tooLong: 'contactSheet.filenameTooLong',
+        reservedName: 'contactSheet.filenameReserved',
+    };
+    return keys[validation.code] ? i18nText(keys[validation.code]) : '';
+}
+
+function updateContactSheetControls() {
+    const format = contactSheetFormat.value === 'png' ? 'png' : 'jpeg';
+    const extension = contactSheetExtension(format);
+    const validation = validateContactSheetFilename(contactSheetFilename.value, format);
+    const validationMessage = contactSheetValidationMessage(validation);
+    contactSheetFilenameExtension.textContent = `.${extension}`;
+    contactSheetNamePreview.textContent = validation.filename
+        || `.${extension}`;
+    contactSheetFilename.setAttribute('aria-invalid', String(!validation.valid));
+    contactSheetFilenameError.textContent = validationMessage;
+    contactSheetQualityGroup.classList.toggle('is-disabled', format !== 'jpeg');
+    contactSheetQuality.disabled = format !== 'jpeg' || contactSheetExportInProgress;
+    contactSheetQualityValue.textContent = contactSheetQuality.value;
+    contactSheetOutputDir.value = exportOutputDirectory;
+    contactSheetOutputDir.title = exportOutputDirectory;
+    btnExportContactSheetConfirm.disabled = contactSheetExportInProgress
+        || !validation.valid
+        || !exportOutputDirectory
+        || !contactSheetSession
+        || contactSheetSession.items.length === 0;
+    btnExportContactSheetConfirm.title = !exportOutputDirectory
+        ? i18nText('contactSheet.noOutputDir')
+        : validationMessage;
+}
+
+function setContactSheetStatus(message, isError = false) {
+    contactSheetExportStatus.textContent = message || '';
+    contactSheetExportStatus.classList.toggle('is-error', Boolean(isError));
+}
+
+function loadContactSheetImage(source, fallbackMime = 'image/jpeg') {
+    if (!source) return Promise.resolve(null);
+    const value = String(source);
+    const dataUrl = value.startsWith('data:')
+        ? value
+        : `data:${fallbackMime};base64,${value}`;
+    return new Promise(resolve => {
+        const image = new Image();
+        image.onload = () => resolve(image);
+        image.onerror = () => resolve(null);
+        image.src = dataUrl;
+    });
+}
+
+function contactSheetPreviewImageSource(item) {
+    return item?.rendered_thumbnail_base64
+        || item?.embedded_thumbnail_base64
+        || item?.embedded_thumb_base64
+        || item?.thumbnail_base64
+        || '';
+}
+
+class ContactSheetExportError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'ContactSheetExportError';
+    }
+}
+
+function contactSheetDrawOptions(session, canvasWidth, images, page) {
+    return {
+        format: session.roll?.format,
+        canvasWidth,
+        frameCount: session.items.length,
+        borderless: !contactSheetIncludeBorders.checked,
+        images,
+        roll: session.roll,
+        unknownFilm: i18nText('status.unknownFilm'),
+        unknownDate: '',
+        unknownCamera: i18nText('status.unknownCamera'),
+        missingFrameLabel: i18nText('contactSheet.loadingPreview'),
+        footerSummary: i18nText('contactSheet.footerSummary', {
+            count: session.items.length,
+            empty: page?.emptyFrames ?? 0,
+        }),
+    };
+}
+
+function renderContactSheetCanvas(canvas, session, canvasWidth, images) {
+    const page = getContactSheetPageLayout({
+        format: session.roll?.format,
+        canvasWidth,
+        frameCount: session.items.length,
+        borderless: !contactSheetIncludeBorders.checked,
+    });
+    canvas.width = page.canvasWidth;
+    canvas.height = Math.ceil(page.canvasHeight);
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('2D canvas is unavailable');
+    drawContactSheet(context, contactSheetDrawOptions(session, canvasWidth, images, page));
+    return page;
+}
+
+function drawContactSheetPreview() {
+    if (!contactSheetSession || contactSheetSession.loading || contactSheetSession.items.length === 0) return;
+    const page = renderContactSheetCanvas(
+        contactSheetPreviewCanvas,
+        contactSheetSession,
+        CONTACT_SHEET_PREVIEW_WIDTH,
+        contactSheetSession.images
+    );
+    contactSheetPreviewStatus.textContent = i18nText('contactSheet.previewSummary', {
+        count: contactSheetSession.items.length,
+        rows: page.rows,
+    });
+    fitContactSheetPreviewCanvas();
+}
+
+function fitContactSheetPreviewCanvas() {
+    const intrinsicWidth = contactSheetPreviewCanvas.width;
+    const intrinsicHeight = contactSheetPreviewCanvas.height;
+    const availableWidth = contactSheetPreviewScroll.clientWidth - 2;
+    const availableHeight = contactSheetPreviewScroll.clientHeight - 2;
+    const size = getContactSheetPreviewSize({
+        intrinsicWidth,
+        intrinsicHeight,
+        availableWidth,
+        availableHeight,
+    });
+    if (!size) return;
+    contactSheetPreviewCanvas.style.width = `${size.width}px`;
+    contactSheetPreviewCanvas.style.height = `${size.height}px`;
+}
+
+function scheduleContactSheetPreviewDraw() {
+    if (contactSheetPreviewFrame !== null) cancelAnimationFrame(contactSheetPreviewFrame);
+    contactSheetPreviewFrame = requestAnimationFrame(() => {
+        contactSheetPreviewFrame = null;
+        drawContactSheetPreview();
+    });
+}
+
+async function loadContactSheetPreview(session) {
     try {
-        btnExportContactSheet.textContent = i18nText('common.generating');
-        btnExportContactSheet.disabled = true;
-
-        const currentRoll = allRolls.find(r => r.roll_id === historyRollViewId);
-        const rollItems = await invoke('get_roll_filmstrip', { rollId: historyRollViewId });
-
-        if (rollItems.length === 0) throw new Error("No images in roll");
-
-        // 1. Determine the format-specific row density and image aspect ratio.
-        const canvasW = 3000;
-        const outerMargin = 100;
-        const layout = getContactSheetLayout(currentRoll.format, canvasW, outerMargin);
-        const is120 = layout.is120;
-        const frames_per_row = layout.framesPerRow;
-
-        // 2. Pad with empty frames
-        const totalRows = Math.ceil(rollItems.length / frames_per_row);
-        const emptyFrames = (totalRows * frames_per_row) - rollItems.length;
-        const totalImages = rollItems.length; // store original
-        
-        for (let i = 0; i < emptyFrames; i++) {
-            rollItems.push({ isEmpty: true });
-        }
-
-        const rows = totalRows;
-        
-        // 3. Math for grid layout
-        const hGap = layout.horizontalGap;
-        const colWidth = layout.imageWidth;
-        const colHeight = layout.imageHeight;
-        
-        const borderH = colHeight * layout.borderRatio;
-        const rowHeightTotal = colHeight + borderH * 2;
-        const vGap = rowHeightTotal * layout.verticalGapRatio;
-        const footerHeight = 300;
-        
-        const canvasH = outerMargin + rows * rowHeightTotal + (rows > 1 ? (rows - 1) * vGap : 0) + footerHeight;
-
-        const canvas = document.createElement('canvas');
-        canvas.width = canvasW;
-        canvas.height = canvasH;
-        const ctx = canvas.getContext('2d');
-
-        // 4. Background (paper) and film strips
-        ctx.fillStyle = contactSheetTheme.paper;
-        ctx.fillRect(0, 0, canvasW, canvasH);
-        
-        const filmName = (currentRoll.film_stock || 'UNKNOWN FILM').toUpperCase();
-        const stripWidth = canvasW - outerMargin * 2;
-
-        ctx.save();
-        ctx.shadowColor = 'rgba(18, 18, 20, 0.28)';
-        ctx.shadowBlur = 22;
-        ctx.shadowOffsetY = 7;
-        ctx.fillStyle = contactSheetTheme.filmBase;
-        for (let r = 0; r < rows; r++) {
-            const rowY = outerMargin + r * (rowHeightTotal + vGap);
-            ctx.fillRect(outerMargin, rowY, stripWidth, rowHeightTotal);
-        }
-        ctx.restore();
-
-        // Frames of a row are collected here: the 135 rebate is drawn once per
-        // strip, after the images, so the sprockets stay evenly spaced.
-        const rowFrames = Array.from({ length: rows }, () => []);
-
-        // 5. Draw images
-        for (let i = 0; i < rollItems.length; i++) {
-            const item = rollItems[i];
-            const r = Math.floor(i / frames_per_row);
-            const c = i % frames_per_row;
-            
-            const x = outerMargin + c * (colWidth + hGap);
-            const y = outerMargin + r * (rowHeightTotal + vGap);
-            
-            if (item.isEmpty) {
-                // Empty frame body
-                ctx.fillStyle = '#000000';
-                ctx.fillRect(x, y + borderH, colWidth, colHeight);
-            } else if (!item.rendered_thumbnail_base64) {
-                // Archive sheets must never silently use the orange import thumbnail.
-                ctx.fillStyle = '#1C1C1E';
-                ctx.fillRect(x, y + borderH, colWidth, colHeight);
-                ctx.fillStyle = '#8E8E93';
-                ctx.font = '600 18px Inter, Helvetica, sans-serif';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText('NOT DEVELOPED', x + colWidth / 2, y + borderH + colHeight / 2);
-            } else {
-                // Load & Draw real image
-                const img = new Image();
-                await new Promise(res => {
-                    img.onload = res;
-                    img.onerror = res;
-                    img.src = item.rendered_thumbnail_base64.startsWith('data:')
-                        ? item.rendered_thumbnail_base64
-                        : `data:image/jpeg;base64,${item.rendered_thumbnail_base64}`;
-                });
-                
-                ctx.save();
-                ctx.beginPath();
-                ctx.rect(x, y + borderH, colWidth, colHeight);
-                ctx.clip();
-                
-                let isVertical = img.height > img.width;
-                if (isVertical) {
-                    ctx.translate(x + colWidth/2, y + borderH + colHeight/2);
-                    ctx.rotate(Math.PI / 2);
-                    ctx.drawImage(img, -colHeight/2, -colWidth/2, colHeight, colWidth);
-                } else {
-                    ctx.drawImage(img, x, y + borderH, colWidth, colHeight);
-                }
-                ctx.restore();
-            }
-            
-            // 6. Procedural edge codes
-            if (is120) {
-                // --- 120 Procedural ---
-                draw120EdgeCodes(ctx, {
-                    x,
-                    y,
-                    imageWidth: colWidth,
-                    imageHeight: colHeight,
-                    borderHeight: borderH,
-                    frameNumber: i + 1,
-                    filmName,
-                });
-            } else {
-                rowFrames[r].push({
-                    x,
-                    width: colWidth,
-                    frameNumber: i + 1,
-                    label: (c === 1 || c === 4) ? 'NEXFILM' : null,
-                });
-            }
-        }
-
-        // 7. 135 rebate, one pass per strip
-        if (!is120) {
-            for (let r = 0; r < rows; r++) {
-                draw135EdgeCodes(ctx, {
-                    stripLeft: outerMargin,
-                    stripTop: outerMargin + r * (rowHeightTotal + vGap),
-                    stripWidth,
-                    imageHeight: colHeight,
-                    borderHeight: borderH,
-                    frames: rowFrames[r],
-                });
-            }
-        }
-
-        // 8. Footer typography
-        const footerBaseline = canvasH - 118;
-
-        const lockup = drawNexfilmLockup(ctx, {
-            x: outerMargin,
-            bottomY: footerBaseline,
-            markHeight: 104,
+        const items = await invoke('get_roll_filmstrip', { rollId: session.roll.roll_id });
+        if (contactSheetSession !== session) return;
+        session.items = Array.isArray(items) ? items : [];
+        contactSheetSubtitle.textContent = i18nText('contactSheet.rollSubtitle', {
+            roll: session.roll.roll_id,
+            count: session.items.length,
         });
-        
-        ctx.textAlign = 'right';
-        ctx.textBaseline = 'alphabetic';
-        ctx.fillStyle = contactSheetTheme.ink;
-        // Long stock names (e.g. "ILFORD DELTA 3200 PROFESSIONAL") step down
-        // instead of running into the logo.
-        const filmNameFont = size => `900 ${size}px "Arial Black", "Helvetica Neue", Arial, sans-serif`;
-        const maxFilmNameWidth = canvasW - outerMargin * 2 - lockup.width - 80;
-        let filmNameSize = 84;
-        ctx.font = filmNameFont(filmNameSize);
-        while (filmNameSize > 44 && ctx.measureText(filmName).width > maxFilmNameWidth) {
-            filmNameSize -= 4;
-            ctx.font = filmNameFont(filmNameSize);
+        if (session.items.length === 0) {
+            session.loading = false;
+            contactSheetPreviewStatus.textContent = '';
+            contactSheetPreviewEmpty.classList.remove('hidden');
+            contactSheetPreviewCanvas.classList.add('hidden');
+            updateContactSheetControls();
+            return;
         }
-        ctx.fillText(filmName, canvasW - outerMargin, footerBaseline);
-        
-        ctx.fillStyle = contactSheetTheme.muted;
-        ctx.font = '32px Inter, "Segoe UI", Helvetica, sans-serif';
-        ctx.fillText(`${currentRoll.date || 'Unknown Date'} | ${currentRoll.camera || 'Unknown Camera'} | ${totalImages} images (${emptyFrames} empty)`, canvasW - outerMargin, canvasH - 56);
+        session.images = await Promise.all(session.items.map(async item => {
+            const image = await loadContactSheetImage(contactSheetPreviewImageSource(item));
+            return image;
+        }));
+        if (contactSheetSession !== session) return;
+        session.loading = false;
+        contactSheetPreviewEmpty.classList.add('hidden');
+        contactSheetPreviewCanvas.classList.remove('hidden');
+        contactSheetPreviewStatus.textContent = i18nText('contactSheet.previewLoaded', {
+            count: session.items.filter((_, index) => Boolean(session.images[index])).length,
+        });
+        drawContactSheetPreview();
+        updateContactSheetControls();
+    } catch (error) {
+        if (contactSheetSession !== session) return;
+        session.loading = false;
+        console.error('Contact sheet preview failed', error);
+        contactSheetPreviewStatus.textContent = i18nText('contactSheet.previewFailed', { error });
+        setContactSheetStatus(i18nText('contactSheet.previewFailed', { error }), true);
+        updateContactSheetControls();
+    }
+}
 
-        // 9. Convert to high quality JPEG
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.95);
-        const filename = createContactSheetFilename(currentRoll);
-        const savedPath = await invoke('save_contact_sheet', { dataUrl, filename });
-        showToast("Contact sheet saved: " + savedPath, "success");
+function applyContactSheetPreferences() {
+    const preferences = readContactSheetPreferences();
+    contactSheetFormat.value = preferences.format;
+    contactSheetResolution.value = String(preferences.resolution);
+    contactSheetQuality.value = String(preferences.quality);
+    contactSheetQualityValue.textContent = String(preferences.quality);
+    contactSheetIncludeBorders.checked = preferences.includeBorders;
+    contactSheetOutputDir.value = exportOutputDirectory;
+}
 
-    } catch (e) {
-        console.error(e);
-        showToast("Failed to generate contact sheet: " + e, "error");
+function openContactSheetModal() {
+    if (!historyRollViewId || contactSheetExportInProgress) return;
+    const roll = allRolls.find(candidate => candidate.roll_id === historyRollViewId);
+    if (!roll) return;
+    const session = {
+        roll,
+        items: [],
+        images: [],
+        loading: true,
+    };
+    contactSheetSession = session;
+    applyContactSheetPreferences();
+    contactSheetFilename.value = createContactSheetFilenameStem(roll);
+    setContactSheetStatus('');
+    contactSheetPreviewStatus.textContent = i18nText('contactSheet.loadingPreview');
+    contactSheetPreviewEmpty.classList.add('hidden');
+    contactSheetPreviewCanvas.classList.remove('hidden');
+    updateContactSheetControls();
+    contactSheetModal.classList.remove('opacity-0', 'pointer-events-none');
+    contactSheetModal.setAttribute('aria-hidden', 'false');
+    setTimeout(() => {
+        contactSheetModalContent.classList.remove('scale-95');
+        contactSheetFilename.focus();
+        contactSheetFilename.setSelectionRange(0, 0);
+        contactSheetFilename.scrollLeft = 0;
+    }, 10);
+    void loadContactSheetPreview(session);
+}
+
+function closeContactSheetModal() {
+    if (contactSheetExportInProgress) return;
+    contactSheetSession = null;
+    if (contactSheetPreviewFrame !== null) {
+        cancelAnimationFrame(contactSheetPreviewFrame);
+        contactSheetPreviewFrame = null;
+    }
+    contactSheetModalContent.classList.add('scale-95');
+    contactSheetModal.classList.add('opacity-0', 'pointer-events-none');
+    contactSheetModal.setAttribute('aria-hidden', 'true');
+    const trigger = document.getElementById('btn-export-contact-sheet');
+    if (trigger && !trigger.classList.contains('hidden')) trigger.focus();
+}
+
+function contactSheetCanvasIsSupported(width, height) {
+    return width > 0
+        && height > 0
+        && width <= CONTACT_SHEET_MAX_CANVAS_DIMENSION
+        && height <= CONTACT_SHEET_MAX_CANVAS_DIMENSION
+        && width * height <= CONTACT_SHEET_MAX_CANVAS_AREA;
+}
+
+async function exportContactSheet() {
+    if (contactSheetExportInProgress || !contactSheetSession) return;
+    const session = contactSheetSession;
+    const validation = validateContactSheetFilename(contactSheetFilename.value, contactSheetFormat.value);
+    if (!validation.valid) {
+        updateContactSheetControls();
+        return;
+    }
+    if (!exportOutputDirectory) {
+        setContactSheetStatus(i18nText('contactSheet.noOutputDir'), true);
+        updateContactSheetControls();
+        return;
+    }
+
+    const canvasWidth = Number(contactSheetResolution.value);
+    const page = getContactSheetPageLayout({
+        format: session.roll?.format,
+        canvasWidth,
+        frameCount: session.items.length,
+        borderless: !contactSheetIncludeBorders.checked,
+    });
+    const canvasHeight = Math.ceil(page.canvasHeight);
+    if (!contactSheetCanvasIsSupported(canvasWidth, canvasHeight)) {
+        const message = i18nText('contactSheet.canvasTooLarge', {
+            width: canvasWidth,
+            height: canvasHeight,
+        });
+        setContactSheetStatus(message, true);
+        showToast(message, 'error');
+        return;
+    }
+
+    contactSheetExportInProgress = true;
+    const controls = Array.from(contactSheetModalContent.querySelectorAll('input, select, button'));
+    controls.forEach(control => { control.disabled = true; });
+    btnExportContactSheetConfirm.textContent = i18nText('contactSheet.exporting');
+    setContactSheetStatus(i18nText('contactSheet.exporting'));
+    updateContactSheetControls();
+
+    try {
+        persistContactSheetPreferences();
+        await flushPendingBackendSync();
+        if (activeProxyIsFull) captureActiveCanvasThumbnail();
+        await flushPendingThumbnail();
+
+        const highQualityImages = [];
+        for (let index = 0; index < session.items.length; index += 1) {
+            const item = session.items[index];
+            const slot = page.slots[index];
+            const targetLongEdge = Math.ceil(Math.max(slot.width, slot.height) * 1.25);
+            setContactSheetStatus(i18nText('contactSheet.renderingFrame', {
+                current: index + 1,
+                total: session.items.length,
+            }));
+            let result;
+            try {
+                result = await invoke('render_contact_sheet_frame', {
+                    rollId: session.roll.roll_id,
+                    filePath: item.file_path,
+                    targetLongEdge,
+                });
+            } catch (error) {
+                throw new ContactSheetExportError(i18nText('contactSheet.frameRenderFailed', {
+                    current: index + 1,
+                    error,
+                }));
+            }
+            const image = await loadContactSheetImage(result?.dataUrl || result?.data_url, 'image/png');
+            if (!image) {
+                throw new ContactSheetExportError(i18nText('contactSheet.frameRenderFailed', {
+                    current: index + 1,
+                    error: i18nText('contactSheet.loadingPreview'),
+                }));
+            }
+            highQualityImages.push(image);
+        }
+
+        if (contactSheetSession !== session) throw new Error('Contact sheet dialog was closed');
+        setContactSheetStatus(i18nText('contactSheet.compositing'));
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const outputCanvas = document.createElement('canvas');
+        renderContactSheetCanvas(outputCanvas, session, canvasWidth, highQualityImages);
+        const format = contactSheetFormat.value === 'png' ? 'png' : 'jpeg';
+        const dataUrl = format === 'jpeg'
+            ? outputCanvas.toDataURL('image/jpeg', Number(contactSheetQuality.value) / 100)
+            : outputCanvas.toDataURL('image/png');
+        const savedPath = await invoke('save_contact_sheet', {
+            dataUrl,
+            outputDir: exportOutputDirectory,
+            filename: validation.filename,
+            format,
+            quality: Number(contactSheetQuality.value),
+            conflictPolicy: 'unique',
+        });
+        const successMessage = i18nText('contactSheet.saved', { path: savedPath });
+        setContactSheetStatus(successMessage);
+        showToast(successMessage, 'success');
+    } catch (error) {
+        console.error('Contact sheet export failed', error);
+        const message = error instanceof ContactSheetExportError
+            ? error.message
+            : i18nText('contactSheet.exportFailed', { error });
+        setContactSheetStatus(message, true);
+        showToast(message, 'error');
     } finally {
-        btnExportContactSheet.textContent = i18nText('actions.exportContactSheet');
-        btnExportContactSheet.disabled = false;
+        contactSheetExportInProgress = false;
+        controls.forEach(control => { control.disabled = false; });
+        btnExportContactSheetConfirm.textContent = i18nText('contactSheet.export');
+        updateContactSheetControls();
+    }
+}
+
+document.getElementById('btn-export-contact-sheet').addEventListener('click', openContactSheetModal);
+btnCloseContactSheet.addEventListener('click', closeContactSheetModal);
+btnCancelContactSheet.addEventListener('click', closeContactSheetModal);
+contactSheetModal.addEventListener('click', event => {
+    if (event.target === contactSheetModal) closeContactSheetModal();
+});
+contactSheetModal.addEventListener('keydown', event => {
+    if (event.key === 'Escape') closeContactSheetModal();
+});
+btnChooseContactSheetDir.addEventListener('click', async () => {
+    const selected = await invoke('select_export_dir').catch(error => {
+        showToast('Could not choose an output folder: ' + error, 'error');
+        return null;
+    });
+    if (!selected) return;
+    exportOutputDirectory = selected;
+    persistContactSheetPreferences();
+    updateContactSheetControls();
+});
+contactSheetFilename.addEventListener('input', updateContactSheetControls);
+contactSheetFormat.addEventListener('change', () => {
+    updateContactSheetControls();
+    persistContactSheetPreferences();
+});
+contactSheetResolution.addEventListener('change', persistContactSheetPreferences);
+contactSheetQuality.addEventListener('input', () => {
+    contactSheetQualityValue.textContent = contactSheetQuality.value;
+    persistContactSheetPreferences();
+});
+contactSheetIncludeBorders.addEventListener('change', () => {
+    persistContactSheetPreferences();
+    scheduleContactSheetPreviewDraw();
+});
+btnExportContactSheetConfirm.addEventListener('click', exportContactSheet);
+contactSheetPreviewScroll.addEventListener('wheel', event => {
+    if (!event.shiftKey || event.deltaY === 0) return;
+    event.preventDefault();
+    contactSheetPreviewScroll.scrollLeft += event.deltaY;
+}, { passive: false });
+window.addEventListener('resize', () => {
+    if (contactSheetSession && !contactSheetSession.loading) {
+        fitContactSheetPreviewCanvas();
     }
 });
 
@@ -11175,58 +11609,33 @@ previewViewport.addEventListener('mousedown', e => {
         const displayU = (e.clientX - rect.left) / rect.width;
         const displayV = (e.clientY - rect.top) / rect.height;
         if (displayU >= 0 && displayU <= 1 && displayV >= 0 && displayV <= 1) {
-            const tex_u = current_geom.crop_rect.x + displayU * current_geom.crop_rect.width;
-            const tex_v = current_geom.crop_rect.y + displayV * current_geom.crop_rect.height;
-            const perspectiveUv = NexFilmGeometry.mapPerspectivePoint([tex_u, tex_v], current_geom);
+            const orientedUv = NexFilmGeometry.displayPointToOriented(
+                [displayU, displayV],
+                currentDisplayFrame()
+            );
+            if (orientedUv.some(value => !Number.isFinite(value) || value < 0 || value > 1)) {
+                return;
+            }
+            const perspectiveUv = NexFilmGeometry.mapPerspectivePoint(orientedUv, current_geom);
             if (!perspectiveUv) return;
             const lensUv = NexFilmGeometry.mapLensDistortionPoint(perspectiveUv, current_geom);
             if (!lensUv) return;
             
             pushUndoState();
             currentSprocketUV = new Float32Array(lensUv);
+            currentSprocketTargetColor = null;
+            currentSprocketTargetColorVersion = null;
 
-            if (proxyPixels && proxyWidth > 0 && proxyHeight > 0) {
-                const sourceUv = NexFilmGeometry.mapDisplayPointToSource(
-                    [displayU, displayV],
-                    current_geom.crop_rect,
-                    proxyWidth,
-                    proxyHeight,
-                    current_geom
-                );
-                if (sourceUv && !sourceUv.some(value => !Number.isFinite(value) || value < 0 || value > 1)) {
-                    const px = Math.min(proxyWidth - 1, Math.floor(sourceUv[0] * proxyWidth));
-                    const py = Math.min(proxyHeight - 1, Math.floor(sourceUv[1] * proxyHeight));
-                    const isLegacy = currentPipelineContract === 'legacy_v1' || currentProxyDomain === 'legacy_linear_srgb';
-                    const isCaptureCorrected = currentProxyDomain === 'relative_transmission_rgb';
-                    const decodeTransport = !isLegacy && !isCaptureCorrected;
-                    const toSprocketTargetSample = decodeTransport
-                        ? sample => NexFilmColorScience.decodeProPhotoTransportSample(sample / 65535.0)
-                        : sample => sample / 65535.0;
-                    let sumR = 0, sumG = 0, sumB = 0;
-                    let count = 0;
-                    const radius = 2;
-                    for (let dy = -radius; dy <= radius; dy++) {
-                        for (let dx = -radius; dx <= radius; dx++) {
-                            const nx = px + dx;
-                            const ny = py + dy;
-                            if (nx >= 0 && nx < proxyWidth && ny >= 0 && ny < proxyHeight) {
-                                const idx = (ny * proxyWidth + nx) * 4;
-                                sumR += toSprocketTargetSample(proxyPixels[idx]);
-                                sumG += toSprocketTargetSample(proxyPixels[idx + 1]);
-                                sumB += toSprocketTargetSample(proxyPixels[idx + 2]);
-                                count++;
-                            }
-                        }
-                    }
-                    if (count > 0) {
-                        currentSprocketTargetColor = new Float32Array([
-                            sumR / count,
-                            sumG / count,
-                            sumB / count,
-                        ]);
-                        currentSprocketTargetColorVersion = PROPHOTO_TRANSPORT_TARGET_COLOR_VERSION;
-                    }
-                }
+            const sourceUv = NexFilmGeometry.mapOrientedPointToSource(
+                lensUv,
+                proxyWidth,
+                proxyHeight,
+                current_geom
+            );
+            const sampledTargetColor = sampleSprocketTargetColorFromProxy(sourceUv);
+            if (sampledTargetColor) {
+                currentSprocketTargetColor = sampledTargetColor;
+                currentSprocketTargetColorVersion = PROPHOTO_TRANSPORT_TARGET_COLOR_VERSION;
             }
 
             const sampledId = activeId;
@@ -11289,7 +11698,6 @@ if (i18n) {
         renderCalibrationWorkspace();
         void renderDevelopCalibrationProfile();
         updateExportDialogState();
-        if (currentView === 'documentation') window.NexFilmDocumentation?.render();
         if (typeof renderLibraryAndFilmstrip === 'function') renderLibraryAndFilmstrip(true);
     });
 }
@@ -11370,7 +11778,6 @@ document.getElementById('menu-view-library')?.addEventListener('click', () => {
 });
 document.getElementById('menu-view-develop')?.addEventListener('click', () => switchView('develop'));
 document.getElementById('menu-view-calibration')?.addEventListener('click', () => switchView('calibration'));
-document.getElementById('menu-view-documentation')?.addEventListener('click', () => switchView('documentation'));
 document.getElementById('menu-view-rolls')?.addEventListener('click', () => switchView('history'));
 document.getElementById('menu-view-reset')?.addEventListener('click', () => {
     resetDevelopViewTransform();

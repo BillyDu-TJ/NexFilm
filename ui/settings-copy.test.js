@@ -1,5 +1,8 @@
 const assert = require('node:assert/strict');
 const { createCopyPayload, mergeCopyPayload } = require('./settings-copy.js');
+require('./color-science.js');
+
+const colorScience = globalThis.NexFilmColorScience;
 
 const currentParams = {
     film_mode: 'Color', d_min: [0.1, 0.1, 0.1], d_max: [2, 2, 2], exposure: 0,
@@ -86,7 +89,89 @@ const legacySprocketPoint = createCopyPayload(
     sourceGeom,
     ['sprocketPoint']
 );
+assert.deepEqual(legacySprocketPoint.params.sprocket_target_color, [0.2, 0.3, 0.4]);
 assert.equal(legacySprocketPoint.params.sprocket_target_color_version, null);
+
+for (const previousVersion of [undefined, null, 1]) {
+    const targetParams = {
+        ...currentParams,
+        sprocket_uv: [0.4, 0.2],
+        sprocket_target_color: [0.1, 0.1, 0.1],
+        sprocket_target_color_version: previousVersion
+    };
+    const pasted = mergeCopyPayload(targetParams, currentGeom, sprocketPoint);
+    assert.deepEqual(pasted.params.sprocket_uv, sourceParams.sprocket_uv);
+    assert.deepEqual(pasted.params.sprocket_target_color, sourceParams.sprocket_target_color);
+    assert.equal(
+        pasted.params.sprocket_target_color_version,
+        2,
+        `a v2 sample must remain paired after replacing target version ${previousVersion}`
+    );
+}
+
+const clearedSprocketPoint = createCopyPayload(
+    { ...sourceParams, sprocket_target_color: null, sprocket_target_color_version: undefined },
+    sourceGeom,
+    ['sprocketPoint']
+);
+assert.equal(clearedSprocketPoint.params.sprocket_target_color, null);
+assert.equal(clearedSprocketPoint.params.sprocket_target_color_version, null);
+const clearedTarget = mergeCopyPayload(
+    {
+        ...currentParams,
+        sprocket_target_color: [0.2, 0.3, 0.4],
+        sprocket_target_color_version: 2
+    },
+    currentGeom,
+    clearedSprocketPoint
+);
+assert.equal(clearedTarget.params.sprocket_target_color, null);
+assert.equal(clearedTarget.params.sprocket_target_color_version, null);
+
+const legacyClearedTarget = mergeCopyPayload(
+    {
+        ...currentParams,
+        sprocket_target_color: [0.2, 0.3, 0.4],
+        sprocket_target_color_version: 2
+    },
+    currentGeom,
+    {
+        settings: ['sprocketPoint'],
+        params: { sprocket_uv: [0.2, 0.8], sprocket_target_color: null }
+    }
+);
+assert.equal(legacyClearedTarget.params.sprocket_target_color_version, null);
+
+const linearTarget = 0.8;
+const v2SprocketPoint = createCopyPayload(
+    {
+        ...sourceParams,
+        sprocket_target_color: [linearTarget, linearTarget, linearTarget],
+        sprocket_target_color_version: 2
+    },
+    sourceGeom,
+    ['sprocketPoint']
+);
+const v2Pasted = mergeCopyPayload(
+    { ...currentParams, sprocket_target_color: null, sprocket_target_color_version: null },
+    currentGeom,
+    v2SprocketPoint
+);
+assert.equal(v2Pasted.params.sprocket_target_color_version, 2);
+const retiredMigrationValue = colorScience.decodeProPhotoTransportSample(
+    (linearTarget + 1.0) * 0.25
+);
+const pastedLinearTarget = v2Pasted.params.sprocket_target_color_version >= 2
+    ? v2Pasted.params.sprocket_target_color[0]
+    : retiredMigrationValue;
+assert.ok(
+    Math.abs(pastedLinearTarget - linearTarget) < 1e-6,
+    'a v2 copied target must stay in linear range'
+);
+assert.ok(
+    retiredMigrationValue < 0.05,
+    'the retired v1 migration would visibly crush a 0.8 target'
+);
 
 const contrastOnly = createCopyPayload(sourceParams, sourceGeom, ['contrast']);
 assert.deepEqual(contrastOnly.params, { contrast: 0.25 });

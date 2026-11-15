@@ -10,6 +10,7 @@ node_modules
 ui/node_modules
 rolls.json
 .claude/settings.local.json
+.zcodeignore
 .smoke-data/
 
 reference_divere/

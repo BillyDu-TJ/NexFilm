@@ -30,7 +30,9 @@
         dehaze: { params: ['dehaze'] },
         lut: { params: ['lut_path'] },
         lutOpacity: { params: ['lut_opacity'] },
-        sprocketPoint: { params: ['sprocket_uv', 'sprocket_target_color'] },
+        sprocketPoint: {
+            params: ['sprocket_uv', 'sprocket_target_color', 'sprocket_target_color_version']
+        },
         sprocketTolerance: { params: ['sprocket_tolerance'] },
         sprocketFeather: { params: ['sprocket_feather'] },
         workingSpace: { params: ['working_colorspace'] },
@@ -64,6 +66,52 @@
         });
     }
 
+    function normalizedSprocketTargetColor(value) {
+        if ((!Array.isArray(value) && !ArrayBuffer.isView(value)) || value.length < 3) {
+            return null;
+        }
+        const components = Array.from(value);
+        if (!components.every(component => Number.isFinite(Number(component)))) {
+            return null;
+        }
+        return components.map(Number);
+    }
+
+    function copySprocketPointParams(target, source) {
+        const targetColor = normalizedSprocketTargetColor(source?.sprocket_target_color);
+        target.sprocket_target_color = targetColor;
+        target.sprocket_target_color_version = targetColor
+            ? (source?.sprocket_target_color_version ?? null)
+            : null;
+    }
+
+    function mergeSprocketPointParams(target, source) {
+        const hasTargetColor = Object.prototype.hasOwnProperty.call(
+            source || {},
+            'sprocket_target_color'
+        );
+        const hasVersion = Object.prototype.hasOwnProperty.call(
+            source || {},
+            'sprocket_target_color_version'
+        );
+        if (!hasTargetColor) {
+            // A version without its sample would reintroduce the retired-v1
+            // migration on an unrelated target colour.
+            if (hasVersion) delete target.sprocket_target_color_version;
+            return;
+        }
+        const targetColor = normalizedSprocketTargetColor(source.sprocket_target_color);
+        if (!targetColor) {
+            target.sprocket_target_color = null;
+            target.sprocket_target_color_version = null;
+            return;
+        }
+        target.sprocket_target_color = targetColor;
+        target.sprocket_target_color_version = hasVersion
+            ? (source.sprocket_target_color_version ?? null)
+            : null;
+    }
+
     function normalizeSettings(settings) {
         const expanded = (settings || []).flatMap(setting => LEGACY_GROUPS[setting] || [setting]);
         return Array.from(new Set(expanded)).filter(setting => SETTING_FIELDS[setting]);
@@ -82,9 +130,8 @@
             mergeSelectedKeys(selectedGeom, geom, fields.geom || []);
             mergeSelectedKeys(selectedExtra, extra, fields.extra || []);
         });
-        if (selectedSettings.includes('sprocketPoint') && selectedParams.sprocket_target_color) {
-            selectedParams.sprocket_target_color_version =
-                params?.sprocket_target_color_version ?? null;
+        if (selectedSettings.includes('sprocketPoint')) {
+            copySprocketPointParams(selectedParams, params);
         }
 
         const result = {
@@ -110,6 +157,9 @@
             mergeSelectedKeys(nextGeom, payload?.geom, fields.geom || []);
             mergeSelectedKeys(nextExtra, payload?.extra, fields.extra || []);
         });
+        if (selectedSettings.includes('sprocketPoint')) {
+            mergeSprocketPointParams(nextParams, payload?.params);
+        }
 
         return { params: nextParams, geom: nextGeom, extra: nextExtra };
     }

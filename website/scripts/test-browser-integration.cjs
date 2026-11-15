@@ -597,36 +597,28 @@ async function runTests() {
     await new Promise(r => setTimeout(r, 200));
     console.log('  ✓ Import Roll modal opened and closed successfully.');
 
-    // 7.8 Click Documentation view in iframe (#nav-documentation)
-    console.log('> Clicking Documentation view (#nav-documentation) in iframe...');
-    await frame.click('#nav-documentation');
+    // 7.8 Verify Rolls history navigation & absence of removed in-app documentation view
+    console.log('> Clicking Rolls view (#nav-history) in iframe...');
+    await frame.click('#nav-history');
     await new Promise(r => setTimeout(r, 250));
 
-    const docViewStatus = await frame.evaluate(() => {
-      const docView = document.getElementById('view-documentation');
-      const zhChapters = window.NexFilmDocsData ? window.NexFilmDocsData.getChapters('zh-CN') : [];
-      const enChapters = window.NexFilmDocsData ? window.NexFilmDocsData.getChapters('en') : [];
-      const navItems = document.querySelectorAll('#documentation-nav-list .documentation-nav-item');
+    const historyViewStatus = await frame.evaluate(() => {
+      const historyView = document.getElementById('view-history');
       return {
-        display: docView ? window.getComputedStyle(docView).display : null,
-        isActive: docView?.classList.contains('is-active'),
-        zhCount: zhChapters.length,
-        enCount: enChapters.length,
-        navItemsCount: navItems.length,
-        hasSection2Chapters: zhChapters.some(c => c.id === 'workspace-and-views') && zhChapters.some(c => c.id === 'density-grading-and-curves')
+        display: historyView ? window.getComputedStyle(historyView).display : null,
+        isActive: historyView?.classList.contains('is-active'),
+        hasNavDocumentation: Boolean(document.getElementById('nav-documentation')),
+        hasViewDocumentation: Boolean(document.getElementById('view-documentation'))
       };
     });
-    console.log('> Documentation view status in iframe:', docViewStatus);
-    if (docViewStatus.display === 'none' || !docViewStatus.isActive) {
-      throw new Error(`Documentation view did not activate properly in iframe: ${JSON.stringify(docViewStatus)}`);
+    console.log('> Rolls view status in iframe:', historyViewStatus);
+    if (historyViewStatus.display === 'none' || !historyViewStatus.isActive) {
+      throw new Error(`Rolls view did not activate properly in iframe: ${JSON.stringify(historyViewStatus)}`);
     }
-    if (docViewStatus.zhCount !== 16 || docViewStatus.enCount !== 16) {
-      throw new Error(`Expected 16 chapters in embedded demo sandbox, got zh: ${docViewStatus.zhCount}, en: ${docViewStatus.enCount}`);
+    if (historyViewStatus.hasNavDocumentation || historyViewStatus.hasViewDocumentation) {
+      throw new Error(`Removed in-app documentation view still present in iframe: ${JSON.stringify(historyViewStatus)}`);
     }
-    if (!docViewStatus.hasSection2Chapters) {
-      throw new Error('Embedded demo sandbox missing Section 2 chapters (workspace-and-views, density-grading-and-curves)!');
-    }
-    console.log('  ✓ #view-documentation active and loaded all 16 synchronized chapters in demo sandbox.');
+    console.log('  ✓ #view-history active and in-app documentation view cleanly removed from demo sandbox.');
 
     // 7.9 Verify zero unhandled exceptions inside iframe
     if (iframeErrors.length > 0) {

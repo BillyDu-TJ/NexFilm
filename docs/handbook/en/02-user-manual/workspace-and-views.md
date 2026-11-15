@@ -4,7 +4,7 @@ track: user-manual
 trackOrder: 2
 chapterOrder: 1
 kicker: "02 / User Manual"
-title: "Interface Overview, Five Core Views, and Interaction Guidelines"
+title: "Interface Overview, Four Core Views, and Interaction Guidelines"
 subtitle: "A detailed look at the menu bar, view routing, filmstrip, inspector groups, and non-destructive interaction rules."
 readingTime: 8
 inApp: true
@@ -18,8 +18,8 @@ NexFilm Engine is built around a unified, darkroom-centric single-window interfa
 
 The application menu bar handles system-wide environment preferences and diagnostic tools:
 - **Preferences**: Allows instant, on-the-fly switching between interface languages (Simplified Chinese `zh-CN` and English `en`) as well as between Darkroom Dark and Light UI themes. Theme and language switches take effect immediately without requiring an engine restart, preserving all active slider positions, curve control points, and canvas viewport coordinates.
-- **View**: Offers direct routing commands across the five core application views alongside native full-screen toggles for immersive darkroom grading sessions.
-- **Help**: Provides direct access to the built-in offline technical handbook, open-source licensing disclosures, and runtime diagnostic system details.
+- **View**: Offers direct routing commands across the four core application views alongside the reset view command.
+- **Help**: Provides version and about information for NexFilm Engine.
 
 Anchored to the right side of the primary header, three global asynchronous task triggers remain permanently accessible across all application screens:
 1. **Import Roll**: Opens the multi-format ingestion modal to import new camera RAW capture folders or scanner directories into the project catalog.
@@ -29,9 +29,9 @@ Anchored to the right side of the primary header, three global asynchronous task
 > [!NOTE] Asynchronous Threading and Non-Blocking UI
 > NexFilm Engine leverages a high-concurrency Rust core. All demanding computing tasks—including Bayer debayering, bounded proxy computation, streaming full-resolution color transformations, and uncompressed TIFF serialization—execute entirely within detached background thread pools. Whether ingesting hundreds of 50-megapixel RAW frames or exporting 16-bit linear masters, the user interface remains at a consistent 60 frames per second. Users can navigate across views or grade other frames without latency.
 
-## Five Core Views and State Transitions {#five-core-views}
+## Four Core Views and State Transitions {#core-views}
 
-The core capabilities of the software are segmented into five orthogonal views. Users transition between these views via the central tab selector in the header. The architectural responsibilities and data flow between views are summarized below:
+The core capabilities of the software are segmented into four orthogonal views. Users transition between these views via the central tab selector in the header. The architectural responsibilities and data flow between views are summarized below:
 
 <table class="doc-table">
     <thead>
@@ -42,7 +42,6 @@ The core capabilities of the software are segmented into five orthogonal views. 
         <tr><td><strong>Develop</strong></td><td>Develop</td><td>The primary high-precision grading workspace. Houses the central canvas, geometry toolbar, interactive filmstrip, and ten inspector modules.</td><td>Fine-tuning film bounds, correcting camera perspective, balancing printer lights, drawing tone curves, and applying detail sharpening.</td></tr>
         <tr><td><strong>Rolls</strong></td><td>Rolls</td><td>The persistent local film catalog. Features multi-dimensional faceted filtering across formats, cameras, and dates, with roll info editing and contact sheet generation.</td><td>Searching historical projects, appending lab notes, re-linking offline source scans, and generating printable contact sheets.</td></tr>
         <tr><td><strong>Hardware Calibration</strong></td><td>Hardware Calibration</td><td>Reprographic capture rig profiling. Calibrates sensor spectral separation, backlight spectral power distribution (SPD), and lens vignetting falloff.</td><td>Setting up new camera bodies, upgrading high-CRI light sources, or switching reprographic macro reproduction lenses.</td></tr>
-        <tr><td><strong>Documentation</strong></td><td>Documentation</td><td>The built-in offline technical manual and color science reference, covering all optical models, printer light color tables, and troubleshooting decision trees.</td><td>Offline field reference during scanning sessions, verifying parameter definitions, or reviewing color math formulations.</td></tr>
     </tbody>
 </table>
 

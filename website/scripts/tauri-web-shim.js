@@ -527,6 +527,15 @@
         return matching.map(item => item.thumbnail_base64 || item.rendered_thumbnail_base64);
       }
 
+      case 'render_contact_sheet_frame': {
+        const item = demoItems.find(candidate => candidate.file_path === args.filePath);
+        return {
+          width: 1024,
+          height: 682,
+          dataUrl: item?.rendered_thumbnail_base64 || item?.thumbnail_base64 || '',
+        };
+      }
+
       case 'promote_roll':
         return true;
 

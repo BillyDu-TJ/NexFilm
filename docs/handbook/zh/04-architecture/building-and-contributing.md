@@ -103,8 +103,7 @@ NexFilm 奉行“契约先行、机器守门”的软件工程文化。在 `scri
    - `node scripts/verify-runtime-assets.cjs`：核对运行时所需的相纸 LUT、图标与着色器资源完整性。
    - `node scripts/verify-ui-startup-order.cjs`：断言 `index.html` 中前端脚本标签的声明加载依赖顺序。
    - `node scripts/verify-slider-contract.cjs`：断言滑块范围、步长与默认值的一致性。
-3. **双端同源文档一致性验证**：  
-   `node scripts/compile-handbook.mjs && node scripts/verify-handbook-sync.cjs` 确保手册编译产物 `ui/documentation-data.js` 与 Markdown 源文件保持字节级一致。
+3. **官网手册对称性验证**：`node scripts/verify-handbook-sync.cjs` 确保 `docs/handbook/{zh,en}/` 中的 19 对双语 Markdown 手册在文件名、元数据与小节锚点上严格对称。
 
 > [!IMPORTANT]
 > 任何 Pull Request 在提交前都应保证上述本地测试套件全部通过。不要修改契约脚本来迁就存在缺陷的代码实现。
@@ -138,5 +137,5 @@ NexFilm 奉行“契约先行、机器守门”的软件工程文化。在 `scri
 NexFilm 采用 **GNU 通用公共许可证第 3 版（GPL-3.0）** 授权分发。每一位参与贡献的开发者应当尊重并遵守以下准则：
 
 1. **代码开源与衍生作品传染性**：GPL-3.0 要求任何包含或派生自 NexFilm 源码的分发版本，必须以相同的 GPL-3.0 许可证完整开源全部源代码。任何试图将核心色彩算法包装为闭源商业产品的行为均属侵权。
-2. **SSOT 单一事实源原则**：使用文档的唯一权威源头位于 `docs/handbook/{zh,en}/` 目录下的 Markdown 文件。严禁直接手改 `ui/documentation-data.js` 编译产物。修改文档必须同步运行 `node scripts/compile-handbook.mjs`。
+2. **SSOT 单一事实源原则**：使用文档的唯一权威源头位于 `docs/handbook/{zh,en}/` 目录下的 Markdown 文件，由官网（`website/`）直接读取渲染。修改文档后请运行 `node scripts/verify-handbook-sync.cjs` 验证中英文目录结构与锚点完全对称。
 3. **严谨的提交历史与规范**：推荐使用遵循 Conventional Commits 规范的 Git 提交消息（如 `feat:`, `fix:`, `docs:`, `refactor:`, `test:`）。在发起 Pull Request 时，需在描述中清晰列出修改动机、影响模块与本地回归测试证据。

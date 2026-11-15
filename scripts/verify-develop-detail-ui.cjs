@@ -175,27 +175,6 @@ setTimeout(() => {
             .map(input => input.value)
             .filter(value => ['curve', 'sharpen', 'texture', 'clarity', 'dehaze'].includes(value));
         results.curveLutMidpoint = NexFilmToneCurve.buildLut([[0, 0], [0.5, 0.4], [1, 1]])[256];
-        results.docSections = ['zh-CN', 'en'].map(locale => window.NexFilmDocsData
-            .getChapters(locale).flatMap(chapter => chapter.sections).map(section => section.id));
-        results.docUnbalancedTags = (() => {
-            const unbalanced = [];
-            for (const locale of ['zh-CN', 'en']) {
-                const sections = window.NexFilmDocsData.getChapters(locale)
-                    .flatMap(chapter => chapter.sections);
-                for (const section of sections) {
-                    for (const tag of ['p', 'table', 'tr', 'td', 'ul', 'li', 'ol', 'strong', 'code']) {
-                        const opened = (section.content.match(
-                            new RegExp('<' + tag + '[ >]', 'g')
-                        ) || []).length;
-                        const closed = (section.content.match(
-                            new RegExp('</' + tag + '>', 'g')
-                        ) || []).length;
-                        if (opened !== closed) unbalanced.push(locale + ':' + section.id + ':' + tag);
-                    }
-                }
-            }
-            return unbalanced;
-        })();
         sliders.sharpeningAmount.el.value = '100';
         sliders.sharpeningDetail.el.value = '40';
         sliders.sharpeningMasking.el.value = '30';
@@ -293,8 +272,8 @@ setTimeout(async () => {
         await wait(250);
         results.drag = { before, downIndex, dragged, movedX: dragged[downIndex][0] > before[0][0] + 0.05 };
 
-        // Pulling the first endpoint sideways grows a control point instead of
-        // being a dead end.
+        // The endpoints are real curve endpoints and move freely. Pulling the
+        // first one sideways must not create a redundant control point.
         const endpointBefore = curvePoints.rgb.map(point => [...point]);
         fire('pointerdown', 0.0, 0.0);
         for (const [x, y] of [[0.1, 0.05], [0.2, 0.1]]) {
@@ -303,9 +282,12 @@ setTimeout(async () => {
         }
         fire('pointerup', 0.2, 0.1);
         await wait(200);
+        const endpointAfter = curvePoints.rgb.map(point => [...point]);
         results.endpointPull = {
-            grew: curvePoints.rgb.length > endpointBefore.length,
-            endpointKept: curvePoints.rgb[0][0] === 0,
+            beforeCount: endpointBefore.length,
+            afterCount: endpointAfter.length,
+            endpoint: endpointAfter[0],
+            nextPoint: endpointAfter[1],
         };
 
         // The bottom-left dot is the one the plot's rounded corner would clip,
@@ -616,20 +598,6 @@ assert.deepEqual(
     ['base', 'coarse-h', 'coarse-v', 'fine-h', 'fine-v', 'texture-h', 'texture-v'],
     'the Detail chain did not allocate the expected render targets'
 );
-assert.deepEqual(
-    results.docSections[0],
-    results.docSections[1],
-    'the two documentation locales no longer share the same sections'
-);
-assert.ok(
-    results.docSections[0].includes('curve-and-detail'),
-    'the Tone Curve and Detail documentation section is missing'
-);
-assert.deepEqual(
-    results.docUnbalancedTags,
-    [],
-    'documentation HTML has unbalanced tags'
-);
 
 assert.deepEqual(
     results.localeLabels,
@@ -644,8 +612,19 @@ assert.deepEqual(
 assert.equal(results.previewError, undefined, `the preview probe failed: ${results.previewError}`);
 assert.equal(results.proxyFull, true, 'the preview proxy never loaded');
 assert.equal(results.drag?.movedX, true, 'a curve drag did not follow the pointer horizontally');
-assert.equal(results.endpointPull?.grew, true, 'a sideways endpoint drag must grow a control point');
-assert.equal(results.endpointPull?.endpointKept, true, 'the endpoint must keep its input value');
+assert.equal(
+    results.endpointPull?.afterCount,
+    results.endpointPull?.beforeCount,
+    'a sideways endpoint drag must not create a redundant control point'
+);
+assert.ok(
+    results.endpointPull?.endpoint?.[0] > 0.15 && results.endpointPull?.endpoint?.[1] > 0.05,
+    `the first endpoint must follow the pointer: ${JSON.stringify(results.endpointPull)}`
+);
+assert.ok(
+    results.endpointPull?.endpoint?.[0] < results.endpointPull?.nextPoint?.[0],
+    `the first endpoint must not cross its neighbour: ${JSON.stringify(results.endpointPull)}`
+);
 assert.ok(
     results.curvePlotInset[0] === results.curvePlotInset[1] && results.curvePlotInset[0] > 0,
     `the curve plot must be inset from the canvas edge: ${results.curvePlotInset}`
@@ -660,7 +639,12 @@ assert.ok(
     results.cornerBlackPoint[0][1] > 0.02,
     `the black point did not follow the drag: ${JSON.stringify(results.cornerBlackPoint)}`
 );
-assert.equal(results.cornerBlackPoint[0][0], 0, 'the black point keeps its input value');
+assert.ok(
+    Math.abs(results.cornerBlackPoint[0][0]) <= 0.02,
+    `the black point keeps its input value within pixel tolerance: ${JSON.stringify(
+        results.cornerBlackPoint
+    )}`
+);
 assert.equal(results.detailSliderDrag?.dragging, false, 'a Detail slider drag must release its drag state');
 assert.ok(
     results.detailDragDrawCalls.filter(count => count === 1).length >= 4,

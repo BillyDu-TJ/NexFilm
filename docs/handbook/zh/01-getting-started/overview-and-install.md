@@ -147,8 +147,8 @@ NexFilm 界面严格遵循暗房工作流人体工程学设计，整体布局清
         </tr>
         <tr>
             <td><strong>顶栏视图标签与全局动作</strong></td>
-            <td>居中为五大主视图标签切换器，右侧固定放置三大全局主操作按钮</td>
-            <td>五大视图分别为：<strong>图库</strong>、<strong>工作台</strong>、<strong>历史胶卷记录</strong>、<strong>硬件校正</strong> 与 <strong>使用文档</strong>。右侧常驻的 <strong>导出胶卷</strong>、<strong>导入胶卷</strong> 与 <strong>导出</strong> 按钮支持在任意视图下直接触发核心批量或单帧导出流程。</td>
+            <td>居中为四大主视图标签切换器，右侧固定放置三大全局主操作按钮</td>
+            <td>四大视图分别为：<strong>图库</strong>、<strong>工作台</strong>、<strong>历史胶卷记录</strong> 与 <strong>硬件校正</strong>（右侧另有赞助入口）。常驻的 <strong>导出胶卷</strong>、<strong>导入胶卷</strong> 与 <strong>导出</strong> 按钮支持在任意视图下直接触发核心批量或单帧导出流程。</td>
         </tr>
         <tr>
             <td><strong>主工作区</strong></td>

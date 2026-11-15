@@ -59,7 +59,6 @@
                 <button type="button" class="menu-item" id="menu-view-develop" data-i18n="nav.develop">Develop</button>
                 <button type="button" class="menu-item" id="menu-view-rolls" data-i18n="nav.rolls">Rolls</button>
                 <button type="button" class="menu-item" id="menu-view-calibration" data-i18n="nav.calibration">Hardware Calibration</button>
-                <button type="button" class="menu-item" id="menu-view-documentation" data-i18n="nav.documentation">Documentation</button>
                 <button type="button" class="menu-item" id="menu-view-reset" data-i18n="menu.resetView">Reset View</button>
             </div>
         </div>
@@ -85,7 +84,6 @@
                 <button id="nav-develop" data-i18n="nav.develop" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Develop</button>
                 <button id="nav-history" data-i18n="nav.rolls" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Rolls</button>
                 <button id="nav-calibration" data-i18n="nav.calibration" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Hardware Calibration</button>
-                <button id="nav-documentation" data-i18n="nav.documentation" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Documentation</button>
                 <button id="nav-sponsor" data-i18n="nav.sponsor" type="button" aria-haspopup="dialog" aria-controls="sponsor-modal" class="px-4 h-full text-[12px] font-bold tracking-widest uppercase transition-colors border-b-2 text-zinc-500 hover:text-zinc-300 border-transparent">Sponsor</button>
             </nav>
         </div>
@@ -296,39 +294,6 @@
                             <div id="calibration-detail-references" class="calibration-reference-list"></div>
                         </section>
                     </div>
-                </section>
-            </div>
-        </section>
-
-        <!-- ============================== -->
-        <!-- VIEW: DOCUMENTATION            -->
-        <!-- ============================== -->
-        <section id="view-documentation" class="documentation-workspace transition-opacity duration-300 z-10" style="display: none;" aria-hidden="true" aria-labelledby="documentation-view-title">
-            <div class="view-toolbar documentation-toolbar">
-                <div class="documentation-toolbar-lead">
-                    <h1 id="documentation-view-title" data-i18n="documentation.title">NexFilm Documentation</h1>
-                    <p id="documentation-view-subtitle" data-i18n="documentation.subtitle">User manual and reference</p>
-                </div>
-                <div class="flex items-center gap-3">
-                    <div class="documentation-search-wrap">
-                        <input id="documentation-search-input" type="search" class="documentation-search-input" data-i18n-placeholder="documentation.searchPlaceholder" placeholder="Search the manual..." data-i18n-aria-label="documentation.searchPlaceholder" aria-label="Search the manual">
-                    </div>
-                </div>
-            </div>
-            <div class="documentation-layout">
-                <aside class="documentation-nav-panel" aria-labelledby="documentation-nav-title">
-                    <div class="documentation-panel-heading">
-                        <h2 id="documentation-nav-title" data-i18n="documentation.navTitle">Topics</h2>
-                        <span id="documentation-chapter-count">0</span>
-                    </div>
-                    <nav id="documentation-nav-list" class="documentation-nav-list custom-scrollbar" aria-label="Documentation chapters">
-                        <!-- Populated dynamically by documentation.js -->
-                    </nav>
-                </aside>
-                <section class="documentation-content-panel custom-scrollbar" id="documentation-content-scroll">
-                    <article id="documentation-article-body" class="documentation-article">
-                        <!-- Populated dynamically by documentation.js -->
-                    </article>
                 </section>
             </div>
         </section>
@@ -771,6 +736,7 @@
                                     <canvas id="tone-curve-canvas" class="tone-curve-canvas" role="img" aria-label="Tone curve editor" data-i18n-aria-label="curve.editor"></canvas>
                                 </div>
                                 <div class="tone-curve-footer">
+                                    <span id="tone-curve-readout" class="tone-curve-readout" aria-live="polite" hidden></span>
                                     <button id="btn-reset-curve" type="button" class="tone-curve-reset" data-i18n="curve.resetChannel">Reset Channel</button>
                                 </div>
                             </div>
@@ -1716,6 +1682,115 @@
         </div>
     </div>
 
+    <!-- Contact Sheet Preview & Export -->
+    <div id="contact-sheet-modal" class="fixed inset-0 z-50 flex items-center justify-center opacity-0 pointer-events-none transition-opacity duration-200" aria-hidden="true">
+        <div id="contact-sheet-modal-content" class="contact-sheet-dialog transform scale-95 transition-transform duration-200" role="dialog" aria-modal="true" aria-labelledby="contact-sheet-title">
+            <div class="export-dialog-header">
+                <div>
+                    <h2 id="contact-sheet-title" data-i18n="contactSheet.title">Contact Sheet</h2>
+                    <p id="contact-sheet-subtitle" data-i18n="contactSheet.subtitle">Review the full sheet, then render the finished frames at full quality.</p>
+                </div>
+                <button id="btn-close-contact-sheet" class="export-icon-button" type="button" data-i18n-aria-label="contactSheet.close" data-i18n-title="contactSheet.close" aria-label="Close contact sheet dialog" title="Close contact sheet dialog">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke-width="1.7" stroke-linecap="round"></path></svg>
+                </button>
+            </div>
+
+            <div class="contact-sheet-preview-panel">
+                <div class="contact-sheet-preview-heading">
+                    <span data-i18n="contactSheet.preview">Sheet preview</span>
+                    <span id="contact-sheet-preview-status" data-i18n="contactSheet.loadingPreview">Loading preview...</span>
+                </div>
+                <div id="contact-sheet-preview-scroll" class="contact-sheet-preview-scroll custom-scrollbar" tabindex="0" role="region" data-i18n-aria-label="contactSheet.preview" aria-label="Sheet preview">
+                    <canvas id="contact-sheet-preview-canvas" class="contact-sheet-preview-canvas" aria-label="Contact sheet preview"></canvas>
+                    <div id="contact-sheet-preview-empty" class="contact-sheet-preview-empty hidden">
+                        <span data-i18n="contactSheet.noFrames">This Roll has no frames to place on a contact sheet.</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="contact-sheet-settings custom-scrollbar">
+                <div class="contact-sheet-settings-grid">
+                    <section class="contact-sheet-settings-section" aria-labelledby="contact-sheet-output-heading">
+                        <div class="export-section-heading">
+                            <h3 id="contact-sheet-output-heading" data-i18n="contactSheet.fileHeading">File</h3>
+                            <span data-i18n="contactSheet.fileHint">Name and destination</span>
+                        </div>
+                        <label class="export-field contact-sheet-filename-field">
+                            <span data-i18n="contactSheet.filename">Filename</span>
+                            <span class="contact-sheet-filename-control">
+                                <input id="contact-sheet-filename" type="text" maxlength="184" spellcheck="false" autocomplete="off" aria-describedby="contact-sheet-filename-error">
+                                <span id="contact-sheet-filename-extension" class="contact-sheet-extension">.jpg</span>
+                            </span>
+                        </label>
+                        <div class="export-preview-row contact-sheet-name-preview-row">
+                            <span data-i18n="contactSheet.fullFilename">Full filename</span>
+                            <code id="contact-sheet-name-preview">contact_sheet.jpg</code>
+                        </div>
+                        <p id="contact-sheet-filename-error" class="contact-sheet-field-error" role="alert"></p>
+                        <div class="export-field export-destination-field">
+                            <span data-i18n="export.destination">Destination</span>
+                            <div class="export-destination-row">
+                                <input id="contact-sheet-output-dir" type="text" readonly placeholder="No folder selected" data-i18n-placeholder="export.noFolder">
+                                <button id="btn-choose-contact-sheet-dir" type="button" data-i18n="actions.chooseFolder">Choose folder</button>
+                            </div>
+                        </div>
+                        <p class="export-info-note contact-sheet-destination-note" data-i18n="contactSheet.destinationHint">The sheet is written directly to this folder. Existing files are kept and given a numbered suffix.</p>
+                    </section>
+
+                    <section class="contact-sheet-settings-section" aria-labelledby="contact-sheet-layout-heading">
+                        <div class="export-section-heading">
+                            <h3 id="contact-sheet-layout-heading" data-i18n="contactSheet.layoutHeading">Layout &amp; quality</h3>
+                            <span data-i18n="contactSheet.layoutHint">Strict page geometry</span>
+                        </div>
+                        <label class="contact-sheet-toggle-row">
+                            <input id="contact-sheet-include-borders" type="checkbox" checked>
+                            <span>
+                                <strong data-i18n="contactSheet.includeBorders">Include film borders</strong>
+                                <small data-i18n="contactSheet.includeBordersHint">Draw the 135/120 rebate, sprockets and edge codes. Turn off to lay out scanned film edges using the selected format's full strip ratio and frame gap.</small>
+                            </span>
+                        </label>
+                        <div class="contact-sheet-options-grid">
+                            <label class="export-field">
+                                <span data-i18n="contactSheet.format">Format</span>
+                                <select id="contact-sheet-format">
+                                    <option value="jpeg" data-i18n="contactSheet.formatJpeg">JPEG</option>
+                                    <option value="png" data-i18n="contactSheet.formatPng">PNG · lossless</option>
+                                </select>
+                            </label>
+                            <label class="export-field">
+                                <span data-i18n="contactSheet.resolution">Resolution</span>
+                                <select id="contact-sheet-resolution">
+                                    <option value="3000" data-i18n="contactSheet.resolutionStandard">Standard · 3000 px</option>
+                                    <option value="4500" selected data-i18n="contactSheet.resolutionHigh">High · 4500 px</option>
+                                    <option value="6000" data-i18n="contactSheet.resolutionUltra">Ultra · 6000 px</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="export-field" id="contact-sheet-quality-group">
+                            <div class="export-field-row">
+                                <span data-i18n="export.jpegQuality">JPEG quality</span>
+                                <output id="contact-sheet-quality-val" for="contact-sheet-quality">95</output>
+                            </div>
+                            <input type="range" id="contact-sheet-quality" min="60" max="100" value="95" step="1">
+                            <div class="export-range-labels">
+                                <span data-i18n="export.smallerFile">Smaller file</span>
+                                <span data-i18n="export.maximumDetail">Maximum detail</span>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+            </div>
+
+            <div class="contact-sheet-footer">
+                <div id="contact-sheet-export-status" class="contact-sheet-export-status" role="status" aria-live="polite"></div>
+                <div class="contact-sheet-footer-actions">
+                    <button id="btn-cancel-contact-sheet" type="button" data-i18n="actions.cancel">Cancel</button>
+                    <button id="btn-export-contact-sheet-confirm" type="button" data-i18n="contactSheet.export">Export Contact Sheet</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="geometry.js"></script>
     <script src="develop-interactions.js"></script>
     <script src="contact-sheet.js"></script>
@@ -1728,8 +1803,6 @@
     <script src="tone-curve.js"></script>
     <script src="export-settings.js"></script>
     <script src="i18n.js"></script>
-    <script src="documentation-data.js"></script>
-    <script src="documentation.js"></script>
     <script src="main.js"></script>
     <script src="import-controls.js"></script>
 </body>

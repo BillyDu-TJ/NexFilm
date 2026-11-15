@@ -17,6 +17,7 @@
         perforationWidthMm: 1.98,
         perforationHeightMm: 2.79,
     });
+    const FILM_120_BORDER_RATIO = 0.052;
 
     // Paper, film base and print colors for the exported sheet. The paper stays
     // clearly lighter than the film base so strips read as separate objects.
@@ -33,12 +34,42 @@
     const formatProfiles = Object.freeze([
         // 120 frames are drawn along the film, so a 6x4.5 frame is portrait:
         // about 41.5 mm along the film against 56 mm across it.
-        Object.freeze({ matches: ['6x4.5', '645'], framesPerRow: 4, aspect: 4 / 3 }),
-        Object.freeze({ matches: ['6x6'], framesPerRow: 4, aspect: 1 }),
-        Object.freeze({ matches: ['6x7'], framesPerRow: 3, aspect: 6 / 7 }),
-        Object.freeze({ matches: ['6x9'], framesPerRow: 2, aspect: 2 / 3 }),
-        Object.freeze({ matches: ['6x12'], framesPerRow: 2, aspect: 1 / 2 }),
-        Object.freeze({ matches: ['6x17'], framesPerRow: 1, aspect: 6 / 17 }),
+        Object.freeze({
+            matches: ['6x4.5', '645'],
+            framesPerRow: 4,
+            aspect: 4 / 3,
+            framedAspect: (4 / 3) * (1 + FILM_120_BORDER_RATIO * 2),
+        }),
+        Object.freeze({
+            matches: ['6x6'],
+            framesPerRow: 4,
+            aspect: 1,
+            framedAspect: 1 + FILM_120_BORDER_RATIO * 2,
+        }),
+        Object.freeze({
+            matches: ['6x7'],
+            framesPerRow: 3,
+            aspect: 6 / 7,
+            framedAspect: (6 / 7) * (1 + FILM_120_BORDER_RATIO * 2),
+        }),
+        Object.freeze({
+            matches: ['6x9'],
+            framesPerRow: 2,
+            aspect: 2 / 3,
+            framedAspect: (2 / 3) * (1 + FILM_120_BORDER_RATIO * 2),
+        }),
+        Object.freeze({
+            matches: ['6x12'],
+            framesPerRow: 2,
+            aspect: 1 / 2,
+            framedAspect: (1 / 2) * (1 + FILM_120_BORDER_RATIO * 2),
+        }),
+        Object.freeze({
+            matches: ['6x17'],
+            framesPerRow: 1,
+            aspect: 6 / 17,
+            framedAspect: (6 / 17) * (1 + FILM_120_BORDER_RATIO * 2),
+        }),
     ]);
 
     const formatGeometry = Object.freeze({
@@ -51,7 +82,7 @@
         '120': Object.freeze({
             // Two 6x7 frames sit about 2.5 mm apart on 61-62 mm wide roll film.
             frameGapRatio: 0.035,
-            borderRatio: 0.052,
+            borderRatio: FILM_120_BORDER_RATIO,
             verticalGapRatio: 0.11,
         }),
     });
@@ -60,7 +91,13 @@
         const normalized = String(format || '135').toLowerCase().replace(/\u00d7/g, 'x');
         const is120 = normalized.includes('120');
         if (!is120) {
-            return { is120: false, framesPerRow: 6, aspect: 2 / 3, ...formatGeometry['135'] };
+            return {
+                is120: false,
+                framesPerRow: 6,
+                aspect: 2 / 3,
+                fullFrameAspect: FILM_135.filmWidthMm / FILM_135.frameWidthMm,
+                ...formatGeometry['135'],
+            };
         }
 
         const profile = formatProfiles.find(candidate =>
@@ -70,25 +107,167 @@
             is120: true,
             framesPerRow: profile ? profile.framesPerRow : 3,
             aspect: profile ? profile.aspect : 1,
+            fullFrameAspect: profile
+                ? profile.framedAspect
+                : 1 + FILM_120_BORDER_RATIO * 2,
             ...formatGeometry['120'],
         };
     }
 
-    function getContactSheetLayout(format, canvasWidth = 3000, outerMargin = 100) {
+    const CONTACT_SHEET_BASE_WIDTH = 3000;
+    const CONTACT_SHEET_MARGIN_RATIO = 100 / CONTACT_SHEET_BASE_WIDTH;
+    const CONTACT_SHEET_FOOTER_RATIO = 300 / CONTACT_SHEET_BASE_WIDTH;
+    const CONTACT_SHEET_LOCKUP_BOTTOM_RATIO = 118 / CONTACT_SHEET_BASE_WIDTH;
+    const CONTACT_SHEET_METADATA_BOTTOM_RATIO = 56 / CONTACT_SHEET_BASE_WIDTH;
+    const CONTACT_SHEET_LOCKUP_HEIGHT_RATIO = 104 / CONTACT_SHEET_BASE_WIDTH;
+    const CONTACT_SHEET_FILM_NAME_RATIO = 84 / CONTACT_SHEET_BASE_WIDTH;
+    const CONTACT_SHEET_METADATA_FONT_RATIO = 32 / CONTACT_SHEET_BASE_WIDTH;
+    const CONTACT_SHEET_PREVIEW_MIN_WIDTH_RATIO = 0.62;
+    const CONTACT_SHEET_PREVIEW_MIN_WIDTH = 420;
+
+    function getContactSheetLayout(
+        format,
+        canvasWidth = CONTACT_SHEET_BASE_WIDTH,
+        outerMargin = canvasWidth * CONTACT_SHEET_MARGIN_RATIO,
+        options = {}
+    ) {
+        const borderless = Boolean(options.borderless);
         const profile = getContactSheetFormat(format);
         const availableWidth = canvasWidth - outerMargin * 2;
         // Inter-frame gaps belong to the film, not to the sheet: derive the
         // image width from the physical frame-to-gap ratio so one row reads as
         // a single continuous strip with an even perforation rhythm.
-        const imageWidth = availableWidth / (
+        const borderedImageWidth = availableWidth / (
             profile.framesPerRow + profile.frameGapRatio * (profile.framesPerRow - 1)
         );
+        const borderedImageHeight = borderedImageWidth * profile.aspect;
+        const borderedBorderHeight = borderedImageHeight * profile.borderRatio;
+        // Borderless frames are scans that already contain the physical film
+        // edge. Keep the same frame + inter-frame packing as the bordered path,
+        // but use the precomputed full-strip ratio for the cell height.
+        const imageWidth = borderedImageWidth;
+        const imageHeight = borderless
+            ? imageWidth * profile.fullFrameAspect
+            : imageWidth * profile.aspect;
+        const horizontalGap = borderedImageWidth * profile.frameGapRatio;
+        const borderHeight = borderless ? 0 : borderedBorderHeight;
+        const rowAllocationHeight = borderedImageHeight + borderedBorderHeight * 2;
+        const rowHeight = imageHeight + borderHeight * 2;
+        const verticalGap = rowHeight * profile.verticalGapRatio;
 
         return {
             ...profile,
-            horizontalGap: imageWidth * profile.frameGapRatio,
+            borderless,
+            canvasWidth,
+            outerMargin,
+            horizontalGap,
             imageWidth,
-            imageHeight: imageWidth * profile.aspect,
+            imageHeight,
+            borderHeight,
+            rowHeight,
+            rowAllocationHeight,
+            verticalGap,
+        };
+    }
+
+    function getContactSheetPageLayout(options = {}) {
+        const format = options.format || '135';
+        const canvasWidth = Number(options.canvasWidth) || CONTACT_SHEET_BASE_WIDTH;
+        const outerMargin = Number.isFinite(Number(options.outerMargin))
+            ? Number(options.outerMargin)
+            : canvasWidth * CONTACT_SHEET_MARGIN_RATIO;
+        const borderless = Boolean(options.borderless);
+        const frameCount = Math.max(0, Math.trunc(Number(options.frameCount) || 0));
+        const bordered = getContactSheetLayout(format, canvasWidth, outerMargin);
+        const layout = getContactSheetLayout(format, canvasWidth, outerMargin, { borderless });
+        const rows = Math.ceil(frameCount / layout.framesPerRow);
+        const totalSlots = rows * layout.framesPerRow;
+        const emptyFrames = totalSlots - frameCount;
+        const footerHeight = canvasWidth * CONTACT_SHEET_FOOTER_RATIO;
+        const pageRowHeight = layout.rowHeight;
+        const pageVerticalGap = layout.verticalGap;
+        const canvasHeight = outerMargin
+            + rows * pageRowHeight
+            + Math.max(0, rows - 1) * pageVerticalGap
+            + footerHeight;
+
+        const rowLayouts = [];
+        const slots = [];
+        for (let row = 0; row < rows; row += 1) {
+            const top = outerMargin + row * (pageRowHeight + pageVerticalGap);
+            rowLayouts.push({
+                top,
+                height: pageRowHeight,
+                imageTop: top + layout.borderHeight,
+            });
+            for (let column = 0; column < layout.framesPerRow; column += 1) {
+                const index = row * layout.framesPerRow + column;
+                slots.push({
+                    index,
+                    row,
+                    column,
+                    x: outerMargin + column * (layout.imageWidth + layout.horizontalGap),
+                    y: rowLayouts[row].imageTop,
+                    width: layout.imageWidth,
+                    height: layout.imageHeight,
+                });
+            }
+        }
+
+        return {
+            format,
+            borderless,
+            canvasWidth,
+            canvasHeight,
+            outerMargin,
+            footerHeight,
+            frameCount,
+            emptyFrames,
+            rows,
+            rowLayouts,
+            slots,
+            totalSlots,
+            layout,
+            bordered,
+            stripWidth: canvasWidth - outerMargin * 2,
+            footer: {
+                baseline: canvasHeight - canvasWidth * CONTACT_SHEET_LOCKUP_BOTTOM_RATIO,
+                metadataBaseline: canvasHeight - canvasWidth * CONTACT_SHEET_METADATA_BOTTOM_RATIO,
+                lockupHeight: canvasWidth * CONTACT_SHEET_LOCKUP_HEIGHT_RATIO,
+                filmNameSize: canvasWidth * CONTACT_SHEET_FILM_NAME_RATIO,
+                metadataFontSize: canvasWidth * CONTACT_SHEET_METADATA_FONT_RATIO,
+            },
+        };
+    }
+
+    function getContactSheetPreviewSize(options = {}) {
+        const intrinsicWidth = Math.max(0, Number(options.intrinsicWidth) || 0);
+        const intrinsicHeight = Math.max(0, Number(options.intrinsicHeight) || 0);
+        const availableWidth = Math.max(0, Number(options.availableWidth) || 0);
+        const availableHeight = Math.max(0, Number(options.availableHeight) || 0);
+        if (!intrinsicWidth || !intrinsicHeight || !availableWidth || !availableHeight) {
+            return null;
+        }
+
+        const fitScale = Math.min(
+            1,
+            availableWidth / intrinsicWidth,
+            availableHeight / intrinsicHeight
+        );
+        // A 135-frame sheet is much taller than the dialog. Let that preview
+        // scroll instead of shrinking every frame to an unreadable thumbnail.
+        const minimumReadableWidth = Math.min(
+            availableWidth,
+            Math.max(CONTACT_SHEET_PREVIEW_MIN_WIDTH, availableWidth * CONTACT_SHEET_PREVIEW_MIN_WIDTH_RATIO)
+        );
+        const minimumReadableScale = Math.min(1, minimumReadableWidth / intrinsicWidth);
+        const scale = Math.max(fitScale, minimumReadableScale);
+        const width = Math.max(1, Math.floor(intrinsicWidth * scale));
+        const height = Math.max(1, Math.floor(intrinsicHeight * scale));
+        return {
+            width,
+            height,
+            scrollsVertically: height > availableHeight + 1,
         };
     }
 
@@ -337,6 +516,190 @@
         return { width: totalWidth, height: markHeight };
     }
 
+    function drawFrameImage(ctx, image, slot, options = {}) {
+        if (!image) return;
+        const sourceWidth = Number(image.naturalWidth || image.width) || 0;
+        const sourceHeight = Number(image.naturalHeight || image.height) || 0;
+        if (!sourceWidth || !sourceHeight) return;
+
+        const rotated = sourceHeight > sourceWidth;
+        const contentWidth = rotated ? sourceHeight : sourceWidth;
+        const contentHeight = rotated ? sourceWidth : sourceHeight;
+        let drawWidth = slot.width;
+        let drawHeight = slot.height;
+        if (options.cropToFill) {
+            const scale = Math.max(slot.width / contentWidth, slot.height / contentHeight);
+            drawWidth = contentWidth * scale;
+            drawHeight = contentHeight * scale;
+        }
+        const centerX = slot.x + slot.width / 2;
+        const centerY = slot.y + slot.height / 2;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(slot.x, slot.y, slot.width, slot.height);
+        ctx.clip();
+        ctx.imageSmoothingEnabled = true;
+        if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'high';
+        if (rotated) {
+            ctx.translate(centerX, centerY);
+            ctx.rotate(Math.PI / 2);
+            ctx.drawImage(
+                image,
+                -drawHeight / 2,
+                -drawWidth / 2,
+                drawHeight,
+                drawWidth
+            );
+        } else {
+            ctx.drawImage(
+                image,
+                centerX - drawWidth / 2,
+                centerY - drawHeight / 2,
+                drawWidth,
+                drawHeight
+            );
+        }
+        ctx.restore();
+    }
+
+    function fillContactSheetFooter(ctx, page, options) {
+        const roll = options.roll || {};
+        const footer = page.footer;
+        const ink = contactSheetTheme.ink;
+        const filmName = String(roll.film_stock || options.unknownFilm || 'UNKNOWN FILM')
+            .trim()
+            .toUpperCase() || 'UNKNOWN FILM';
+        const lockup = drawNexfilmLockup(ctx, {
+            x: page.outerMargin,
+            bottomY: footer.baseline,
+            markHeight: footer.lockupHeight,
+        });
+
+        ctx.save();
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'alphabetic';
+        ctx.fillStyle = ink;
+        const filmNameFont = size => `900 ${size}px "Arial Black", "Helvetica Neue", Arial, sans-serif`;
+        const maxFilmNameWidth = page.canvasWidth - page.outerMargin * 2 - lockup.width - footer.lockupHeight * 0.77;
+        let filmNameSize = footer.filmNameSize;
+        ctx.font = filmNameFont(filmNameSize);
+        while (filmNameSize > footer.filmNameSize * 0.52 && ctx.measureText(filmName).width > maxFilmNameWidth) {
+            filmNameSize -= Math.max(1, footer.filmNameSize * 0.048);
+            ctx.font = filmNameFont(filmNameSize);
+        }
+        ctx.fillText(filmName, page.canvasWidth - page.outerMargin, footer.baseline);
+
+        const summary = typeof options.footerSummary === 'string'
+            ? options.footerSummary
+            : `${page.frameCount} images (${page.emptyFrames} empty)`;
+        const metadata = [
+            roll.format,
+            roll.date || options.unknownDate,
+            roll.camera || options.unknownCamera,
+            summary,
+        ]
+            .map(value => String(value || '').trim())
+            .filter(Boolean)
+            .join(' · ');
+        ctx.fillStyle = contactSheetTheme.muted;
+        ctx.font = `${footer.metadataFontSize}px Inter, "Segoe UI", Helvetica, sans-serif`;
+        ctx.fillText(metadata, page.canvasWidth - page.outerMargin, footer.metadataBaseline);
+        ctx.restore();
+    }
+
+    function drawContactSheet(ctx, options = {}) {
+        const images = Array.isArray(options.images) ? options.images : [];
+        const page = getContactSheetPageLayout({
+            format: options.format,
+            canvasWidth: options.canvasWidth,
+            outerMargin: options.outerMargin,
+            frameCount: options.frameCount ?? images.length,
+            borderless: options.borderless,
+        });
+        const is120 = page.layout.is120;
+
+        ctx.save();
+        ctx.fillStyle = contactSheetTheme.paper;
+        ctx.fillRect(0, 0, page.canvasWidth, page.canvasHeight);
+
+        if (page.rows > 0) {
+            ctx.save();
+            ctx.shadowColor = 'rgba(18, 18, 20, 0.28)';
+            ctx.shadowBlur = page.canvasWidth * 0.007333;
+            ctx.shadowOffsetY = page.canvasWidth * 0.002333;
+            ctx.fillStyle = contactSheetTheme.filmBase;
+            for (const row of page.rowLayouts) {
+                ctx.fillRect(page.outerMargin, row.top, page.stripWidth, row.height);
+            }
+            ctx.restore();
+        }
+
+        const rowFrames = Array.from({ length: page.rows }, () => []);
+        for (const slot of page.slots) {
+            const image = images[slot.index] || null;
+            if (page.frameCount > slot.index) {
+                if (image) {
+                    drawFrameImage(ctx, image, slot, {
+                        cropToFill: page.borderless,
+                    });
+                } else {
+                    ctx.fillStyle = '#1C1C1E';
+                    ctx.fillRect(slot.x, slot.y, slot.width, slot.height);
+                    ctx.fillStyle = '#8E8E93';
+                    ctx.font = `600 ${Math.max(10, page.canvasWidth * 0.006)}px Inter, Helvetica, sans-serif`;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(
+                        options.missingFrameLabel || 'NO PREVIEW',
+                        slot.x + slot.width / 2,
+                        slot.y + slot.height / 2
+                    );
+                }
+            } else if (!page.borderless) {
+                ctx.fillStyle = contactSheetTheme.filmBase;
+                ctx.fillRect(slot.x, slot.y, slot.width, slot.height);
+            }
+
+            if (page.borderless || page.frameCount <= slot.index) continue;
+            if (is120) {
+                draw120EdgeCodes(ctx, {
+                    x: slot.x,
+                    y: slot.y - page.layout.borderHeight,
+                    imageWidth: slot.width,
+                    imageHeight: slot.height,
+                    borderHeight: page.layout.borderHeight,
+                    frameNumber: slot.index + 1,
+                    filmName: String(options.roll?.film_stock || options.unknownFilm || 'UNKNOWN FILM'),
+                });
+            } else {
+                rowFrames[slot.row].push({
+                    x: slot.x,
+                    width: slot.width,
+                    frameNumber: slot.index + 1,
+                    label: (slot.column === 1 || slot.column === 4) ? 'NEXFILM' : null,
+                });
+            }
+        }
+
+        if (!page.borderless && !is120) {
+            for (let row = 0; row < page.rows; row += 1) {
+                draw135EdgeCodes(ctx, {
+                    stripLeft: page.outerMargin,
+                    stripTop: page.rowLayouts[row].top,
+                    stripWidth: page.stripWidth,
+                    imageHeight: page.layout.imageHeight,
+                    borderHeight: page.layout.borderHeight,
+                    frames: rowFrames[row],
+                });
+            }
+        }
+
+        fillContactSheetFooter(ctx, page, options);
+        ctx.restore();
+        return page;
+    }
+
     function safeFilenamePart(value, fallback) {
         const normalized = String(value || '')
             .trim()
@@ -347,21 +710,67 @@
         return (normalized || fallback).slice(0, 80);
     }
 
-    function createContactSheetFilename(roll) {
+    function createContactSheetFilenameStem(roll) {
         const rollId = safeFilenamePart(roll && roll.roll_id, 'unknown_roll');
         const camera = safeFilenamePart(roll && roll.camera, 'unknown_camera');
-        return `contact_sheet_${rollId}_${camera}.jpg`;
+        return `contact_sheet_${rollId}_${camera}`.slice(0, 180);
+    }
+
+    function contactSheetExtension(format) {
+        return String(format || '').toLowerCase() === 'png' ? 'png' : 'jpg';
+    }
+
+    function createContactSheetFilename(roll, format = 'jpeg') {
+        return `${createContactSheetFilenameStem(roll)}.${contactSheetExtension(format)}`;
+    }
+
+    function validateContactSheetFilename(value, format = 'jpeg') {
+        const extension = contactSheetExtension(format);
+        const raw = String(value || '').trim();
+        const withoutExtension = raw.replace(/\.(?:jpe?g|png)$/i, '').trim();
+        if (!withoutExtension) {
+            return { valid: false, code: 'empty', stem: '', filename: '', extension };
+        }
+        if (/[\u0000-\u001f<>:"/\\|?*]/.test(withoutExtension)) {
+            return { valid: false, code: 'invalidCharacters', stem: withoutExtension, filename: '', extension };
+        }
+        if (/[. ]$/.test(withoutExtension)) {
+            return { valid: false, code: 'trailingDotOrSpace', stem: withoutExtension, filename: '', extension };
+        }
+        if (withoutExtension.length > 180) {
+            return { valid: false, code: 'tooLong', stem: withoutExtension, filename: '', extension };
+        }
+        const base = withoutExtension.split('.')[0].toLowerCase();
+        const reserved = ['con', 'prn', 'aux', 'nul'].includes(base)
+            || /^(?:com|lpt)[1-9]$/.test(base);
+        if (reserved) {
+            return { valid: false, code: 'reservedName', stem: withoutExtension, filename: '', extension };
+        }
+        return {
+            valid: true,
+            code: '',
+            stem: withoutExtension,
+            filename: `${withoutExtension}.${extension}`,
+            extension,
+        };
     }
 
     return {
+        CONTACT_SHEET_BASE_WIDTH,
         getContactSheetFormat,
         getContactSheetLayout,
+        getContactSheetPageLayout,
+        getContactSheetPreviewSize,
         getPerforationLayout,
         draw135EdgeCodes,
         get120EdgeCode,
         draw120EdgeCodes,
         drawNexfilmLockup,
+        drawContactSheet,
         contactSheetTheme,
         createContactSheetFilename,
+        createContactSheetFilenameStem,
+        contactSheetExtension,
+        validateContactSheetFilename,
     };
 }));

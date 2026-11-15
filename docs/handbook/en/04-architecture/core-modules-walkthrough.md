@@ -91,7 +91,7 @@ The v1.1.0 density pipeline retired the old `legacy_linear_srgb` approximations.
 
 The front-end interface avoids bloated application frameworks, organizing darkroom lifecycle events through focused modular scripts:
 
-- **`ui/main.js` (Application Controller & Navigation)**: Manages view transitions across Library, Develop, Rolls, Hardware Calibration, and Documentation; coordinates the virtualized filmstrip, global keyboard shortcuts, and asynchronous Tauri IPC dispatch.
+- **`ui/main.js` (Application Controller & Navigation)**: Manages view transitions across Library, Develop, Rolls, and Hardware Calibration; coordinates the virtualized filmstrip, global keyboard shortcuts, and asynchronous Tauri IPC dispatch.
 - **`ui/tone-curve.js` (Printer Lights & Curve Editor)**: Handles interactive editing across four-channel (Master/R/G/B) tone curves, calculating 256-step LUTs via cubic spline interpolation and synchronizing printer lights additive offsets.
 - **`ui/geometry.js` (Film Gate & Projective Warping)**: Implements four-corner polygon drag handles, coordinates automated gate boundary detection, and renders perspective alignment grids.
 - **`ui/contact-sheet.js` (Contact Sheet Layout Engine)**: Organizes multi-frame negative rolls into row-based contact sheet layouts, supporting darkroom paper emulation, frame borders, and metadata typographic stamping.

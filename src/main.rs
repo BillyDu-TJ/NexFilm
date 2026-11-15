@@ -108,6 +108,7 @@ fn main() {
             nexfilm_engine::commands::reset_image_development,
             nexfilm_engine::commands::update_tuning_parameters,
             nexfilm_engine::commands::batch_export_images,
+            nexfilm_engine::commands::render_contact_sheet_frame,
             nexfilm_engine::commands::sync_thumbnail_buffer,
             nexfilm_engine::commands::set_thumbnail_data,
             nexfilm_engine::commands::clear_invalid_rendered_thumbnail,

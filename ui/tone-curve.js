@@ -9,6 +9,8 @@
     const LUT_SIZE = 1024;
     const MAX_POINTS = 16;
     const CHANNELS = ['rgb', 'red', 'green', 'blue'];
+    const MIN_POINT_GAP = 0.01;
+    const POINT_HIT_RADIUS = 0.075;
     const CHANNEL_STORAGE = {
         rgb: 'curve_rgb',
         red: 'curve_red',
@@ -31,7 +33,10 @@
         return Math.min(1, Math.max(0, value));
     }
 
-    /// Sort, clamp and guarantee the two endpoints, exactly like the renderer.
+    /// Sort, clamp and deduplicate the control points, exactly like the
+    /// renderer. The first and last points are genuine curve endpoints: they
+    /// may sit anywhere in the input range and the curve stays flat outside
+    /// them.
     function normalizePoints(points) {
         const sorted = (points || [])
             .filter(point => Number.isFinite(Number(point?.[0])) && Number.isFinite(Number(point?.[1])))
@@ -47,9 +52,10 @@
             }
         }
         if (deduplicated.length === 0) return identityPoints();
-        if (deduplicated[0][0] > EPSILON) deduplicated.unshift([0, deduplicated[0][1]]);
-        const last = deduplicated[deduplicated.length - 1];
-        if (last[0] < 1 - EPSILON) deduplicated.push([1, last[1]]);
+        if (deduplicated.length === 1) {
+            const output = deduplicated[0][1];
+            return [[0, output], [1, output]];
+        }
         return deduplicated.slice(0, MAX_POINTS);
     }
 
@@ -92,8 +98,12 @@
     function evaluate(points, x, tangents = null) {
         const normalized = normalizePoints(points);
         if (normalized.length < 2) return clamp01(x);
+        if (!Number.isFinite(x)) return normalized[0][1];
+        if (x <= normalized[0][0]) return normalized[0][1];
+        const last = normalized[normalized.length - 1];
+        if (x >= last[0]) return last[1];
         const slopes = tangents || monotoneTangents(normalized);
-        const clamped = Math.min(normalized[normalized.length - 1][0], Math.max(normalized[0][0], x));
+        const clamped = Math.min(last[0], Math.max(normalized[0][0], x));
         let segment = normalized.length - 2;
         for (let index = 0; index < normalized.length - 1; index += 1) {
             if (clamped <= normalized[index + 1][0] + 1e-9) {
@@ -139,11 +149,13 @@
     function isIdentity(points) {
         const normalized = normalizePoints(points);
         return normalized.length === 2
+            && Math.abs(normalized[0][0]) < EPSILON
             && Math.abs(normalized[0][1]) < EPSILON
+            && Math.abs(normalized[1][0] - 1) < EPSILON
             && Math.abs(normalized[1][1] - 1) < EPSILON;
     }
 
-    function findPointIndex(points, x, y, tolerance = 0.04) {
+    function findPointIndex(points, x, y, tolerance = POINT_HIT_RADIUS) {
         let best = -1;
         let bestDistance = tolerance;
         points.forEach((point, index) => {
@@ -157,18 +169,29 @@
     }
 
     /// Add a control point. Returns null when the curve already holds the
-    /// maximum number of points.
+    /// maximum number of points or when the coordinates are invalid. Clicking
+    /// inside EPSILON of an existing x replaces that column cleanly from
+    /// either side instead of dropping the new click during sorting.
     function insertPoint(points, x, y) {
         const normalized = normalizePoints(points);
         if (normalized.length >= MAX_POINTS) return null;
+        if (!Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return null;
+        const nextX = clamp01(Number(x));
+        const nextY = clamp01(Number(y));
+        const existingIndex = normalized.findIndex(point => Math.abs(point[0] - nextX) < EPSILON);
+        if (existingIndex >= 0) {
+            const next = normalized.map(point => point.slice());
+            next[existingIndex] = [nextX, nextY];
+            return normalizePoints(next);
+        }
         const next = normalized.slice();
-        next.push([clamp01(x), clamp01(y)]);
+        next.push([nextX, nextY]);
         return normalizePoints(next);
     }
 
-    /// Move a control point. The two endpoints keep their input value, which is
-    /// how a lifted black point or a pulled-down white point is expressed; the
-    /// interior points stay between their neighbours so the curve cannot fold.
+    /// Move a control point. Both endpoints may move freely inside the input
+    /// range, while every point keeps a small gap from its neighbours so the
+    /// curve cannot fold or reorder.
     function movePoint(points, index, x, y) {
         const normalized = normalizePoints(points);
         if (index < 0 || index >= normalized.length) return normalized;
@@ -176,13 +199,20 @@
         const isLast = index === normalized.length - 1;
         const next = normalized.map(point => point.slice());
         if (isFirst) {
-            next[index][0] = 0;
+            const upper = Math.max(0, next[1][0] - MIN_POINT_GAP);
+            next[index][0] = Math.min(upper, clamp01(x));
         } else if (isLast) {
-            next[index][0] = 1;
+            const lower = Math.min(1, next[index - 1][0] + MIN_POINT_GAP);
+            next[index][0] = Math.max(lower, clamp01(x));
         } else {
-            const lower = next[index - 1][0] + 1e-3;
-            const upper = next[index + 1][0] - 1e-3;
-            next[index][0] = Math.min(upper, Math.max(lower, clamp01(x)));
+            const previous = next[index - 1][0];
+            const following = next[index + 1][0];
+            const lower = Math.min(previous + MIN_POINT_GAP, following - EPSILON);
+            const upper = Math.max(previous + EPSILON, following - MIN_POINT_GAP);
+            next[index][0] = Math.min(
+                Math.max(lower, clamp01(x)),
+                Math.max(lower, upper)
+            );
         }
         next[index][1] = clamp01(y);
         return next;
@@ -226,6 +256,8 @@
     return {
         LUT_SIZE,
         MAX_POINTS,
+        MIN_POINT_GAP,
+        POINT_HIT_RADIUS,
         CHANNELS,
         CHANNEL_STORAGE,
         CHANNEL_LABELS,

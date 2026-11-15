@@ -82,7 +82,7 @@ NexFilm 在架构层面确立了不可动摇的 **WYSIWYG 数学等价契约**�
 <text x="40" y="55" fill="#e4e4e7" font-size="12" font-weight="bold">原生前端 (WebView2 / WebKit)</text>
 <text x="40" y="73" fill="#a1a1aa" font-size="10">UI 交互层 · WebGL2 实时渲染</text>
 <rect x="40" y="95" width="215" height="48" rx="6" fill="#27272a" stroke="#52525b" stroke-width="1"/>
-<text x="52" y="116" fill="#fafafa" font-size="11">五大视图控制器 (main.js)</text>
+<text x="52" y="116" fill="#fafafa" font-size="11">四大视图控制器 (main.js)</text>
 <text x="52" y="132" fill="#a1a1aa" font-size="9">Library / Develop / Rolls / Calib</text>
 <rect x="40" y="155" width="215" height="48" rx="6" fill="#27272a" stroke="#52525b" stroke-width="1"/>
 <text x="52" y="176" fill="#fafafa" font-size="11">暗房微调交互 (tone-curve.js)</text>
