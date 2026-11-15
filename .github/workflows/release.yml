@@ -16,7 +16,7 @@ jobs:
   # 第一步：统一验证代码（在 Linux 上跑最快，验证成功才打包）
   verify:
     name: Verify source code
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 15
 
     steps:
