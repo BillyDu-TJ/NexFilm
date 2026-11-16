@@ -110,6 +110,9 @@ fn anchor_mismatch(
     if provenance.input_domain != expected_domain {
         return Some("anchor_input_domain_mismatch");
     }
+    if provenance.raw_decode_version != Some(raw_decode_version) {
+        return Some("anchor_raw_decode_version_mismatch");
+    }
     if expected_domain == DataDomain::ProPhotoEstimate && provenance.working_basis != working_basis
     {
         return Some("anchor_working_basis_mismatch");
@@ -124,9 +127,6 @@ fn anchor_mismatch(
         if provenance.calibration_payload_digest.as_deref() != Some(profile.payload_digest.as_str())
         {
             return Some("anchor_payload_mismatch");
-        }
-        if provenance.raw_decode_version != Some(raw_decode_version) {
-            return Some("anchor_raw_decode_version_mismatch");
         }
     }
     None
@@ -655,6 +655,33 @@ mod tests {
                 .iter()
                 .any(|value| value.contains(reason)));
         }
+    }
+
+    #[test]
+    fn prophoto_anchor_from_an_older_decode_generation_is_rejected() {
+        let mut input = input(None);
+        let mut base = anchor(DataDomain::ProPhotoEstimate, None);
+        base.provenance.raw_decode_version = Some(input.raw_decode_version - 1);
+        let mut full = base.clone();
+        full.source = DensityAnchorSource::SampledFullExposure;
+        full.density = [1.0, 1.1, 1.2];
+        input.density_anchors = DensityAnchors {
+            d_min_base: Some(base),
+            d_max_full_exposure: Some(full),
+            retained_records: Vec::new(),
+            highlight_fraction: None,
+            sampled_frame_paths: Vec::new(),
+        };
+
+        let result = resolve_pipeline(&input);
+
+        assert_eq!(
+            result.resolved_path,
+            ProcessingContract::SmartAutoProPhotoV11
+        );
+        assert!(result.usable_density_anchors.d_min_base.is_none());
+        assert!(result.rejected_anchor_reasons.iter().any(|reason| reason
+            == "density_anchor_rejected|d_min_base|anchor_raw_decode_version_mismatch"));
     }
 
     #[test]

@@ -12,12 +12,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub const DATABASE_PATH: &str = "nexfilm_user.db";
 pub const LEGACY_MATH_VERSION: i64 = 3;
 pub const MATH_VERSION: i64 = 5;
-// M3 (LibRaw unification, macOS 0.21.3 -> 0.22.2): the macOS decode output
-// (camera tables, black levels) changes with the unified LibRaw, so existing
-// proxies/anchors must re-decode. Windows decodes byte-identically, but the
-// version is a global schema constant — no platform fork, so Windows pays the
-// same one-time re-decode.
-pub const RAW_DECODE_VERSION: i64 = 13;
+// v1.2.1: every generic TIFF/JPEG/PNG now decodes its declared transfer curve
+// directly into the ProPhoto working space, without the linear-sRGB u16
+// transport or its 10% chroma compression. Proxies, density endpoints and Roll
+// anchors measured by an older decoder cannot be reused on this generation.
+pub const RAW_DECODE_VERSION: i64 = 14;
 pub const LAST_USED_CALIBRATION_PROFILE_KEY: &str = "last_used_calibration_profile_id";
 
 /// Development builds intentionally keep the database beside the repository so
@@ -465,7 +464,8 @@ fn migrate_raw_decode_settings(connection: &Connection) -> rusqlite::Result<()> 
 /// geometry edits.
 fn migrate_density_contract(connection: &Connection) -> rusqlite::Result<()> {
     let mut statement = connection.prepare(
-        "SELECT rowid, math_version, raw_decode_version FROM image_states
+        "SELECT rowid, math_version, raw_decode_version, params, pipeline_state
+         FROM image_states
          WHERE math_version < ?1 OR raw_decode_version < ?2",
     )?;
     let rows = statement.query_map(
@@ -475,6 +475,8 @@ fn migrate_density_contract(connection: &Connection) -> rusqlite::Result<()> {
                 row.get::<_, i64>(0)?,
                 row.get::<_, i64>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
             ))
         },
     )?;
@@ -483,19 +485,48 @@ fn migrate_density_contract(connection: &Connection) -> rusqlite::Result<()> {
 
     let default_base = serde_json::to_string(&BaseColor::default())
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
-    for (row_id, _, _) in row_ids {
+    for (row_id, _, _, params_json, pipeline_state_json) in row_ids {
+        let mut params = params_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<TuningParams>(json).ok())
+            .unwrap_or_default();
+        let mut state = pipeline_state_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<PipelineState>(json).ok())
+            .unwrap_or_default();
+        if state.contract != ProcessingContract::LegacyV1 {
+            // Old endpoints were measured on the previous decode generation.
+            // Keeping only the manual colour/geometry edits forces the frame
+            // back to the undeveloped state without discarding the user's work.
+            let default_density = crate::app_state::DensityParams::default();
+            params.density.d_min = default_density.d_min;
+            params.density.d_max = default_density.d_max;
+            state.content_range = None;
+            state.render_mapping = Default::default();
+            state.processing_report.base_source = "unresolved".to_string();
+            state.processing_report.base_confidence = "low".to_string();
+        }
+        let params = serde_json::to_string(&params)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
+        let pipeline_state = serde_json::to_string(&state)
+            .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
         connection.execute(
             "UPDATE image_states
              SET base_color = ?1,
                  rendered_thumb_base64 = NULL,
+                 thumbnail_base64 = COALESCE(embedded_thumb_base64, thumbnail_base64),
                  math_version = ?2,
                  raw_decode_version = ?3,
-                 updated_at = ?4
-             WHERE rowid = ?5",
+                 params = ?4,
+                 pipeline_state = ?5,
+                 updated_at = ?6
+             WHERE rowid = ?7",
             rusqlite::params![
                 default_base,
-                LEGACY_MATH_VERSION,
+                math_version_for_contract(state.contract),
                 RAW_DECODE_VERSION,
+                params,
+                pipeline_state,
                 now_timestamp(),
                 row_id
             ],
@@ -1499,6 +1530,121 @@ mod tests {
         assert_eq!(stored_base, BaseColor::default());
         assert_eq!(rendered, None);
         assert_eq!(math_version, LEGACY_MATH_VERSION);
+        assert_eq!(raw_version, RAW_DECODE_VERSION);
+    }
+
+    #[test]
+    fn decode_version_bump_clears_modern_density_cache_but_keeps_manual_edits() {
+        let connection = Connection::open_in_memory().unwrap();
+        init_schema(&connection).unwrap();
+
+        let mut params = TuningParams::default();
+        params.exposure.exposure = 0.375;
+        params.density.d_min = [0.21, 0.22, 0.23];
+        params.density.d_max = [1.71, 1.72, 1.73];
+        params.density.d_min_offset = 0.04;
+        params.density.d_max_offset = -0.06;
+        params.density.gamma = 1.8;
+        let mut geom = GeometryState::default();
+        geom.crop_rect.x = 0.2;
+        geom.crop_rect.width = 0.75;
+
+        let mut state = PipelineState::smart_auto();
+        state.content_range = Some(crate::app_state::ContentRange {
+            low: [0.3, 0.4, 0.5],
+            high: [1.2, 1.3, 1.4],
+            source_scope: crate::app_state::ContentRangeScope::FilmArea,
+            percentile_method: "legacy".to_string(),
+        });
+        state.render_mapping.mode = crate::app_state::RenderMode::RollAnchored;
+        state.render_mapping.density_low = [0.15, 0.25, 0.35];
+        state.render_mapping.density_high = [1.35, 1.45, 1.55];
+        state.processing_report.base_source = "content_estimate".to_string();
+        state.processing_report.base_confidence = "0.900".to_string();
+        let analyzed_base = BaseColor {
+            base_r: 60_000,
+            base_g: 50_000,
+            base_b: 40_000,
+        };
+
+        connection
+            .execute(
+                "INSERT INTO image_states (
+                    roll_id, file_path, thumbnail_base64, embedded_thumb_base64,
+                    rendered_thumb_base64, params, geom, base_color, pipeline_state,
+                    math_version, raw_decode_version
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 13)",
+                rusqlite::params![
+                    "roll-a",
+                    "modern.tif",
+                    "stale-positive",
+                    "undeveloped-preview",
+                    "stale-rendered-positive",
+                    serde_json::to_string(&params).unwrap(),
+                    serde_json::to_string(&geom).unwrap(),
+                    serde_json::to_string(&analyzed_base).unwrap(),
+                    serde_json::to_string(&state).unwrap(),
+                    MATH_VERSION,
+                ],
+            )
+            .unwrap();
+
+        init_schema(&connection).unwrap();
+
+        let (params, geom, base, state, thumbnail, rendered, math_version, raw_version): (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+        ) = connection
+            .query_row(
+                "SELECT params, geom, base_color, pipeline_state, thumbnail_base64,
+                        rendered_thumb_base64, math_version, raw_decode_version
+                 FROM image_states WHERE file_path = 'modern.tif'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .unwrap();
+        let params: TuningParams = serde_json::from_str(&params).unwrap();
+        let geom: GeometryState = serde_json::from_str(&geom).unwrap();
+        let base: BaseColor = serde_json::from_str(&base).unwrap();
+        let state: PipelineState = serde_json::from_str(&state).unwrap();
+
+        assert_eq!(params.exposure.exposure, 0.375);
+        assert_eq!(geom.crop_rect.x, 0.2);
+        let default_density = crate::app_state::DensityParams::default();
+        assert_eq!(params.density.d_min, default_density.d_min);
+        assert_eq!(params.density.d_max, default_density.d_max);
+        assert_eq!(params.density.d_min_offset, 0.04);
+        assert_eq!(params.density.d_max_offset, -0.06);
+        assert_eq!(params.density.gamma, 1.8);
+        assert_eq!(base, BaseColor::default());
+        assert_eq!(state.contract, ProcessingContract::SmartAutoProPhotoV11);
+        assert_eq!(state.content_range, None);
+        assert_eq!(
+            state.render_mapping,
+            crate::app_state::RenderMapping::default()
+        );
+        assert_eq!(state.processing_report.base_source, "unresolved");
+        assert_eq!(state.processing_report.base_confidence, "low");
+        assert_eq!(thumbnail.as_deref(), Some("undeveloped-preview"));
+        assert_eq!(rendered, None);
+        assert_eq!(math_version, MATH_VERSION);
         assert_eq!(raw_version, RAW_DECODE_VERSION);
     }
 

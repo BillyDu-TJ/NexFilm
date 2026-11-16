@@ -479,6 +479,23 @@ pub fn compress_linear_srgb_for_density(rgb: [f32; 3]) -> [f32; 3] {
     rgb.map(|channel| (luma + (channel - luma) * scale).clamp(floor, CEILING))
 }
 
+/// Fit linear RGB into the positive transmission domain without pulling
+/// saturated channels toward the luminance axis.
+///
+/// The direct Smart Auto ProPhoto path carries the negative's orange mask and
+/// other wide-gamut colours outside sRGB. Compressing their chroma to preserve
+/// a Rec. 709 luminance there removes real scene colour, so this boundary only
+/// clamps each channel to the interval where the subsequent `-log10(T)` is
+/// finite. Values inside the interval are returned unchanged.
+pub fn clamp_positive_transmission_for_density(rgb: [f32; 3]) -> [f32; 3] {
+    const ABSOLUTE_FLOOR: f32 = 1.0 / 65_535.0;
+    const CEILING: f32 = 1.0 - ABSOLUTE_FLOOR;
+    if rgb.iter().any(|value| !value.is_finite()) {
+        return [ABSOLUTE_FLOOR; 3];
+    }
+    rgb.map(|channel| channel.clamp(ABSOLUTE_FLOOR, CEILING))
+}
+
 pub fn convert_encoded_rgb(rgb: [f32; 3], source: ColorSpaceId, target: ColorSpaceId) -> [f32; 3] {
     let source_profile = profile(source);
     let target_profile = profile(target);
@@ -964,6 +981,31 @@ mod tests {
         let mild_ratio = mild[0] / crate::core_math::density_luma(mild);
         let severe_ratio = severe[0] / crate::core_math::density_luma(severe);
         assert!((mild_ratio - severe_ratio).abs() > 1e-3);
+    }
+
+    #[test]
+    fn positive_transmission_clamp_preserves_in_range_color_exactly() {
+        let rgb = [0.9, 0.1, 0.1];
+        assert_eq!(clamp_positive_transmission_for_density(rgb), rgb);
+    }
+
+    #[test]
+    fn positive_transmission_clamp_does_not_desaturate_out_of_range_channels() {
+        const FLOOR: f32 = 1.0 / 65_535.0;
+        const CEILING: f32 = 1.0 - FLOOR;
+        let clamped = clamp_positive_transmission_for_density([1.4, 0.8, -0.2]);
+        assert_eq!(clamped, [CEILING, 0.8, FLOOR]);
+        assert_eq!(clamped[1], 0.8);
+        assert_eq!(clamped[2], FLOOR);
+    }
+
+    #[test]
+    fn positive_transmission_clamp_falls_back_for_non_finite_values() {
+        const FLOOR: f32 = 1.0 / 65_535.0;
+        assert_eq!(
+            clamp_positive_transmission_for_density([f32::NAN, 0.4, f32::INFINITY]),
+            [FLOOR; 3]
+        );
     }
 
     #[test]

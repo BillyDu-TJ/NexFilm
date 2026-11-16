@@ -22,9 +22,10 @@ use crate::capability_resolver::{
     resolve_pipeline, PipelineImageKind, PipelineResolution, PipelineResolverInput, ResolverProfile,
 };
 use crate::color_science::{
-    apply_linear_matrix, canonical_output_space, compress_linear_srgb_for_density,
-    convert_encoded_to_linear_rgb_with_matrix, identify_icc_profile, linear_conversion_matrix,
-    parse_output_space, ColorSpaceId, DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
+    apply_linear_matrix, canonical_output_space, clamp_positive_transmission_for_density,
+    compress_linear_srgb_for_density, convert_encoded_to_linear_rgb_with_matrix,
+    identify_icc_profile, linear_conversion_matrix, parse_output_space, ColorSpaceId,
+    DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
 };
 use crate::core_math::{
     apply_detail_pixel, apply_lens_distortion_uv, apply_linear_highlight_adjustment_rgb,
@@ -1524,6 +1525,24 @@ fn embedded_input_profile(path: &str) -> Option<ColorSpaceId> {
     identify_icc_profile(&embedded_icc_bytes(path)?)
 }
 
+/// Resolve the primaries and transfer curve of an encoded direct-image sample.
+///
+/// A recognised ICC profile wins. Its tone-curve tags decide whether the file
+/// is display encoded or already linear, so an exported linear TIFF is not
+/// linearised twice. Files without a usable declaration are read as sRGB, which
+/// is the input-domain contract every generic TIFF/JPEG/PNG falls back to.
+fn resolve_direct_encoded_space(path: &str) -> (ColorSpaceId, bool) {
+    if let Some(icc) = embedded_icc_bytes(path) {
+        if let Some(profile) = identify_icc_profile(&icc) {
+            return (
+                profile,
+                crate::color_science::icc_declares_linear_transfer(&icc),
+            );
+        }
+    }
+    (ColorSpaceId::SRgb, false)
+}
+
 fn is_lightweight_direct_preview(path: &str) -> bool {
     matches!(
         std::path::Path::new(path)
@@ -2917,6 +2936,7 @@ fn srgb_proxy_u16_to_prophoto_f32(
 fn anchor_matches_resolved_contract(anchor: &DensityAnchor, state: &PipelineState) -> bool {
     if anchor.provenance.algorithm_version != crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION
         || anchor.provenance.input_domain != state.contract.input_domain()
+        || anchor.provenance.raw_decode_version != Some(RAW_DECODE_VERSION)
         || anchor.provenance.legacy
         || anchor.density.iter().any(|value| !value.is_finite())
     {
@@ -2933,7 +2953,6 @@ fn anchor_matches_resolved_contract(anchor: &DensityAnchor, state: &PipelineStat
                 .calibration_payload_digest
                 .as_ref()
                 .is_some_and(|digest| !digest.trim().is_empty())
-            && anchor.provenance.raw_decode_version == Some(RAW_DECODE_VERSION)
     } else {
         anchor.provenance.calibration_profile_id.is_none()
             && anchor.provenance.calibration_payload_digest.is_none()
@@ -4005,35 +4024,6 @@ fn preview_proxy_decode_mode(target_long_edge: u32) -> DecodeMode {
     }
 }
 
-fn convert_linear_image(
-    image: ImageBuffer<Rgb<u16>, Vec<u16>>,
-    source: ColorSpaceId,
-    target: ColorSpaceId,
-) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
-    if source == target {
-        return image;
-    }
-    let matrix = linear_conversion_matrix(source, target);
-    let mut converted = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(image.width(), image.height());
-    converted
-        .as_mut()
-        .par_chunks_exact_mut(3)
-        .zip(image.as_raw().par_chunks_exact(3))
-        .for_each(|(target_pixel, source_pixel)| {
-            let rgb = [
-                source_pixel[0] as f32 / 65535.0,
-                source_pixel[1] as f32 / 65535.0,
-                source_pixel[2] as f32 / 65535.0,
-            ];
-            let converted = apply_linear_matrix(rgb, matrix);
-            for channel in 0..3 {
-                target_pixel[channel] =
-                    (converted[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
-            }
-        });
-    converted
-}
-
 fn convert_linear_image_in_place(
     mut image: ImageBuffer<Rgb<u16>, Vec<u16>>,
     source: ColorSpaceId,
@@ -4059,12 +4049,37 @@ fn convert_linear_image_in_place(
     image
 }
 
+fn convert_encoded_u16_image_for_working_space(
+    mut image: ImageBuffer<Rgb<u16>, Vec<u16>>,
+    source_profile: ColorSpaceId,
+    linear_transfer: bool,
+    target: ColorSpaceId,
+) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
+    let matrix = linear_conversion_matrix(source_profile, target);
+    image.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+        let encoded = [
+            pixel[0] as f32 / 65535.0,
+            pixel[1] as f32 / 65535.0,
+            pixel[2] as f32 / 65535.0,
+        ];
+        let linear = if linear_transfer {
+            apply_linear_matrix(encoded, matrix)
+        } else {
+            convert_encoded_to_linear_rgb_with_matrix(encoded, source_profile, matrix)
+        };
+        for channel in 0..3 {
+            pixel[channel] = (linear[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+        }
+    });
+    image
+}
+
 fn decode_reduced_tiff_for_working_space(
     path: &str,
     target_long_edge: u32,
 ) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
     let requested_profile = DENSITY_CAPTURE_PROFILE;
-    let mut image = decode_uncompressed_tiff_reduced(path, target_long_edge)?;
+    let image = decode_uncompressed_tiff_reduced(path, target_long_edge)?;
     if is_scanner_fff_tiff(path) {
         let input =
             scanner_fff_container_input(path).unwrap_or(ScannerFffInput::DOCUMENTED_DEFAULT);
@@ -4074,27 +4089,11 @@ fn decode_reduced_tiff_for_working_space(
             input,
         ));
     }
-    if let Some(source_profile) = embedded_input_profile(path) {
-        let matrix = linear_conversion_matrix(source_profile, requested_profile);
-        image.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
-            let linear = convert_encoded_to_linear_rgb_with_matrix(
-                [
-                    pixel[0] as f32 / 65535.0,
-                    pixel[1] as f32 / 65535.0,
-                    pixel[2] as f32 / 65535.0,
-                ],
-                source_profile,
-                matrix,
-            );
-            for channel in 0..3 {
-                pixel[channel] = (linear[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
-            }
-        });
-        return Ok(image);
-    }
-    Ok(convert_linear_image_in_place(
+    let (source_profile, linear_transfer) = resolve_direct_encoded_space(path);
+    Ok(convert_encoded_u16_image_for_working_space(
         image,
-        ColorSpaceId::SRgb,
+        source_profile,
+        linear_transfer,
         requested_profile,
     ))
 }
@@ -4479,51 +4478,88 @@ fn resolve_input_domain(
 /// Convert one encoded sample of a profiled TIFF into the Smart Auto working
 /// space. Kept separate from the file plumbing so the gamut behaviour can be
 /// tested directly.
+#[cfg(test)]
 fn encoded_pixel_to_prophoto_estimate(encoded: [f32; 3], source_profile: ColorSpaceId) -> [f32; 3] {
-    let to_prophoto = linear_conversion_matrix(source_profile, ColorSpaceId::ProPhotoRgb);
-    compress_linear_srgb_for_density(convert_encoded_to_linear_rgb_with_matrix(
-        encoded,
-        source_profile,
-        to_prophoto,
-    ))
+    encoded_pixel_to_prophoto_estimate_with_transfer(encoded, source_profile, false)
 }
 
-/// Convert a TIFF that carries an embedded ICC profile straight into the Smart
-/// Auto working space.
+fn encoded_pixel_to_prophoto_estimate_with_transfer(
+    encoded: [f32; 3],
+    source_profile: ColorSpaceId,
+    linear_transfer: bool,
+) -> [f32; 3] {
+    let to_prophoto = linear_conversion_matrix(source_profile, ColorSpaceId::ProPhotoRgb);
+    let linear = if linear_transfer {
+        apply_linear_matrix(encoded, to_prophoto)
+    } else {
+        convert_encoded_to_linear_rgb_with_matrix(encoded, source_profile, to_prophoto)
+    };
+    clamp_positive_transmission_for_density(linear)
+}
+
+/// Convert a direct RGB image into the Smart Auto working space.
 ///
-/// Routing such a file through the 16-bit linear-sRGB transport first would
-/// clamp it per channel, and the orange mask of a colour negative deliberately
-/// sits outside the sRGB gamut: on a real merged scan that clamped 84.7% of the
-/// red channel against 0.95% in the file itself, which is what produced the
-/// cyan highlights and magenta shadows. Returns an error when the file has no
-/// embedded profile, is a scanner FFF, or cannot be read by the streaming
-/// decoder, so the caller can keep the estimate-input fallback.
-fn decode_profiled_tiff_prophoto_estimate(
+/// TIFF, JPEG and PNG all follow one transfer/matrix path. Uncompressed TIFF is
+/// read row by row when possible so a large scan never needs a second full-size
+/// encoded buffer; compressed or block-stored TIFF and the other direct image
+/// formats fall back to the generic decoder. The samples are linearised in
+/// their declared source domain and mapped straight to ProPhoto, intentionally
+/// bypassing the clamping linear-sRGB u16 transport.
+fn decode_direct_rgb_prophoto_estimate(
     path: &str,
     target_long_edge: u32,
+    mode: DecodeMode,
 ) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
     if is_scanner_fff_tiff(path) {
         return Err("scanner_fff_uses_scanner_linear_path".to_string());
     }
-    let source_profile =
-        embedded_input_profile(path).ok_or_else(|| "no_embedded_profile".to_string())?;
-    let encoded = decode_uncompressed_tiff_reduced(path, target_long_edge)?;
+    let target_long_edge = target_long_edge.min(estimate_target_long_edge(mode)).max(1);
+    let encoded = if is_tiff_extension(path) {
+        decode_uncompressed_tiff_reduced(path, target_long_edge).or_else(|stream_error| {
+            image::open(path)
+                .map(|image| image.into_rgb16())
+                .map_err(|image_error| {
+                    format!(
+                        "TIFF decode failed for {path}: streaming reader: {stream_error}; image decoder: {image_error:?}"
+                    )
+                })
+        })?
+    } else {
+        image::open(path)
+            .map(|image| image.into_rgb16())
+            .map_err(|error| format!("Image decode failed for {path}: {error:?}"))?
+    };
+    let (source_profile, linear_transfer) = resolve_direct_encoded_space(path);
     let mut estimate = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
     estimate
         .as_mut()
         .par_chunks_exact_mut(3)
         .zip(encoded.as_raw().par_chunks_exact(3))
         .for_each(|(target, pixel)| {
-            target.copy_from_slice(&encoded_pixel_to_prophoto_estimate(
+            target.copy_from_slice(&encoded_pixel_to_prophoto_estimate_with_transfer(
                 [
                     f32::from(pixel[0]) / 65535.0,
                     f32::from(pixel[1]) / 65535.0,
                     f32::from(pixel[2]) / 65535.0,
                 ],
                 source_profile,
+                linear_transfer,
             ));
         });
-    Ok(estimate)
+    Ok(fit_linear_transmission_long_edge(
+        estimate,
+        target_long_edge,
+    ))
+}
+
+/// Backwards-compatible name for the TIFF-only callers and tests. The direct
+/// decoder itself is shared with JPEG/PNG and every production Smart Auto path.
+#[cfg(test)]
+fn decode_profiled_tiff_prophoto_estimate(
+    path: &str,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    decode_direct_rgb_prophoto_estimate(path, target_long_edge, DecodeMode::ExportFull)
 }
 
 fn fit_linear_transmission_long_edge(
@@ -4791,46 +4827,15 @@ fn decode_image_buffer(
         let image = image::open(path)
             .map(|image| image.into_rgb16())
             .map_err(|error| format!("Image decode failed for {path}: {error:?}"))?;
-        let extension = std::path::Path::new(path)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        // JPEG/PNG samples are encoded sRGB by default. A recognized embedded
-        // ICC profile takes precedence, including for TIFFs exported by this
-        // application; unprofiled scanner TIFFs retain their linear contract.
-        let embedded_profile = embedded_input_profile(path);
-        let encoded_source = if extension == "jpg" || extension == "jpeg" || extension == "png" {
-            Some(embedded_profile.unwrap_or(ColorSpaceId::SRgb))
-        } else {
-            embedded_profile
-        };
-        if let Some(source_profile) = encoded_source {
-            let matrix = linear_conversion_matrix(source_profile, requested_profile);
-            let mut converted =
-                ImageBuffer::<Rgb<u16>, Vec<u16>>::new(image.width(), image.height());
-            converted
-                .as_mut()
-                .par_chunks_exact_mut(3)
-                .zip(image.as_raw().par_chunks_exact(3))
-                .for_each(|(target, source)| {
-                    let rgb = [
-                        source[0] as f32 / 65535.0,
-                        source[1] as f32 / 65535.0,
-                        source[2] as f32 / 65535.0,
-                    ];
-                    let linear =
-                        convert_encoded_to_linear_rgb_with_matrix(rgb, source_profile, matrix);
-                    for channel in 0..3 {
-                        target[channel] =
-                            (linear[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
-                    }
-                });
-            return Ok(converted);
-        }
-        return Ok(convert_linear_image(
+        // Every direct image declares an encoded input domain, even when that
+        // declaration is the unprofiled sRGB fallback. Converting SRgb -> SRgb
+        // as linear light was the no-op that handed gamma-encoded TIFF samples
+        // to -log10(T).
+        let (source_profile, linear_transfer) = resolve_direct_encoded_space(path);
+        return Ok(convert_encoded_u16_image_for_working_space(
             image,
-            ColorSpaceId::SRgb,
+            source_profile,
+            linear_transfer,
             requested_profile,
         ));
     }
@@ -5043,25 +5048,7 @@ fn decode_prophoto_basis_estimate(
         return Ok(linear_srgb_u16_to_prophoto_f32(&linear));
     }
     if !is_raw_extension(path) {
-        let source = decode_image_buffer(path, mode)?;
-        let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
-        let mut converted = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(source.width(), source.height());
-        converted
-            .as_mut()
-            .par_chunks_exact_mut(3)
-            .zip(source.as_raw().par_chunks_exact(3))
-            .for_each(|(target, pixel)| {
-                let rgb = apply_linear_matrix(
-                    compress_linear_srgb_for_density([
-                        pixel[0] as f32 / 65535.0,
-                        pixel[1] as f32 / 65535.0,
-                        pixel[2] as f32 / 65535.0,
-                    ]),
-                    matrix,
-                );
-                target.copy_from_slice(&rgb);
-            });
-        return Ok(converted);
+        return decode_direct_rgb_prophoto_estimate(path, estimate_target_long_edge(mode), mode);
     }
 
     let options = crate::raw_backend::DecodeOptions {
@@ -5150,16 +5137,12 @@ fn decode_scanner_profiled_estimate_with_matrix_options(
         return Ok((estimate, matrix));
     }
     let profile = profile.filter(|_| !is_dng_extension(path));
-    // A profiled TIFF converts straight into the working space, exactly like
-    // the Develop proxy does: routing it through the 16-bit linear-sRGB
-    // transport would clamp each channel independently, and the orange mask of
-    // a colour negative deliberately sits outside the sRGB gamut. A bound
-    // scanner profile expects the transport's linear-sRGB source domain, so
-    // those frames keep the historical path.
-    if profile.is_none() && is_tiff_extension(path) && !is_scanner_fff_tiff(path) {
-        if let Ok(estimate) = decode_profiled_tiff_prophoto_estimate(path, target_long_edge) {
-            return Ok((estimate, None));
-        }
+    // Every unbound direct RGB input (TIFF, JPEG, PNG) follows the same encoded
+    // domain -> ProPhoto path. A bound scanner profile expects the historical
+    // linear-sRGB transport, so that branch keeps its existing handling below.
+    if profile.is_none() && is_direct_image_extension(path) && !is_scanner_fff_tiff(path) {
+        let estimate = decode_direct_rgb_prophoto_estimate(path, target_long_edge, mode)?;
+        return Ok((estimate, None));
     }
     let source = if is_tiff_extension(path) || is_scanner_fff_tiff(path) {
         // Large scans must come from the streaming reader: the generic image
@@ -7851,18 +7834,16 @@ pub async fn prepare_proxy(
                     // without the generic-image fallback below.
                     let linear = decode_tiff_for_smart_auto(&decode_path, target_long_edge)?;
                     linear_srgb_u16_to_prophoto_f32(&linear)
-                } else if is_tiff_extension(&decode_path) {
-                    // A profile-less or unusual TIFF still has to be importable;
-                    // the generic decoder reads whatever the streaming reader
-                    // cannot, matching the legacy branch's behaviour.
-                    match decode_profiled_tiff_prophoto_estimate(&decode_path, target_long_edge) {
-                        Ok(estimate) => estimate,
-                        Err(_) => {
-                            let linear = decode_tiff_for_smart_auto(&decode_path, target_long_edge)
-                                .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
-                            linear_srgb_u16_to_prophoto_f32(&linear)
-                        }
-                    }
+                } else if is_direct_image_extension(&decode_path) {
+                    // All TIFF/JPEG/PNG inputs use one encoded-domain decoder.
+                    // The streaming TIFF reader and the generic-image fallback
+                    // live inside it, so the canvas cannot diverge from export
+                    // or Roll-anchor analysis.
+                    decode_direct_rgb_prophoto_estimate(
+                        &decode_path,
+                        target_long_edge,
+                        decode_mode,
+                    )?
                 } else {
                     let (estimate, matrix) = decode_scanner_profiled_estimate_with_matrix(
                         &decode_path,
@@ -16946,25 +16927,27 @@ mod import_contract_tests {
         build_response_buffer_from_proxy_with_state, clear_retired_legacy_domain,
         compute_auto_base, compute_auto_base_f32, compute_auto_color_limits,
         compute_content_limits_f32, compute_content_limits_f32_with_bounds,
-        compute_frame_base_density_f32, decode_image_buffer, decode_import_preview_base64,
-        decode_profiled_tiff_prophoto_estimate, decode_prophoto_estimate_image_buffer,
+        compute_frame_base_density_f32, decode_direct_rgb_prophoto_estimate, decode_image_buffer,
+        decode_import_preview_base64, decode_profiled_tiff_prophoto_estimate,
+        decode_prophoto_basis_estimate, decode_prophoto_estimate_image_buffer,
         decode_prophoto_estimate_image_buffer_with_policy, decode_prophoto_transport_sample,
         decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
         decode_scanner_profiled_estimate_image_buffer, decode_tiff_for_smart_auto,
         decode_uncompressed_tiff_reduced, default_pipeline_state_for_import, density_luma,
         detect_frame_base_density, detect_frame_highlight_fraction, embedded_input_profile,
         encode_export_buffer, encode_prophoto_transport_sample, encoded_pixel_to_prophoto_estimate,
-        estimate_film_base_f32, film_block_luma_profile, fixed_roll_density_mapping,
-        frame_needs_window_reanalysis, highlight_block_index, is_better_preview_edge,
-        is_dng_extension, is_lightweight_direct_preview, is_noritsu_rendered_image,
-        is_raw_extension, is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
+        encoded_pixel_to_prophoto_estimate_with_transfer, estimate_film_base_f32,
+        film_block_luma_profile, fixed_roll_density_mapping, frame_needs_window_reanalysis,
+        highlight_block_index, is_better_preview_edge, is_dng_extension,
+        is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
+        is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
         libraw_decode_error_message, linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff,
         measure_roll_highlight_frames, persist_import_batch, pipeline_base_density,
         pipeline_has_base, point_in_film_area, prepare_content_render_limits,
         preserve_smart_auto_content_span, prophoto_estimate_to_transport_proxy,
         raw_decode_failure_hint, reference_density_extreme, render_f32_shader_equivalent,
-        render_shader_equivalent, resolve_input_domain, rgb16_image_from_bytes,
-        roll_density_mapping_with_frame_base, roll_physical_density_span,
+        render_shader_equivalent, resolve_direct_encoded_space, resolve_input_domain,
+        rgb16_image_from_bytes, roll_density_mapping_with_frame_base, roll_physical_density_span,
         sample_reference_frame_path, sampled_frame_paths_from_anchors,
         share_smart_auto_density_scale, srgb_proxy_u16_to_prophoto_f32,
         suppress_raw_density_chroma_noise, tiff_smart_auto_input_is_estimated,
@@ -16983,9 +16966,9 @@ mod import_contract_tests {
         TuningParams,
     };
     use crate::color_science::{
-        apply_linear_matrix, compress_linear_srgb_for_density,
-        convert_encoded_to_linear_rgb_with_matrix, linear_conversion_matrix, ColorSpaceId,
-        DENSITY_CAPTURE_PROFILE,
+        apply_linear_matrix, clamp_positive_transmission_for_density,
+        compress_linear_srgb_for_density, convert_encoded_to_linear_rgb_with_matrix,
+        linear_conversion_matrix, ColorSpaceId, DENSITY_CAPTURE_PROFILE,
     };
     use base64::Engine as _;
     use image::{ImageBuffer, Rgb};
@@ -17004,6 +16987,7 @@ mod import_contract_tests {
     fn complete_roll_mapping_is_fixed_and_content_independent() {
         let provenance = DensityAnchorProvenance {
             input_domain: DataDomain::ProPhotoEstimate,
+            raw_decode_version: Some(RAW_DECODE_VERSION),
             algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
             legacy: false,
             ..Default::default()
@@ -17043,6 +17027,7 @@ mod import_contract_tests {
     fn roll_render_uses_persisted_mapping_when_params_are_stale() {
         let provenance = DensityAnchorProvenance {
             input_domain: DataDomain::ProPhotoEstimate,
+            raw_decode_version: Some(RAW_DECODE_VERSION),
             algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
             legacy: false,
             ..Default::default()
@@ -17119,6 +17104,7 @@ mod import_contract_tests {
     fn master_density_offsets_trim_the_roll_mapping_endpoints() {
         let provenance = DensityAnchorProvenance {
             input_domain: DataDomain::ProPhotoEstimate,
+            raw_decode_version: Some(RAW_DECODE_VERSION),
             algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
             legacy: false,
             ..Default::default()
@@ -17214,6 +17200,7 @@ mod import_contract_tests {
     fn density_reference_aggregation_uses_channel_medians_and_preserves_contract() {
         let provenance = DensityAnchorProvenance {
             input_domain: DataDomain::ProPhotoEstimate,
+            raw_decode_version: Some(RAW_DECODE_VERSION),
             algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
             legacy: false,
             ..Default::default()
@@ -19265,8 +19252,8 @@ mod import_contract_tests {
             [0.090, 0.910],
         ]);
         let linear = decode_tiff_for_smart_auto(&frame, EDGE).unwrap();
-        // Follow the production branch: a profiled TIFF is converted straight
-        // into the working space, only profile-less files take the u16 route.
+        // Follow the production branch: every direct RGB TIFF is converted
+        // straight into the working space from its declared encoded domain.
         let estimate = match decode_profiled_tiff_prophoto_estimate(&frame, EDGE) {
             Ok(estimate) => estimate,
             Err(_) => linear_srgb_u16_to_prophoto_f32(&linear),
@@ -19395,6 +19382,7 @@ mod import_contract_tests {
                     reference_id: None,
                     provenance: DensityAnchorProvenance {
                         input_domain: DataDomain::ProPhotoEstimate,
+                        raw_decode_version: Some(crate::persistence::RAW_DECODE_VERSION),
                         algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION
                             .to_string(),
                         legacy: false,
@@ -19504,6 +19492,7 @@ mod import_contract_tests {
                 reference_id: None,
                 provenance: DensityAnchorProvenance {
                     input_domain: DataDomain::ProPhotoEstimate,
+                    raw_decode_version: Some(crate::persistence::RAW_DECODE_VERSION),
                     algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION
                         .to_string(),
                     legacy: false,
@@ -20069,6 +20058,7 @@ mod import_contract_tests {
         ];
         let valid_provenance = || crate::app_state::DensityAnchorProvenance {
             input_domain: ProcessingContract::RollAnchoredProPhotoV11.input_domain(),
+            raw_decode_version: Some(RAW_DECODE_VERSION),
             algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
             legacy: false,
             ..crate::app_state::DensityAnchorProvenance::default()
@@ -22890,6 +22880,117 @@ mod import_contract_tests {
         std::fs::write(path, bytes).unwrap();
     }
 
+    /// The same layout with RGB8 samples, so the streaming reader has to take
+    /// its `bits == 8` branch instead of reading 16-bit words.
+    fn write_unprofiled_rgb8_tiff(path: &std::path::Path, width: u32, height: u32) {
+        fn push_entry(bytes: &mut Vec<u8>, tag: u16, type_code: u16, count: u32, value: u32) {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&type_code.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        const IFD_OFFSET: u32 = 8;
+        const SHORT: u16 = 3;
+        const LONG: u16 = 4;
+        let entry_count: u16 = 11;
+        let bits_offset = IFD_OFFSET + 2 + u32::from(entry_count) * 12 + 4;
+        let pixel_offset = bits_offset + 12;
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"II");
+        bytes.extend_from_slice(&42u16.to_le_bytes());
+        bytes.extend_from_slice(&IFD_OFFSET.to_le_bytes());
+        bytes.extend_from_slice(&entry_count.to_le_bytes());
+        push_entry(&mut bytes, 256, LONG, 1, width);
+        push_entry(&mut bytes, 257, LONG, 1, height);
+        push_entry(&mut bytes, 258, LONG, 3, bits_offset);
+        push_entry(&mut bytes, 259, SHORT, 1, 1);
+        push_entry(&mut bytes, 262, SHORT, 1, 2);
+        push_entry(&mut bytes, 273, LONG, 1, pixel_offset);
+        push_entry(&mut bytes, 274, SHORT, 1, 1);
+        push_entry(&mut bytes, 277, SHORT, 1, 3);
+        push_entry(&mut bytes, 278, LONG, 1, height);
+        push_entry(&mut bytes, 279, LONG, 1, width * height * 3);
+        push_entry(&mut bytes, 284, SHORT, 1, 1);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&8u32.to_le_bytes());
+        }
+        let x_scale = width.saturating_sub(1).max(1) as f32;
+        let y_scale = height.saturating_sub(1).max(1) as f32;
+        for y in 0..height {
+            for x in 0..width {
+                if x == 0 && y == 0 {
+                    bytes.extend_from_slice(&[128, 80, 0]);
+                    continue;
+                }
+                for channel in 0..3 {
+                    let position = x as f32 / x_scale * 0.58
+                        + y as f32 / y_scale * 0.24
+                        + channel as f32 * 0.06;
+                    bytes.push((18.0 + 205.0 * position).round().clamp(8.0, 240.0) as u8);
+                }
+            }
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn write_rgb16_tiff_with_icc(
+        path: &std::path::Path,
+        width: u32,
+        height: u32,
+        icc: &[u8],
+        pixel: impl Fn(u32, u32) -> [u16; 3],
+    ) {
+        fn push_entry(bytes: &mut Vec<u8>, tag: u16, type_code: u16, count: u32, value: u32) {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&type_code.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        const IFD_OFFSET: u32 = 8;
+        const SHORT: u16 = 3;
+        const LONG: u16 = 4;
+        const UNDEFINED: u16 = 7;
+        let entry_count: u16 = 12;
+        let bits_offset = IFD_OFFSET + 2 + u32::from(entry_count) * 12 + 4;
+        let pixel_offset = bits_offset + 12;
+        let icc_offset = pixel_offset + width * height * 6;
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"II");
+        bytes.extend_from_slice(&42u16.to_le_bytes());
+        bytes.extend_from_slice(&IFD_OFFSET.to_le_bytes());
+        bytes.extend_from_slice(&entry_count.to_le_bytes());
+        push_entry(&mut bytes, 256, LONG, 1, width);
+        push_entry(&mut bytes, 257, LONG, 1, height);
+        push_entry(&mut bytes, 258, LONG, 3, bits_offset);
+        push_entry(&mut bytes, 259, SHORT, 1, 1);
+        push_entry(&mut bytes, 262, SHORT, 1, 2);
+        push_entry(&mut bytes, 273, LONG, 1, pixel_offset);
+        push_entry(&mut bytes, 274, SHORT, 1, 1);
+        push_entry(&mut bytes, 277, SHORT, 1, 3);
+        push_entry(&mut bytes, 278, LONG, 1, height);
+        push_entry(&mut bytes, 279, LONG, 1, width * height * 6);
+        push_entry(&mut bytes, 284, SHORT, 1, 1);
+        push_entry(&mut bytes, 34675, UNDEFINED, icc.len() as u32, icc_offset);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&16u32.to_le_bytes());
+        }
+        for y in 0..height {
+            for x in 0..width {
+                for value in pixel(x, y) {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        bytes.extend_from_slice(icc);
+        std::fs::write(path, bytes).unwrap();
+    }
+
     #[test]
     fn unprofiled_generic_tiff_is_read_as_an_estimated_srgb_input() {
         // Writing a plain uncompressed RGB16 TIFF keeps the regression
@@ -22911,6 +23012,396 @@ mod import_contract_tests {
         assert_eq!(decoded.dimensions(), (6, 4));
 
         std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    fn expected_direct_prophoto_estimate(
+        encoded: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+        source: ColorSpaceId,
+        linear_transfer: bool,
+    ) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+        let matrix = linear_conversion_matrix(source, ColorSpaceId::ProPhotoRgb);
+        ImageBuffer::from_fn(encoded.width(), encoded.height(), |x, y| {
+            let pixel = encoded.get_pixel(x, y).0;
+            let rgb = [
+                f32::from(pixel[0]) / 65535.0,
+                f32::from(pixel[1]) / 65535.0,
+                f32::from(pixel[2]) / 65535.0,
+            ];
+            let linear = if linear_transfer {
+                apply_linear_matrix(rgb, matrix)
+            } else {
+                convert_encoded_to_linear_rgb_with_matrix(rgb, source, matrix)
+            };
+            Rgb(clamp_positive_transmission_for_density(linear))
+        })
+    }
+
+    fn assert_estimate_matches(
+        left: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+        right: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    ) {
+        assert_eq!(left.dimensions(), right.dimensions());
+        for (left, right) in left.as_raw().iter().zip(right.as_raw().iter()) {
+            assert!(
+                (left - right).abs() <= 1.0e-6,
+                "direct decode diverged: {left} vs {right}"
+            );
+        }
+    }
+
+    #[test]
+    fn unprofiled_tiff_direct_decode_applies_srgb_eotf_on_canvas_export_and_roll_paths() {
+        let directory = std::env::temp_dir().join(format!(
+            "nexfilm-direct-srgb-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("unprofiled-rgb16.tif");
+        write_unprofiled_rgb16_tiff(&path, 6, 4);
+        let path_string = path.to_string_lossy().to_string();
+
+        let encoded = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap();
+        let expected = expected_direct_prophoto_estimate(&encoded, ColorSpaceId::SRgb, false);
+        let direct =
+            decode_direct_rgb_prophoto_estimate(&path_string, u32::MAX, DecodeMode::ExportFull)
+                .unwrap();
+        assert_estimate_matches(&direct, &expected);
+
+        let working = decode_reduced_tiff_for_working_space(&path_string, u32::MAX).unwrap();
+        let generic = decode_image_buffer(&path_string, DecodeMode::ExportFull).unwrap();
+        assert_eq!(working, generic);
+        let source_pixel = encoded.get_pixel(2, 1).0;
+        let expected_linear = convert_encoded_to_linear_rgb_with_matrix(
+            [
+                f32::from(source_pixel[0]) / 65535.0,
+                f32::from(source_pixel[1]) / 65535.0,
+                f32::from(source_pixel[2]) / 65535.0,
+            ],
+            ColorSpaceId::SRgb,
+            linear_conversion_matrix(ColorSpaceId::SRgb, DENSITY_CAPTURE_PROFILE),
+        )
+        .map(|value| (value.clamp(0.0, 1.0) * 65535.0).round() as u16);
+        assert_eq!(working.get_pixel(2, 1).0, expected_linear);
+
+        let canvas = decode_prophoto_estimate_image_buffer(&path_string, DecodeMode::ExportFull)
+            .expect("the Roll-anchor/sample decoder must use the direct path");
+        let export = decode_scanner_profiled_estimate_image_buffer(
+            &path_string,
+            DecodeMode::ExportFull,
+            None,
+            u32::MAX,
+        )
+        .expect("the export decoder must use the direct path");
+        assert_estimate_matches(&canvas, &direct);
+        assert_estimate_matches(&export, &direct);
+
+        let encoded_pixel = [
+            f32::from(encoded.get_pixel(2, 1).0[0]) / 65535.0,
+            f32::from(encoded.get_pixel(2, 1).0[1]) / 65535.0,
+            f32::from(encoded.get_pixel(2, 1).0[2]) / 65535.0,
+        ];
+        let without_eotf = clamp_positive_transmission_for_density(apply_linear_matrix(
+            encoded_pixel,
+            linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb),
+        ));
+        let with_eotf = encoded_pixel_to_prophoto_estimate_with_transfer(
+            encoded_pixel,
+            ColorSpaceId::SRgb,
+            false,
+        );
+        assert!(
+            without_eotf
+                .iter()
+                .zip(with_eotf)
+                .any(|(linear, decoded)| (*linear - decoded).abs() > 1.0e-4),
+            "the fixture must distinguish a skipped EOTF: {without_eotf:?} vs {with_eotf:?}"
+        );
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn unprofiled_rgb8_tiff_uses_the_direct_srgb_eotf_and_keeps_the_full_window() {
+        let directory = std::env::temp_dir().join(format!(
+            "nexfilm-direct-rgb8-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("unprofiled-rgb8.tif");
+        let (width, height) = (64u32, 48u32);
+        write_unprofiled_rgb8_tiff(&path, width, height);
+        let path_string = path.to_string_lossy().to_string();
+
+        assert!(embedded_input_profile(&path_string).is_none());
+        assert!(tiff_smart_auto_input_is_estimated(&path_string));
+        let encoded = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap();
+        assert_eq!(encoded.dimensions(), (width, height));
+        assert!(encoded.as_raw().iter().any(|value| *value % 257 == 0));
+
+        // sRGB primaries stay far enough inside ProPhoto that the retired 10%
+        // chroma floor is a no-op here; the nonlinear-ICC test below is the
+        // fixture that exercises the no-compression branch explicitly. This
+        // comparison still pins the clamp-only direct formula.
+        let expected = expected_direct_prophoto_estimate(&encoded, ColorSpaceId::SRgb, false);
+        let geom = GeometryState::default();
+        for mode in [DecodeMode::ExportFull, DecodeMode::DevelopProxy] {
+            let direct = decode_direct_rgb_prophoto_estimate(&path_string, u32::MAX, mode).unwrap();
+            assert_estimate_matches(&direct, &expected);
+
+            let base = estimate_film_base_f32(&direct, &geom);
+            assert!(
+                base.usable,
+                "the RGB8 fixture must yield a usable film base: \
+                 source={} fallback={:?}",
+                base.source, base.fallback_reason
+            );
+            let mut limits =
+                compute_content_limits_f32_with_bounds(&direct, None, &geom, base.density, None)
+                    .unwrap();
+            let observed_span = density_luma(limits.d_max) - density_luma(limits.d_min);
+            let (_, short_content) = prepare_content_render_limits(
+                &mut limits,
+                &DensityAnchors::default(),
+                base.density,
+            );
+            assert!(
+                !short_content && observed_span >= 0.8,
+                "the decoded window must not collapse to a short range: \
+                 observed_span={observed_span} short_content={short_content} limits={limits:?}"
+            );
+        }
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn jpeg_direct_export_and_roll_anchor_decodes_agree() {
+        let directory = std::env::temp_dir().join(format!(
+            "nexfilm-direct-jpeg-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("direct-rgb.jpg");
+        let source = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_fn(19, 13, |x, y| {
+            Rgb([
+                (28 + x * 9 + y * 3) as u8,
+                (42 + x * 4 + y * 11) as u8,
+                (17 + x * 7 + y * 5) as u8,
+            ])
+        });
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(source)
+            .write_to(&mut encoded, image::ImageOutputFormat::Jpeg(100))
+            .unwrap();
+        std::fs::write(&path, encoded.into_inner()).unwrap();
+        let path_string = path.to_string_lossy().to_string();
+
+        assert!(!is_tiff_extension(&path_string));
+        assert!(embedded_input_profile(&path_string).is_none());
+        let direct =
+            decode_direct_rgb_prophoto_estimate(&path_string, u32::MAX, DecodeMode::ExportFull)
+                .unwrap();
+        let export = decode_scanner_profiled_estimate_image_buffer(
+            &path_string,
+            DecodeMode::ExportFull,
+            None,
+            u32::MAX,
+        )
+        .unwrap();
+        let canvas =
+            decode_prophoto_estimate_image_buffer(&path_string, DecodeMode::ExportFull).unwrap();
+        let roll = decode_prophoto_basis_estimate(
+            &path_string,
+            DecodeMode::ExportFull,
+            crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
+        )
+        .unwrap();
+
+        assert_estimate_matches(&export, &direct);
+        assert_estimate_matches(&canvas, &direct);
+        assert_estimate_matches(&roll, &direct);
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn nonlinear_embedded_icc_tiff_applies_its_eotf_without_chroma_compression() {
+        let directory = std::env::temp_dir().join(format!(
+            "nexfilm-direct-nonlinear-icc-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("nonlinear-adobe-rgb-rgb16.tif");
+        let icc = crate::color_science::build_icc_profile(ColorSpaceId::AdobeRgb);
+        let (width, height) = (10u32, 8u32);
+        write_rgb16_tiff_with_icc(&path, width, height, &icc, |x, y| {
+            if x == 0 && y == 0 {
+                [30_000, 0, 0]
+            } else {
+                [
+                    (8_000 + x * 2_100 + y * 430) as u16,
+                    (11_000 + x * 1_700 + y * 370) as u16,
+                    (5_000 + x * 1_300 + y * 290) as u16,
+                ]
+            }
+        });
+        let path_string = path.to_string_lossy().to_string();
+
+        assert!(!crate::color_science::icc_declares_linear_transfer(&icc));
+        assert_eq!(
+            resolve_direct_encoded_space(&path_string),
+            (ColorSpaceId::AdobeRgb, false)
+        );
+
+        let encoded = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap();
+        let expected = expected_direct_prophoto_estimate(&encoded, ColorSpaceId::AdobeRgb, false);
+        let direct =
+            decode_direct_rgb_prophoto_estimate(&path_string, u32::MAX, DecodeMode::ExportFull)
+                .unwrap();
+        assert_estimate_matches(&direct, &expected);
+
+        let without_eotf =
+            expected_direct_prophoto_estimate(&encoded, ColorSpaceId::AdobeRgb, true);
+        assert!(
+            direct
+                .as_raw()
+                .iter()
+                .zip(without_eotf.as_raw())
+                .any(|(linear, decoded)| (*linear - decoded).abs() > 1.0e-4),
+            "the nonlinear ICC fixture must distinguish a skipped EOTF"
+        );
+
+        let low_channel_pixel = direct.get_pixel(0, 0).0;
+        let luma = density_luma(low_channel_pixel);
+        let lowest = low_channel_pixel.into_iter().fold(f32::INFINITY, f32::min);
+        assert!(
+            lowest < 0.10 * luma,
+            "the fixture must put one channel below 10% of luma: \
+             pixel={low_channel_pixel:?} luma={luma}"
+        );
+        let compressed = compress_linear_srgb_for_density(low_channel_pixel);
+        assert!(
+            low_channel_pixel
+                .iter()
+                .zip(compressed)
+                .any(|(clamped, compressed)| (*clamped - compressed).abs() > 1.0e-4),
+            "the direct decode must not apply the retired 10% chroma floor: \
+             pixel={low_channel_pixel:?} compressed={compressed:?}"
+        );
+
+        std::fs::remove_file(&path).ok();
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn compressed_tiff_and_png_use_the_same_direct_prophoto_decode() {
+        let directory = std::env::temp_dir().join(format!(
+            "nexfilm-direct-compressed-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+
+        let tiff_path = directory.join("lzw-rgb16.tif");
+        let width = 7u32;
+        let height = 5u32;
+        let mut pixels = Vec::with_capacity((width * height * 3) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                for channel in 0..3u32 {
+                    pixels.push((5_000 + x * 1_300 + y * 211 + channel * 2_500) as u16);
+                }
+            }
+        }
+        {
+            let file = std::fs::File::create(&tiff_path).unwrap();
+            let writer = std::io::BufWriter::new(file);
+            let mut encoder = tiff::encoder::TiffEncoder::new(writer).unwrap();
+            encoder
+                .write_image_with_compression::<
+                    tiff::encoder::colortype::RGB16,
+                    tiff::encoder::compression::Lzw,
+                >(width, height, Default::default(), &pixels)
+                .unwrap();
+        }
+        let tiff_string = tiff_path.to_string_lossy().to_string();
+        assert!(
+            decode_uncompressed_tiff_reduced(&tiff_string, u32::MAX).is_err(),
+            "the streaming reader must reject this fixture so the fallback is exercised"
+        );
+        let tiff_encoded: ImageBuffer<Rgb<u16>, Vec<u16>> =
+            ImageBuffer::from_raw(width, height, pixels.clone()).unwrap();
+        let expected = expected_direct_prophoto_estimate(&tiff_encoded, ColorSpaceId::SRgb, false);
+        let tiff_estimate =
+            decode_direct_rgb_prophoto_estimate(&tiff_string, u32::MAX, DecodeMode::ExportFull)
+                .unwrap();
+        assert_estimate_matches(&tiff_estimate, &expected);
+
+        let png_path = directory.join("unprofiled-rgb16.png");
+        let png_encoded = ImageBuffer::<Rgb<u16>, Vec<u16>>::from_fn(4, 3, |x, y| {
+            Rgb([
+                (4_000 + x * 1_000 + y * 137) as u16,
+                (5_000 + x * 1_000 + y * 233) as u16,
+                (6_000 + x * 1_000 + y * 311) as u16,
+            ])
+        });
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb16(png_encoded.clone())
+            .write_to(&mut bytes, image::ImageOutputFormat::Png)
+            .unwrap();
+        std::fs::write(&png_path, bytes.into_inner()).unwrap();
+        let png_string = png_path.to_string_lossy().to_string();
+        let expected = expected_direct_prophoto_estimate(&png_encoded, ColorSpaceId::SRgb, false);
+        let png_estimate =
+            decode_direct_rgb_prophoto_estimate(&png_string, u32::MAX, DecodeMode::ExportFull)
+                .unwrap();
+        assert_estimate_matches(&png_estimate, &expected);
+
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn linear_icc_tiff_is_not_linearised_twice_by_the_direct_decoder() {
+        let directory = std::env::temp_dir().join(format!(
+            "nexfilm-direct-linear-icc-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("linear-adobe-rgb-rgb16.tif");
+        write_adobe_rgb_rgb16_tiff(&path, 8, 6);
+        let path_string = path.to_string_lossy().to_string();
+
+        assert_eq!(
+            resolve_direct_encoded_space(&path_string),
+            (ColorSpaceId::AdobeRgb, true)
+        );
+        let encoded = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap();
+        let expected = expected_direct_prophoto_estimate(&encoded, ColorSpaceId::AdobeRgb, true);
+        let direct =
+            decode_direct_rgb_prophoto_estimate(&path_string, u32::MAX, DecodeMode::ExportFull)
+                .unwrap();
+        assert_estimate_matches(&direct, &expected);
+
+        let double_linearized =
+            expected_direct_prophoto_estimate(&encoded, ColorSpaceId::AdobeRgb, false);
+        assert!(
+            direct
+                .as_raw()
+                .iter()
+                .zip(double_linearized.as_raw())
+                .any(|(linear, decoded)| (*linear - decoded).abs() > 1.0e-4),
+            "linear ICC samples must not receive the display curve a second time"
+        );
+
         std::fs::remove_dir_all(&directory).ok();
     }
 
@@ -26818,6 +27309,7 @@ mod export_readonly_contract_tests {
     fn test_roll_anchors() -> DensityAnchors {
         let provenance = DensityAnchorProvenance {
             input_domain: DataDomain::ProPhotoEstimate,
+            raw_decode_version: Some(RAW_DECODE_VERSION),
             algorithm_version: DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
             legacy: false,
             ..Default::default()

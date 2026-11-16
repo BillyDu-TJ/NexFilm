@@ -1,6 +1,6 @@
 {
   "productName": "NexFilm Engine",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "identifier": "com.nexfilm.engine",
   "build": {
     "beforeDevCommand": "",
