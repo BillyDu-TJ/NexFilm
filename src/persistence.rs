@@ -14,9 +14,10 @@ pub const LEGACY_MATH_VERSION: i64 = 3;
 pub const MATH_VERSION: i64 = 5;
 // v1.2.1: every generic TIFF/JPEG/PNG now decodes its declared transfer curve
 // directly into the ProPhoto working space, without the linear-sRGB u16
-// transport or its 10% chroma compression. Proxies, density endpoints and Roll
-// anchors measured by an older decoder cannot be reused on this generation.
-pub const RAW_DECODE_VERSION: i64 = 14;
+// transport or its 10% chroma compression. Phase 1.1 also changed the DNG,
+// LinearRaw DNG and scanner FFF pixel contract, so anchors, content windows,
+// rendered state and Capture Profiles from version 14 cannot be reused.
+pub const RAW_DECODE_VERSION: i64 = 15;
 pub const LAST_USED_CALIBRATION_PROFILE_KEY: &str = "last_used_calibration_profile_id";
 
 /// Development builds intentionally keep the database beside the repository so
@@ -1573,7 +1574,7 @@ mod tests {
                     roll_id, file_path, thumbnail_base64, embedded_thumb_base64,
                     rendered_thumb_base64, params, geom, base_color, pipeline_state,
                     math_version, raw_decode_version
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, 13)",
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 rusqlite::params![
                     "roll-a",
                     "modern.tif",
@@ -1585,6 +1586,7 @@ mod tests {
                     serde_json::to_string(&analyzed_base).unwrap(),
                     serde_json::to_string(&state).unwrap(),
                     MATH_VERSION,
+                    RAW_DECODE_VERSION - 1,
                 ],
             )
             .unwrap();
@@ -2232,7 +2234,7 @@ mod tests {
     /// Manual RAW_DECODE_VERSION bump verification against a real library.
     /// Points `NEXFILM_DIAG_DB` at a **copy** of an existing database, runs the
     /// same `init_schema` migration the app runs at startup, and asserts every
-    /// pre-bump row (raw_decode_version 12 at the M3 bump) was invalidated:
+    /// pre-bump row (version 14 at the Phase 1.1 bump) was invalidated:
     /// rendered proxy dropped, re-anchor forced, version stamped to the new
     /// constant — no row survives on the old decode generation.
     #[test]

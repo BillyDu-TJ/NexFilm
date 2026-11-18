@@ -212,7 +212,7 @@ pub(crate) fn frame_base_density(
         return None;
     }
     let source = state.processing_report.base_source.as_str();
-    if source.is_empty() || source == "unresolved" || source == "compatibility_fallback" {
+    if !base_source_is_trusted(source) {
         return None;
     }
     Some(base_density_from_base_color(base_color))
@@ -221,6 +221,29 @@ pub(crate) fn frame_base_density(
 /// Recorded when a frame carries a film base that was measured on another
 /// frame of the same Roll instead of on its own pixels.
 pub(crate) const INHERITED_FILM_BASE_SOURCE: &str = "inherited_film_base";
+/// Complete Roll measurement failed on the current Film Area. The frame
+/// deliberately renders with the Roll anchor (zero frame-base offset).
+pub(crate) const COMPLETE_ROLL_ANCHOR_FALLBACK_SOURCE: &str = "complete_roll_anchor_fallback";
+/// A measured-looking candidate that failed the base quality gate. It is kept
+/// as a source marker for the technical report, never as a render base.
+pub(crate) const INVALID_FILM_BASE_SOURCE: &str = "invalid_film_base";
+/// No trusted base exists. The density window keeps each content channel's own
+/// low endpoint instead of subtracting an invented neutral reference.
+pub(crate) const CONTENT_FALLBACK_SOURCE: &str = "content_fallback";
+
+pub(crate) fn base_source_is_trusted(source: &str) -> bool {
+    !matches!(
+        source,
+        "" | "unresolved"
+            | "content_estimate"
+            | "compatibility_fallback"
+            | "missing_film_base_reference"
+            | INHERITED_FILM_BASE_SOURCE
+            | CONTENT_FALLBACK_SOURCE
+            | INVALID_FILM_BASE_SOURCE
+            | COMPLETE_ROLL_ANCHOR_FALLBACK_SOURCE
+    )
+}
 
 /// True when a persisted base belongs to the frame that stores it.
 ///
@@ -231,13 +254,7 @@ pub(crate) fn base_is_frame_measurement(source: &str, base_color: &BaseColor) ->
     if *base_color == BaseColor::default() {
         return false;
     }
-    !matches!(
-        source,
-        "" | "unresolved"
-            | INHERITED_FILM_BASE_SOURCE
-            | "compatibility_fallback"
-            | "missing_film_base_reference"
-    )
+    source != INHERITED_FILM_BASE_SOURCE && base_source_is_trusted(source)
 }
 
 #[cfg(test)]
@@ -397,7 +414,7 @@ mod tests {
         // removes the mask. Aligning on the content instead cancelled
         // scene-wide colour and gave colour-dominant scenes an opposite cast.
         let mut state = PipelineState::smart_auto();
-        state.processing_report.base_source = "content_estimate".to_string();
+        state.processing_report.base_source = "detected_film_base".to_string();
         let base_color = BaseColor {
             base_r: 10000,
             base_g: 20000,
@@ -419,6 +436,13 @@ mod tests {
         let density = pipeline.compute_true_density(&[0.5, 0.5, 0.5]);
         let expected = -0.5f32.log10();
         assert!(density.iter().all(|value| (*value - expected).abs() < 1e-6));
+    }
+
+    #[test]
+    fn content_estimate_is_not_a_trusted_base_source() {
+        // Old records keep their original provenance string, but it is a
+        // content-derived candidate rather than a film-base measurement.
+        assert!(!crate::pipeline::base_source_is_trusted("content_estimate"));
     }
 
     #[test]
