@@ -1,5 +1,6 @@
 const tauriCore = window.__TAURI__?.core;
 const tauriEvents = window.__TAURI__?.event;
+const tauriApp = window.__TAURI__?.app;
 const invoke = tauriCore?.invoke ?? (async () => {
     throw new Error('Tauri runtime unavailable in browser preview');
 });
@@ -8,6 +9,20 @@ const convertFileSrc = tauriCore?.convertFileSrc ?? ((path, protocol) =>
     protocol + '://localhost/' + encodeURIComponent(path));
 const i18n = window.NexFilmI18n;
 const i18nText = (key, vars = {}) => i18n?.t(key, vars) ?? key;
+let appVersionPromise = null;
+
+function getAppVersion() {
+    if (!appVersionPromise) {
+        appVersionPromise = Promise.resolve()
+            .then(() => tauriApp?.getVersion?.())
+            .then(version => String(version || '').trim().replace(/^v/i, ''))
+            .catch(error => {
+                console.error('Could not read the application version', error);
+                return '';
+            });
+    }
+    return appVersionPromise;
+}
 const {
     getContactSheetPageLayout,
     getContactSheetPreviewSize,
@@ -12080,8 +12095,9 @@ document.getElementById('menu-view-reset')?.addEventListener('click', () => {
     resetDevelopViewTransform();
     if (currentView === 'develop') updateCanvasTransform();
 });
-document.getElementById('menu-about')?.addEventListener('click', () => {
-    showToast('NexFilm Engine v1.0', 'info');
+document.getElementById('menu-about')?.addEventListener('click', async () => {
+    const version = await getAppVersion();
+    showToast(version ? `NexFilm Engine v${version}` : 'NexFilm Engine', 'info');
 });
 
 function cleanupWebGLResources() {
