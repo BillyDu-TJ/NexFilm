@@ -128,7 +128,7 @@ Because the application references original files via absolute disk paths, movin
 
 <div class="doc-callout">
     <div class="doc-callout-title">Thumbnail Refresh Recommendations After Version Upgrades</div>
-    <div class="doc-callout-body">When upgrading from earlier versions such as <code>v1.0.2</code> to <code>v1.1.0</code> or later, changes to the density pipeline weighting and channel span algorithms may cause older cached thumbnails to appear darker than expected. Open existing rolls in the Develop workspace and trigger <strong>Auto Invert</strong> once to re-render the thumbnail and refresh stored recipe parameters. Before processing large archival collections, verify your complete workflow by running a small test batch of two or three frames from import to export.</div>
+    <div class="doc-callout-body">When upgrading from earlier versions to <code>v1.1.0</code>, <code>v1.2.1</code>, or later, updates to direct RGB linearization, film-base anchoring, and density window rules (for example <code>RAW_DECODE_VERSION = 15</code> and <code>DENSITY_WINDOW_RULE_VERSION = 6</code> in <code>v1.2.1</code>) invalidate affected legacy caches and Roll anchors. Open existing rolls in the Develop workspace and trigger <strong>Auto Invert</strong> if prompted so thumbnails and stored recipe parameters refresh under the current pipeline. Before processing large archival collections, verify your complete workflow by running a small test batch of two or three frames from import to export.</div>
 </div>
 
 ## Four Core Workspace Regions at a Glance {#interface-layout}

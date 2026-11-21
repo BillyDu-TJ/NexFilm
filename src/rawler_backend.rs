@@ -27,6 +27,7 @@ use crate::raw_backend::{
 };
 use rawler::imgop::xyz::Illuminant;
 use rawler::rawimage::RawPhotometricInterpretation;
+use rayon::prelude::*;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
@@ -177,6 +178,212 @@ pub(crate) fn decode_camera_rgb<P: AsRef<Path>>(
         camera_to_srgb,
         camera_to_srgb_source: source,
     })
+}
+
+/// Already-demosaiced linear RGB decoded by rawler at the full stored IFD
+/// resolution, without ActiveArea/CropArea or EXIF rotation. The caller applies
+/// stage-2 opcodes in ActiveArea coordinates, then crop and orientation once.
+pub(crate) struct LinearRawRgbData {
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    /// Standard TIFF orientation 1..=8.
+    pub(crate) orientation: u16,
+    /// Interleaved RGB, normalised by the file's black/white levels and kept
+    /// unbounded above 1.0 so linear highlights survive the ProPhoto step.
+    pub(crate) pixels: Vec<f32>,
+}
+
+/// Decode a LinearRaw DNG's rendered RGB samples through rawler. This is the
+/// fallback for compression formats the `tiff` crate cannot unpack (JPEG XL,
+/// Lossless JPEG, etc.); the module boundary keeps every rawler call here.
+pub(crate) fn decode_linear_raw_rgb<P: AsRef<Path>>(path: P) -> Result<LinearRawRgbData, String> {
+    let path = path.as_ref();
+    let image =
+        rawler::decode_file(path).map_err(|error| format!("rawler decode failed: {error}"))?;
+    if !matches!(image.photometric, RawPhotometricInterpretation::LinearRaw) {
+        return Err(format!(
+            "rawler selected photometric {:?}; a LinearRaw RGB page is required",
+            image.photometric
+        ));
+    }
+    if image.cpp < 3 {
+        return Err(format!(
+            "rawler image carries {} samples per pixel; LinearRaw RGB needs at least 3",
+            image.cpp
+        ));
+    }
+    let width = image.width;
+    let height = image.height;
+    let cpp = image.cpp;
+    let expected = width
+        .checked_mul(height)
+        .and_then(|pixels| pixels.checked_mul(cpp))
+        .ok_or_else(|| "rawler LinearRaw dimensions overflowed".to_string())?;
+    let data_len = match &image.data {
+        rawler::RawImageData::Integer(samples) => samples.len(),
+        rawler::RawImageData::Float(samples) => samples.len(),
+    };
+    if data_len != expected {
+        return Err(format!(
+            "rawler LinearRaw carries {data_len} samples for {width}x{height}x{cpp}"
+        ));
+    }
+
+    // OpcodeList2 rectangles are expressed relative to the active-area origin,
+    // so decoding must keep the full IFD. Cropping here would make a crop whose
+    // origin differs from the active area shift every opcode coordinate.
+    let output_width = width;
+    let output_height = height;
+    let black_levels = image.blacklevel.as_vec();
+    let white_levels = image.whitelevel.as_vec();
+    let black_repeat_width = image.blacklevel.width.max(1);
+    let black_repeat_height = image.blacklevel.height.max(1);
+    let float_source = matches!(&image.data, rawler::RawImageData::Float(_));
+    let integer_white_fallback = integer_white_level(image.bps);
+    let mut pixels = vec![0.0f32; output_width * output_height * 3];
+
+    pixels
+        .par_chunks_exact_mut(output_width * 3)
+        .enumerate()
+        .for_each(|(output_y, row)| {
+            let source_y = output_y;
+            for output_x in 0..output_width {
+                let source_x = output_x;
+                let source_index = (source_y * width + source_x) * cpp;
+                let target_index = output_x * 3;
+                for channel in 0..3 {
+                    let raw = match &image.data {
+                        rawler::RawImageData::Integer(samples) => {
+                            f32::from(samples[source_index + channel])
+                        }
+                        rawler::RawImageData::Float(samples) => samples[source_index + channel],
+                    };
+                    let (black, white) = linear_raw_rgb_levels(
+                        float_source,
+                        &black_levels,
+                        &white_levels,
+                        cpp,
+                        black_repeat_width,
+                        black_repeat_height,
+                        source_x,
+                        source_y,
+                        channel,
+                        integer_white_fallback,
+                    );
+                    let normalized = (raw - black) / (white - black);
+                    row[target_index + channel] = if normalized.is_finite() && normalized > 0.0 {
+                        normalized
+                    } else {
+                        0.0
+                    };
+                }
+            }
+        });
+
+    Ok(LinearRawRgbData {
+        width: u32::try_from(output_width)
+            .map_err(|_| "rawler LinearRaw width exceeds u32".to_string())?,
+        height: u32::try_from(output_height)
+            .map_err(|_| "rawler LinearRaw height exceeds u32".to_string())?,
+        orientation: match image.orientation.to_u16() {
+            0 => 1,
+            value => value,
+        },
+        pixels,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn linear_raw_rgb_levels(
+    float_source: bool,
+    black_levels: &[f32],
+    white_levels: &[f32],
+    cpp: usize,
+    repeat_width: usize,
+    repeat_height: usize,
+    x: usize,
+    y: usize,
+    channel: usize,
+    integer_white_fallback: f32,
+) -> (f32, f32) {
+    let reported_black = linear_raw_level(
+        black_levels,
+        cpp,
+        repeat_width,
+        repeat_height,
+        x,
+        y,
+        channel,
+    );
+    let reported_white = linear_raw_level(white_levels, cpp, 1, 1, x, y, channel);
+    if float_source {
+        // Float DNGs are already stored as linear real values. rawler still
+        // fills WhiteLevel from BitsPerSample (32), so an integer-looking
+        // level is a header artifact rather than a valid float scale.
+        let black = reported_black
+            .filter(|value| value.is_finite() && *value >= 0.0 && *value < 64.0)
+            .unwrap_or(0.0);
+        let white = reported_white
+            .filter(|value| value.is_finite() && *value > black && *value <= 64.0)
+            .unwrap_or(1.0);
+        if white > black {
+            return (black, white);
+        }
+        return (0.0, 1.0);
+    }
+    let black = reported_black
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(0.0);
+    let white = reported_white
+        .filter(|value| value.is_finite() && *value > black)
+        .unwrap_or(integer_white_fallback);
+    if white.is_finite() && white > black {
+        (black, white)
+    } else {
+        (0.0, integer_white_fallback)
+    }
+}
+
+fn linear_raw_level(
+    levels: &[f32],
+    cpp: usize,
+    repeat_width: usize,
+    repeat_height: usize,
+    x: usize,
+    y: usize,
+    channel: usize,
+) -> Option<f32> {
+    let channel = channel.min(cpp.saturating_sub(1));
+    match levels.len() {
+        0 => None,
+        1 => levels.first().copied(),
+        length if length == cpp => levels.get(channel).copied(),
+        length
+            if length
+                == repeat_width
+                    .max(1)
+                    .saturating_mul(repeat_height.max(1))
+                    .saturating_mul(cpp) =>
+        {
+            let repeat_width = repeat_width.max(1);
+            let repeat_height = repeat_height.max(1);
+            let index = ((y % repeat_height) * repeat_width + (x % repeat_width))
+                .saturating_mul(cpp)
+                .saturating_add(channel);
+            levels.get(index).copied()
+        }
+        _ => None,
+    }
+}
+
+fn integer_white_level(bits: usize) -> f32 {
+    if bits >= 32 {
+        u32::MAX as f32
+    } else if bits == 0 {
+        1.0
+    } else {
+        ((1u64 << bits) - 1) as f32
+    }
 }
 
 /// The mosaic plus the camera colour metadata a DNG re-wrap needs, from rawler
@@ -926,6 +1133,83 @@ mod tests {
         );
         assert_eq!(tiff_ifd0_orientation(&path), 0);
         let _ = std::fs::remove_file(&path);
+    }
+
+    fn patch_tiff_short(path: &Path, tag: u16, value: u16) {
+        let mut bytes = std::fs::read(path).expect("read TIFF");
+        assert_eq!(&bytes[..2], b"II");
+        let ifd_offset = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let count = u16::from_le_bytes(bytes[ifd_offset..ifd_offset + 2].try_into().unwrap());
+        for index in 0..usize::from(count) {
+            let entry = ifd_offset + 2 + index * 12;
+            if u16::from_le_bytes(bytes[entry..entry + 2].try_into().unwrap()) == tag {
+                bytes[entry + 8..entry + 10].copy_from_slice(&value.to_le_bytes());
+                std::fs::write(path, bytes).expect("write TIFF");
+                return;
+            }
+        }
+        panic!("TIFF tag {tag} was not found");
+    }
+
+    #[test]
+    fn linear_raw_rgb_decode_normalizes_samples_and_reports_orientation() {
+        let samples = [1_000u16, 20_000, 65_535, 10_000, 30_000, 50_000];
+        let bytes = crate::dng_writer::linear_dng_bytes(&crate::dng_writer::LinearDngRequest {
+            width: 2,
+            height: 1,
+            rgb16: &samples,
+            xyz_to_space: crate::color_science::xyz_d50_to_color_space_matrix(
+                crate::color_science::ColorSpaceId::DisplayP3,
+            ),
+            icc_profile: None,
+            camera_model: "rawler LinearRaw test",
+            description: None,
+            software: "NexFilm test",
+            timestamp: "2026:01:01 00:00:00",
+            opcode_list2: None,
+        })
+        .expect("build LinearRaw DNG");
+        let path = temp_file("linear-raw-rgb", &bytes);
+        patch_tiff_short(&path, 274, 6);
+
+        let decoded = decode_linear_raw_rgb(&path).expect("rawler LinearRaw decode");
+        assert_eq!((decoded.width, decoded.height), (2, 1));
+        assert_eq!(decoded.orientation, 6);
+        assert_eq!(decoded.pixels.len(), 6);
+        for (actual, expected) in decoded
+            .pixels
+            .iter()
+            .zip(samples.iter().map(|sample| f32::from(*sample) / 65535.0))
+        {
+            assert!(
+                (*actual - expected).abs() < 2e-5,
+                "sample was not normalised by its integer white level: {actual} != {expected}"
+            );
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn linear_raw_levels_apply_channel_and_repeat_patterns() {
+        let black = [8.0, 16.0, 32.0];
+        let white = [65_000.0];
+        assert_eq!(
+            linear_raw_rgb_levels(false, &black, &white, 3, 1, 1, 0, 0, 1, 65_535.0),
+            (16.0, 65_000.0)
+        );
+        // 2x2 repeat, three channels per site: index = (y*2 + x)*3 + channel.
+        let repeat = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0];
+        assert_eq!(linear_raw_level(&repeat, 3, 2, 2, 1, 1, 2), Some(11.0));
+        assert_eq!(
+            linear_raw_rgb_levels(true, &[], &[], 3, 1, 1, 0, 0, 0, 65_535.0),
+            (0.0, 1.0),
+            "float samples fall back to a 0..1 contract"
+        );
+        assert_eq!(
+            linear_raw_rgb_levels(false, &[], &[], 3, 1, 1, 0, 0, 0, 65_535.0),
+            (0.0, 65_535.0),
+            "integer samples fall back to their reported bit depth"
+        );
     }
 
     #[test]

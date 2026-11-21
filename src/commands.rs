@@ -36,6 +36,7 @@ use crate::core_math::{
     trim_density_endpoints, DetailSettings, ToneCurveSet, DENSITY_LUMA_COEFFICIENTS,
     DETAIL_LOCAL_DOWNSCALE, DETAIL_REFERENCE_LONG_EDGE,
 };
+use crate::dng_opcode;
 use crate::persistence::{self, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
 use crate::scanner_profile::{import_local_profile, record_is_current, ScannerProfileRecord};
@@ -321,6 +322,38 @@ fn extract_tiff_jpeg_preview(path: &str, target_edge: u32) -> Option<Vec<u8>> {
         let Some(entries) = read_at(&mut file, ifd_offset + 2, count.saturating_mul(12) + 4) else {
             continue;
         };
+        let mut raw_ifd = false;
+        for index in 0..count {
+            let entry = &entries[index * 12..index * 12 + 12];
+            let tag = read_u16(&entry[0..2]);
+            // CR2Slices is tag 50752 (0xC640). Its presence marks the IFD as
+            // raw sensor slices, never as a display preview.
+            if tag == 0xc640 {
+                raw_ifd = true;
+            }
+            if tag == 0x0106 {
+                let kind = read_u16(&entry[2..4]);
+                let item_count = read_u32(&entry[4..8]);
+                if let Some(bytes) = value_bytes(&mut file, entry, kind, item_count) {
+                    let photometric = match kind {
+                        3 if bytes.len() >= 2 => read_u16(&bytes[0..2]) as u32,
+                        4 if bytes.len() >= 4 => read_u32(&bytes[0..4]),
+                        _ => 0,
+                    };
+                    if matches!(photometric, 32803 | 34892) {
+                        raw_ifd = true;
+                    }
+                }
+            }
+        }
+        let next_offset = ifd_offset + 2 + count as u64 * 12;
+        let next_ifd = read_at(&mut file, next_offset, 4)
+            .map(|bytes| read_u32(&bytes) as u64)
+            .unwrap_or(0);
+        if next_ifd != 0 {
+            pending.push(next_ifd);
+        }
+
         let mut jpeg_offset = None;
         let mut jpeg_length = None;
         for index in 0..count {
@@ -328,6 +361,21 @@ fn extract_tiff_jpeg_preview(path: &str, target_edge: u32) -> Option<Vec<u8>> {
             let tag = read_u16(&entry[0..2]);
             let kind = read_u16(&entry[2..4]);
             let item_count = read_u32(&entry[4..8]);
+            if tag == 0x014a || tag == 0x8769 {
+                if let Some(bytes) = value_bytes(&mut file, entry, kind, item_count) {
+                    if tag == 0x014a {
+                        for chunk in bytes.chunks_exact(4) {
+                            pending.push(read_u32(chunk) as u64);
+                        }
+                    } else if bytes.len() >= 4 {
+                        pending.push(read_u32(&bytes[0..4]) as u64);
+                    }
+                }
+                continue;
+            }
+            if raw_ifd {
+                continue;
+            }
             let Some(bytes) = value_bytes(&mut file, entry, kind, item_count) else {
                 continue;
             };
@@ -335,13 +383,10 @@ fn extract_tiff_jpeg_preview(path: &str, target_edge: u32) -> Option<Vec<u8>> {
                 jpeg_offset = Some(read_u32(&bytes[0..4]) as u64);
             } else if (tag == 0x0202 || tag == 0x0117) && item_count >= 1 && bytes.len() >= 4 {
                 jpeg_length = Some(read_u32(&bytes[0..4]) as u64);
-            } else if tag == 0x014a && bytes.len() >= 4 {
-                for chunk in bytes.chunks_exact(4) {
-                    pending.push(read_u32(chunk) as u64);
-                }
-            } else if tag == 0x8769 && bytes.len() >= 4 {
-                pending.push(read_u32(&bytes[0..4]) as u64);
             }
+        }
+        if raw_ifd {
+            continue;
         }
         if let (Some(offset), Some(length)) = (jpeg_offset, jpeg_length) {
             if length >= 4
@@ -364,13 +409,6 @@ fn extract_tiff_jpeg_preview(path: &str, target_edge: u32) -> Option<Vec<u8>> {
                         }
                     }
                 }
-            }
-        }
-        let next_offset = ifd_offset + 2 + count as u64 * 12;
-        if let Some(next) = read_at(&mut file, next_offset, 4) {
-            let next = read_u32(&next) as u64;
-            if next != 0 {
-                pending.push(next);
             }
         }
     }
@@ -407,7 +445,15 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
             break;
         }
         let is_sof = matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf);
-        if is_sof && segment_len >= 7 {
+        if is_sof {
+            if !matches!(marker, 0xc0 | 0xc1 | 0xc2) || segment_len < 8 {
+                return None;
+            }
+            let sample_precision = bytes[cursor + 2];
+            let components = bytes[cursor + 7];
+            if sample_precision != 8 || !matches!(components, 1 | 3) {
+                return None;
+            }
             let height = u16::from_be_bytes([bytes[cursor + 3], bytes[cursor + 4]]) as u32;
             let width = u16::from_be_bytes([bytes[cursor + 5], bytes[cursor + 6]]) as u32;
             return Some((width, height));
@@ -741,8 +787,23 @@ struct ClassicTiffDirectory {
     sub_ifd_offsets: Vec<u64>,
     /// DNG `ColorMatrix1`: XYZ D50 to the stored linear RGB coordinates.
     color_matrix1: Option<[[f32; 3]; 3]>,
+    /// DNG `ColorMatrix2`, usually the daylight illuminant of a dual-illuminant
+    /// calibration pair.
+    color_matrix2: Option<[[f32; 3]; 3]>,
+    /// DNG `CalibrationIlluminant1` for `color_matrix1`.
+    calibration_illuminant1: Option<u16>,
+    /// DNG `CalibrationIlluminant2` for `color_matrix2`.
+    calibration_illuminant2: Option<u16>,
     /// DNG `AsShotNeutral`: the camera-space colour that has to read as grey.
     as_shot_neutral: Option<[f32; 3]>,
+    /// DNG `ActiveArea` as [top, left, bottom, right] in full IFD coordinates.
+    active_area: Option<[u32; 4]>,
+    /// DNG `DefaultCropOrigin` in active-area coordinates.
+    default_crop_origin: Option<[u32; 2]>,
+    /// DNG `DefaultCropSize` in pixels.
+    default_crop_size: Option<[u32; 2]>,
+    /// DNG `OpcodeList2` (`51009`), copied only from the selected LinearRaw IFD.
+    opcode_list2: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug)]
@@ -882,6 +943,23 @@ fn classic_tiff_rational_values(
         .collect()
 }
 
+fn classic_tiff_numeric_values(
+    file: &mut std::fs::File,
+    file_len: u64,
+    little: bool,
+    entry: &ClassicTiffEntry,
+) -> Result<Vec<f64>, String> {
+    match entry.type_code {
+        3 | 4 => classic_tiff_unsigned_values(file, file_len, little, entry)
+            .map(|values| values.into_iter().map(|value| value as f64).collect()),
+        5 | 10 => classic_tiff_rational_values(file, file_len, little, entry),
+        _ => Err(format!(
+            "Unsupported TIFF numeric tag type {}",
+            entry.type_code
+        )),
+    }
+}
+
 fn read_classic_tiff_directory_impl(
     path: &str,
     page: usize,
@@ -1013,6 +1091,22 @@ fn read_classic_tiff_directory_impl(
     let orientation =
         u16::try_from(first(values(274)?, 1)).map_err(|_| "Invalid TIFF orientation")?;
     let sub_ifd_offsets = values(330)?.unwrap_or_default();
+    let active_area = values(50829)?.and_then(|values| {
+        if values.len() != 4 {
+            return None;
+        }
+        let values = values
+            .into_iter()
+            .map(|value| u32::try_from(value).ok())
+            .collect::<Option<Vec<_>>>()?;
+        Some([values[0], values[1], values[2], values[3]])
+    });
+    let calibration_illuminant1 = values(50778)?
+        .and_then(|values| values.first().copied())
+        .and_then(|value| u16::try_from(value).ok());
+    let calibration_illuminant2 = values(50779)?
+        .and_then(|values| values.first().copied())
+        .and_then(|value| u16::try_from(value).ok());
     drop(values);
     let icc_profile = entries.get(&34675).and_then(|entry| {
         (entry.type_code == 7)
@@ -1028,18 +1122,47 @@ fn read_classic_tiff_directory_impl(
             .map(|entry| classic_tiff_rational_values(&mut file, file_len, little, entry))
             .transpose()
     };
-    let color_matrix1 = rational_values(50721)?.and_then(|values| {
-        (values.len() == 9 && values.iter().all(|value| value.is_finite())).then(|| {
-            [
-                [values[0] as f32, values[1] as f32, values[2] as f32],
-                [values[3] as f32, values[4] as f32, values[5] as f32],
-                [values[6] as f32, values[7] as f32, values[8] as f32],
-            ]
+    let dng_color_matrix = |values: Option<Vec<f64>>| {
+        values.and_then(|values| {
+            (values.len() == 9 && values.iter().all(|value| value.is_finite())).then(|| {
+                [
+                    [values[0] as f32, values[1] as f32, values[2] as f32],
+                    [values[3] as f32, values[4] as f32, values[5] as f32],
+                    [values[6] as f32, values[7] as f32, values[8] as f32],
+                ]
+            })
         })
-    });
+    };
+    let color_matrix1 = dng_color_matrix(rational_values(50721)?);
+    let color_matrix2 = dng_color_matrix(rational_values(50722)?);
     let as_shot_neutral = rational_values(50728)?.and_then(|values| {
         (values.len() == 3 && values.iter().all(|value| value.is_finite() && *value > 0.0))
             .then(|| [values[0] as f32, values[1] as f32, values[2] as f32])
+    });
+    let mut crop_values = |tag: u16| -> Result<Option<Vec<f64>>, String> {
+        entries
+            .get(&tag)
+            .map(|entry| classic_tiff_numeric_values(&mut file, file_len, little, entry))
+            .transpose()
+    };
+    let default_crop_origin = crop_values(50719)?.and_then(|values| {
+        (values.len() == 2
+            && values
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0))
+        .then(|| [values[0].round() as u32, values[1].round() as u32])
+    });
+    let default_crop_size = crop_values(50720)?.and_then(|values| {
+        (values.len() == 2 && values.iter().all(|value| value.is_finite() && *value > 0.0))
+            .then(|| [values[0].round() as u32, values[1].round() as u32])
+    });
+    let opcode_list2 = entries.get(&51009).and_then(|entry| {
+        matches!(entry.type_code, 1 | 7)
+            .then(|| {
+                read_classic_tiff_entry_data(&mut file, file_len, little, entry, 16 * 1024 * 1024)
+                    .ok()
+            })
+            .flatten()
     });
 
     Ok(ClassicTiffDirectory {
@@ -1060,7 +1183,14 @@ fn read_classic_tiff_directory_impl(
         icc_profile,
         sub_ifd_offsets,
         color_matrix1,
+        color_matrix2,
+        calibration_illuminant1,
+        calibration_illuminant2,
         as_shot_neutral,
+        active_area,
+        default_crop_origin,
+        default_crop_size,
+        opcode_list2,
     })
 }
 
@@ -1613,6 +1743,28 @@ fn decode_tiff_direct_f32_with_budget_and_ifd(
     budget_bytes: usize,
     selected_directory: Option<&ClassicTiffDirectory>,
 ) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    let (image, orientation) = decode_tiff_direct_full_f32_with_budget_and_ifd(
+        path,
+        target_long_edge,
+        budget_bytes,
+        selected_directory,
+    )?;
+    Ok(fit_linear_transmission_long_edge(
+        apply_tiff_orientation(image, orientation),
+        target_long_edge,
+    ))
+}
+
+/// Decode the selected IFD at its stored resolution and hand the caller the
+/// unrotated buffer. LinearRaw `OpcodeList2` uses pre-rotation active-area
+/// coordinates, so the opcode pass has to run between this function and the
+/// orientation/scale wrapper above.
+fn decode_tiff_direct_full_f32_with_budget_and_ifd(
+    path: &str,
+    target_long_edge: u32,
+    budget_bytes: usize,
+    selected_directory: Option<&ClassicTiffDirectory>,
+) -> Result<(ImageBuffer<Rgb<f32>, Vec<f32>>, u16), String> {
     // The row-streaming reader avoids a second full-size buffer for the common
     // uncompressed, upright scan. Everything else uses the tiff crate with an
     // explicit, finite budget.
@@ -1629,7 +1781,7 @@ fn decode_tiff_direct_f32_with_budget_and_ifd(
                         target[channel] = f32::from(source[channel]) / 65535.0;
                     }
                 });
-            return Ok(image);
+            return Ok((image, 1));
         }
     }
 
@@ -1688,7 +1840,7 @@ fn decode_tiff_direct_f32_with_budget_and_ifd(
     let pixels = decoder
         .read_image()
         .map_err(|error| format!("Cannot decode TIFF pixels: {error}"))?;
-    let mut image = tiff_pixels_to_rgb_f32(width, height, channels, pixels)?;
+    let image = tiff_pixels_to_rgb_f32(width, height, channels, pixels)?;
     let orientation = selected_directory
         .map(|directory| directory.orientation)
         .or_else(|| {
@@ -1697,8 +1849,7 @@ fn decode_tiff_direct_f32_with_budget_and_ifd(
                 .map(|directory| directory.orientation)
         })
         .unwrap_or(1);
-    image = apply_tiff_orientation(image, orientation);
-    Ok(fit_linear_transmission_long_edge(image, target_long_edge))
+    Ok((image, orientation))
 }
 
 fn decode_tiff_direct_f32_with_budget(
@@ -1716,17 +1867,17 @@ fn decode_tiff_direct_f32(
     decode_tiff_direct_f32_with_budget(path, target_long_edge, tiff_decode_budget_bytes())
 }
 
-fn decode_tiff_direct_f32_at_ifd(
+fn decode_tiff_direct_full_f32_at_ifd(
     path: &str,
-    target_long_edge: u32,
     directory: &ClassicTiffDirectory,
 ) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
-    decode_tiff_direct_f32_with_budget_and_ifd(
+    decode_tiff_direct_full_f32_with_budget_and_ifd(
         path,
-        target_long_edge,
+        u32::MAX,
         tiff_decode_budget_bytes(),
         Some(directory),
     )
+    .map(|(image, _)| image)
 }
 
 fn decode_uncompressed_linear_dng_reduced(
@@ -1737,6 +1888,32 @@ fn decode_uncompressed_linear_dng_reduced(
         dng_linear_raw_directory(path).ok_or("DNG has no uncompressed LinearRaw RGB IFD")?;
     if directory.compression != 1 {
         return Err("DNG LinearRaw page is compressed".to_string());
+    }
+    if directory.opcode_list2.is_some() {
+        let encoded =
+            decode_uncompressed_tiff_directory_reduced(path, directory.clone(), u32::MAX)?;
+        let mut image = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
+        image
+            .as_mut()
+            .par_chunks_exact_mut(3)
+            .zip(encoded.as_raw().par_chunks_exact(3))
+            .for_each(|(target, source)| {
+                for channel in 0..3 {
+                    target[channel] = f32::from(source[channel]) / 65535.0;
+                }
+            });
+        let image = finalize_linear_raw_dng_rgb(image, &directory, target_long_edge)?;
+        let mut output = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(image.width(), image.height());
+        output
+            .as_mut()
+            .par_chunks_exact_mut(3)
+            .zip(image.as_raw().par_chunks_exact(3))
+            .for_each(|(target, source)| {
+                for channel in 0..3 {
+                    target[channel] = (source[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+                }
+            });
+        return Ok(output);
     }
     decode_uncompressed_tiff_directory_reduced(path, directory, target_long_edge)
 }
@@ -2095,6 +2272,7 @@ fn embedded_icc_bytes(path: &str) -> Option<Vec<u8>> {
     }
 }
 
+#[cfg(test)]
 fn embedded_input_profile(path: &str) -> Option<ColorSpaceId> {
     identify_icc_profile(&embedded_icc_bytes(path)?)
 }
@@ -2345,6 +2523,7 @@ fn decode_develop_preview_base64(path: &str, max_edge: u32) -> Option<String> {
     })
 }
 
+#[cfg(test)]
 fn build_response_buffer(
     width: u32,
     height: u32,
@@ -2383,6 +2562,7 @@ fn build_response_buffer(
     out_buffer
 }
 
+#[cfg(test)]
 fn build_response_buffer_from_proxy(
     proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>,
     base_color: &BaseColor,
@@ -2899,7 +3079,6 @@ fn estimate_film_base_f32(
         } else {
             Some(median_channel_density(&mut base_band))
         };
-
         // 2. Lowest-density tail inside the Film Area.
         let (tail_density, tail_confidence, tail_usable) = match compute_auto_base_f32(proxy, geom)
         {
@@ -3705,6 +3884,7 @@ fn analysis_geometry_rule_is_current(state: &PipelineState) -> bool {
     state.processing_report.analysis_geometry_rule >= required_analysis_geometry_rule(state)
 }
 
+#[cfg(test)]
 fn frame_needs_analysis_geometry_reanalysis(state: &PipelineState, geom: &GeometryState) -> bool {
     frame_uses_frame_wise_analysis_geometry(state)
         && (!analysis_geometry_is_current(state, geom) || !analysis_geometry_rule_is_current(state))
@@ -3970,6 +4150,7 @@ fn preserve_content_span(limits: &mut AutoColorLimits, minimum_span: f32) {
     }
 }
 
+#[cfg(test)]
 fn preserve_smart_auto_content_span(limits: &mut AutoColorLimits) {
     preserve_content_span(limits, 0.8);
 }
@@ -5187,6 +5368,147 @@ fn input_domain_for_color_space(id: ColorSpaceId) -> (InputPrimaries, InputTrans
     }
 }
 
+const EMBEDDED_ICC_PARSE_FAILED_REASON: &str = "embedded_icc_parse_failed";
+
+fn compact_pipeline_error(error: &str) -> String {
+    let mut compact = error
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(';', ",");
+    if compact.chars().count() > 160 {
+        compact = compact.chars().take(157).collect::<String>() + "...";
+    }
+    compact
+}
+
+fn embedded_icc_parse_failure_reason(error: &str) -> String {
+    format!(
+        "{EMBEDDED_ICC_PARSE_FAILED_REASON}:{}",
+        compact_pipeline_error(error)
+    )
+}
+
+fn input_domain_detail_with_note(detail: String, note: Option<&str>) -> String {
+    match note {
+        Some(note) if !note.is_empty() => {
+            if detail.is_empty() {
+                note.to_string()
+            } else {
+                format!("{detail}; {note}")
+            }
+        }
+        _ => detail,
+    }
+}
+
+fn push_unique_reason(reasons: &mut Vec<String>, reason: impl Into<String>) {
+    let reason = reason.into();
+    if !reasons.iter().any(|existing| existing == &reason) {
+        reasons.push(reason);
+    }
+}
+
+fn extend_unique_fallback_reasons(
+    report: &mut PipelineProcessingReport,
+    reasons: impl IntoIterator<Item = String>,
+) {
+    for reason in reasons {
+        push_unique_reason(&mut report.fallback_reasons, reason);
+    }
+}
+
+/// Degradations already encoded in the resolved input-domain record. The
+/// detail string is also the copyable technical report, so the mapping keeps
+/// the user-facing reason stable while retaining the original parser error.
+fn input_domain_fallback_reasons(domain: &InputDomainRecord) -> Vec<String> {
+    let detail = domain.detail.as_str();
+    let mut reasons = Vec::new();
+    if let Some(start) = detail.find(EMBEDDED_ICC_PARSE_FAILED_REASON) {
+        push_unique_reason(&mut reasons, detail[start..].trim().to_string());
+    }
+    if detail.contains("dng_sample_layout_unresolved_libraw_camera_native") {
+        push_unique_reason(&mut reasons, "dng_sample_layout_unresolved");
+    }
+    if detail.contains("linear_raw_dng_without_icc_or_colormatrix_read_as_linear_srgb") {
+        push_unique_reason(&mut reasons, "linear_raw_dng_color_metadata_missing");
+    }
+    if detail.contains("flextight_container_record_unreadable") {
+        push_unique_reason(&mut reasons, "scanner_fff_container_unreadable");
+    }
+    reasons
+}
+
+fn proxy_additional_fallback_reasons(
+    input_domain: &InputDomainRecord,
+    working_basis: WorkingBasis,
+    camera_to_display: Option<[f32; 9]>,
+    scanner_profile_bound: bool,
+    scanner_profile_resolved: bool,
+    capture_fallback_reason: Option<&str>,
+) -> Vec<String> {
+    let mut reasons = input_domain_fallback_reasons(input_domain);
+    if scanner_profile_bound && !scanner_profile_resolved {
+        push_unique_reason(&mut reasons, "scanner_profile_missing_or_stale");
+    }
+    if working_basis == WorkingBasis::CameraNative && camera_to_display.is_none() {
+        push_unique_reason(&mut reasons, "camera_matrix_unresolved");
+    }
+    if let Some(reason) = capture_fallback_reason {
+        push_unique_reason(
+            &mut reasons,
+            if reason == "capture_profile_unavailable" {
+                "capture_profile_unavailable"
+            } else {
+                "capture_profile_runtime_fallback"
+            },
+        );
+    }
+    reasons
+}
+
+fn is_decoded_input_fallback_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "camera_matrix_unresolved"
+            | "dng_sample_layout_unresolved"
+            | "linear_raw_dng_color_metadata_missing"
+            | "scanner_fff_container_unreadable"
+            | "scanner_profile_missing_or_stale"
+            | "scanner_tiff_input_space_estimated"
+            | "capture_profile_unavailable"
+            | "capture_profile_runtime_fallback"
+    ) || reason.starts_with("embedded_icc_parse_failed:")
+        || reason.starts_with("capture_runtime_failure|")
+        || reason.starts_with("profile_capture_fallback|")
+        || reason.starts_with("capture_fit_invalid|")
+}
+
+/// Keep decoded-pixel metadata when a database row replaces the in-memory
+/// pipeline state. The row is authoritative for edits, but it cannot describe
+/// pixels that were decoded after it was written.
+fn preserve_decoded_proxy_report(
+    report: &mut PipelineProcessingReport,
+    decoded_input_domain: &InputDomainRecord,
+    decoded_camera_to_display: Option<[f32; 9]>,
+    decoded_fallback_reasons: impl IntoIterator<Item = String>,
+) {
+    if report.camera_to_display.is_none() {
+        report.camera_to_display = decoded_camera_to_display;
+    }
+    if report.input_domain.source == InputDomainSource::Unknown
+        && decoded_input_domain.source != InputDomainSource::Unknown
+    {
+        report.input_domain = decoded_input_domain.clone();
+    }
+    extend_unique_fallback_reasons(
+        report,
+        decoded_fallback_reasons
+            .into_iter()
+            .filter(|reason| is_decoded_input_fallback_reason(reason)),
+    );
+}
+
 fn input_transfer_from_icc_class(class: IccTransferClass) -> InputTransferCurve {
     match class {
         IccTransferClass::Linear => InputTransferCurve::Linear,
@@ -5395,8 +5717,8 @@ fn dng_sample_kind(path: &str) -> DngSampleKind {
 fn dng_linear_raw_directory(path: &str) -> Option<ClassicTiffDirectory> {
     let root = read_classic_tiff_directory(path, 0).ok()?;
     let mut best = (root.photometric == 34892 && root.samples_per_pixel >= 3).then(|| root.clone());
-    for offset in root.sub_ifd_offsets {
-        if let Ok(candidate) = read_classic_tiff_subdirectory(path, offset) {
+    for offset in &root.sub_ifd_offsets {
+        if let Ok(candidate) = read_classic_tiff_subdirectory(path, *offset) {
             if candidate.photometric != 34892 || candidate.samples_per_pixel < 3 {
                 continue;
             }
@@ -5410,7 +5732,81 @@ fn dng_linear_raw_directory(path: &str) -> Option<ClassicTiffDirectory> {
             }
         }
     }
-    best
+    let mut selected = best?;
+    if selected.ifd_offset != root.ifd_offset {
+        // DNG stores the colour calibration and white balance on IFD0 even
+        // when the full-resolution LinearRaw page lives in a SubIFD.
+        if selected.icc_profile.is_none() {
+            selected.icc_profile = root.icc_profile;
+        }
+        if selected.color_matrix1.is_none() {
+            selected.color_matrix1 = root.color_matrix1;
+        }
+        if selected.color_matrix2.is_none() {
+            selected.color_matrix2 = root.color_matrix2;
+        }
+        if selected.calibration_illuminant1.is_none() {
+            selected.calibration_illuminant1 = root.calibration_illuminant1;
+        }
+        if selected.calibration_illuminant2.is_none() {
+            selected.calibration_illuminant2 = root.calibration_illuminant2;
+        }
+        if selected.as_shot_neutral.is_none() {
+            selected.as_shot_neutral = root.as_shot_neutral;
+        }
+        if selected.orientation <= 1 && root.orientation > 1 {
+            selected.orientation = root.orientation;
+        }
+    }
+    Some(selected)
+}
+
+#[derive(Clone, Copy)]
+struct DngColorMatrixChoice {
+    matrix: [[f32; 3]; 3],
+    tag: &'static str,
+    illuminant: u16,
+}
+
+/// DNG's two calibration matrices describe tungsten and daylight. Choose the
+/// daylight-family one first so a neutral daylight exposure is not pushed
+/// through the Standard Light A matrix merely because it is `ColorMatrix1`.
+fn select_dng_color_matrix(directory: &ClassicTiffDirectory) -> Option<DngColorMatrixChoice> {
+    let mut candidates = Vec::new();
+    if let Some(matrix) = directory.color_matrix1 {
+        candidates.push(DngColorMatrixChoice {
+            matrix,
+            tag: "colormatrix1",
+            illuminant: directory.calibration_illuminant1.unwrap_or(21),
+        });
+    }
+    if let Some(matrix) = directory.color_matrix2 {
+        candidates.push(DngColorMatrixChoice {
+            matrix,
+            tag: "colormatrix2",
+            illuminant: directory.calibration_illuminant2.unwrap_or(21),
+        });
+    }
+    candidates
+        .into_iter()
+        .filter(|choice| dng_color_matrix_to_prophoto(choice.matrix).is_some())
+        .min_by_key(|choice| calibration_illuminant_rank(choice.illuminant))
+}
+
+/// Keep aligned with `rawler_backend::rawler_camera_to_srgb`; Standard Light A
+/// is the explicit last choice rather than an ordinary "other" illuminant.
+fn calibration_illuminant_rank(illuminant: u16) -> u8 {
+    match illuminant {
+        21 => 0, // D65
+        23 => 1, // D50
+        20 => 2, // D55
+        1 => 3,  // Daylight
+        9 => 4,  // Fine weather
+        10 => 5, // Cloudy
+        11 => 6, // Shade
+        17 => 9, // Standard Light A
+        _ => 7,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5482,12 +5878,23 @@ fn apply_matrix_product(left: [f32; 9], right: [f32; 9]) -> [f32; 9] {
 
 fn resolve_linear_raw_dng_domain(path: &str) -> LinearRawDngDomain {
     let directory = dng_linear_raw_directory(path);
+    let opcode_suffix = directory
+        .as_ref()
+        .is_some_and(|directory| directory.opcode_list2.is_some())
+        .then_some("_opcode_list2_stage2_linearized")
+        .unwrap_or("");
     let icc = directory
         .as_ref()
         .and_then(|directory| directory.icc_profile.as_deref());
     let identified = icc.and_then(icc_color_space);
-    let icc_transform =
-        icc.and_then(|bytes| IccRgbTransform::from_icc_to_linear_prophoto(bytes).ok());
+    let (icc_transform, icc_parse_failure) = match icc {
+        Some(bytes) => match IccRgbTransform::from_icc_to_linear_prophoto(bytes) {
+            Ok(transform) => (Some(transform), None),
+            Err(error) => (None, Some(embedded_icc_parse_failure_reason(&error))),
+        },
+        None => (None, None),
+    };
+    let icc_parse_failure = icc_parse_failure.as_deref();
     let as_shot_neutral = directory
         .as_ref()
         .and_then(|directory| directory.as_shot_neutral);
@@ -5522,9 +5929,12 @@ fn resolve_linear_raw_dng_domain(path: &str) -> LinearRawDngDomain {
                 source: InputDomainSource::EmbeddedIcc,
                 confidence: InputDomainConfidence::Verified,
                 estimated: false,
-                detail: format!(
-                    "linear_raw_dng_{}",
-                    crate::color_science::profile_name(space)
+                detail: input_domain_detail_with_note(
+                    format!(
+                        "linear_raw_dng_{}{opcode_suffix}",
+                        crate::color_science::profile_name(space),
+                    ),
+                    icc_parse_failure,
                 ),
             },
         };
@@ -5552,16 +5962,16 @@ fn resolve_linear_raw_dng_domain(path: &str) -> LinearRawDngDomain {
                 source: InputDomainSource::EmbeddedIcc,
                 confidence: InputDomainConfidence::Verified,
                 estimated: false,
-                detail: "linear_raw_dng_custom_icc_to_prophoto".to_string(),
+                detail: input_domain_detail_with_note(
+                    format!("linear_raw_dng_custom_icc_to_prophoto{opcode_suffix}"),
+                    icc_parse_failure,
+                ),
             },
         };
     }
 
-    if let Some(matrix) = directory
-        .as_ref()
-        .and_then(|directory| directory.color_matrix1)
-        .and_then(dng_color_matrix_to_prophoto)
-    {
+    if let Some(choice) = directory.as_ref().and_then(select_dng_color_matrix) {
+        let matrix = dng_color_matrix_to_prophoto(choice.matrix).expect("checked above");
         return LinearRawDngDomain {
             color_source: LinearRawColorSource::ColorMatrix(matrix),
             as_shot_neutral,
@@ -5570,11 +5980,17 @@ fn resolve_linear_raw_dng_domain(path: &str) -> LinearRawDngDomain {
                 primaries: InputPrimaries::ScannerDevice,
                 transfer: InputTransferCurve::Linear,
                 reference: InputReference::LinearTransmission,
-                normalization: "linear_raw_dng_colormatrix1_full_range".to_string(),
+                normalization: format!("linear_raw_dng_{}_full_range", choice.tag),
                 source: InputDomainSource::RawMetadata,
                 confidence: InputDomainConfidence::Declared,
                 estimated: false,
-                detail: "linear_raw_dng_colormatrix1_to_prophoto".to_string(),
+                detail: input_domain_detail_with_note(
+                    format!(
+                        "linear_raw_dng_{}_illuminant{}_to_prophoto{opcode_suffix}",
+                        choice.tag, choice.illuminant,
+                    ),
+                    icc_parse_failure,
+                ),
             },
         };
     }
@@ -5591,7 +6007,12 @@ fn resolve_linear_raw_dng_domain(path: &str) -> LinearRawDngDomain {
             source: InputDomainSource::DeviceIdentification,
             confidence: InputDomainConfidence::Estimated,
             estimated: true,
-            detail: "linear_raw_dng_without_icc_or_colormatrix1_read_as_linear_srgb".to_string(),
+            detail: input_domain_detail_with_note(
+                format!(
+                    "linear_raw_dng_without_icc_or_colormatrix_read_as_linear_srgb{opcode_suffix}"
+                ),
+                icc_parse_failure,
+            ),
         },
     }
 }
@@ -5713,7 +6134,14 @@ fn resolve_input_domain(
         };
     }
 
+    let mut embedded_icc_parse_failure = None;
     if let Some(icc) = embedded_icc_bytes(path) {
+        let icc_transform = IccRgbTransform::from_icc_to_linear_prophoto(&icc);
+        embedded_icc_parse_failure = icc_transform
+            .as_ref()
+            .err()
+            .map(|error| embedded_icc_parse_failure_reason(error));
+        let icc_parse_note = embedded_icc_parse_failure.as_deref();
         if let Some(profile) = icc_color_space(&icc) {
             let linear = crate::color_science::icc_declares_linear_transfer(&icc);
             let (primaries, encoded_transfer) = input_domain_for_color_space(profile);
@@ -5736,16 +6164,19 @@ fn resolve_input_domain(
                 source: InputDomainSource::EmbeddedIcc,
                 confidence: InputDomainConfidence::Verified,
                 estimated: false,
-                detail: if linear {
-                    format!("{} linear", crate::color_science::profile_name(profile))
-                } else if transfer == InputTransferCurve::Unknown {
-                    format!("{} custom_trc", crate::color_science::profile_name(profile))
-                } else {
-                    crate::color_science::profile_name(profile).to_string()
-                },
+                detail: input_domain_detail_with_note(
+                    if linear {
+                        format!("{} linear", crate::color_science::profile_name(profile))
+                    } else if transfer == InputTransferCurve::Unknown {
+                        format!("{} custom_trc", crate::color_science::profile_name(profile))
+                    } else {
+                        crate::color_science::profile_name(profile).to_string()
+                    },
+                    icc_parse_note,
+                ),
             };
         }
-        if IccRgbTransform::from_icc_to_linear_prophoto(&icc).is_ok() {
+        if icc_transform.is_ok() {
             // The description did not match a built-in name, but the profile is
             // a valid RGB declaration. Its actual matrix/TRC drives decoding;
             // report the custom primaries instead of pretending it is sRGB.
@@ -5763,7 +6194,10 @@ fn resolve_input_domain(
                 source: InputDomainSource::EmbeddedIcc,
                 confidence: InputDomainConfidence::Verified,
                 estimated: false,
-                detail: "embedded_icc_custom_matrix_or_lut".to_string(),
+                detail: input_domain_detail_with_note(
+                    "embedded_icc_custom_matrix_or_lut".to_string(),
+                    icc_parse_note,
+                ),
             };
         }
         if let Some(profile) = identify_icc_profile(&icc) {
@@ -5790,9 +6224,12 @@ fn resolve_input_domain(
                 source: InputDomainSource::EmbeddedIcc,
                 confidence: InputDomainConfidence::Verified,
                 estimated: false,
-                detail: format!(
-                    "{} (name_only_fallback)",
-                    crate::color_science::profile_name(profile)
+                detail: input_domain_detail_with_note(
+                    format!(
+                        "{} (name_only_fallback)",
+                        crate::color_science::profile_name(profile)
+                    ),
+                    icc_parse_note,
                 ),
             };
         }
@@ -5808,7 +6245,16 @@ fn resolve_input_domain(
         source: InputDomainSource::FallbackSrgb,
         confidence: InputDomainConfidence::Estimated,
         estimated: true,
-        detail: if is_tiff_extension(path) {
+        detail: if let Some(note) = embedded_icc_parse_failure.as_deref() {
+            input_domain_detail_with_note(
+                if is_tiff_extension(path) {
+                    "tiff_with_unreadable_embedded_icc".to_string()
+                } else {
+                    "encoded_rgb_with_unreadable_embedded_icc".to_string()
+                },
+                Some(note),
+            )
+        } else if is_tiff_extension(path) {
             "tiff_without_embedded_icc".to_string()
         } else {
             "encoded_rgb_without_embedded_icc".to_string()
@@ -6071,48 +6517,216 @@ fn decode_reduced_dng_for_working_space(
     Ok(image)
 }
 
-fn decode_linear_raw_dng_encoded(
+fn linear_raw_active_origin(directory: &ClassicTiffDirectory) -> (u32, u32) {
+    directory
+        .active_area
+        .map(|[top, left, _, _]| (left, top))
+        .unwrap_or((0, 0))
+}
+
+/// Full-image crop rectangle selected by DNG `DefaultCropOrigin`/`Size`.
+///
+/// Both tags are relative to `ActiveArea`. The returned tuple is
+/// `(left, top, width, height)` and is always clipped to the decoded IFD.
+fn linear_raw_crop_rect(
+    directory: &ClassicTiffDirectory,
+    width: u32,
+    height: u32,
+) -> (u32, u32, u32, u32) {
+    let active = directory
+        .active_area
+        .and_then(|[top, left, bottom, right]| {
+            (bottom > top && right > left).then_some((left, top, right - left, bottom - top))
+        });
+    let (mut left, mut top, mut crop_width, mut crop_height) =
+        match (directory.default_crop_origin, directory.default_crop_size) {
+            (Some(origin), Some(size)) => {
+                let active_left = active.map(|area| area.0).unwrap_or(0);
+                let active_top = active.map(|area| area.1).unwrap_or(0);
+                (
+                    active_left.saturating_add(origin[0]),
+                    active_top.saturating_add(origin[1]),
+                    size[0],
+                    size[1],
+                )
+            }
+            _ => active.unwrap_or((0, 0, width, height)),
+        };
+    left = left.min(width.saturating_sub(1));
+    top = top.min(height.saturating_sub(1));
+    crop_width = crop_width.min(width.saturating_sub(left)).max(1);
+    crop_height = crop_height.min(height.saturating_sub(top)).max(1);
+    (left, top, crop_width, crop_height)
+}
+
+fn apply_linear_raw_opcode_list2(
+    image: &mut ImageBuffer<Rgb<f32>, Vec<f32>>,
+    directory: &ClassicTiffDirectory,
+) -> Result<Option<dng_opcode::OpcodeListSummary>, String> {
+    let Some(opcode_list) = directory.opcode_list2.as_deref() else {
+        return Ok(None);
+    };
+    let (active_left, active_top) = linear_raw_active_origin(directory);
+    let summary = dng_opcode::apply_opcode_list2(
+        opcode_list,
+        image.width(),
+        image.height(),
+        active_left,
+        active_top,
+        image.as_mut(),
+    )
+    .map_err(|error| {
+        format!(
+            "Cannot apply DNG OpcodeList2 from the selected LinearRaw IFD at byte {}: {error}",
+            directory.ifd_offset
+        )
+    })?;
+    Ok(Some(summary))
+}
+
+/// Run stage-2 opcodes on the full-resolution active area, then crop, rotate
+/// and finally fit the requested long edge. This ordering is required because
+/// opcode coordinates live before crop and orientation, and because nonlinear
+/// polynomials must not see already-averaged pixels.
+fn finalize_linear_raw_dng_rgb(
+    mut image: ImageBuffer<Rgb<f32>, Vec<f32>>,
+    directory: &ClassicTiffDirectory,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    apply_linear_raw_opcode_list2(&mut image, directory)?;
+    let (width, height) = image.dimensions();
+    let (left, top, crop_width, crop_height) = linear_raw_crop_rect(directory, width, height);
+    if (left, top, crop_width, crop_height) != (0, 0, width, height) {
+        image = image::imageops::crop_imm(&image, left, top, crop_width, crop_height).to_image();
+    }
+    let image = apply_tiff_orientation(image, directory.orientation);
+    Ok(fit_linear_transmission_long_edge(image, target_long_edge))
+}
+
+fn decode_linear_raw_dng_rgb_f32(
     path: &str,
     target_long_edge: u32,
-) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
     // VueScan LinearRaw DNG stores already-interpolated, linear RGB samples.
     // Read its uncompressed IFD directly so a 1.6 GB scan never has to be
     // unpacked into a second full-size LibRaw buffer merely to build a proxy.
     let directory = dng_linear_raw_directory(path)
         .ok_or_else(|| format!("DNG has no LinearRaw RGB IFD: {path}"))?;
-    let stream_error = if directory.compression == 1 {
-        match decode_uncompressed_tiff_directory_reduced(path, directory.clone(), target_long_edge)
-        {
-            Ok(image) => return Ok(image),
-            Err(error) => error,
+    let mut attempts = Vec::new();
+    if directory.compression == 1 {
+        let decode_target = if directory.opcode_list2.is_some() {
+            u32::MAX
+        } else {
+            target_long_edge
+        };
+        match decode_uncompressed_tiff_directory_reduced(path, directory.clone(), decode_target) {
+            Ok(encoded) => {
+                let mut image =
+                    ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
+                image
+                    .as_mut()
+                    .par_chunks_exact_mut(3)
+                    .zip(encoded.as_raw().par_chunks_exact(3))
+                    .for_each(|(target, source)| {
+                        for channel in 0..3 {
+                            target[channel] = f32::from(source[channel]) / 65535.0;
+                        }
+                    });
+                if directory.opcode_list2.is_some() {
+                    match finalize_linear_raw_dng_rgb(image, &directory, target_long_edge) {
+                        Ok(image) => return Ok(image),
+                        Err(error) => attempts.push(format!("opcode list 2: {error}")),
+                    }
+                } else {
+                    return Ok(image);
+                }
+            }
+            Err(error) => attempts.push(format!("streaming reader: {error}")),
         }
     } else {
-        format!("LinearRaw IFD uses compression {}", directory.compression)
-    };
-    let encoded = decode_tiff_direct_f32_at_ifd(path, target_long_edge, &directory).map_err(
-        |tiff_error| {
-            format!(
-                "LinearRaw DNG decode failed for {path}: streaming reader: {stream_error}; \
-                 selected IFD at byte {}: {tiff_error}",
-                directory.ifd_offset
-            )
-        },
-    )?;
-    let mut rgb16 = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(encoded.width(), encoded.height());
-    rgb16
-        .as_mut()
-        .par_chunks_exact_mut(3)
-        .zip(encoded.as_raw().par_chunks_exact(3))
-        .for_each(|(target, source)| {
-            for channel in 0..3 {
-                target[channel] = if source[channel].is_finite() {
-                    (source[channel].clamp(0.0, 1.0) * 65535.0).round() as u16
+        attempts.push(format!(
+            "streaming reader: skipped (compression {})",
+            directory.compression
+        ));
+    }
+
+    match decode_tiff_direct_full_f32_at_ifd(path, &directory)
+        .and_then(|image| finalize_linear_raw_dng_rgb(image, &directory, target_long_edge))
+    {
+        Ok(image) => return Ok(image),
+        Err(error) => attempts.push(format!(
+            "TIFF decoder for IFD at byte {}: {error}",
+            directory.ifd_offset
+        )),
+    }
+
+    let budget = tiff_decode_budget_bytes();
+    let expected_rgb_bytes = u64::from(directory.width)
+        .checked_mul(u64::from(directory.height))
+        .and_then(|pixels| pixels.checked_mul(3))
+        .and_then(|samples| samples.checked_mul(std::mem::size_of::<f32>() as u64));
+    if expected_rgb_bytes.is_none_or(|required| required > budget as u64) {
+        attempts.push(format!(
+            "rawler: expected LinearRaw RGB needs {} bytes, above the configured decode \
+             budget of {budget} bytes",
+            expected_rgb_bytes
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "more".to_string())
+        ));
+    } else {
+        match crate::rawler_backend::decode_linear_raw_rgb(path) {
+            Ok(decoded) => {
+                let pixel_count = usize::try_from(decoded.width)
+                    .ok()
+                    .and_then(|width| {
+                        usize::try_from(decoded.height)
+                            .ok()
+                            .map(|height| width * height)
+                    })
+                    .ok_or_else(|| "rawler LinearRaw dimensions overflowed".to_string())?;
+                let required = pixel_count
+                    .checked_mul(3)
+                    .and_then(|samples| samples.checked_mul(std::mem::size_of::<f32>()))
+                    .ok_or_else(|| "rawler LinearRaw buffer size overflowed".to_string())?;
+                if required > budget {
+                    attempts.push(format!(
+                        "rawler: decoded RGB needs {required} bytes, above the configured decode \
+                     budget of {budget} bytes"
+                    ));
+                } else if decoded.pixels.len() != pixel_count * 3 {
+                    attempts.push(format!(
+                        "rawler: returned {} samples for {}x{} RGB",
+                        decoded.pixels.len(),
+                        decoded.width,
+                        decoded.height
+                    ));
                 } else {
-                    0
-                };
+                    let image = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(
+                        decoded.width,
+                        decoded.height,
+                        decoded.pixels,
+                    )
+                    .ok_or_else(|| "Cannot construct rawler LinearRaw RGB image".to_string())?;
+                    let mut final_directory = directory.clone();
+                    if final_directory.orientation <= 1 && decoded.orientation > 1 {
+                        final_directory.orientation = decoded.orientation;
+                    }
+                    match finalize_linear_raw_dng_rgb(image, &final_directory, target_long_edge) {
+                        Ok(image) => return Ok(image),
+                        Err(error) => attempts.push(format!("rawler opcode list 2: {error}")),
+                    }
+                }
             }
-        });
-    Ok(rgb16)
+            Err(error) => attempts.push(format!("rawler: {error}")),
+        }
+    }
+
+    Err(format!(
+        "LinearRaw DNG decode failed for {path} (selected IFD at byte {}, compression {}): {}",
+        directory.ifd_offset,
+        directory.compression,
+        attempts.join("; ")
+    ))
 }
 
 /// Modern LinearRaw path: keep the stored RGB unbounded and map it directly to
@@ -6126,7 +6740,7 @@ fn decode_linear_raw_dng_prophoto_estimate(
             "DNG is not a rendered LinearRaw sample layout: {path}"
         ));
     }
-    let encoded = decode_linear_raw_dng_encoded(path, target_long_edge)?;
+    let encoded = decode_linear_raw_dng_rgb_f32(path, target_long_edge)?;
     let domain = resolve_linear_raw_dng_domain(path);
     let gains = domain.white_balance_gains();
     let mut estimate = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
@@ -6136,19 +6750,16 @@ fn decode_linear_raw_dng_prophoto_estimate(
             .par_chunks_exact_mut(3)
             .zip(encoded.as_raw().par_chunks_exact(3))
             .for_each(|(target, pixel)| {
-                target[0] = f32::from(pixel[0]) / 65535.0 * gains[0];
-                target[1] = f32::from(pixel[1]) / 65535.0 * gains[1];
-                target[2] = f32::from(pixel[2]) / 65535.0 * gains[2];
+                target[0] = pixel[0] * gains[0];
+                target[1] = pixel[1] * gains[1];
+                target[2] = pixel[2] * gains[2];
             });
         transform.apply_encoded_rgb(estimate.as_mut())?;
         estimate.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
             let clamped = clamp_positive_transmission_for_density([pixel[0], pixel[1], pixel[2]]);
             pixel.copy_from_slice(&clamped);
         });
-        return Ok(fit_linear_transmission_long_edge(
-            estimate,
-            target_long_edge,
-        ));
+        return Ok(estimate);
     }
     let matrix = domain.color_matrix_to(ColorSpaceId::ProPhotoRgb);
     estimate
@@ -6157,18 +6768,15 @@ fn decode_linear_raw_dng_prophoto_estimate(
         .zip(encoded.as_raw().par_chunks_exact(3))
         .for_each(|(target, pixel)| {
             let balanced = [
-                f32::from(pixel[0]) / 65535.0 * gains[0],
-                f32::from(pixel[1]) / 65535.0 * gains[1],
-                f32::from(pixel[2]) / 65535.0 * gains[2],
+                pixel[0] * gains[0],
+                pixel[1] * gains[1],
+                pixel[2] * gains[2],
             ];
             target.copy_from_slice(&clamp_positive_transmission_for_density(
                 apply_linear_matrix(balanced, matrix),
             ));
         });
-    Ok(fit_linear_transmission_long_edge(
-        estimate,
-        target_long_edge,
-    ))
+    Ok(estimate)
 }
 
 fn rgb16_image_from_bytes(
@@ -6208,42 +6816,6 @@ fn rgb16_image_from_bytes(
             }
         });
     Ok(image_buffer)
-}
-
-fn rgb32_pixels_from_bytes(
-    width: u32,
-    height: u32,
-    colors: usize,
-    bits: u16,
-    bytes: &[u8],
-) -> Result<(u32, u32, Vec<f32>), String> {
-    if colors < 3 || bits != 16 {
-        return Err(format!(
-            "Unexpected LibRaw output: {colors} channels at {bits} bits"
-        ));
-    }
-    let pixel_count = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or_else(|| "LibRaw image dimensions overflowed".to_string())?;
-    let required_bytes = pixel_count
-        .checked_mul(colors)
-        .and_then(|samples| samples.checked_mul(std::mem::size_of::<u16>()))
-        .ok_or_else(|| "LibRaw image buffer size overflowed".to_string())?;
-    if bytes.len() < required_bytes {
-        return Err("LibRaw returned a truncated image buffer".to_string());
-    }
-    let mut pixels = vec![0.0f32; pixel_count * 3];
-    pixels
-        .par_chunks_exact_mut(3)
-        .enumerate()
-        .for_each(|(index, pixel)| {
-            let source = index * colors * std::mem::size_of::<u16>();
-            for (channel, value) in pixel.iter_mut().enumerate() {
-                let offset = source + channel * std::mem::size_of::<u16>();
-                *value = u16::from_ne_bytes([bytes[offset], bytes[offset + 1]]) as f32 / 65535.0;
-            }
-        });
-    Ok((width, height, pixels))
 }
 
 fn raw_decode_failure_hint(path: &str) -> Option<&'static str> {
@@ -6395,6 +6967,7 @@ fn estimate_target_long_edge(mode: DecodeMode) -> u32 {
 /// production decode entry uses. The harness in `raw_backend.rs` records it
 /// alongside the direct RAW-backend verdicts so the matrix cannot describe a
 /// bypassed path as the app's behaviour.
+#[cfg(test)]
 pub(crate) fn decode_route_for_diagnostic(path: &str) -> &'static str {
     if is_scanner_fff_tiff(path) {
         "scanner-fff-stream"
@@ -6414,6 +6987,7 @@ pub(crate) fn decode_route_for_diagnostic(path: &str) -> &'static str {
 /// row-streaming TIFF reader. Calling `decode_image_buffer` here instead would
 /// exercise the generic tiff crate page decoder and its 512 MB strip limit,
 /// which is not the path the application takes for these scans.
+#[cfg(test)]
 pub(crate) fn decode_routed_for_diagnostic(path: &str) -> Result<(u32, u32), String> {
     decode_export_source(path).map(|image| (image.width(), image.height()))
 }
@@ -7201,6 +7775,7 @@ fn persist_import_batch(
         .map_err(|error| format!("Failed to commit imported images: {error}"))
 }
 
+#[cfg(test)]
 fn default_pipeline_state_for_import(
     loose: bool,
     target_roll: &str,
@@ -7360,6 +7935,12 @@ fn state_from_resolution_with_frame_base(
     report.input_domain = persisted.processing_report.input_domain.clone();
     // So does the basis of the working buffer the positive is displayed from.
     report.camera_to_display = persisted.processing_report.camera_to_display;
+    preserve_decoded_proxy_report(
+        &mut report,
+        &persisted.processing_report.input_domain,
+        persisted.processing_report.camera_to_display,
+        persisted.processing_report.fallback_reasons.iter().cloned(),
+    );
     let expected_domain = match resolution.resolved_path {
         ProcessingContract::CaptureCorrectedV11 => "relative_transmission_rgb",
         ProcessingContract::LegacyV1 => "legacy_linear_srgb",
@@ -7401,9 +7982,10 @@ fn state_from_resolution_with_frame_base(
         report.analysis_geometry_rule = persisted.processing_report.analysis_geometry_rule;
         report.render_route = persisted.processing_report.render_route.clone();
         report.fallback_reason = persisted.processing_report.fallback_reason.clone();
-        report
-            .fallback_reasons
-            .extend(persisted.processing_report.fallback_reasons.iter().cloned());
+        extend_unique_fallback_reasons(
+            &mut report,
+            persisted.processing_report.fallback_reasons.iter().cloned(),
+        );
     }
     state.processing_report = report;
     if let Some(mapping) =
@@ -8693,6 +9275,7 @@ fn write_linear_dng_export(
         description: description.as_deref(),
         software: &software,
         timestamp: &timestamp,
+        opcode_list2: None,
     };
     let bytes = crate::dng_writer::linear_dng_bytes(&request)?;
     write_bytes_atomically(output_path, &bytes)
@@ -9031,6 +9614,12 @@ pub struct ActiveImageState {
     pub pipeline_state: PipelineState,
 }
 
+#[derive(serde::Serialize)]
+pub struct PreparedProxyResult {
+    pub long_edge: u32,
+    pub pipeline_state: PipelineState,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  LRU Proxy Cache — strict bounded-capacity enforcement
 // ═══════════════════════════════════════════════════════════════════════════
@@ -9118,19 +9707,17 @@ pub async fn switch_active_image(
     item.params = params;
     item.geom = geom;
     item.base_color = base_color;
-    // The camera matrix is a property of the decoded file. A record persisted
-    // before this frame's first decode in this session does not carry it yet,
-    // but the retained working proxy does not change basis by being reselected.
-    let decoded_camera_to_display = item.pipeline_state.processing_report.camera_to_display;
+    // The camera matrix, decoded input domain and decode-time fallbacks are
+    // properties of the in-memory pixels. A database row written before this
+    // frame's first decode in the session cannot replace them.
+    let decoded_report = item.effective_pipeline_state().processing_report.clone();
     item.pipeline_state = pipeline_state;
-    if item
-        .pipeline_state
-        .processing_report
-        .camera_to_display
-        .is_none()
-    {
-        item.pipeline_state.processing_report.camera_to_display = decoded_camera_to_display;
-    }
+    preserve_decoded_proxy_report(
+        &mut item.pipeline_state.processing_report,
+        &decoded_report.input_domain,
+        decoded_report.camera_to_display,
+        decoded_report.fallback_reasons,
+    );
     clear_retired_legacy_domain(&mut item.pipeline_state);
 
     // Return the current resolved capability, not the persisted request. This
@@ -9177,7 +9764,7 @@ pub async fn prepare_proxy(
     id: String,
     target_long_edge: Option<u32>,
     state: State<'_, EngineState>,
-) -> Result<u32, String> {
+) -> Result<PreparedProxyResult, String> {
     let target_long_edge = preview_proxy_target_long_edge(target_long_edge);
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
     let (
@@ -9223,6 +9810,7 @@ pub async fn prepare_proxy(
         persistence::load_scanner_profiles(&connection)
             .map_err(|error| format!("Failed to load scanner profiles: {error}"))?
     };
+    let scanner_profile_bound = roll.is_some_and(|roll| roll.scanner_profile_id.is_some());
     let scanner_profile = roll
         .and_then(|roll| roll.scanner_profile_id.as_deref())
         .and_then(|profile_id| {
@@ -9232,7 +9820,8 @@ pub async fn prepare_proxy(
         })
         .filter(|record| record_is_current(record))
         .map(|record| record.profile.clone());
-    if roll.is_some_and(|roll| roll.scanner_profile_id.is_some()) && scanner_profile.is_none() {
+    let scanner_profile_resolved = scanner_profile.is_some();
+    if scanner_profile_bound && !scanner_profile_resolved {
         eprintln!("[Scanner Pipeline] Bound scanner profile is missing or stale; using source RGB unchanged");
     }
     let initial_resolution =
@@ -9242,6 +9831,18 @@ pub async fn prepare_proxy(
     // technical report and every later stage see the same domain.
     let input_domain = resolve_input_domain(&file_path, scanner_profile.as_ref());
     persisted_state.processing_report.input_domain = input_domain.clone();
+    let known_proxy_fallback_reasons = proxy_additional_fallback_reasons(
+        &input_domain,
+        WorkingBasis::ProPhotoEstimate,
+        None,
+        scanner_profile_bound,
+        scanner_profile_resolved,
+        None,
+    );
+    extend_unique_fallback_reasons(
+        &mut persisted_state.processing_report,
+        known_proxy_fallback_reasons.iter().cloned(),
+    );
     let use_smart_auto_compatibility_proxy = initial_resolution.resolved_path
         == ProcessingContract::SmartAutoProPhotoV11
         && is_smart_auto_compatibility(&persisted_state);
@@ -9266,14 +9867,30 @@ pub async fn prepare_proxy(
     {
         // The proxy is already the one this frame renders: a base inherited
         // from another frame can still be replaced on it right here.
-        {
+        let pipeline_state = {
             let mut item = write_lock(&item_arc);
+            item.pipeline_state.processing_report.input_domain = input_domain.clone();
+            extend_unique_fallback_reasons(
+                &mut item.pipeline_state.processing_report,
+                known_proxy_fallback_reasons.iter().cloned(),
+            );
+            if let Some(runtime) = item.runtime_pipeline_state.as_mut() {
+                runtime.processing_report.input_domain = input_domain.clone();
+                extend_unique_fallback_reasons(
+                    &mut runtime.processing_report,
+                    known_proxy_fallback_reasons.iter().cloned(),
+                );
+            }
             if let Err(error) = remeasure_inherited_film_base(&mut item) {
                 eprintln!("[Film Base] inherited film base re-measurement failed: {error}");
             }
-        }
+            item.effective_pipeline_state().clone()
+        };
         track_proxy_loaded(&state, &id);
-        return Ok(current_long_edge);
+        return Ok(PreparedProxyResult {
+            long_edge: current_long_edge,
+            pipeline_state,
+        });
     }
 
     let contract = initial_resolution.resolved_path;
@@ -9299,6 +9916,7 @@ pub async fn prepare_proxy(
         input_domain: InputDomainRecord,
         /// Camera -> sRGB matrix of a camera-native working buffer.
         camera_to_display: Option<[f32; 9]>,
+        working_basis: WorkingBasis,
     }
 
     let decode_path = file_path.clone();
@@ -9322,6 +9940,7 @@ pub async fn prepare_proxy(
                             fallback_reason: None,
                             input_domain: resolved_input_domain.clone(),
                             camera_to_display: None,
+                            working_basis: WorkingBasis::ProPhotoEstimate,
                         });
                     }
                     Err(error) => {
@@ -9353,6 +9972,7 @@ pub async fn prepare_proxy(
                             fallback_reason: Some(error),
                             input_domain: resolved_input_domain.clone(),
                             camera_to_display,
+                            working_basis: smart_auto_working_basis(&decode_path),
                         });
                     }
                 }
@@ -9388,6 +10008,7 @@ pub async fn prepare_proxy(
                     fallback_reason: None,
                     input_domain: resolved_input_domain.clone(),
                     camera_to_display: None,
+                    working_basis: WorkingBasis::ProPhotoEstimate,
                 });
             }
             if contract != ProcessingContract::LegacyV1 {
@@ -9410,6 +10031,7 @@ pub async fn prepare_proxy(
                     fallback_reason: None,
                     input_domain: decoded.input_domain,
                     camera_to_display: decoded.camera_to_display,
+                    working_basis: decoded.working_basis,
                 });
             }
 
@@ -9437,6 +10059,7 @@ pub async fn prepare_proxy(
                     fallback_reason: None,
                     input_domain: resolved_input_domain.clone(),
                     camera_to_display,
+                    working_basis: WorkingBasis::ProPhotoEstimate,
                 });
             }
             let img_buffer = if is_dng_extension(&decode_path) {
@@ -9467,6 +10090,7 @@ pub async fn prepare_proxy(
                 fallback_reason: None,
                 input_domain: resolved_input_domain.clone(),
                 camera_to_display: None,
+                working_basis: WorkingBasis::ProPhotoEstimate,
             })
         })
         .await
@@ -9534,6 +10158,20 @@ pub async fn prepare_proxy(
     );
     clear_retired_legacy_domain(&mut final_state);
     final_state.processing_report.input_domain = prepared.input_domain.clone();
+    let capture_fallback_reason = (contract == ProcessingContract::CaptureCorrectedV11)
+        .then_some(prepared.fallback_reason.as_deref())
+        .flatten();
+    extend_unique_fallback_reasons(
+        &mut final_state.processing_report,
+        proxy_additional_fallback_reasons(
+            &prepared.input_domain,
+            prepared.working_basis,
+            prepared.camera_to_display,
+            scanner_profile_bound,
+            scanner_profile_resolved,
+            capture_fallback_reason,
+        ),
+    );
     // The positive of a camera-native working buffer is displayed through the
     // matrix of the decode that produced it, everywhere it is rendered.
     final_state.processing_report.camera_to_display = prepared.camera_to_display;
@@ -9564,7 +10202,7 @@ pub async fn prepare_proxy(
     );
     let density_provenance = resolution_density_provenance(&final_resolution);
     let loaded_long_edge = prepared.transport.width().max(prepared.transport.height());
-    let retained_long_edge = {
+    let (retained_long_edge, pipeline_state) = {
         let mut item = write_lock(&item_arc);
         // Legacy and loose Smart Auto compatibility keep the historical
         // linear-sRGB u16 source; anchored Smart Auto and Capture Corrected
@@ -9604,6 +10242,14 @@ pub async fn prepare_proxy(
         clear_retired_legacy_domain(&mut item.pipeline_state);
         item.pipeline_state.processing_report.input_domain =
             final_state.processing_report.input_domain.clone();
+        extend_unique_fallback_reasons(
+            &mut item.pipeline_state.processing_report,
+            final_state
+                .processing_report
+                .fallback_reasons
+                .iter()
+                .cloned(),
+        );
         item.pipeline_state.processing_report.camera_to_display =
             final_state.processing_report.camera_to_display;
         item.runtime_pipeline_state = Some(final_state);
@@ -9615,10 +10261,16 @@ pub async fn prepare_proxy(
         if let Err(error) = remeasure_inherited_film_base(&mut item) {
             eprintln!("[Film Base] inherited film base re-measurement failed: {error}");
         }
-        loaded_long_edge.max(retained_long_edge)
+        (
+            loaded_long_edge.max(retained_long_edge),
+            item.effective_pipeline_state().clone(),
+        )
     };
     track_proxy_loaded(&state, &id);
-    Ok(retained_long_edge)
+    Ok(PreparedProxyResult {
+        long_edge: retained_long_edge,
+        pipeline_state,
+    })
 }
 
 #[tauri::command]
@@ -13044,6 +13696,7 @@ fn render_shader_equivalent(
     )
 }
 
+#[cfg(test)]
 fn render_shader_equivalent_with_state(
     source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
     params: &TuningParams,
@@ -13259,6 +13912,10 @@ pub struct BatchExportResult {
     output_dir: String,
     errors: Vec<String>,
     warnings: Vec<String>,
+}
+
+fn modern_export_failure(stage: &str, file_path: &str, error: impl std::fmt::Display) -> String {
+    format!("Modern export stage={stage} failed for {file_path}: {error}")
 }
 
 fn export_sharpening(value: &str) -> Result<Option<(f32, f32)>, String> {
@@ -14824,6 +15481,19 @@ pub async fn batch_export_images(
             serde_json::json!({ "processed": skipped_count, "total": count }),
         );
         let processed_count = std::sync::atomic::AtomicUsize::new(skipped_count);
+        let finish_export_frame = |stage: &str, id: &str| {
+            let processed =
+                processed_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let _ = progress_app.emit(
+                "export_progress",
+                serde_json::json!({
+                    "processed": processed,
+                    "total": count,
+                    "id": id,
+                    "stage": stage,
+                }),
+            );
+        };
 
         // Process one full-resolution image at a time. Each image still uses
         // Rayon internally, but the outer loop is deliberately sequential so
@@ -14952,7 +15622,12 @@ pub async fn batch_export_images(
                         let (input, quality_mask, camera_to_display) = match decoded_f32 {
                             Ok(decoded) => decoded,
                             Err(error) => {
-                                lock_mutex(&failures).push(format!("Failed to decode {}: {error}", file_path));
+                                lock_mutex(&failures).push(modern_export_failure(
+                                    "decode",
+                                    &file_path,
+                                    error,
+                                ));
+                                finish_export_frame("decode", &snapshot.id);
                                 return;
                             }
                         };
@@ -14984,7 +15659,12 @@ pub async fn batch_export_images(
                         ) {
                             Ok(dimensions) => dimensions,
                             Err(error) => {
-                                lock_mutex(&failures).push(format!("Invalid export dimensions for {}: {error}", file_path));
+                                lock_mutex(&failures).push(modern_export_failure(
+                                    "dimensions",
+                                    &file_path,
+                                    error,
+                                ));
+                                finish_export_frame("dimensions", &snapshot.id);
                                 return;
                             }
                         };
@@ -14998,7 +15678,12 @@ pub async fn batch_export_images(
                             match encode_export_output(out_buffer, export_format, output_space) {
                             Ok(buffer) => buffer,
                             Err(error) => {
-                                lock_mutex(&failures).push(format!("Failed to convert {} to {}: {error}", file_path, color_space));
+                                lock_mutex(&failures).push(modern_export_failure(
+                                    "color_conversion",
+                                    &file_path,
+                                    format!("conversion to {color_space}: {error}"),
+                                ));
+                                finish_export_frame("color_conversion", &snapshot.id);
                                 return;
                             }
                         };
@@ -15010,8 +15695,13 @@ pub async fn batch_export_images(
                             quality,
                         ) {
                             Ok(()) => { success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
-                            Err(error) => lock_mutex(&failures).push(error),
+                            Err(error) => lock_mutex(&failures).push(modern_export_failure(
+                                "write",
+                                &file_path,
+                                error,
+                            )),
                         }
+                        finish_export_frame("complete", &snapshot.id);
                         return;
                     }
 
@@ -15150,14 +15840,14 @@ pub async fn batch_export_images(
                     }
                 }
                 Err(error) => {
-                    lock_mutex(&failures).push(format!("Failed to decode {}: {error}", file_path))
+                    lock_mutex(&failures).push(modern_export_failure(
+                        "decode",
+                        &file_path,
+                        error,
+                    ))
                 }
             }
-            let processed = processed_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            let _ = progress_app.emit(
-                "export_progress",
-                serde_json::json!({ "processed": processed, "total": count, "id": snapshot.id }),
-            );
+            finish_export_frame("complete", &snapshot.id);
         });
 
         let failures = failures
@@ -18088,21 +18778,6 @@ fn persist_geometry_and_pipeline_on_connection(
         .map_err(|error| format!("Failed to commit geometry transaction: {error}"))
 }
 
-fn persist_base_color(
-    roll_id: &str,
-    file_path: &str,
-    base_color: &BaseColor,
-) -> Result<(), String> {
-    let serialized = serde_json::to_string(base_color)
-        .map_err(|error| format!("Failed to serialize base color: {error}"))?;
-    persist_single_image_update(
-        roll_id,
-        file_path,
-        "UPDATE image_states SET base_color = ?1, updated_at = ?2 WHERE roll_id = ?3 AND file_path = ?4",
-        serialized,
-    )
-}
-
 fn persist_base_and_pipeline(
     roll_id: &str,
     file_path: &str,
@@ -18738,11 +19413,12 @@ mod import_contract_tests {
         detect_frame_highlight_fraction, dng_linear_raw_directory, dng_sample_kind,
         embedded_input_profile, encode_export_buffer, encode_prophoto_transport_sample,
         encoded_pixel_to_prophoto_estimate, encoded_pixel_to_prophoto_estimate_with_transfer,
-        estimate_film_base_f32, film_block_luma_profile, fixed_roll_density_mapping,
-        frame_needs_analysis_geometry_reanalysis, frame_needs_window_reanalysis,
-        highlight_block_index, invalidate_analysis_if_geometry_changed, is_better_preview_edge,
-        is_dng_extension, is_lightweight_direct_preview, is_noritsu_rendered_image,
-        is_raw_extension, is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
+        estimate_film_base_f32, extract_tiff_jpeg_preview, film_block_luma_profile,
+        fixed_roll_density_mapping, frame_needs_analysis_geometry_reanalysis,
+        frame_needs_window_reanalysis, highlight_block_index,
+        invalidate_analysis_if_geometry_changed, is_better_preview_edge, is_dng_extension,
+        is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
+        is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension, jpeg_dimensions,
         libraw_decode_error_message, linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff,
         measure_roll_highlight_frames, persist_import_batch, pipeline_base_density,
         pipeline_has_base, point_in_film_area, prepare_content_render_limits,
@@ -18776,7 +19452,7 @@ mod import_contract_tests {
         xyz_d50_to_color_space_matrix, ColorSpaceId, DENSITY_CAPTURE_PROFILE,
     };
     use base64::Engine as _;
-    use image::{ImageBuffer, Rgb};
+    use image::{GenericImageView, ImageBuffer, Rgb};
     use rayon::prelude::*;
     use std::sync::{Arc, RwLock};
 
@@ -18791,6 +19467,389 @@ mod import_contract_tests {
             ));
         std::fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    fn synthetic_jpeg(
+        width: u16,
+        height: u16,
+        sof_marker: u8,
+        precision: u8,
+        components: u8,
+    ) -> Vec<u8> {
+        let payload_len = 6 + components as usize * 3;
+        let segment_len = payload_len + 2;
+        let mut bytes = vec![0xff, 0xd8, 0xff, sof_marker];
+        bytes.extend_from_slice(&(segment_len as u16).to_be_bytes());
+        bytes.push(precision);
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.push(components);
+        for component in 1..=components {
+            bytes.extend_from_slice(&[component, 0x11, 0]);
+        }
+        bytes.extend_from_slice(&[0xff, 0xd9]);
+        bytes
+    }
+
+    fn put_u16_le(bytes: &mut [u8], offset: usize, value: u16) {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u32_le(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_tiff_entry(
+        bytes: &mut [u8],
+        offset: usize,
+        tag: u16,
+        kind: u16,
+        count: u32,
+        value: u32,
+    ) {
+        put_u16_le(bytes, offset, tag);
+        put_u16_le(bytes, offset + 2, kind);
+        put_u32_le(bytes, offset + 4, count);
+        if kind == 3 {
+            put_u16_le(bytes, offset + 8, value as u16);
+        } else {
+            put_u32_le(bytes, offset + 8, value);
+        }
+    }
+
+    fn synthetic_tiff_preview_fixture(
+        preview: &[u8],
+        raw_preview: &[u8],
+        raw_photometric: Option<u16>,
+        raw_cr2_slice: bool,
+        gap_before_raw_ifd: usize,
+    ) -> Vec<u8> {
+        const IFD0_OFFSET: usize = 8;
+        const IFD0_SIZE: usize = 2 + 2 * 12 + 4;
+        let preview_offset = IFD0_OFFSET + IFD0_SIZE;
+        let raw_ifd_offset = preview_offset + preview.len() + gap_before_raw_ifd;
+        let raw_entry_count =
+            2 + usize::from(raw_photometric.is_some()) + usize::from(raw_cr2_slice);
+        let raw_ifd_size = 2 + raw_entry_count * 12 + 4;
+        let raw_offset = raw_ifd_offset + raw_ifd_size;
+        let mut bytes = vec![0u8; raw_offset + raw_preview.len()];
+
+        bytes[0..2].copy_from_slice(b"II");
+        put_u16_le(&mut bytes, 2, 42);
+        put_u32_le(&mut bytes, 4, IFD0_OFFSET as u32);
+        put_u16_le(&mut bytes, IFD0_OFFSET, 2);
+        put_tiff_entry(
+            &mut bytes,
+            IFD0_OFFSET + 2,
+            0x0111,
+            4,
+            1,
+            preview_offset as u32,
+        );
+        put_tiff_entry(
+            &mut bytes,
+            IFD0_OFFSET + 14,
+            0x0117,
+            4,
+            1,
+            preview.len() as u32,
+        );
+        put_u32_le(&mut bytes, IFD0_OFFSET + 26, raw_ifd_offset as u32);
+
+        put_u16_le(&mut bytes, raw_ifd_offset, raw_entry_count as u16);
+        let mut entry_offset = raw_ifd_offset + 2;
+        if let Some(photometric) = raw_photometric {
+            put_tiff_entry(&mut bytes, entry_offset, 0x0106, 3, 1, photometric as u32);
+            entry_offset += 12;
+        }
+        if raw_cr2_slice {
+            put_tiff_entry(&mut bytes, entry_offset, 0xc640, 3, 1, 1);
+            entry_offset += 12;
+        }
+        put_tiff_entry(&mut bytes, entry_offset, 0x0111, 4, 1, raw_offset as u32);
+        put_tiff_entry(
+            &mut bytes,
+            entry_offset + 12,
+            0x0117,
+            4,
+            1,
+            raw_preview.len() as u32,
+        );
+        put_u32_le(&mut bytes, entry_offset + 24, 0);
+
+        bytes[preview_offset..preview_offset + preview.len()].copy_from_slice(preview);
+        bytes[raw_offset..].copy_from_slice(raw_preview);
+        bytes
+    }
+
+    fn synthetic_raw_ifd0_with_subifd_preview(preview: &[u8]) -> Vec<u8> {
+        const IFD_OFFSET: usize = 8;
+        const IFD_SIZE: usize = 2 + 2 * 12 + 4;
+        let sub_ifd_offset = IFD_OFFSET + IFD_SIZE;
+        let preview_offset = sub_ifd_offset + IFD_SIZE + 520 * 1024;
+        let mut bytes = vec![0u8; preview_offset + preview.len()];
+
+        bytes[0..2].copy_from_slice(b"II");
+        put_u16_le(&mut bytes, 2, 42);
+        put_u32_le(&mut bytes, 4, IFD_OFFSET as u32);
+        put_u16_le(&mut bytes, IFD_OFFSET, 2);
+        put_tiff_entry(&mut bytes, IFD_OFFSET + 2, 0x0106, 3, 1, 32803);
+        put_tiff_entry(
+            &mut bytes,
+            IFD_OFFSET + 14,
+            0x014a,
+            4,
+            1,
+            sub_ifd_offset as u32,
+        );
+        put_u32_le(&mut bytes, IFD_OFFSET + 26, 0);
+
+        put_u16_le(&mut bytes, sub_ifd_offset, 2);
+        put_tiff_entry(
+            &mut bytes,
+            sub_ifd_offset + 2,
+            0x0111,
+            4,
+            1,
+            preview_offset as u32,
+        );
+        put_tiff_entry(
+            &mut bytes,
+            sub_ifd_offset + 14,
+            0x0117,
+            4,
+            1,
+            preview.len() as u32,
+        );
+        put_u32_le(&mut bytes, sub_ifd_offset + 26, 0);
+        bytes[preview_offset..].copy_from_slice(preview);
+        bytes
+    }
+
+    #[test]
+    fn tiff_preview_rejects_lossless_cfa_jpeg_candidates() {
+        let preview = synthetic_jpeg(8688, 5792, 0xc0, 8, 3);
+        let raw = synthetic_jpeg(4448, 2960, 0xc3, 14, 1);
+        let fixture = synthetic_tiff_preview_fixture(&preview, &raw, None, false, 0);
+        let root = import_contract_root("tiff-preview-lossless");
+        let path = root.join("fixture.cr2");
+        std::fs::write(&path, fixture).unwrap();
+
+        let extracted = extract_tiff_jpeg_preview(path.to_string_lossy().as_ref(), 1024).unwrap();
+
+        assert_eq!(extracted, preview);
+        assert_eq!(jpeg_dimensions(&extracted), Some((8688, 5792)));
+        assert_eq!(jpeg_dimensions(&raw), None);
+    }
+
+    #[test]
+    fn tiff_preview_skips_raw_pixel_ifds() {
+        let preview = synthetic_jpeg(160, 120, 0xc0, 8, 3);
+        let raw = synthetic_jpeg(4448, 2960, 0xc0, 8, 3);
+        let root = import_contract_root("tiff-preview-raw-ifd");
+        for (name, photometric, cr2_slice) in [
+            ("cfa.cr2", Some(32803), false),
+            ("cr2-slices.cr2", None, true),
+        ] {
+            let fixture =
+                synthetic_tiff_preview_fixture(&preview, &raw, photometric, cr2_slice, 520 * 1024);
+            let path = root.join(name);
+            std::fs::write(&path, fixture).unwrap();
+
+            let extracted =
+                extract_tiff_jpeg_preview(path.to_string_lossy().as_ref(), 1024).unwrap();
+
+            assert_eq!(extracted, preview, "{name}");
+            assert_eq!(jpeg_dimensions(&raw), Some((4448, 2960)));
+        }
+    }
+
+    #[test]
+    fn tiff_preview_reads_a_preview_subifd_beneath_a_raw_ifd0() {
+        let preview = synthetic_jpeg(160, 120, 0xc0, 8, 3);
+        let fixture = synthetic_raw_ifd0_with_subifd_preview(&preview);
+        let root = import_contract_root("tiff-preview-raw-root-subifd");
+        let path = root.join("fixture.cr2");
+        std::fs::write(&path, fixture).unwrap();
+
+        let extracted = extract_tiff_jpeg_preview(path.to_string_lossy().as_ref(), 1024).unwrap();
+
+        assert_eq!(extracted, preview);
+        assert_eq!(jpeg_dimensions(&extracted), Some((160, 120)));
+    }
+
+    #[test]
+    #[ignore = "manual Canon 5DS CR2 preview, gate and render diagnostic"]
+    fn canon_5ds_cr2_preview_and_gate_diagnostic() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let output_root = root.join("target").join("canon-5ds-cr2-diagnostic");
+        std::fs::create_dir_all(&output_root).unwrap();
+        for name in ["4 (11).CR2", "4 (12).CR2"] {
+            let path = root.join("test_picture").join("佳能5DS").join(name);
+            let path_string = path.to_string_lossy().to_string();
+            let stem = path
+                .file_stem()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap();
+            let ifd0 = read_classic_tiff_directory(&path_string, 0).unwrap();
+            let preview =
+                extract_tiff_jpeg_preview(&path_string, IMPORT_PREVIEW_LONG_EDGE).unwrap();
+            let preview_dimensions = jpeg_dimensions(&preview).unwrap();
+            println!(
+                "[CR2 PREVIEW] {stem}: ifd0_offset={} strip_offset={} strip_bytes={} extracted_bytes={} dimensions={preview_dimensions:?}",
+                ifd0.ifd_offset,
+                ifd0.strip_offsets.first().copied().unwrap_or_default(),
+                ifd0.strip_byte_counts.first().copied().unwrap_or_default(),
+                preview.len(),
+            );
+            assert_eq!(preview.len(), ifd0.strip_byte_counts[0] as usize);
+
+            let encoded =
+                decode_import_preview_base64(&path_string, IMPORT_PREVIEW_LONG_EDGE).unwrap();
+            let encoded_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&encoded)
+                .unwrap();
+            let preview_image = image::load_from_memory(&encoded_bytes).unwrap();
+            preview_image
+                .save(output_root.join(format!("{stem}-import-preview.jpg")))
+                .unwrap();
+            let preview_gate = super::detect_film_border_from_encoded(
+                &encoded,
+                Some("135"),
+                Some(&GeometryState::default()),
+            )
+            .unwrap();
+            println!(
+                "[CR2 PREVIEW GATE] {stem}: preview={:?} status={} confidence={:?} points={:?}",
+                preview_image.dimensions(),
+                preview_gate.status,
+                preview_gate.confidence,
+                preview_gate.points
+            );
+
+            let legacy = report_legacy_transport(&path_string, 1200).unwrap();
+            let legacy_gate = crate::film_border::detect_film_border(
+                &image::DynamicImage::ImageRgb16(legacy.clone()),
+            );
+            println!(
+                "[CR2 U16 GATE] {stem}: image={:?} status={} confidence={:?} points={:?}",
+                legacy.dimensions(),
+                legacy_gate.status,
+                legacy_gate.confidence,
+                legacy_gate.points
+            );
+
+            let develop = decode_modern_input(
+                &path_string,
+                DecodeMode::DevelopProxy,
+                None,
+                PROXY_LONG_EDGE as u32,
+                false,
+            )
+            .unwrap();
+            println!(
+                "[CR2 MODERN] {stem}: DevelopProxy={:?}",
+                develop.image.dimensions()
+            );
+            let export =
+                decode_modern_input(&path_string, DecodeMode::ExportFull, None, u32::MAX, false)
+                    .unwrap();
+            println!(
+                "[CR2 MODERN] {stem}: ExportFull={:?}",
+                export.image.dimensions()
+            );
+            drop(export);
+
+            let estimate = &develop.image;
+            for (label, points) in [
+                ("full-frame", None),
+                ("preview-gate", Some(preview_gate.points)),
+                ("u16-gate", Some(legacy_gate.points)),
+            ] {
+                let mut geom = GeometryState::default();
+                if let Some(points) = points {
+                    geom.calibration_points = Some(points);
+                    geom.calibration_confirmed = true;
+                }
+                let base = estimate_film_base_f32(&estimate, &geom);
+                let base_density = if base.is_trusted() {
+                    base.density
+                } else {
+                    [0.0; 3]
+                };
+                let mut limits = compute_content_limits_f32_with_bounds(
+                    &estimate,
+                    None,
+                    &geom,
+                    base_density,
+                    None,
+                )
+                .unwrap();
+                let (offsets, short_content) = prepare_content_render_limits(
+                    &mut limits,
+                    &DensityAnchors::default(),
+                    base_density,
+                );
+                let mut params = TuningParams::default();
+                params.density.d_min = limits.d_min;
+                params.density.d_max = limits.d_max;
+                let render_source = if base.is_trusted() {
+                    match base.source {
+                        "film_edge_band" => "film_edge_band",
+                        "film_area_low_density_tail" => "detected_film_base",
+                        source => source,
+                    }
+                } else {
+                    base.source
+                };
+                let mut state = PipelineState::smart_auto();
+                state.processing_report.base_source = render_source.to_string();
+                state.processing_report.base_confidence = format!("{:.3}", base.confidence);
+                state.processing_report.camera_to_display = develop.camera_to_display;
+                let rendered = render_f32_shader_equivalent(
+                    estimate,
+                    None,
+                    &params,
+                    &geom,
+                    &base_color_from_density(base_density),
+                    &state,
+                    None,
+                );
+                println!(
+                    "[CR2 RENDER] {stem} {label}: base_source={} base=({:.4},{:.4},{:.4}) d_min=({:.4},{:.4},{:.4}) d_max=({:.4},{:.4},{:.4}) offsets=({:.4},{:.4},{:.4}) short_content={short_content}",
+                    base.source,
+                    base.density[0],
+                    base.density[1],
+                    base.density[2],
+                    limits.d_min[0],
+                    limits.d_min[1],
+                    limits.d_min[2],
+                    limits.d_max[0],
+                    limits.d_max[1],
+                    limits.d_max[2],
+                    offsets[0],
+                    offsets[1],
+                    offsets[2],
+                );
+                ab_render_report(&format!("{stem}-{label}"), &rendered);
+                if label != "full-frame" {
+                    assert!(
+                        base.is_trusted(),
+                        "{stem} {label}: the gate render must use a trusted film base"
+                    );
+                    let full = render_full_percentages(&rendered);
+                    assert!(
+                        full.iter().all(|percentage| *percentage < 10.0),
+                        "{stem} {label}: gate render is overexposed, full={full:?}"
+                    );
+                }
+                report_balance(&stem, label, &rendered);
+                ab_save_preview(
+                    output_root.join(format!("{stem}-{label}-rendered.jpg")),
+                    &rendered,
+                );
+            }
+        }
     }
 
     #[test]
@@ -19486,7 +20545,7 @@ mod import_contract_tests {
     }
 
     #[test]
-    fn linear_raw_dng_subifd_page_uses_its_embedded_icc() {
+    fn linear_raw_dng_subifd_page_inherits_the_ifd0_icc() {
         let root = import_contract_root("linear-dng-subifd");
         let path = root.join("frame.dng");
         let source = ImageBuffer::from_fn(2, 2, |x, y| {
@@ -19504,12 +20563,126 @@ mod import_contract_tests {
         let directory = dng_linear_raw_directory(&path_text).expect("LinearRaw SubIFD");
         assert_eq!(directory.photometric, 34892);
         assert_eq!(directory.icc_profile.as_deref(), Some(icc.as_slice()));
+        let root_ifd = read_classic_tiff_directory(&path_text, 0).expect("IFD0");
+        assert_eq!(root_ifd.icc_profile.as_deref(), Some(icc.as_slice()));
+        assert_ne!(root_ifd.ifd_offset, directory.ifd_offset);
         let decoded = decode_uncompressed_linear_dng_reduced(&path_text, u32::MAX).unwrap();
         assert_eq!(decoded.as_raw(), source.as_raw());
 
         let working = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
         let expected = expected_icc_prophoto_estimate(&source, &icc);
         assert_estimate_matches(&working, &expected);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_subifd_inherits_ifd0_metadata_and_prefers_the_daylight_matrix() {
+        let root = import_contract_root("linear-dng-subifd-inheritance");
+        let path = root.join("frame.dng");
+        let source = ImageBuffer::from_raw(
+            2,
+            1,
+            vec![10_000u16, 20_000, 30_000, 40_000, 50_000, 60_000],
+        )
+        .unwrap();
+        let tungsten = [
+            [1.45, 0.12, -0.08],
+            [-0.32, 1.20, -0.02],
+            [0.03, -0.18, 0.95],
+        ];
+        let daylight_f64 = xyz_d50_to_color_space_matrix(ColorSpaceId::DisplayP3);
+        let daylight = [
+            [
+                daylight_f64[0] as f32,
+                daylight_f64[1] as f32,
+                daylight_f64[2] as f32,
+            ],
+            [
+                daylight_f64[3] as f32,
+                daylight_f64[4] as f32,
+                daylight_f64[5] as f32,
+            ],
+            [
+                daylight_f64[6] as f32,
+                daylight_f64[7] as f32,
+                daylight_f64[8] as f32,
+            ],
+        ];
+        let neutral = [0.5, 1.0, 0.8];
+        write_linear_raw_dng_with_root_metadata(
+            &path,
+            &source,
+            tungsten,
+            Some(daylight),
+            17,
+            Some(21),
+            neutral,
+            6,
+        );
+        let path_text = path.to_string_lossy().to_string();
+
+        let directory = dng_linear_raw_directory(&path_text).expect("LinearRaw SubIFD");
+        assert_ne!(directory.ifd_offset, 8, "the full page must be the SubIFD");
+        assert_eq!(directory.calibration_illuminant1, Some(17));
+        assert_eq!(directory.calibration_illuminant2, Some(21));
+        assert_eq!(directory.orientation, 6);
+        let directory_neutral = directory.as_shot_neutral.expect("inherited neutral");
+        for (actual, expected) in directory_neutral.into_iter().zip(neutral) {
+            assert!((actual - expected).abs() < 2e-5);
+        }
+        assert_eq!(directory.color_matrix1, Some(tungsten));
+        let directory_daylight = directory.color_matrix2.expect("inherited D65 matrix");
+        for (actual, expected) in directory_daylight
+            .iter()
+            .flatten()
+            .zip(daylight.iter().flatten())
+        {
+            assert!((actual - expected).abs() < 2e-4);
+        }
+
+        let domain = super::resolve_linear_raw_dng_domain(&path_text);
+        assert_eq!(domain.input_domain.source, InputDomainSource::RawMetadata);
+        assert!(!domain.input_domain.estimated);
+        assert!(
+            domain.input_domain.detail.contains("colormatrix2"),
+            "the D65 ColorMatrix2 must win over Standard Light A: {}",
+            domain.input_domain.detail
+        );
+        assert!(domain.input_domain.detail.contains("illuminant21"));
+        let expected_matrix = dng_color_matrix_to_prophoto(daylight).unwrap();
+        let actual_matrix = domain.color_matrix_to(ColorSpaceId::ProPhotoRgb);
+        for (actual, expected) in actual_matrix.iter().zip(expected_matrix) {
+            assert!((actual - expected).abs() < 2e-4);
+        }
+
+        let decoded = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
+        assert_eq!(
+            decoded.dimensions(),
+            (1, 2),
+            "the inherited IFD0 orientation must rotate the SubIFD page exactly once"
+        );
+        let gains = domain.white_balance_gains();
+        for (x, y, samples) in [
+            (0, 0, [10_000.0f32, 20_000.0, 30_000.0]),
+            (0, 1, [40_000.0f32, 50_000.0, 60_000.0]),
+        ] {
+            let expected = clamp_positive_transmission_for_density(apply_linear_matrix(
+                [
+                    samples[0] / 65535.0 * gains[0],
+                    samples[1] / 65535.0 * gains[1],
+                    samples[2] / 65535.0 * gains[2],
+                ],
+                expected_matrix,
+            ));
+            let actual = decoded.get_pixel(x, y).0;
+            for channel in 0..3 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 5.0e-5,
+                    "SubIFD metadata inheritance changed the decoded pixel: \
+                     expected={expected:?} actual={actual:?}"
+                );
+            }
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -19536,7 +20709,14 @@ mod import_contract_tests {
             flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(&raw).unwrap();
         let compressed = encoder.finish().unwrap();
-        write_linear_raw_dng_with_compressed_subifd(&path, &source, Some(&icc), 8, &compressed);
+        write_linear_raw_dng_with_compressed_subifd(
+            &path,
+            &source,
+            Some(&icc),
+            8,
+            &compressed,
+            None,
+        );
         let path_text = path.to_string_lossy().to_string();
 
         let directory = dng_linear_raw_directory(&path_text).expect("LinearRaw SubIFD");
@@ -19550,11 +20730,210 @@ mod import_contract_tests {
         let decoded = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
         assert_eq!(
             decoded.dimensions(),
-            (3, 2),
-            "the SubIFD page, not the 1x1 IFD0 preview, must be decoded"
+            (2, 3),
+            "the SubIFD page must be decoded and inherit IFD0 orientation 6"
         );
-        let expected = expected_icc_prophoto_estimate(&source, &icc);
+        let mut oriented = ImageBuffer::from_pixel(source.height(), source.width(), Rgb([0u16; 3]));
+        for y in 0..source.height() {
+            for x in 0..source.width() {
+                oriented.put_pixel(source.height() - 1 - y, x, *source.get_pixel(x, y));
+            }
+        }
+        let expected = expected_icc_prophoto_estimate(&oriented, &icc);
         assert_estimate_matches(&decoded, &expected);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_opcode_list2_runs_before_proxy_downsampling() {
+        let root = import_contract_root("linear-dng-opcode-list2");
+        let path = root.join("frame.dng");
+        let coefficients = vec![
+            vec![0.05, 0.10, 0.0, 0.20],
+            vec![0.03, 0.08, 0.0, 0.15],
+            vec![0.01, 0.05, 0.0, 0.10],
+        ];
+        let expected = [[0.30f32, 0.20, 0.12], [0.05, 0.10, 0.03]];
+        let samples = expected
+            .iter()
+            .flat_map(|pixel| {
+                pixel
+                    .iter()
+                    .zip(coefficients.iter())
+                    .map(|(target, polynomial)| {
+                        let stored = solve_test_polynomial(polynomial, f64::from(*target));
+                        (stored * 65535.0).round().clamp(0.0, 65535.0) as u16
+                    })
+            })
+            .collect::<Vec<_>>();
+        let opcode_list = test_map_polynomial_opcode_list(2, 1, &coefficients);
+        let bytes = crate::dng_writer::linear_dng_bytes(&crate::dng_writer::LinearDngRequest {
+            width: 2,
+            height: 1,
+            rgb16: &samples,
+            xyz_to_space: xyz_d50_to_color_space_matrix(ColorSpaceId::ProPhotoRgb),
+            icc_profile: None,
+            camera_model: "OpcodeList2 test",
+            description: None,
+            software: "NexFilm test",
+            timestamp: "2026:01:01 00:00:00",
+            opcode_list2: Some(&opcode_list),
+        })
+        .unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+
+        let directory = dng_linear_raw_directory(&path_text).expect("LinearRaw page");
+        assert_eq!(
+            directory.opcode_list2.as_deref(),
+            Some(opcode_list.as_slice()),
+            "the selected LinearRaw IFD must expose its OpcodeList2"
+        );
+        let summary = crate::dng_opcode::apply_opcode_list2(
+            directory.opcode_list2.as_deref().unwrap(),
+            2,
+            1,
+            super::linear_raw_active_origin(&directory).0,
+            super::linear_raw_active_origin(&directory).1,
+            &mut [0.0; 6],
+        )
+        .unwrap();
+        assert_eq!(summary.map_polynomial_count, 3);
+        assert_eq!(summary.map_table_count, 0);
+
+        let export = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
+        assert_eq!(export.dimensions(), (2, 1));
+        for (x, expected_pixel) in expected.iter().enumerate() {
+            let actual = export.get_pixel(x as u32, 0).0;
+            for channel in 0..3 {
+                assert!(
+                    (actual[channel] - expected_pixel[channel]).abs() < 1.0e-4,
+                    "pixel {x} channel {channel} after stage 2: \
+                     expected={expected_pixel:?} actual={actual:?}"
+                );
+            }
+        }
+
+        let proxy = decode_linear_raw_dng_prophoto_estimate(&path_text, 1).unwrap();
+        assert_eq!(proxy.dimensions(), (1, 1));
+        let expected_mean = [
+            (export.get_pixel(0, 0)[0] + export.get_pixel(1, 0)[0]) * 0.5,
+            (export.get_pixel(0, 0)[1] + export.get_pixel(1, 0)[1]) * 0.5,
+            (export.get_pixel(0, 0)[2] + export.get_pixel(1, 0)[2]) * 0.5,
+        ];
+        let actual_mean = proxy.get_pixel(0, 0).0;
+        for channel in 0..3 {
+            assert!(
+                (actual_mean[channel] - expected_mean[channel]).abs() < 1.0e-4,
+                "proxy must average already-linearised samples: \
+                 expected={expected_mean:?} actual={actual_mean:?}"
+            );
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_opcode_list2_matches_streaming_and_tiff_subifd_paths() {
+        use std::io::Write as _;
+
+        let root = import_contract_root("linear-dng-opcode-paths");
+        let source = ImageBuffer::from_raw(
+            2,
+            2,
+            vec![
+                10_000u16, 20_000, 30_000, 40_000, 50_000, 60_000, 12_000, 22_000, 32_000, 42_000,
+                52_000, 62_000,
+            ],
+        )
+        .unwrap();
+        let polynomials = vec![
+            vec![0.0, 0.0, 1.0],
+            vec![0.0, 0.0, 1.0],
+            vec![0.0, 0.0, 1.0],
+        ];
+        let opcode_list =
+            test_map_polynomial_opcode_list(source.width(), source.height(), &polynomials);
+
+        let streaming_path = root.join("streaming.dng");
+        let bytes = crate::dng_writer::linear_dng_bytes(&crate::dng_writer::LinearDngRequest {
+            width: source.width(),
+            height: source.height(),
+            rgb16: source.as_raw(),
+            xyz_to_space: xyz_d50_to_color_space_matrix(ColorSpaceId::ProPhotoRgb),
+            icc_profile: None,
+            camera_model: "OpcodeList2 path test",
+            description: None,
+            software: "NexFilm test",
+            timestamp: "2026:01:01 00:00:00",
+            opcode_list2: Some(&opcode_list),
+        })
+        .unwrap();
+        std::fs::write(&streaming_path, bytes).unwrap();
+
+        let tiff_path = root.join("deflate-subifd.dng");
+        let raw: Vec<u8> = source
+            .as_raw()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&raw).unwrap();
+        let compressed = encoder.finish().unwrap();
+        write_linear_raw_dng_with_compressed_subifd(
+            &tiff_path,
+            &source,
+            None,
+            8,
+            &compressed,
+            Some(&opcode_list),
+        );
+
+        let streaming = super::decode_linear_raw_dng_rgb_f32(
+            streaming_path.to_string_lossy().as_ref(),
+            u32::MAX,
+        )
+        .unwrap();
+        let tiff =
+            super::decode_linear_raw_dng_rgb_f32(tiff_path.to_string_lossy().as_ref(), u32::MAX)
+                .unwrap();
+        assert_eq!(streaming.dimensions(), source.dimensions());
+        assert_eq!(tiff.dimensions(), source.dimensions());
+        for (index, source_pixel) in source.as_raw().chunks_exact(3).enumerate() {
+            let expected = [
+                (f32::from(source_pixel[0]) / 65535.0).powi(2),
+                (f32::from(source_pixel[1]) / 65535.0).powi(2),
+                (f32::from(source_pixel[2]) / 65535.0).powi(2),
+            ];
+            let actual: [f32; 3] = streaming.as_raw()[index * 3..index * 3 + 3]
+                .try_into()
+                .unwrap();
+            for channel in 0..3 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 1.0e-6,
+                    "streaming path pixel {index} channel {channel}: \
+                     expected={expected:?} actual={actual:?}"
+                );
+            }
+        }
+        // The compressed page lives in a SubIFD, so the helper's IFD0
+        // orientation 6 is inherited and must run after opcode linearisation.
+        let expected_oriented = super::apply_tiff_orientation(streaming, 6);
+        for (actual, expected) in tiff
+            .as_raw()
+            .chunks_exact(3)
+            .zip(expected_oriented.as_raw().chunks_exact(3))
+        {
+            for channel in 0..3 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 1.0e-6,
+                    "TIFF and streaming paths must agree after the shared \
+                     opcode/orientation order: expected={expected:?} actual={actual:?}"
+                );
+            }
+        }
 
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -19564,7 +20943,7 @@ mod import_contract_tests {
         let root = import_contract_root("linear-dng-unsupported-subifd");
         let path = root.join("frame.dng");
         let source = ImageBuffer::from_pixel(2, 2, Rgb([10_000u16, 20_000, 30_000]));
-        write_linear_raw_dng_with_compressed_subifd(&path, &source, None, 7, &[1, 2, 3, 4]);
+        write_linear_raw_dng_with_compressed_subifd(&path, &source, None, 7, &[1, 2, 3, 4], None);
         let path_text = path.to_string_lossy().to_string();
 
         let error = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap_err();
@@ -19699,6 +21078,7 @@ mod import_contract_tests {
             description: None,
             software: "NexFilm test",
             timestamp: "2026:01:01 00:00:00",
+            opcode_list2: None,
         })
         .unwrap();
         std::fs::write(&path, bytes).unwrap();
@@ -19764,6 +21144,7 @@ mod import_contract_tests {
                 description: None,
                 software: "NexFilm test",
                 timestamp: "2026:01:01 00:00:00",
+                opcode_list2: None,
             })
             .unwrap();
             std::fs::write(&path, bytes).unwrap();
@@ -19848,6 +21229,7 @@ mod import_contract_tests {
             description: None,
             software: "NexFilm test",
             timestamp: "2026:01:01 00:00:00",
+            opcode_list2: None,
         })
         .unwrap();
         std::fs::write(&path, bytes).unwrap();
@@ -19867,6 +21249,408 @@ mod import_contract_tests {
         );
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "read-only user-supplied JPEG XL LinearRaw panorama; run explicitly for release diagnostics"]
+    fn compressed_linear_raw_panorama_sample_diagnostic() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("_DSC7587-3-Pano.dng");
+        if !path.is_file() {
+            return;
+        }
+        let path_text = path.to_string_lossy().to_string();
+        let directory = dng_linear_raw_directory(&path_text).expect("LinearRaw page");
+        let domain = resolve_input_domain(&path_text, None);
+        println!(
+            "[DNG DIAG] IFD={} {}x{} bits={:?} compression={} photometric={} orientation={}",
+            directory.ifd_offset,
+            directory.width,
+            directory.height,
+            directory.bits_per_sample,
+            directory.compression,
+            directory.photometric,
+            directory.orientation
+        );
+        println!(
+            "[DNG DIAG] domain source={:?} primaries={:?} transfer={:?} detail={} estimated={}",
+            domain.source, domain.primaries, domain.transfer, domain.detail, domain.estimated
+        );
+        println!(
+            "[DNG DIAG] matrices=({},{}) illuminants=({:?},{:?}) neutral={:?} gains={:?}",
+            directory.color_matrix1.is_some(),
+            directory.color_matrix2.is_some(),
+            directory.calibration_illuminant1,
+            directory.calibration_illuminant2,
+            directory.as_shot_neutral,
+            super::resolve_linear_raw_dng_domain(&path_text).white_balance_gains()
+        );
+        let opcode_list = directory
+            .opcode_list2
+            .clone()
+            .expect("the panorama must carry OpcodeList2");
+        println!(
+            "[DNG DIAG] opcode_list2 bytes={} active_area={:?} crop_origin={:?} crop_size={:?}",
+            opcode_list.len(),
+            directory.active_area,
+            directory.default_crop_origin,
+            directory.default_crop_size
+        );
+        {
+            let mut raw = crate::rawler_backend::decode_linear_raw_rgb(&path_text)
+                .expect("rawler full-resolution LinearRaw decode");
+            assert_eq!((raw.width, raw.height), (directory.width, directory.height));
+            let stats = |pixels: &[f32]| {
+                let mut mean = [0.0f64; 3];
+                let mut minimum = [f32::INFINITY; 3];
+                let mut maximum = [f32::NEG_INFINITY; 3];
+                for pixel in pixels.chunks_exact(3) {
+                    for channel in 0..3 {
+                        let value = pixel[channel];
+                        mean[channel] += f64::from(value);
+                        minimum[channel] = minimum[channel].min(value);
+                        maximum[channel] = maximum[channel].max(value);
+                    }
+                }
+                let count = (pixels.len() / 3).max(1) as f64;
+                (mean.map(|sum| sum / count), minimum, maximum)
+            };
+            let (before, before_min, before_max) = stats(&raw.pixels);
+            let raw_domain = super::resolve_linear_raw_dng_domain(&path_text);
+            let gains = raw_domain.white_balance_gains();
+            let matrix = raw_domain.color_matrix_to(ColorSpaceId::ProPhotoRgb);
+            let mut before_prophoto_mean = [0.0f64; 3];
+            let mut before_prophoto_samples = [Vec::new(), Vec::new(), Vec::new()];
+            for (index, pixel) in raw.pixels.chunks_exact(3).enumerate() {
+                let mapped = clamp_positive_transmission_for_density(apply_linear_matrix(
+                    [
+                        pixel[0] * gains[0],
+                        pixel[1] * gains[1],
+                        pixel[2] * gains[2],
+                    ],
+                    matrix,
+                ));
+                for channel in 0..3 {
+                    before_prophoto_mean[channel] += f64::from(mapped[channel]);
+                    if index % 17 == 0 {
+                        before_prophoto_samples[channel].push(mapped[channel]);
+                    }
+                }
+            }
+            let before_prophoto_count = (raw.pixels.len() / 3).max(1) as f64;
+            println!(
+                "[DNG DIAG] pre-opcode ProPhoto mean=({:.5},{:.5},{:.5}) R/G={:.4} B/G={:.4}",
+                before_prophoto_mean[0] / before_prophoto_count,
+                before_prophoto_mean[1] / before_prophoto_count,
+                before_prophoto_mean[2] / before_prophoto_count,
+                before_prophoto_mean[0] / before_prophoto_mean[1].max(1e-9),
+                before_prophoto_mean[2] / before_prophoto_mean[1].max(1e-9)
+            );
+            for channel in 0..3 {
+                let mut values = std::mem::take(&mut before_prophoto_samples[channel]);
+                values.sort_unstable_by(f32::total_cmp);
+                let percentile =
+                    |fraction: f32| values[((values.len() - 1) as f32 * fraction) as usize];
+                println!(
+                    "[DNG DIAG] pre-opcode {} p01={:.5} p50={:.5} p99={:.5} max={:.5}",
+                    ["R", "G", "B"][channel],
+                    percentile(0.01),
+                    percentile(0.50),
+                    percentile(0.99),
+                    values.last().copied().unwrap_or(0.0)
+                );
+            }
+            let (active_left, active_top) = super::linear_raw_active_origin(&directory);
+            let summary = crate::dng_opcode::apply_opcode_list2(
+                &opcode_list,
+                raw.width,
+                raw.height,
+                active_left,
+                active_top,
+                &mut raw.pixels,
+            )
+            .expect("apply the panorama OpcodeList2");
+            let (after, after_min, after_max) = stats(&raw.pixels);
+            println!(
+                "[DNG DIAG] opcodes parsed={} polynomial={} table={} optional_skipped={} writes={}",
+                summary.opcode_count,
+                summary.map_polynomial_count,
+                summary.map_table_count,
+                summary.skipped_optional_count,
+                summary.pixel_writes
+            );
+            println!(
+                "[DNG DIAG] OpcodeList2 before mean=({:.5},{:.5},{:.5}) min={:?} max={:?}",
+                before[0], before[1], before[2], before_min, before_max
+            );
+            println!(
+                "[DNG DIAG] OpcodeList2 after  mean=({:.5},{:.5},{:.5}) min={:?} max={:?}",
+                after[0], after[1], after[2], after_min, after_max
+            );
+            assert_eq!(summary.map_polynomial_count, 3);
+            assert_eq!(
+                summary.pixel_writes,
+                u64::from(raw.width) * u64::from(raw.height) * 3
+            );
+            assert!(
+                after[0] > after[1] && after[1] > after[2],
+                "stage-2 linearisation must restore R > G > B before colour conversion: {after:?}"
+            );
+        }
+        assert_eq!(
+            domain.source,
+            InputDomainSource::RawMetadata,
+            "the panorama must use its DNG colour metadata"
+        );
+        assert!(
+            domain.detail.contains("colormatrix2"),
+            "D65 ColorMatrix2 must be selected: {}",
+            domain.detail
+        );
+
+        let proxy = decode_modern_input(
+            &path_text,
+            DecodeMode::DevelopProxy,
+            None,
+            PROXY_LONG_EDGE as u32,
+            false,
+        )
+        .unwrap();
+        let export =
+            decode_modern_input(&path_text, DecodeMode::ExportFull, None, u32::MAX, false).unwrap();
+        println!(
+            "[DNG DIAG] decoded proxy={}x{} export={}x{}",
+            proxy.image.width(),
+            proxy.image.height(),
+            export.image.width(),
+            export.image.height()
+        );
+        assert_eq!(proxy.input_domain.source, InputDomainSource::RawMetadata);
+        assert_eq!(export.input_domain.source, InputDomainSource::RawMetadata);
+        assert_eq!(
+            proxy.image.width().max(proxy.image.height()),
+            PROXY_LONG_EDGE as u32
+        );
+        assert!(export.image.width().max(export.image.height()) > 7_000);
+
+        let image = &export.image;
+        let total = f64::from(image.width()) * f64::from(image.height());
+        let mut means = [0.0f64; 3];
+        let mut saturated = [0.0f64; 3];
+        let mut over_one = [0.0f64; 3];
+        let mut sampled = [Vec::new(), Vec::new(), Vec::new()];
+        for (index, pixel) in image.as_raw().chunks_exact(3).enumerate() {
+            for channel in 0..3 {
+                let value = pixel[channel];
+                means[channel] += f64::from(value);
+                if value >= 0.999 {
+                    saturated[channel] += 1.0;
+                }
+                if value >= 1.0 {
+                    over_one[channel] += 1.0;
+                }
+                if index % 17 == 0 {
+                    sampled[channel].push(value);
+                }
+            }
+        }
+        println!(
+            "[DNG DIAG] decoded mean=({:.5},{:.5},{:.5}) R/G={:.4} B/G={:.4}",
+            means[0] / total,
+            means[1] / total,
+            means[2] / total,
+            means[0] / means[1].max(1e-9),
+            means[2] / means[1].max(1e-9)
+        );
+        assert!(
+            means[0] > means[1] && means[1] > means[2],
+            "decoded ProPhoto means must keep the orange-negative order R > G > B: {means:?}"
+        );
+        for channel in 0..3 {
+            let mut values = std::mem::take(&mut sampled[channel]);
+            values.sort_unstable_by(f32::total_cmp);
+            let percentile =
+                |fraction: f32| values[((values.len() - 1) as f32 * fraction) as usize];
+            println!(
+                "[DNG DIAG] {} p01={:.5} p50={:.5} p99={:.5} max={:.5} \
+                 >=0.999={:.3}% >=1.0={:.3}%",
+                ["R", "G", "B"][channel],
+                percentile(0.01),
+                percentile(0.50),
+                percentile(0.99),
+                values.last().copied().unwrap_or(0.0),
+                100.0 * saturated[channel] / total,
+                100.0 * over_one[channel] / total
+            );
+        }
+
+        let working = ImageBuffer::<Rgb<u16>, Vec<u16>>::from_fn(
+            proxy.image.width(),
+            proxy.image.height(),
+            |x, y| {
+                let pixel = proxy.image.get_pixel(x, y).0;
+                Rgb(pixel.map(|value| (value.clamp(0.0, 1.0) * 65535.0).round() as u16))
+            },
+        );
+        let border =
+            crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(working));
+        let mut geom = GeometryState::default();
+        if border.confidence == crate::film_border::DetectionConfidence::High {
+            geom.calibration_points = Some(border.points);
+        }
+        println!(
+            "[DNG DIAG] film border confidence={:?} status={} points={:?}",
+            border.confidence, border.status, geom.calibration_points
+        );
+        let proxy_image = &proxy.image;
+        let film_base = estimate_film_base_f32(proxy_image, &geom);
+        let (analyzed_base, confidence) =
+            compute_auto_base_f32(proxy_image, &geom).expect("auto film base");
+        println!(
+            "[DNG DIAG] film base estimate density={:?} source={} usable={} fallback={:?}",
+            film_base.density,
+            film_base.source,
+            film_base.is_trusted(),
+            film_base.fallback_reason
+        );
+        println!(
+            "[DNG DIAG] auto base density={:?} confidence={:.4}",
+            analyzed_base, confidence
+        );
+        assert!(
+            analyzed_base[0] < analyzed_base[1] && analyzed_base[1] < analyzed_base[2],
+            "the automatic film base must keep the orange-negative density order \
+             D_R < D_G < D_B: {analyzed_base:?}"
+        );
+        let base_color = base_color_from_density(analyzed_base);
+        let mut state = default_pipeline_state_for_import(true, "DNG_DIAG", &[]);
+        // Match the existing _DSC7587 TIFF baseline: use the measured frame
+        // base as the display zero, so R/G is directly comparable.
+        state.density_anchors.d_min_base = Some(DensityAnchor {
+            density: analyzed_base,
+            source: DensityAnchorSource::EstimatedFromContent,
+            scope: DensityAnchorScope::Frame,
+            confidence: DensityAnchorConfidence::Estimated,
+            reference_id: None,
+            provenance: DensityAnchorProvenance {
+                input_domain: DataDomain::ProPhotoEstimate,
+                raw_decode_version: Some(crate::persistence::RAW_DECODE_VERSION),
+                algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+                legacy: false,
+                ..Default::default()
+            },
+        });
+        let base = pipeline_base_density(&state, &base_color);
+        let mut limits = compute_content_limits_f32_with_bounds(
+            proxy_image,
+            None,
+            &geom,
+            base,
+            roll_physical_density_span(&state.density_anchors, base),
+        )
+        .expect("content limits");
+        let (channel_offsets, _) =
+            prepare_content_render_limits(&mut limits, &state.density_anchors, base);
+        println!(
+            "[DNG DIAG] d_min={:?} d_max={:?} offsets={:?}",
+            limits.d_min, limits.d_max, channel_offsets
+        );
+        assert!(
+            limits.d_max.iter().all(|value| value.is_finite())
+                && limits.d_max[0] > 0.45
+                && limits.d_max[2] > 0.70,
+            "the linearised panorama must recover a real per-channel density span: {:?}",
+            limits.d_max
+        );
+        state.render_mapping.mode = RenderMode::PreserveTone;
+        state.render_mapping.density_low = limits.d_min;
+        state.render_mapping.density_high = limits.d_max;
+        state.render_mapping.channel_offsets = channel_offsets;
+        let mut params = TuningParams::default();
+        params.density.d_min = limits.d_min;
+        params.density.d_max = limits.d_max;
+        let rendered =
+            render_f32_shader_equivalent(image, None, &params, &geom, &base_color, &state, None);
+        let mut all_means = [0.0f64; 3];
+        let mut center_means = [0.0f64; 3];
+        let mut center_count = 0.0f64;
+        let mut ground_means = [0.0f64; 3];
+        let mut ground_count = 0.0f64;
+        for (y, row) in rendered.rows().enumerate() {
+            for (x, pixel) in row.enumerate() {
+                for channel in 0..3 {
+                    all_means[channel] += f64::from(pixel[channel]);
+                }
+                if (0.25..0.75).contains(&(x as f64 / rendered.width() as f64))
+                    && (0.25..0.75).contains(&(y as f64 / rendered.height() as f64))
+                {
+                    for channel in 0..3 {
+                        center_means[channel] += f64::from(pixel[channel]);
+                    }
+                    center_count += 1.0;
+                }
+                if (0.30..0.55).contains(&(x as f64 / rendered.width() as f64))
+                    && (0.60..0.85).contains(&(y as f64 / rendered.height() as f64))
+                {
+                    for channel in 0..3 {
+                        ground_means[channel] += f64::from(pixel[channel]);
+                    }
+                    ground_count += 1.0;
+                }
+            }
+        }
+        let all_total = total.max(1.0);
+        let center_total = center_count.max(1.0);
+        println!(
+            "[DNG DIAG] rendered all mean=({:.1},{:.1},{:.1}) R/G={:.3} B/G={:.3}",
+            all_means[0] / all_total,
+            all_means[1] / all_total,
+            all_means[2] / all_total,
+            all_means[0] / all_means[1].max(1.0),
+            all_means[2] / all_means[1].max(1.0)
+        );
+        let all_rg = all_means[0] / all_means[1].max(1.0);
+        let all_bg = all_means[2] / all_means[1].max(1.0);
+        println!(
+            "[DNG DIAG] rendered center mean=({:.1},{:.1},{:.1}) R/G={:.3} B/G={:.3}",
+            center_means[0] / center_total,
+            center_means[1] / center_total,
+            center_means[2] / center_total,
+            center_means[0] / center_means[1].max(1.0),
+            center_means[2] / center_means[1].max(1.0)
+        );
+        let center_rg = center_means[0] / center_means[1].max(1.0);
+        let center_bg = center_means[2] / center_means[1].max(1.0);
+        println!(
+            "[DNG DIAG] rendered mid-grey ground mean=({:.1},{:.1},{:.1}) R/G={:.3} B/G={:.3}",
+            ground_means[0] / ground_count.max(1.0),
+            ground_means[1] / ground_count.max(1.0),
+            ground_means[2] / ground_count.max(1.0),
+            ground_means[0] / ground_means[1].max(1.0),
+            ground_means[2] / ground_means[1].max(1.0)
+        );
+        let ground_rg = ground_means[0] / ground_means[1].max(1.0);
+        let ground_bg = ground_means[2] / ground_means[1].max(1.0);
+        assert!(
+            (0.90..=1.20).contains(&all_rg)
+                && (0.85..=1.20).contains(&all_bg)
+                && (0.90..=1.15).contains(&center_rg)
+                && (0.90..=1.15).contains(&center_bg)
+                && (0.90..=1.25).contains(&ground_rg)
+                && (0.80..=1.15).contains(&ground_bg),
+            "the rendered panorama must avoid both the cyan TIFF cast and the \
+             magenta non-linearised cast: all=({all_rg:.3},{all_bg:.3}) \
+             center=({center_rg:.3},{center_bg:.3}) ground=({ground_rg:.3},{ground_bg:.3})"
+        );
+        assert!(
+            saturated.iter().all(|count| *count / total < 0.01),
+            "no channel may be broadly clipped at the LinearRaw decode"
+        );
+        assert!(
+            all_rg > 0.72,
+            "the rendered red channel must improve on the previous 0.687 TIFF cast"
+        );
     }
 
     #[test]
@@ -20417,50 +22201,6 @@ mod import_contract_tests {
             means[2] / green,
             means[0] - means[2]
         );
-    }
-
-    /// Per-channel film-base density from the frame's brightest samples, the way
-    /// the v1.0.2 path estimates it. `scoped_to_area` restricts the samples to
-    /// the declared Film Area.
-    fn ab_frame_base_density(
-        image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
-        geom: &GeometryState,
-        scoped_to_area: bool,
-    ) -> [f32; 3] {
-        let points =
-            geom.calibration_points
-                .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-        let mut channels = [Vec::new(), Vec::new(), Vec::new()];
-        for (index, pixel) in image.as_raw().chunks_exact(3).enumerate() {
-            if pixel
-                .iter()
-                .any(|value| !value.is_finite() || *value <= 0.0)
-            {
-                continue;
-            }
-            if scoped_to_area {
-                let x = (index as u32 % image.width()) as f32
-                    / image.width().saturating_sub(1).max(1) as f32;
-                let y = (index as u32 / image.width()) as f32
-                    / image.height().saturating_sub(1).max(1) as f32;
-                if !point_in_film_area([x, y], &points, 0.0) {
-                    continue;
-                }
-            }
-            for channel in 0..3 {
-                channels[channel].push(pixel[channel]);
-            }
-        }
-        std::array::from_fn(|channel| {
-            let values = &mut channels[channel];
-            if values.is_empty() {
-                return 0.0;
-            }
-            values.sort_unstable_by(|left, right| right.total_cmp(left));
-            let tail = ((values.len() as f32 * 0.01).ceil() as usize).clamp(1, values.len());
-            let mean = values.iter().take(tail).sum::<f32>() / tail as f32;
-            -mean.max(1.0e-6).log10()
-        })
     }
 
     fn ab_probe_region(
@@ -24543,6 +26283,19 @@ mod import_contract_tests {
         );
     }
 
+    fn render_full_percentages(image: &image::ImageBuffer<image::Rgb<u16>, Vec<u16>>) -> [f64; 3] {
+        let total = u64::from(image.width()) * u64::from(image.height());
+        let mut full = [0u64; 3];
+        for pixel in image.as_raw().chunks_exact(3) {
+            for (channel, value) in pixel.iter().enumerate() {
+                if *value == u16::MAX {
+                    full[channel] += 1;
+                }
+            }
+        }
+        full.map(|count| 100.0 * count as f64 / total.max(1) as f64)
+    }
+
     /// The working-domain image the unified pipeline actually consumes for one
     /// file, following the same decoder branch `prepare_proxy` takes.
     /// The u16 linear-sRGB transport the retired v1.0.2 recipe consumed for one
@@ -25127,6 +26880,7 @@ mod import_contract_tests {
                 println!("\n[SKIP] {stem}: the retired recipe could not decode this file");
                 continue;
             };
+            ab_save_preview(out_root.join(format!("{stem}-legacy-input.jpg")), &legacy);
             let border = crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(
                 legacy.clone(),
             ));
@@ -25884,16 +27638,16 @@ mod import_contract_tests {
         const SHORT: u16 = 3;
         const LONG: u16 = 4;
         const UNDEFINED: u16 = 7;
-        let root_entries: u16 = 11;
+        let root_entries: u16 = 12;
         let root_bits_offset = IFD_OFFSET + 2 + u32::from(root_entries) * 12 + 4;
         let root_preview_offset = root_bits_offset + 12;
         let root_preview_bytes = source.width() * source.height() * 3;
-        let sub_ifd_offset = root_preview_offset + root_preview_bytes;
-        let sub_entries: u16 = 11;
+        let root_icc_offset = root_preview_offset + root_preview_bytes;
+        let sub_ifd_offset = root_icc_offset + icc.len() as u32;
+        let sub_entries: u16 = 10;
         let sub_bits_offset = sub_ifd_offset + 2 + u32::from(sub_entries) * 12 + 4;
         let sub_pixel_offset = sub_bits_offset + 12;
         let sub_pixel_bytes = source.width() * source.height() * 6;
-        let sub_icc_offset = sub_pixel_offset + sub_pixel_bytes;
 
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"II");
@@ -25911,6 +27665,13 @@ mod import_contract_tests {
         push_entry(&mut bytes, 279, LONG, 1, root_preview_bytes);
         push_entry(&mut bytes, 284, SHORT, 1, 1);
         push_entry(&mut bytes, 330, LONG, 1, sub_ifd_offset);
+        push_entry(
+            &mut bytes,
+            34675,
+            UNDEFINED,
+            icc.len() as u32,
+            root_icc_offset,
+        );
         bytes.extend_from_slice(&0u32.to_le_bytes());
         for _ in 0..3 {
             bytes.extend_from_slice(&8u32.to_le_bytes());
@@ -25920,6 +27681,7 @@ mod import_contract_tests {
                 + usize::try_from(root_preview_bytes).unwrap(),
             0,
         );
+        bytes.extend_from_slice(icc);
 
         bytes.resize(usize::try_from(sub_ifd_offset).unwrap(), 0);
         bytes.extend_from_slice(&sub_entries.to_le_bytes());
@@ -25933,13 +27695,6 @@ mod import_contract_tests {
         push_entry(&mut bytes, 278, LONG, 1, source.height());
         push_entry(&mut bytes, 279, LONG, 1, sub_pixel_bytes);
         push_entry(&mut bytes, 284, SHORT, 1, 1);
-        push_entry(
-            &mut bytes,
-            34675,
-            UNDEFINED,
-            icc.len() as u32,
-            sub_icc_offset,
-        );
         bytes.extend_from_slice(&0u32.to_le_bytes());
         for _ in 0..3 {
             bytes.extend_from_slice(&16u32.to_le_bytes());
@@ -25947,8 +27702,50 @@ mod import_contract_tests {
         for value in source.as_raw() {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        bytes.extend_from_slice(icc);
         std::fs::write(path, bytes).unwrap();
+    }
+
+    fn test_map_polynomial_opcode_list(
+        width: u32,
+        height: u32,
+        polynomials: &[Vec<f64>],
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(polynomials.len() as u32).to_be_bytes());
+        for (plane, coefficients) in polynomials.iter().enumerate() {
+            let params_len = 36 + (coefficients.len() * 8);
+            bytes.extend_from_slice(&8u32.to_be_bytes());
+            bytes.extend_from_slice(&0x0001_0300u32.to_be_bytes());
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+            bytes.extend_from_slice(&(params_len as u32).to_be_bytes());
+            for value in [0, 0, height, width, plane as u32, 1, 1, 1] {
+                bytes.extend_from_slice(&value.to_be_bytes());
+            }
+            bytes.extend_from_slice(&((coefficients.len() - 1) as u32).to_be_bytes());
+            for coefficient in coefficients {
+                bytes.extend_from_slice(&coefficient.to_be_bytes());
+            }
+        }
+        bytes
+    }
+
+    fn solve_test_polynomial(coefficients: &[f64], target: f64) -> f64 {
+        let evaluate = |x: f64| {
+            coefficients
+                .iter()
+                .rev()
+                .fold(0.0, |value, coefficient| value * x + coefficient)
+        };
+        let (mut low, mut high) = (0.0f64, 1.0f64);
+        for _ in 0..64 {
+            let middle = (low + high) * 0.5;
+            if evaluate(middle) < target {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        (low + high) * 0.5
     }
 
     /// IFD0 is a 1x1 RGB8 preview; the requested LinearRaw page is a SubIFD
@@ -25961,6 +27758,7 @@ mod import_contract_tests {
         icc: Option<&[u8]>,
         compression: u16,
         compressed_pixels: &[u8],
+        opcode_list2: Option<&[u8]>,
     ) {
         fn push_entry(bytes: &mut Vec<u8>, tag: u16, type_code: u16, count: u32, value: u32) {
             bytes.extend_from_slice(&tag.to_le_bytes());
@@ -25982,11 +27780,12 @@ mod import_contract_tests {
         let root_bits_offset = IFD_OFFSET + root_ifd_size;
         let root_pixel_offset = root_bits_offset + 6;
         let sub_ifd_offset = align4(usize::try_from(root_pixel_offset + 3).unwrap()) as u32;
-        let sub_entries: u16 = if icc.is_some() { 12 } else { 11 };
+        let sub_entries: u16 = 11 + u16::from(icc.is_some()) + u16::from(opcode_list2.is_some());
         let sub_ifd_size = 2 + u32::from(sub_entries) * 12 + 4;
         let sub_bits_offset = sub_ifd_offset + sub_ifd_size;
         let sub_pixel_offset = align4(usize::try_from(sub_bits_offset + 6).unwrap()) as u32;
         let sub_icc_offset = sub_pixel_offset + compressed_pixels.len() as u32;
+        let sub_opcode_offset = sub_icc_offset + icc.map_or(0, |profile| profile.len() as u32);
 
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"II");
@@ -26032,6 +27831,15 @@ mod import_contract_tests {
                 sub_icc_offset,
             );
         }
+        if let Some(opcode_list2) = opcode_list2 {
+            push_entry(
+                &mut bytes,
+                51009,
+                UNDEFINED,
+                opcode_list2.len() as u32,
+                sub_opcode_offset,
+            );
+        }
         bytes.extend_from_slice(&0u32.to_le_bytes());
         for _ in 0..3 {
             bytes.extend_from_slice(&16u16.to_le_bytes());
@@ -26040,6 +27848,150 @@ mod import_contract_tests {
         bytes.extend_from_slice(compressed_pixels);
         if let Some(icc) = icc {
             bytes.extend_from_slice(icc);
+        }
+        if let Some(opcode_list2) = opcode_list2 {
+            bytes.extend_from_slice(opcode_list2);
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// IFD0 carries the 1x1 preview plus all DNG colour metadata; the full
+    /// LinearRaw page is a SubIFD with none of those tags.
+    fn write_linear_raw_dng_with_root_metadata(
+        path: &std::path::Path,
+        source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+        color_matrix1: [[f32; 3]; 3],
+        color_matrix2: Option<[[f32; 3]; 3]>,
+        calibration_illuminant1: u16,
+        calibration_illuminant2: Option<u16>,
+        as_shot_neutral: [f32; 3],
+        orientation: u16,
+    ) {
+        fn push_entry(bytes: &mut Vec<u8>, tag: u16, type_code: u16, count: u32, value: u32) {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&type_code.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        fn align4(value: usize) -> usize {
+            (value + 3) & !3
+        }
+        fn push_srational_matrix(bytes: &mut [u8], offset: usize, matrix: [[f32; 3]; 3]) {
+            for (index, value) in matrix.iter().flatten().enumerate() {
+                let numerator = (value * 10_000.0).round() as i32;
+                let start = offset + index * 8;
+                bytes[start..start + 4].copy_from_slice(&numerator.to_le_bytes());
+                bytes[start + 4..start + 8].copy_from_slice(&10_000i32.to_le_bytes());
+            }
+        }
+        fn push_rational(bytes: &mut [u8], offset: usize, value: f32) {
+            let numerator = (value * 10_000.0).round() as u32;
+            bytes[offset..offset + 4].copy_from_slice(&numerator.to_le_bytes());
+            bytes[offset + 4..offset + 8].copy_from_slice(&10_000u32.to_le_bytes());
+        }
+
+        const IFD_OFFSET: u32 = 8;
+        const SHORT: u16 = 3;
+        const LONG: u16 = 4;
+        const RATIONAL: u16 = 5;
+        const SRATIONAL: u16 = 10;
+
+        let root_entries: u16 =
+            14 + u16::from(color_matrix2.is_some()) + u16::from(calibration_illuminant2.is_some());
+        let root_size = 2 + u32::from(root_entries) * 12 + 4;
+        let sub_ifd_offset = IFD_OFFSET + root_size;
+        let sub_entries: u16 = 10;
+        let sub_size = 2 + u32::from(sub_entries) * 12 + 4;
+        let payload = sub_ifd_offset + sub_size;
+        let root_bits_offset = payload;
+        let sub_bits_offset = root_bits_offset + 6;
+        let root_pixel_offset = sub_bits_offset + 6;
+        let matrix1_offset = align4(root_pixel_offset as usize + 3) as u32;
+        let matrix2_offset = color_matrix2.map(|_| matrix1_offset + 72);
+        let neutral_offset = matrix2_offset.unwrap_or(matrix1_offset) + 72;
+        let sub_pixel_offset = neutral_offset + 24;
+        let sub_pixel_bytes = source.width() * source.height() * 6;
+        let mut bytes = vec![0u8; sub_pixel_offset as usize + sub_pixel_bytes as usize];
+
+        bytes[0..2].copy_from_slice(b"II");
+        bytes[2..4].copy_from_slice(&42u16.to_le_bytes());
+        bytes[4..8].copy_from_slice(&IFD_OFFSET.to_le_bytes());
+        let mut root_entry_bytes = Vec::new();
+        push_entry(&mut root_entry_bytes, 256, LONG, 1, 1);
+        push_entry(&mut root_entry_bytes, 257, LONG, 1, 1);
+        push_entry(&mut root_entry_bytes, 258, SHORT, 3, root_bits_offset);
+        push_entry(&mut root_entry_bytes, 259, SHORT, 1, 1);
+        push_entry(&mut root_entry_bytes, 262, SHORT, 1, 2);
+        push_entry(&mut root_entry_bytes, 273, LONG, 1, root_pixel_offset);
+        push_entry(&mut root_entry_bytes, 274, SHORT, 1, u32::from(orientation));
+        push_entry(&mut root_entry_bytes, 277, SHORT, 1, 3);
+        push_entry(&mut root_entry_bytes, 278, LONG, 1, 1);
+        push_entry(&mut root_entry_bytes, 279, LONG, 1, 3);
+        push_entry(&mut root_entry_bytes, 330, LONG, 1, sub_ifd_offset);
+        push_entry(&mut root_entry_bytes, 50721, SRATIONAL, 9, matrix1_offset);
+        if let Some(offset) = matrix2_offset {
+            push_entry(&mut root_entry_bytes, 50722, SRATIONAL, 9, offset);
+        }
+        push_entry(&mut root_entry_bytes, 50728, RATIONAL, 3, neutral_offset);
+        push_entry(
+            &mut root_entry_bytes,
+            50778,
+            SHORT,
+            1,
+            u32::from(calibration_illuminant1),
+        );
+        if let Some(illuminant) = calibration_illuminant2 {
+            push_entry(
+                &mut root_entry_bytes,
+                50779,
+                SHORT,
+                1,
+                u32::from(illuminant),
+            );
+        }
+        let root_offset = IFD_OFFSET as usize;
+        bytes[root_offset..root_offset + 2].copy_from_slice(&root_entries.to_le_bytes());
+        bytes[root_offset + 2..root_offset + 2 + root_entry_bytes.len()]
+            .copy_from_slice(&root_entry_bytes);
+        let next_offset = root_offset + 2 + root_entry_bytes.len();
+        bytes[next_offset..next_offset + 4].copy_from_slice(&0u32.to_le_bytes());
+
+        let sub_offset = sub_ifd_offset as usize;
+        let mut sub_entry_bytes = Vec::new();
+        push_entry(&mut sub_entry_bytes, 256, LONG, 1, source.width());
+        push_entry(&mut sub_entry_bytes, 257, LONG, 1, source.height());
+        push_entry(&mut sub_entry_bytes, 258, SHORT, 3, sub_bits_offset);
+        push_entry(&mut sub_entry_bytes, 259, SHORT, 1, 1);
+        push_entry(&mut sub_entry_bytes, 262, SHORT, 1, 34892);
+        push_entry(&mut sub_entry_bytes, 273, LONG, 1, sub_pixel_offset);
+        push_entry(&mut sub_entry_bytes, 277, SHORT, 1, 3);
+        push_entry(&mut sub_entry_bytes, 278, LONG, 1, source.height());
+        push_entry(&mut sub_entry_bytes, 279, LONG, 1, sub_pixel_bytes);
+        push_entry(&mut sub_entry_bytes, 284, SHORT, 1, 1);
+        bytes[sub_offset..sub_offset + 2].copy_from_slice(&sub_entries.to_le_bytes());
+        bytes[sub_offset + 2..sub_offset + 2 + sub_entry_bytes.len()]
+            .copy_from_slice(&sub_entry_bytes);
+        let sub_next = sub_offset + 2 + sub_entry_bytes.len();
+        bytes[sub_next..sub_next + 4].copy_from_slice(&0u32.to_le_bytes());
+
+        for index in 0..3 {
+            let start = root_bits_offset as usize + index * 2;
+            bytes[start..start + 2].copy_from_slice(&8u16.to_le_bytes());
+            let start = sub_bits_offset as usize + index * 2;
+            bytes[start..start + 2].copy_from_slice(&16u16.to_le_bytes());
+        }
+        bytes[root_pixel_offset as usize..root_pixel_offset as usize + 3]
+            .copy_from_slice(&[255, 0, 0]);
+        push_srational_matrix(&mut bytes, matrix1_offset as usize, color_matrix1);
+        if let (Some(offset), Some(matrix)) = (matrix2_offset, color_matrix2) {
+            push_srational_matrix(&mut bytes, offset as usize, matrix);
+        }
+        for (index, value) in as_shot_neutral.into_iter().enumerate() {
+            push_rational(&mut bytes, neutral_offset as usize + index * 8, value);
+        }
+        for (index, value) in source.as_raw().iter().enumerate() {
+            let start = sub_pixel_offset as usize + index * 2;
+            bytes[start..start + 2].copy_from_slice(&value.to_le_bytes());
         }
         std::fs::write(path, bytes).unwrap();
     }
@@ -27935,6 +29887,138 @@ mod import_contract_tests {
             &base_color_from_density([0.2, 0.3, 0.4]),
             &geom
         ));
+    }
+
+    #[test]
+    fn unresolved_frame_keeps_decode_fallbacks_through_resolution_rebuild() {
+        let mut persisted = PipelineState::smart_auto();
+        persisted.processing_report.base_source = "unresolved".to_string();
+        persisted.processing_report.input_domain = crate::app_state::InputDomainRecord {
+            source: InputDomainSource::RawMetadata,
+            detail: "camera-native decoded before Auto Invert".to_string(),
+            ..crate::app_state::InputDomainRecord::default()
+        };
+        let decoded_fallbacks = vec![
+            "embedded_icc_parse_failed:bad profile".to_string(),
+            "camera_matrix_unresolved".to_string(),
+            "dng_sample_layout_unresolved".to_string(),
+            "linear_raw_dng_color_metadata_missing".to_string(),
+            "scanner_fff_container_unreadable".to_string(),
+            "scanner_profile_missing_or_stale".to_string(),
+            "scanner_tiff_input_space_estimated".to_string(),
+            "capture_profile_runtime_fallback".to_string(),
+            "embedded_icc_parse_failed:bad profile".to_string(),
+        ];
+        persisted.processing_report.fallback_reasons = decoded_fallbacks.clone();
+        let resolution = resolve_pipeline(&PipelineResolverInput {
+            persisted_contract: persisted.contract,
+            roll_profile_id: None,
+            profile: None,
+            image_kind: PipelineImageKind::RawBayer,
+            density_anchors: DensityAnchors::default(),
+            raw_decode_version: RAW_DECODE_VERSION,
+            working_basis: WorkingBasis::CameraNative,
+            runtime_failure: None,
+        });
+
+        let rebuilt = super::state_from_resolution(&persisted, &resolution);
+
+        assert_eq!(rebuilt.processing_report.base_source, "unresolved");
+        for expected in decoded_fallbacks {
+            assert!(
+                rebuilt
+                    .processing_report
+                    .fallback_reasons
+                    .iter()
+                    .any(|reason| reason == &expected),
+                "resolution rebuild dropped {expected}: {:?}",
+                rebuilt.processing_report.fallback_reasons
+            );
+        }
+        assert_eq!(
+            rebuilt
+                .processing_report
+                .fallback_reasons
+                .iter()
+                .filter(|reason| *reason == "embedded_icc_parse_failed:bad profile")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn switching_images_preserves_decoded_domain_camera_and_fallbacks() {
+        let mut persisted = PipelineState::smart_auto();
+        persisted.processing_report.input_domain = crate::app_state::InputDomainRecord {
+            source: InputDomainSource::Unknown,
+            detail: "database row written before decode".to_string(),
+            ..crate::app_state::InputDomainRecord::default()
+        };
+        let decoded_domain = crate::app_state::InputDomainRecord {
+            source: InputDomainSource::EmbeddedIcc,
+            detail: "embedded_icc_parse_failed:bad profile".to_string(),
+            ..crate::app_state::InputDomainRecord::default()
+        };
+        let camera = Some([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+
+        super::preserve_decoded_proxy_report(
+            &mut persisted.processing_report,
+            &decoded_domain,
+            camera,
+            vec![
+                "embedded_icc_parse_failed:bad profile".to_string(),
+                "camera_matrix_unresolved".to_string(),
+                "smart_auto_no_trusted_film_base".to_string(),
+                "embedded_icc_parse_failed:bad profile".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            persisted.processing_report.input_domain.source,
+            InputDomainSource::EmbeddedIcc
+        );
+        assert_eq!(persisted.processing_report.camera_to_display, camera);
+        assert!(persisted
+            .processing_report
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason.starts_with("embedded_icc_parse_failed:")));
+        assert!(persisted
+            .processing_report
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason == "camera_matrix_unresolved"));
+        assert!(!persisted
+            .processing_report
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason == "smart_auto_no_trusted_film_base"));
+        assert_eq!(
+            persisted
+                .processing_report
+                .fallback_reasons
+                .iter()
+                .filter(|reason| *reason == "embedded_icc_parse_failed:bad profile")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn prepared_proxy_result_serializes_pipeline_state_for_the_frontend() {
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.fallback_reasons = vec!["camera_matrix_unresolved".to_string()];
+        let result = super::PreparedProxyResult {
+            long_edge: 2560,
+            pipeline_state: state,
+        };
+
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["long_edge"], 2560);
+        assert_eq!(
+            value["pipeline_state"]["processing_report"]["fallback_reasons"][0],
+            "camera_matrix_unresolved"
+        );
     }
 
     #[test]
@@ -31840,6 +33924,136 @@ mod input_domain_round_trip_tests {
         assert_eq!(domain.source, InputDomainSource::EmbeddedIcc);
         assert!(!domain.estimated);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn corrupt_embedded_icc(path: &std::path::Path) {
+        let mut bytes = std::fs::read(path).unwrap();
+        let signature = bytes
+            .windows(4)
+            .position(|window| window == b"acsp")
+            .expect("the fixture must contain an ICC signature");
+        bytes[signature..signature + 4].copy_from_slice(b"XXXX");
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn unreadable_embedded_icc_is_reported_and_falls_back_without_crashing() {
+        let root = temp_root("unreadable-icc");
+
+        let tiff_path = root.join("frame.tiff");
+        let profile = crate::color_science::build_icc_profile(ColorSpaceId::AdobeRgb);
+        write_export_image_with_profile(
+            sample_image(),
+            &tiff_path,
+            ExportFormat::Tiff16,
+            92,
+            None,
+            Some(&profile),
+        )
+        .unwrap();
+        corrupt_embedded_icc(&tiff_path);
+        let tiff_path_string = tiff_path.to_string_lossy().to_string();
+        let tiff_domain = resolve_input_domain(&tiff_path_string, None);
+        let tiff_reasons = input_domain_fallback_reasons(&tiff_domain);
+        assert!(
+            tiff_domain.detail.contains("embedded_icc_parse_failed:"),
+            "the TIFF report must keep the parser error: {}",
+            tiff_domain.detail
+        );
+        assert!(
+            tiff_reasons
+                .iter()
+                .any(|reason| reason.starts_with("embedded_icc_parse_failed:")),
+            "the TIFF fallback reason must be copyable: {tiff_reasons:?}"
+        );
+        decode_modern_input(
+            &tiff_path_string,
+            DecodeMode::DevelopProxy,
+            None,
+            512,
+            false,
+        )
+        .expect("a corrupt ICC must fall back to the existing direct decode");
+
+        let dng_path = root.join("frame.dng");
+        write_linear_dng_export(&sample_image(), &dng_path, ColorSpaceId::SRgb, None).unwrap();
+        corrupt_embedded_icc(&dng_path);
+        let dng_path_string = dng_path.to_string_lossy().to_string();
+        let dng_domain = resolve_linear_raw_dng_domain(&dng_path_string).input_domain;
+        let dng_reasons = input_domain_fallback_reasons(&dng_domain);
+        assert!(
+            dng_domain.detail.contains("embedded_icc_parse_failed:"),
+            "the LinearRaw DNG report must keep the parser error: {}",
+            dng_domain.detail
+        );
+        assert!(
+            dng_reasons
+                .iter()
+                .any(|reason| reason.starts_with("embedded_icc_parse_failed:")),
+            "the LinearRaw DNG fallback reason must be copyable: {dng_reasons:?}"
+        );
+        decode_modern_input(&dng_path_string, DecodeMode::DevelopProxy, None, 512, false)
+            .expect("a corrupt LinearRaw ICC must keep the DNG decode fallback");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn abnormal_proxy_fallbacks_are_mapped_and_deduplicated() {
+        let domain = InputDomainRecord {
+            detail: concat!(
+                "dng_sample_layout_unresolved_libraw_camera_native; ",
+                "linear_raw_dng_without_icc_or_colormatrix_read_as_linear_srgb; ",
+                "flextight_container_record_unreadable; ",
+                "embedded_icc_parse_failed:bad profile"
+            )
+            .to_string(),
+            ..InputDomainRecord::default()
+        };
+        let reasons = proxy_additional_fallback_reasons(
+            &domain,
+            WorkingBasis::CameraNative,
+            None,
+            true,
+            false,
+            Some("capture_profile_unavailable"),
+        );
+        for expected in [
+            "dng_sample_layout_unresolved",
+            "linear_raw_dng_color_metadata_missing",
+            "scanner_fff_container_unreadable",
+            "embedded_icc_parse_failed:bad profile",
+            "camera_matrix_unresolved",
+            "scanner_profile_missing_or_stale",
+            "capture_profile_unavailable",
+        ] {
+            assert!(
+                reasons.iter().any(|reason| reason == expected),
+                "missing fallback reason {expected}: {reasons:?}"
+            );
+        }
+
+        let mut report = PipelineProcessingReport::default();
+        extend_unique_fallback_reasons(&mut report, reasons.iter().cloned());
+        extend_unique_fallback_reasons(&mut report, reasons);
+        assert_eq!(
+            report.fallback_reasons.len(),
+            7,
+            "fallback reasons must be written once: {:?}",
+            report.fallback_reasons
+        );
+    }
+
+    #[test]
+    fn modern_export_failures_keep_the_stage_and_original_error() {
+        let failure = modern_export_failure(
+            "decode",
+            "frame.dng",
+            "LibRaw decode failed: unsupported sample layout",
+        );
+        assert!(failure.contains("stage=decode"));
+        assert!(failure.contains("frame.dng"));
+        assert!(failure.contains("LibRaw decode failed: unsupported sample layout"));
     }
 }
 

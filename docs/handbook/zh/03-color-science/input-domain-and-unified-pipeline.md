@@ -17,7 +17,7 @@ sinceVersion: "v1.1.0"
 
 NexFilm 引擎在 v1.1.0 确立了统一密度管线核心原则：**输入格式仅决定输入域，密度数学全局唯一**。
 
-扫描仪高位深度 LinearRaw DNG、封装专有元数据的 FFF 容器，以及附带专业色彩配置文件的 16-bit TIFF/JPEG，会由解码器识别输入域并投射到 32 位浮点 Linear ProPhoto Estimate。LibRaw 解码的相机 RAW 是明确的例外：它保留 NormalizedAsShot Camera Native RGB 进入密度阶段，camera→sRGB 矩阵延后到正片显示，因此不会在橙色色罩的蓝通道上先施加矩阵和 gamut 压缩。除这个有记录的工作基分叉外，片基扣除、端点推导和正片管线仍使用同一套密度数学。
+扫描仪高位深度 LinearRaw DNG（支持 IFD0 / SubIFD 结构及 `OpcodeList2` 逆映射）、封装专有元数据的 FFF 容器，以及带有或缺少 ICC 配置文件的 TIFF / PNG / JPEG（自 `v1.2.1` 起不再经由 16 位线性 sRGB 中转，并支持 `f32`/`f64` 浮点 TIFF），都会由解码器识别输入域并直接投射到 32 位浮点 Linear ProPhoto Estimate。LibRaw / `rawler` 解码的相机拜耳 RAW 保留 NormalizedAsShot Camera Native RGB 进入密度阶段，camera→sRGB 矩阵延后到正片显示，因此不会在橙色色罩的蓝通道上先施加矩阵和 gamut 压缩。除这个有记录的工作基分叉外，片基扣除、端点推导和正片管线仍使用同一套密度数学。
 
 ```text
 输入文件（RAW / FFF / TIFF / DNG / JPEG）
@@ -55,11 +55,11 @@ gamma、曲线、LUT 与目标输出色域
 为了准确将各类异构图像文件还原为真实物理透射率，NexFilm 实现了由低到高严格分级的输入域判定链函数 `resolve_input_domain`。系统依次探测五层元数据依据，每一步均记录明确的数据来源、色度基色、传递函数与置信度标记：
 
 1. **第一优先级：内嵌 ICC 色彩特性文件**  
-   若 TIFF 或 JPEG 图像内部包含合法的 ICC Profile（如 Adobe RGB (1998)、Display P3 或扫描仪专用校准配置文件），引擎直接提取其 `rXYZ`、`gXYZ`、`bXYZ` 矩阵与响应曲线标记。这个来源优先级最高，会被当作经过硬件标定的色彩空间。
+   若 TIFF、PNG、JPEG 或 LinearRaw DNG 内部包含合法的 ICC Profile（如 Adobe RGB (1998)、Display P3 或扫描仪专用校准配置文件），引擎通过 `moxcms` 真实解析色度矩阵与响应曲线（含线性 TRC 保护与 EOTF 修正）。这个来源优先级最高，会被当作经过硬件标定的色彩空间；若内嵌 ICC 损坏，则保留具体解析错误并打上 `embedded_icc_parse_failed` 退化诊断标记。
 2. **第二优先级：扫描仪容器元数据与专有记录（Verified / Estimated）**  
    对于哈苏 Flextight / Imacon 扫描仪生成的 `.fff` 格式，引擎解析其 TIFF 头部嵌入的 XML 属性列表（plist），提取 `RGBProfile` 字符串与 `Gamma` 数值。若容器明确声明为 AdobeRGB 或广色域扫描仪配置，则直接应用对应的伽马解扩方程。若属性缺失，则回退为文档标准默认值（Gamma 1.8，标定为 `estimated` 置信度）。
 3. **第三优先级：RAW / LinearRaw 元数据与传感器标定参数**  
-   对于相机 RAW 文件（如 CR2、NEF、ARW），引擎读取 LibRaw 解析的相机原生拜尔矩阵元数据与预设矩阵。对于经专业扫描仪输出或第三方软件合成的 DNG 文件，引擎检测其 SubIFD 标签；若检测到 `PhotometricInterpretation = 34892 (LinearRaw)` 且未压缩，则直接判定为相机原生线性透射数据。
+   对于相机 RAW 文件（如 CR2、NEF、ARW），引擎读取 LibRaw / `rawler` 解析的相机原生拜耳矩阵元数据与预设矩阵。对于经扫描仪输出或 Lightroom 全景拼接合并的 DNG 文件，引擎同时检查 IFD0 与 SubIFD 的 `PhotometricInterpretation = 34892 (LinearRaw)` 布局，兼容 `rawler` 压缩 LinearRaw 解码、先执行 Stage-2 `OpcodeList2`（`MapTable` / `MapPolynomial`）逆色调压缩映射，并按内嵌 ICC 或双光源 `ColorMatrix1/2` + `AsShotNeutral` 还原线性色彩。
 4. **第四优先级：已建档扫描仪机型默认参数**  
    当用户在软件中显式指定了扫描仪型号（如 Nikon Super Coolscan 9000 ED、Minolta Dimage Scan Elite 5400），且输入文件不含内嵌 ICC 时，引擎调取内置的机型基色与透射特性记录进行解析。
 5. **第五优先级：sRGB 兜底与预估标记**  
@@ -82,7 +82,7 @@ Camera Native RGB f32
 
 帧的 `PipelineProcessingReport::camera_to_display` 保存该矩阵：`Some` 表示密度阶段使用相机原生基，`None` 表示 ProPhoto Estimate，旧记录缺少该字段时也按 `None` 读取。单位阵、非有限值、退化行和 LibRaw 未解析出矩阵的 identity/Unresolved 不会写入；预览、导出和 CPU 渲染都会回退到 ProPhoto 显示矩阵。M1 的 rawler 矩阵回填与 M2 的 rawler 像素回退仍使用相机原生基。
 
-预览纹理头的标志位 `8` 表示相机原生缓冲区，后接 9 个 row-major `f32` 矩阵系数。WebGL 主渲染与 Detail pass 都使用 `u_positive_to_display`，CPU 渲染和导出使用同一个矩阵来源。Roll 锚点也记录 `working_basis`；跨基锚点会被拒绝为 `anchor_working_basis_mismatch`，界面提示重新对整卷执行自动反相。`DENSITY_WINDOW_RULE_VERSION` 已升到 4，`RAW_DECODE_VERSION` 保持 13。
+预览纹理头的标志位 `8` 表示相机原生缓冲区，后接 9 个 row-major `f32` 矩阵系数。WebGL 主渲染与 Detail pass 都使用 `u_positive_to_display`，CPU 渲染和导出使用同一个矩阵来源。Roll 锚点也记录 `working_basis`；跨基锚点会被拒绝为 `anchor_working_basis_mismatch`，界面提示重新对整卷执行自动反相。随 `v1.2.1` 升级，`DENSITY_WINDOW_RULE_VERSION` 为 `6`，`RAW_DECODE_VERSION` 为 `15`。
 
 ## 片基采样三级优先级与质量门限法则 {#film-base-sampling-priority}
 

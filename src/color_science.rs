@@ -1077,7 +1077,7 @@ pub fn xyz_d50_to_color_space_matrix(id: ColorSpaceId) -> [f64; 9] {
 /// sRGB before the log is the same category of error as applying an unrelated
 /// display matrix to camera-native RAW.
 pub fn dng_color_matrix_to_prophoto(xyz_to_source: [[f32; 3]; 3]) -> Option<[f32; 9]> {
-    let matrix = [
+    let xyz_to_source = [
         f64::from(xyz_to_source[0][0]),
         f64::from(xyz_to_source[0][1]),
         f64::from(xyz_to_source[0][2]),
@@ -1088,15 +1088,36 @@ pub fn dng_color_matrix_to_prophoto(xyz_to_source: [[f32; 3]; 3]) -> Option<[f32
         f64::from(xyz_to_source[2][1]),
         f64::from(xyz_to_source[2][2]),
     ];
-    let determinant = matrix[0] * (matrix[4] * matrix[8] - matrix[5] * matrix[7])
-        - matrix[1] * (matrix[3] * matrix[8] - matrix[5] * matrix[6])
-        + matrix[2] * (matrix[3] * matrix[7] - matrix[4] * matrix[6]);
+    let determinant = xyz_to_source[0]
+        * (xyz_to_source[4] * xyz_to_source[8] - xyz_to_source[5] * xyz_to_source[7])
+        - xyz_to_source[1]
+            * (xyz_to_source[3] * xyz_to_source[8] - xyz_to_source[5] * xyz_to_source[6])
+        + xyz_to_source[2]
+            * (xyz_to_source[3] * xyz_to_source[7] - xyz_to_source[4] * xyz_to_source[6]);
     if !determinant.is_finite() || determinant.abs() < 1e-12 {
         return None;
     }
-    let source_to_xyz = matrix_inverse(matrix);
     let xyz_to_prophoto = xyz_d50_to_color_space_matrix(ColorSpaceId::ProPhotoRgb);
-    let source_to_prophoto = matrix_multiply(xyz_to_prophoto, source_to_xyz);
+    // With AsShotNeutral the decoder first balances the declared camera
+    // neutral to [c, c, c]. This camera-from-ProPhoto matrix must therefore
+    // map ProPhoto white to the same equal-camera-white, exactly as LibRaw's
+    // `cam_xyz_coeff` row normalisation does. Normalising after the inverse
+    // would instead rescale rows by unrelated channel factors.
+    let prophoto_to_xyz = matrix_inverse(xyz_to_prophoto);
+    let mut camera_from_prophoto = matrix_multiply(xyz_to_source, prophoto_to_xyz);
+    for row in 0..3 {
+        let start = row * 3;
+        let sum = camera_from_prophoto[start]
+            + camera_from_prophoto[start + 1]
+            + camera_from_prophoto[start + 2];
+        if !sum.is_finite() || sum <= 1e-12 {
+            return None;
+        }
+        for column in 0..3 {
+            camera_from_prophoto[start + column] /= sum;
+        }
+    }
+    let source_to_prophoto = matrix_inverse(camera_from_prophoto);
     let result = source_to_prophoto.map(|value| value as f32);
     result
         .iter()
@@ -1223,6 +1244,83 @@ mod tests {
             let rgb = matrix_vector(xyz_d50_to_color_space_matrix(space), d50_white);
             for channel in rgb {
                 assert!((channel - 1.0).abs() < 2e-4, "{space:?}: {rgb:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn dng_color_matrix_preserves_the_balanced_neutral_white_point() {
+        // Nikon D810-style dual-illuminant values: real camera matrices have
+        // non-unit row sums, which must not add a second channel gain after
+        // AsShotNeutral has already balanced the pixels.
+        let xyz_to_camera = [
+            [0.7175, 0.1354, -0.0383],
+            [-0.4693, 1.2670, 0.2400],
+            [0.0162, -0.1657, 0.7853],
+        ];
+        let matrix = dng_color_matrix_to_prophoto(xyz_to_camera).expect("camera matrix");
+        for row in 0..3 {
+            let sum = matrix[row * 3] + matrix[row * 3 + 1] + matrix[row * 3 + 2];
+            assert!(
+                (sum - 1.0).abs() < 2e-5,
+                "source-to-ProPhoto row {row} must preserve neutral white: {matrix:?}"
+            );
+        }
+        let neutral = [0.4721f32, 1.0, 0.6855];
+        let gains = [1.0 / neutral[0], 1.0 / neutral[1], 1.0 / neutral[2]];
+        let maximum = gains.into_iter().fold(0.0f32, f32::max);
+        let balanced = [
+            neutral[0] * gains[0] / maximum,
+            neutral[1] * gains[1] / maximum,
+            neutral[2] * gains[2] / maximum,
+        ];
+        let prophoto = matrix_vector(
+            [
+                f64::from(matrix[0]),
+                f64::from(matrix[1]),
+                f64::from(matrix[2]),
+                f64::from(matrix[3]),
+                f64::from(matrix[4]),
+                f64::from(matrix[5]),
+                f64::from(matrix[6]),
+                f64::from(matrix[7]),
+                f64::from(matrix[8]),
+            ],
+            [
+                f64::from(balanced[0]),
+                f64::from(balanced[1]),
+                f64::from(balanced[2]),
+            ],
+        );
+        for channel in prophoto {
+            assert!(
+                (channel - prophoto[0]).abs() < 1e-5,
+                "balanced AsShotNeutral must stay neutral in ProPhoto: {prophoto:?}"
+            );
+        }
+
+        // The matrices written by the LinearRaw DNG exporter already map D50
+        // white to [1,1,1], so the normalisation must be a no-op there.
+        for space in [
+            ColorSpaceId::ProPhotoRgb,
+            ColorSpaceId::DisplayP3,
+            ColorSpaceId::SRgb,
+        ] {
+            let xyz_to_space = xyz_d50_to_color_space_matrix(space);
+            let rows = [
+                [xyz_to_space[0], xyz_to_space[1], xyz_to_space[2]],
+                [xyz_to_space[3], xyz_to_space[4], xyz_to_space[5]],
+                [xyz_to_space[6], xyz_to_space[7], xyz_to_space[8]],
+            ]
+            .map(|row| row.map(|value| value as f32));
+            let matrix = dng_color_matrix_to_prophoto(rows).expect("written DNG matrix");
+            for row in 0..3 {
+                let sum = matrix[row * 3] + matrix[row * 3 + 1] + matrix[row * 3 + 2];
+                assert!((sum - 1.0).abs() < 2e-5, "{space:?}: {matrix:?}");
+            }
+            let white = apply_linear_matrix([1.0, 1.0, 1.0], matrix);
+            for channel in white {
+                assert!((channel - 1.0).abs() < 2e-5, "{space:?}: {white:?}");
             }
         }
     }

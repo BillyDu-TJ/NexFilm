@@ -638,6 +638,9 @@ pub enum InputDomainSource {
     DeviceIdentification,
     /// No declaration was available; the file was read as sRGB.
     FallbackSrgb,
+    /// No decoded input-domain record is available yet.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

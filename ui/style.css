@@ -306,6 +306,52 @@ body > header > div:last-child button:hover { background: var(--control) !import
     min-width: 0;
     overflow-wrap: anywhere;
 }
+#toast-container > .diagnostic-toast {
+    pointer-events: auto;
+    align-items: flex-start;
+}
+#toast-container > .diagnostic-toast[data-tone="error"] {
+    border-left-color: #ef4444 !important;
+}
+#toast-container > .diagnostic-toast[data-tone="warning"] {
+    border-left-color: #f59e0b !important;
+}
+.diagnostic-toast-body {
+    min-width: 0;
+}
+.diagnostic-toast-message {
+    user-select: text;
+    white-space: pre-line;
+    overflow-wrap: anywhere;
+    font-size: 13px;
+}
+.diagnostic-toast-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+}
+.diagnostic-toast-action,
+.diagnostic-toast-close {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+.diagnostic-toast-action {
+    font-size: 11px;
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.diagnostic-toast-close {
+    opacity: .7;
+}
+.diagnostic-toast-action:hover,
+.diagnostic-toast-close:hover {
+    opacity: 1;
+}
 #btn-delete-rolls:disabled,
 #btn-promote-roll:disabled,
 #btn-edit-roll:disabled,

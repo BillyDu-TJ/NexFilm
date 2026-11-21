@@ -39,8 +39,8 @@ const faqs = [
   // Category 2: Scanning & Formats
   {
     category: 'formats',
-    q: 'Why does digitizing with a mirrorless RAW produce vastly superior results compared to flatbed scanner JPEGs?',
-    a: `JPEGs are compressed 8-bit files baked with scanner-native gamma curves and lossy algorithms, discarding exposure headroom and original emulsion transmittance. Camera RAW files preserve un-interpolated, linear photon sensor counts, permitting accurate optical density calculations ($D = -\\log_{10}(T)$) with complete color fidelity. See <a href="${withBase('/en/docs/import-formats-and-library/#format-matrix')}" class="text-accent underline">Format Support Matrix →</a>`
+    q: 'Can NexFilm invert scanned JPEGs/PNGs cleanly, and when do camera RAW or 16-bit TIFF still matter?',
+    a: `Starting in <strong>v1.2.1</strong>, scanned JPEGs and PNGs linearize directly via embedded ICC (or sRGB) into 32-bit float ProPhoto RGB alongside improved borderless content fallback, so <strong>normal scanner JPEGs now invert cleanly and reliably out of the box</strong>. Camera RAW and 16-bit TIFF still retain 12–16 bits of linear dynamic range ($D = -\\log_{10}(T)$), giving you much greater highlight recovery headroom and supporting hardware calibration workflows. See <a href="${withBase('/en/docs/import-formats-and-library/#format-matrix')}" class="text-accent underline">Format Support Matrix →</a>`
   },
   {
     category: 'formats',

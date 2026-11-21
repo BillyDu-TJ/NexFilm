@@ -39,8 +39,8 @@ const faqs = [
   // Category 2: Scanning & Formats
   {
     category: 'formats',
-    q: '为什么数码相机翻拍的色彩还原效果远比普通扫描仪 JPEG 更好？',
-    a: `JPEG 是经过扫描仪内部曲线映射与非线性伽马压缩后的有损 8 位文件，不仅严重丢失了感光动态范围，更失去了原始未曝光片基和乳剂物理透射率。而数码相机翻拍 RAW 具有传感器未插值的真实线性光子响应，能够精确测量染料对数透射率（$D = -\\log_{10}(T)$），从而还原出纯净、通透的真实色彩。详见 <a href="${withBase('/zh/docs/import-formats-and-library/#format-matrix')}" class="text-accent underline">格式支持矩阵与解码规格 →</a>`
+    q: '扫描仪导出的 JPEG / PNG 能直接反相吗？相机 RAW 和 16-bit TIFF 还有什么优势？',
+    a: `自 <strong>v1.2.1</strong> 起，扫描仪导出的 JPEG 和 PNG 会按内嵌 ICC（或 sRGB）直接线性化进入 32 位浮点 ProPhoto RGB，并结合改进的无片基内容兜底策略计算反相，因此<strong>正常扫描的 JPEG 现已可以直接获得稳定、自然的反相效果</strong>。不过 8 位 JPEG 容器本身位深与高光余量较小，如果要大幅挽救过曝高光、保留极端色彩过渡或运行硬件标定，相机 RAW 与 16-bit TIFF 依然具有明显优势。详见 <a href="${withBase('/zh/docs/import-formats-and-library/#format-matrix')}" class="text-accent underline">格式支持矩阵与解码规格 →</a>`
   },
   {
     category: 'formats',

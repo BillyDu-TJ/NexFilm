@@ -13,6 +13,9 @@ const MAX_AREA_RATIO: f64 = 0.98;
 const MAX_SIDE_RATIO: f64 = 6.0;
 const MAX_DIAGONAL_RATIO: f64 = 3.0;
 const MIN_GRADIENT_PROMINENCE: f64 = 1.22;
+const MIN_GATE_ASPECT_SCORE: f64 = 0.95;
+const MAX_PROJECTION_CANDIDATES: usize = 8;
+const OUTER_REBATE_MIN_FRACTION: f64 = 0.08;
 const MAX_ANALYSIS_EDGE: u32 = 640;
 const WORKING_EDGE: u32 = 1024;
 const AUTO_LONG_EDGE_INSET: f32 = 0.02;
@@ -150,7 +153,7 @@ pub fn detect_film_border_with_format(
     // Film gates are often not closed contours after thresholding: sprocket
     // holes and image texture break or join their edges. Locate the four long
     // gate edges from robust Sobel projections first, then fit each edge.
-    if let Some(points) = detect_from_gradient_projections(&blurred) {
+    if let Some(points) = detect_from_gradient_projections(&blurred, preferred_aspect) {
         let aspect_score = candidate_aspect_score(&points, preferred_aspect);
         // The gradient fit follows the strongest long edges. The rebate walk
         // was less stable than this candidate on camera negatives, so keep it
@@ -885,7 +888,10 @@ fn find_best_quad(
     best
 }
 
-fn detect_from_gradient_projections(gray: &image::GrayImage) -> Option<[Point<i32>; 4]> {
+fn detect_from_gradient_projections(
+    gray: &image::GrayImage,
+    preferred_aspect: Option<f64>,
+) -> Option<[Point<i32>; 4]> {
     let (width, height) = gray.dimensions();
     if width < 32 || height < 32 {
         return None;
@@ -928,51 +934,147 @@ fn detect_from_gradient_projections(gray: &image::GrayImage) -> Option<[Point<i3
 
     let vertical_radius = (width as f64 * 0.035).round().max(3.0) as i32;
     let horizontal_radius = (height as f64 * 0.035).round().max(3.0) as i32;
-    let left = fit_vertical_edge(
-        &x_gradient,
-        left_x,
-        top_y,
-        bottom_y,
-        vertical_radius,
-        left_peak,
-        -1,
-    );
-    let right = fit_vertical_edge(
-        &x_gradient,
-        right_x,
-        top_y,
-        bottom_y,
-        vertical_radius,
-        right_peak,
-        1,
-    );
-    let top = fit_horizontal_edge(
-        &y_gradient,
-        top_y,
-        left_x,
-        right_x,
-        horizontal_radius,
-        top_peak,
-        -1,
-    );
-    let bottom = fit_horizontal_edge(
-        &y_gradient,
-        bottom_y,
-        left_x,
-        right_x,
-        horizontal_radius,
-        bottom_peak,
-        1,
-    );
+    let fit_quad = |left_x: i32,
+                    right_x: i32,
+                    top_y: i32,
+                    bottom_y: i32,
+                    left_peak: f64,
+                    right_peak: f64,
+                    top_peak: f64,
+                    bottom_peak: f64| {
+        let left = fit_vertical_edge(
+            &x_gradient,
+            left_x,
+            top_y,
+            bottom_y,
+            vertical_radius,
+            left_peak,
+            -1,
+        );
+        let right = fit_vertical_edge(
+            &x_gradient,
+            right_x,
+            top_y,
+            bottom_y,
+            vertical_radius,
+            right_peak,
+            1,
+        );
+        let top = fit_horizontal_edge(
+            &y_gradient,
+            top_y,
+            left_x,
+            right_x,
+            horizontal_radius,
+            top_peak,
+            -1,
+        );
+        let bottom = fit_horizontal_edge(
+            &y_gradient,
+            bottom_y,
+            left_x,
+            right_x,
+            horizontal_radius,
+            bottom_peak,
+            1,
+        );
+        let points = [
+            intersect_lines(left, top)?,
+            intersect_lines(right, top)?,
+            intersect_lines(right, bottom)?,
+            intersect_lines(left, bottom)?,
+        ];
+        let area = polygon_area(&points);
+        validate_quad(&points, width, height, area).then_some(points)
+    };
 
-    let points = [
-        intersect_lines(left, top)?,
-        intersect_lines(right, top)?,
-        intersect_lines(right, bottom)?,
-        intersect_lines(left, bottom)?,
-    ];
-    let area = polygon_area(&points);
-    validate_quad(&points, width, height, area).then_some(points)
+    let strongest = fit_quad(
+        left_x,
+        right_x,
+        top_y,
+        bottom_y,
+        left_peak,
+        right_peak,
+        top_peak,
+        bottom_peak,
+    );
+    if strongest.is_some_and(|points| {
+        candidate_aspect_score(&points, preferred_aspect) >= MIN_GATE_ASPECT_SCORE
+    }) {
+        return strongest;
+    }
+
+    // The absolute gradient maximum can be the film's outer edge or the row of
+    // sprocket holes above the picture. Those edges are often stronger than
+    // the frame line, but they produce a visibly wrong quad. Move an edge that
+    // landed in the outermost 3% inward to the nearest substantial projection
+    // peak instead; left/right stay on their original projection.
+    let outer_margin = (height as f64 * 0.03).max(1.0) as i32;
+    let minimum_rebate = (height as f64 * OUTER_REBATE_MIN_FRACTION).max(1.0) as i32;
+    let has_three_two_prior = preferred_aspect.is_some_and(|aspect| (aspect - 1.5).abs() < 0.01);
+    if width <= height && !has_three_two_prior {
+        return strongest;
+    }
+    let top_is_outer = top_y <= outer_margin;
+    let bottom_is_outer = bottom_y >= height as i32 - outer_margin;
+    if !top_is_outer && !bottom_is_outer {
+        return strongest;
+    }
+    let top_options = if top_is_outer {
+        let mut candidates = projection_candidates(&top_projection, 0.015, 0.49)
+            .into_iter()
+            .filter(|(index, peak, _)| *index >= top_y + minimum_rebate && *peak >= top_peak * 0.5)
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(index, _, _)| *index);
+        candidates
+    } else {
+        vec![(top_y, top_peak, top_prominence)]
+    };
+    let bottom_options = if bottom_is_outer {
+        let mut candidates = projection_candidates(&bottom_projection, 0.51, 0.985)
+            .into_iter()
+            .filter(|(index, peak, _)| {
+                *index <= bottom_y - minimum_rebate && *peak >= bottom_peak * 0.5
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|(index, _, _)| std::cmp::Reverse(*index));
+        candidates
+    } else {
+        vec![(bottom_y, bottom_peak, bottom_prominence)]
+    };
+    let mut combinations = Vec::new();
+    for &(candidate_top, candidate_top_peak, _) in &top_options {
+        for &(candidate_bottom, candidate_bottom_peak, _) in &bottom_options {
+            combinations.push((
+                candidate_top,
+                candidate_bottom,
+                candidate_top_peak,
+                candidate_bottom_peak,
+                (candidate_top - top_y).max(0) + (bottom_y - candidate_bottom).max(0),
+            ));
+        }
+    }
+    combinations.sort_by_key(|(_, _, _, _, movement)| *movement);
+    for (candidate_top, candidate_bottom, candidate_top_peak, candidate_bottom_peak, _) in
+        combinations
+    {
+        let Some(points) = fit_quad(
+            left_x,
+            right_x,
+            candidate_top,
+            candidate_bottom,
+            left_peak,
+            right_peak,
+            candidate_top_peak,
+            candidate_bottom_peak,
+        ) else {
+            continue;
+        };
+        if candidate_aspect_score(&points, preferred_aspect) >= MIN_GATE_ASPECT_SCORE {
+            return Some(points);
+        }
+    }
+    strongest
 }
 
 fn gradient_projection_x(
@@ -1055,6 +1157,31 @@ fn strongest_projection(
     let baseline = median_f64(&mut baseline);
     let prominence = (peak + 1.0) / (baseline + 1.0);
     (peak >= 6.0).then_some(((start + relative_index) as i32, peak, prominence))
+}
+
+fn projection_candidates(values: &[f64], start_ratio: f64, end_ratio: f64) -> Vec<(i32, f64, f64)> {
+    let start = (values.len() as f64 * start_ratio).floor() as usize;
+    let end = ((values.len() as f64 * end_ratio).ceil() as usize).min(values.len());
+    if end <= start + 2 {
+        return Vec::new();
+    }
+
+    let mut baseline = values[start..end].to_vec();
+    let baseline = median_f64(&mut baseline);
+    let mut candidates = (start + 1..end - 1)
+        .filter(|index| {
+            values[*index] >= 6.0
+                && values[*index] >= values[*index - 1]
+                && values[*index] > values[*index + 1]
+        })
+        .map(|index| {
+            let peak = values[index];
+            (index as i32, peak, (peak + 1.0) / (baseline + 1.0))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| right.1.total_cmp(&left.1));
+    candidates.truncate(MAX_PROJECTION_CANDIDATES);
+    candidates
 }
 
 fn median_f64(samples: &mut [f64]) -> f64 {
@@ -1508,6 +1635,50 @@ mod tests {
         image
     }
 
+    fn sprocket_bordered_strip() -> image::RgbImage {
+        let mut image = image::RgbImage::from_pixel(420, 340, image::Rgb([180, 180, 180]));
+        draw_filled_rect_mut(
+            &mut image,
+            Rect::at(0, 0).of_size(420, 10),
+            image::Rgb([255, 255, 255]),
+        );
+        draw_filled_rect_mut(
+            &mut image,
+            Rect::at(0, 330).of_size(420, 10),
+            image::Rgb([255, 255, 255]),
+        );
+        draw_filled_rect_mut(
+            &mut image,
+            Rect::at(20, 10).of_size(380, 320),
+            image::Rgb([175, 175, 175]),
+        );
+        for x in (35..390).step_by(35) {
+            draw_filled_rect_mut(
+                &mut image,
+                Rect::at(x, 15).of_size(16, 20),
+                image::Rgb([225, 225, 225]),
+            );
+            draw_filled_rect_mut(
+                &mut image,
+                Rect::at(x, 300).of_size(16, 20),
+                image::Rgb([225, 225, 225]),
+            );
+        }
+        draw_filled_rect_mut(
+            &mut image,
+            Rect::at(60, 60).of_size(300, 200),
+            image::Rgb([130, 130, 130]),
+        );
+        for y in (70..250).step_by(14) {
+            draw_filled_rect_mut(
+                &mut image,
+                Rect::at(75, y).of_size(270, 3),
+                image::Rgb([150, 150, 150]),
+            );
+        }
+        image
+    }
+
     #[test]
     fn blank_thumbnail_falls_back_to_a_centered_safe_frame() {
         let image = DynamicImage::ImageLuma8(GrayImage::from_pixel(320, 200, Luma([16])));
@@ -1581,6 +1752,26 @@ mod tests {
         assert!((result.points[0][1] - 38.0 / 209.0).abs() < 0.03);
         assert!((result.points[2][0] - 274.0 / 319.0).abs() < 0.03);
         assert!((result.points[2][1] - 174.0 / 209.0).abs() < 0.03);
+    }
+
+    #[test]
+    fn sprocket_strip_outer_edge_does_not_steal_the_gate_edges() {
+        let result = detect_film_border_with_format(
+            &DynamicImage::ImageRgb8(sprocket_bordered_strip()),
+            Some("135"),
+        );
+
+        assert_eq!(result.status, "detected_gradient");
+        let top = (result.points[0][1] + result.points[1][1]) * 0.5;
+        let bottom = (result.points[2][1] + result.points[3][1]) * 0.5;
+        assert!(
+            (0.14..0.25).contains(&top),
+            "top edge stayed on the outer sprocket strip: {top}"
+        );
+        assert!(
+            (0.70..0.82).contains(&bottom),
+            "bottom edge stayed on the outer sprocket strip: {bottom}"
+        );
     }
 
     #[test]

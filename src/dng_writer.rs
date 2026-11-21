@@ -419,6 +419,10 @@ pub(crate) struct LinearDngRequest<'a> {
     pub(crate) description: Option<&'a str>,
     pub(crate) software: &'a str,
     pub(crate) timestamp: &'a str,
+    /// Optional DNG `OpcodeList2` payload. Callers that write already-linear
+    /// samples leave this empty; synthetic decode tests use it to model the
+    /// stage-2 curve Adobe writes into compressed LinearRaw files.
+    pub(crate) opcode_list2: Option<&'a [u8]>,
 }
 
 /// Write already-linear RGB as a LinearRaw DNG.
@@ -467,6 +471,9 @@ pub(crate) fn linear_dng_bytes(request: &LinearDngRequest<'_>) -> Result<Vec<u8>
     }
     if let Some(description) = request.description {
         entries.push((270, Value::Ascii(description.to_string())));
+    }
+    if let Some(opcode_list2) = request.opcode_list2 {
+        entries.push((51009, Value::Undefined(opcode_list2.to_vec())));
     }
 
     let strip: Vec<u8> = request
@@ -827,6 +834,7 @@ mod tests {
             description: None,
             software: "NexFilm Engine test",
             timestamp: "2026:09:18 10:00:00",
+            opcode_list2: None,
         };
         let bytes = linear_dng_bytes(&request).unwrap();
         let entries = read_ifd(&bytes);
@@ -1074,6 +1082,7 @@ mod tests {
             description: None,
             software: "NexFilm Engine test",
             timestamp: "2026:09:18 10:00:00",
+            opcode_list2: None,
         };
         let path = write_temp(
             "nexfilm-linear-dng-libraw.dng",
