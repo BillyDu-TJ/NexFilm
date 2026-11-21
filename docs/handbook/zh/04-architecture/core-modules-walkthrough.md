@@ -26,6 +26,7 @@ src/
 ├── raw_backend.rs               # LibRaw 0.22+ 绑定与 C++ 马赛克垫片
 ├── rawler_backend.rs            # 纯 Rust RAW 解码后端与机型兼容支持
 ├── calibration_fit.rs           # SVD 奇异值分解通道分离拟合与条件数守卫
+├── dng_opcode.rs                # DNG Stage-2 OpcodeList2 逆色调映射执行器
 ├── dng_writer.rs                # 极简单 IFD 线性与马赛克 DNG 编码器
 ├── scanner_profile.rs           # 扫描仪机型配置表与容器属性解析
 ├── io_processor.rs              # 流式分行图像读取与条带化内存管理

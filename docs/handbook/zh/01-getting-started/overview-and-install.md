@@ -128,7 +128,7 @@ xattr -cr "/Applications/NexFilm Engine.app"
 
 <div class="doc-callout">
     <div class="doc-callout-title">版本升级后的缩略图与缓存刷新建议</div>
-    <div class="doc-callout-body">如果用户从旧版（如 <code>v1.0.2</code>）升级至 <code>v1.1.0</code> 或更新版本，由于新版引擎引入了改进的片基采样加权与有界跨度反相算法，旧版保存的缩略图配方可能显示较暗。建议打开既有胶卷，在工作台中重新点击一次 <strong>自动反相</strong>，即可刷新该帧的高清缩略图与正片配方。在初次使用本软件处理具有珍贵价值的商业胶卷前，建议先导入两三张样本底片完整演练导入、反相与导出流程，确认各环节符合预期后再进行批量作业。</div>
+    <div class="doc-callout-body">如果用户从旧版升级至 <code>v1.1.0</code>、<code>v1.2.1</code> 或更新版本，由于引擎升级了直接 RGB 线性化入口、片基状态锚定与统一密度窗口规则（如 <code>v1.2.1</code> 将 <code>RAW_DECODE_VERSION</code> 升至 <code>15</code>、<code>DENSITY_WINDOW_RULE_VERSION</code> 升至 <code>6</code>），受影响的旧缓存与 Roll 锚点会自动失效；若打开既有胶卷后提示重算，建议在工作台中重新点击一次 <strong>自动反相</strong> 刷新缩略图与正片配方。在初次处理重要商业胶卷前，也建议先导入两三张样本底片完整演练导入、反相与导出流程。</div>
 </div>
 
 ## 界面四大核心功能区域速览 {#interface-layout}

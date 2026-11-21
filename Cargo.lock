@@ -3068,6 +3068,7 @@ dependencies = [
  "flate2",
  "image 0.24.9",
  "imageproc",
+ "moxcms",
  "nalgebra 0.32.6",
  "rawler",
  "rawlib",

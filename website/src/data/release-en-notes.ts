@@ -5,6 +5,24 @@
  */
 
 export const RELEASE_EN_NOTES: Record<string, string> = {
+  'v1.2.1': `From a feature standpoint, **v1.2.1** adds no new editing panels—its user-facing focus is **decoding stability, broader source compatibility, film-base consistency, and clear error diagnostics**. Beneath the surface, however, it represents a substantial internal overhaul of direct RGB linearization, LinearRaw/merged DNG decoding, and film-base anchoring so demanding real-world scans and camera captures run reliably through one unified physical pipeline.
+
+### Highlights & Engineering Improvements
+- **Direct RGB & Scanned JPEG / PNG / TIFF Straight to ProPhoto f32**: TIFF, JPEG, and PNG inputs bypass the legacy 16-bit linear-sRGB transport and luminance chroma compression, linearizing directly into \`f32\` ProPhoto RGB. Paired with real ICC chromaticity/TRC decoding via \`moxcms\` (including linear TRC guards and EOTF fixes), \`f32\` / \`f64\` float TIFF preservation, EXIF orientation handling, and explicit memory budget checks, **standard scanner JPEGs and borderless scans now invert cleanly out of the box in v1.2.1**.
+- **Full LinearRaw & Lightroom Stitched / Merged DNG Support**: Handles both IFD0 and SubIFD LinearRaw layouts, decodes compressed LinearRaw frames through \`rawler\`, executes DNG Stage-2 \`OpcodeList2\` (\`MapTable\` / \`MapPolynomial\`) inverse tone mapping prior to cropping or downsampling, and resolves linear color via embedded ICC or dual-illuminant \`ColorMatrix1/2\` + \`AsShotNeutral\`—fixing color casts, highlight distortion, and decode failures on stitched panoramas and merged DNGs.
+- **Unified Modern Decode Entry & Film-Base State Separation**: Unifies the modern decode path shared by preview proxies, Roll anchor sampling, Contact Sheets, and batch export (\`RAW_DECODE_VERSION = 15\`, \`DENSITY_WINDOW_RULE_VERSION = 6\`). Clearly separates \`Trusted\` bases (strictly anchored at \`d_min = 0\`) from \`ContentFallback\` (preserving per-channel lows without blowing highlights), invalidating affected legacy caches and Roll anchors cleanly on upgrade.
+- **Canon \`.CR2\` Preview Extraction & 135 Sprocket Border Recovery**: Tightens embedded JPEG preview probing to 8-bit 1/3-channel baseline/progressive JPEGs and skips raw slice (\`0xC640\`) or CFA/LinearRaw IFDs so high-resolution \`.CR2\` files no longer mistake 50+ MB lossless sensor slices for thumbnails; adds inward top/bottom border recovery on horizontal \`3:2\` 135 scans so framing does not lock onto outer sprocket edges.
+- **Degraded-Pipeline Warnings & Copyable Diagnostics**: Surfacing clear stage-specific errors and one-click **Copy details** diagnostics (\`NexFilm v1.2.1 | stage=...\`) in Toast notifications for ICC parse failures, degraded camera matrices, DNG/scanner metadata fallbacks, calibration fallbacks, and import / auto-invert / film-area / Develop / batch-export failures.
+
+### Upgrade Notice
+- Because \`v1.2.1\` updates direct RGB decoding and unified density window rules, affected caches and Roll anchors refresh on open; re-run **Auto Invert** if an existing roll prompts for anchor recalibration.
+
+### Known Limitations
+- Hardware calibration features (Capture Corrected, Capture Characterized, Scanner Input Profiles) remain experimental.
+- Very large JPEG/PNG files remain subject to explicit decoder memory ceilings; 16-bit TIFF or DNG is still recommended for ultra-high-resolution archives.
+- Full-resolution export of massive scans requires sufficient free RAM.
+- Nikon proprietary **HE/HE*** compressed NEF files remain unsupported by upstream open-source decoders (LibRaw / \`rawler\`).`,
+
   'v1.1.0': `### What's New
 - **Unified Density Pipeline**: Input domain (embedded ICC, scanner container tags, RAW metadata, model recognition, or sRGB fallback) is parsed per frame. Inversion math is strictly unified: per-channel film base subtraction → optical density domain → shared window origin → bounded channel span response. Normal materials remain completely consistent.
 - **Roll-wide White Point & Batch Inversion**: Calibrate a shared white point from the brightest frame across an entire roll. Frames sampled for film base or leader are marked as calibration frames, automatically excluded from Develop, white point measurement, and batch inversion, with skipped count reported in progress.

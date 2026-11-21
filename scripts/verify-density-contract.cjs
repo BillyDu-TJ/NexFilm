@@ -50,7 +50,12 @@ assert.match(
 );
 assert.match(
     commandSource,
-    /let measured = item[\s\S]{0,220}?estimate_film_base_f32\(proxy, &item\.geom\)/,
+    /fn measure_frame_film_base[\s\S]{0,800}?estimate_film_base_f32\(proxy, &item\.geom\)/,
+    'Film-base helper must measure the target frame proxy inside Film Area',
+);
+assert.match(
+    commandSource,
+    /pub async fn apply_film_base[\s\S]{0,900}?let measured = measure_frame_film_base\(&item\)/,
     'Pasting a film base must measure the target frame',
 );
 const pasteHandler =
@@ -115,7 +120,7 @@ assert.match(commandSource, /fn inherited_film_base_measurement\(/);
 // freshly decoded one, and the export decode — never in the batch itself.
 assert.match(
     commandSource,
-    /if current_long_edge >= target_long_edge[\s\S]{0,400}?remeasure_inherited_film_base\(&mut item\)/,
+    /if current_long_edge >= target_long_edge[\s\S]{0,1400}?remeasure_inherited_film_base\(&mut item\)[\s\S]{0,300}?return Ok\(PreparedProxyResult/,
     'An already prepared frame must still re-measure an inherited base',
 );
 assert.match(

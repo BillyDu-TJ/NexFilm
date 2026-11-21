@@ -118,9 +118,9 @@ NexFilm Engine is distributed under the **GNU General Public License v3.0 only (
 
 ### Structured Issue Reporting Guidelines
 If you encounter crashes, decoding anomalies, or UI rendering glitches, open an issue on the official GitHub repository. To facilitate rapid diagnosis and patch deployment, please provide the following technical details:
-- **Environment Diagnostics**: Operating system version (e.g., Windows 11 23H2 or macOS Sonoma 14.5 Apple Silicon) and the exact installed NexFilm Engine version (e.g., v1.1.0);
+- **Environment Diagnostics**: Operating system version (e.g., Windows 11 23H2 or macOS Sonoma 14.5 Apple Silicon) and the exact installed NexFilm Engine version (e.g., v1.2.1);
 - **Hardware and Capture Details**: Camera body, reprographic lens, light source manufacturer, file extension, and pixel dimensions;
-- **Step-by-Step Reproduction Log**: Detailed steps leading to the anomaly, accompanied by relevant console error logs and stack traces;
+- **Step-by-Step Reproduction Log & Copyable Diagnostic**: Detailed steps leading to the anomaly; when a warning or error Toast appears, click **Copy details** to attach the structured diagnostic line (`NexFilm v1.2.1 | stage=...`) along with any console logs;
 - **Privacy Guidelines**: Never upload images containing private personal information to public issues. Test charts or non-sensitive photographic crops are preferred for diagnostic investigations.
 
 ### Theoretical Foundations and Community Acknowledgments

@@ -204,6 +204,12 @@ fn mark_inherited_film_base(pipeline_state: &str) -> Result<String, String> {
         .map_err(|error| format!("Invalid source pipeline state: {error}"))?;
     state.processing_report.base_source = crate::pipeline::INHERITED_FILM_BASE_SOURCE.to_string();
     state.processing_report.base_confidence = "1.000".to_string();
+    state.processing_report.analysis_window_rule = 0;
+    state
+        .processing_report
+        .analysis_geometry_fingerprint
+        .clear();
+    state.processing_report.analysis_geometry_rule = 0;
     serde_json::to_string(&state)
         .map_err(|error| format!("Failed to serialize pipeline state: {error}"))
 }
@@ -725,6 +731,10 @@ mod tests {
     fn inherited_film_base_marker_round_trips_and_is_not_a_frame_measurement() {
         let mut state = PipelineState::default();
         state.processing_report.base_source = "film_edge_band".to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint = "v1-measured".to_string();
+        state.processing_report.analysis_geometry_rule = 1;
         let marked = mark_inherited_film_base(&serde_json::to_string(&state).unwrap()).unwrap();
         let round: PipelineState = serde_json::from_str(&marked).unwrap();
         assert_eq!(
@@ -732,6 +742,12 @@ mod tests {
             crate::pipeline::INHERITED_FILM_BASE_SOURCE
         );
         assert_eq!(round.processing_report.base_confidence, "1.000");
+        assert_eq!(round.processing_report.analysis_window_rule, 0);
+        assert!(round
+            .processing_report
+            .analysis_geometry_fingerprint
+            .is_empty());
+        assert_eq!(round.processing_report.analysis_geometry_rule, 0);
 
         let placeholder = BaseColor {
             base_r: 12345,

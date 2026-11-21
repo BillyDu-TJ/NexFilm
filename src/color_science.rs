@@ -5,6 +5,12 @@
 //! ICC profile generation in one place so that RAW decoding, preview and
 //! export cannot silently disagree about what three channel values mean.
 
+use moxcms::{
+    curve_from_gamma, ColorProfile, DataColorSpace, Layout, ToneReprCurve, TransformF32Executor,
+    TransformOptions,
+};
+use std::sync::Arc;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorSpaceId {
     SRgb,
@@ -536,6 +542,279 @@ pub fn profile_name(id: ColorSpaceId) -> &'static str {
     profile(id).name
 }
 
+/// A real ICC conversion into one of the application's unbounded linear RGB
+/// working spaces.
+///
+/// ICC matrices, TRCs (including parametric/LUT curves), rendering intent and
+/// the profile's chromatic adaptation are handled by `moxcms`. This is the
+/// decode path for profiles whose description does not match one of the
+/// built-in names; it is also used for LinearRaw DNGs whose embedded profile
+/// must win over a guessed device matrix.
+#[derive(Clone)]
+pub struct IccRgbTransform {
+    transform: Arc<TransformF32Executor>,
+    linear_transfer: bool,
+}
+
+impl std::fmt::Debug for IccRgbTransform {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("IccRgbTransform")
+            .field("linear_transfer", &self.linear_transfer)
+            .finish_non_exhaustive()
+    }
+}
+
+impl IccRgbTransform {
+    pub fn from_icc_to(icc: &[u8], target: ColorSpaceId) -> Result<Self, String> {
+        let source = ColorProfile::new_from_slice(icc)
+            .map_err(|error| format!("Invalid ICC profile: {error}"))?;
+        if source.color_space != DataColorSpace::Rgb {
+            return Err("ICC profile is not an RGB profile".to_string());
+        }
+        let mut destination = match target {
+            ColorSpaceId::SRgb => ColorProfile::new_srgb(),
+            ColorSpaceId::DisplayP3 => ColorProfile::new_display_p3(),
+            ColorSpaceId::AdobeRgb => ColorProfile::new_adobe_rgb(),
+            ColorSpaceId::Rec2020 => ColorProfile::new_bt2020(),
+            ColorSpaceId::ProPhotoRgb | ColorSpaceId::ProPhotoRgbD65 => {
+                ColorProfile::new_pro_photo_rgb()
+            }
+            ColorSpaceId::Aces2065 => ColorProfile::new_aces_aces_2065_1_linear(),
+            ColorSpaceId::AcesCg => ColorProfile::new_aces_cg_linear(),
+        };
+        // The density stage consumes linear light, so the destination profile
+        // must not add a display curve after the source EOTF was applied.
+        let linear = curve_from_gamma(1.0);
+        destination.red_trc = Some(linear.clone());
+        destination.green_trc = Some(linear.clone());
+        destination.blue_trc = Some(linear);
+        let options = TransformOptions {
+            rendering_intent: source.rendering_intent,
+            ..TransformOptions::default()
+        };
+        let transform = source
+            .create_transform_f32(Layout::Rgb, &destination, Layout::Rgb, options)
+            .map_err(|error| format!("Cannot build ICC transform: {error}"))?;
+        Ok(Self {
+            transform,
+            linear_transfer: icc_declares_linear_transfer(icc),
+        })
+    }
+
+    pub fn from_icc_to_linear_prophoto(icc: &[u8]) -> Result<Self, String> {
+        Self::from_icc_to(icc, ColorSpaceId::ProPhotoRgb)
+    }
+
+    pub fn declares_linear_transfer(&self) -> bool {
+        self.linear_transfer
+    }
+
+    /// Transform encoded RGB samples in place. Values stay f32 and may be
+    /// negative or above one after the conversion; the density boundary owns
+    /// the final physical clamp.
+    pub fn apply_encoded_rgb(&self, pixels: &mut [f32]) -> Result<(), String> {
+        const CHUNK_VALUES: usize = 8192 * 3;
+        let mut output = vec![0.0f32; pixels.len().min(CHUNK_VALUES)];
+        for chunk in pixels.chunks_mut(CHUNK_VALUES) {
+            output.resize(chunk.len(), 0.0);
+            self.transform
+                .transform(chunk, &mut output)
+                .map_err(|error| format!("ICC pixel transform failed: {error}"))?;
+            chunk.copy_from_slice(&output);
+        }
+        Ok(())
+    }
+}
+
+/// Identify the built-in primaries from the profile's actual colorant tags,
+/// rather than trusting its description string. A profile can be named
+/// "sRGB" while carrying scanner or print primaries; the pixels follow the
+/// matrix, so the report has to follow it too.
+pub fn icc_color_space(icc: &[u8]) -> Option<ColorSpaceId> {
+    let actual = ColorProfile::new_from_slice(icc).ok()?;
+    let colorant_xy = |colorant: moxcms::Xyzd| {
+        let sum = colorant.x + colorant.y + colorant.z;
+        (sum > 0.0).then_some((colorant.x / sum, colorant.y / sum))
+    };
+    let actual_xy = [
+        colorant_xy(actual.red_colorant)?,
+        colorant_xy(actual.green_colorant)?,
+        colorant_xy(actual.blue_colorant)?,
+    ];
+    const TOLERANCE: f64 = 1.5e-3;
+    [
+        ColorSpaceId::SRgb,
+        ColorSpaceId::DisplayP3,
+        ColorSpaceId::AdobeRgb,
+        ColorSpaceId::Rec2020,
+        ColorSpaceId::ProPhotoRgb,
+        ColorSpaceId::Aces2065,
+        ColorSpaceId::AcesCg,
+    ]
+    .into_iter()
+    .find(|candidate| {
+        let Ok(reference) = ColorProfile::new_from_slice(&build_icc_profile(*candidate)) else {
+            return false;
+        };
+        let reference_xy = [
+            colorant_xy(reference.red_colorant),
+            colorant_xy(reference.green_colorant),
+            colorant_xy(reference.blue_colorant),
+        ];
+        reference_xy
+            .into_iter()
+            .zip(actual_xy)
+            .all(|(reference, actual)| {
+                reference.is_some_and(|reference| {
+                    (reference.0 - actual.0).abs() <= TOLERANCE
+                        && (reference.1 - actual.1).abs() <= TOLERANCE
+                })
+            })
+    })
+}
+
+/// Transfer curve families the input-domain report can name without guessing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IccTransferClass {
+    Linear,
+    Srgb,
+    Gamma18,
+    Gamma20,
+    Gamma22,
+    Unknown,
+}
+
+const ICC_TRC_SAMPLE_X: [f32; 9] = [0.02, 0.05, 0.10, 0.18, 0.25, 0.35, 0.50, 0.75, 1.0];
+
+fn reference_icc_profile(id: ColorSpaceId) -> ColorProfile {
+    match id {
+        ColorSpaceId::SRgb => ColorProfile::new_srgb(),
+        ColorSpaceId::DisplayP3 => ColorProfile::new_display_p3(),
+        ColorSpaceId::AdobeRgb => ColorProfile::new_adobe_rgb(),
+        ColorSpaceId::Rec2020 => ColorProfile::new_bt2020(),
+        ColorSpaceId::ProPhotoRgb | ColorSpaceId::ProPhotoRgbD65 => {
+            ColorProfile::new_pro_photo_rgb()
+        }
+        ColorSpaceId::Aces2065 => ColorProfile::new_aces_aces_2065_1_linear(),
+        ColorSpaceId::AcesCg => ColorProfile::new_aces_cg_linear(),
+    }
+}
+
+fn curve_samples(curve: &ToneReprCurve) -> Option<Vec<f32>> {
+    let evaluator = curve.make_linear_evaluator().ok()?;
+    Some(
+        ICC_TRC_SAMPLE_X
+            .iter()
+            .map(|value| evaluator.evaluate_value(*value))
+            .collect(),
+    )
+}
+
+fn profile_trc_samples(profile: &ColorProfile) -> Option<[Vec<f32>; 3]> {
+    Some([
+        curve_samples(profile.red_trc.as_ref()?)?,
+        curve_samples(profile.green_trc.as_ref()?)?,
+        curve_samples(profile.blue_trc.as_ref()?)?,
+    ])
+}
+
+fn trc_samples_match(left: &[Vec<f32>; 3], right: &[Vec<f32>; 3], tolerance: f32) -> bool {
+    left.iter().zip(right).all(|(left, right)| {
+        left.iter()
+            .zip(right)
+            .all(|(left, right)| (left - right).abs() <= tolerance)
+    })
+}
+
+/// True when a profile's actual TRC tags match the standard curve of the named
+/// primaries. Primaries detection alone cannot justify reporting Gamma22 for an
+/// Adobe RGB profile that was re-tagged with a different curve.
+pub fn icc_trc_matches_standard(icc: &[u8], primaries: ColorSpaceId) -> bool {
+    let Ok(actual) = ColorProfile::new_from_slice(icc) else {
+        return false;
+    };
+    let reference = reference_icc_profile(primaries);
+    let (Some(actual), Some(reference)) = (
+        profile_trc_samples(&actual),
+        profile_trc_samples(&reference),
+    ) else {
+        return false;
+    };
+    trc_samples_match(&actual, &reference, 2.0e-3)
+}
+
+fn pure_gamma_transfer_class(samples: &[Vec<f32>; 3]) -> IccTransferClass {
+    let mut gamma_sum = 0.0f32;
+    let mut gamma_count = 0usize;
+    for channel in samples {
+        for (x, y) in ICC_TRC_SAMPLE_X.iter().zip(channel) {
+            if *x < 0.1 {
+                continue;
+            }
+            if !y.is_finite() || *y <= 0.0 {
+                return IccTransferClass::Unknown;
+            }
+            gamma_sum += y.ln() / x.ln();
+            gamma_count += 1;
+        }
+    }
+    if gamma_count == 0 {
+        return IccTransferClass::Unknown;
+    }
+    let gamma = gamma_sum / gamma_count as f32;
+    if !gamma.is_finite() {
+        return IccTransferClass::Unknown;
+    }
+    for channel in samples {
+        for (x, y) in ICC_TRC_SAMPLE_X.iter().zip(channel) {
+            if (*y - x.powf(gamma)).abs() > 2.0e-3 {
+                return IccTransferClass::Unknown;
+            }
+        }
+    }
+    if (gamma - 1.8).abs() <= 0.04 {
+        IccTransferClass::Gamma18
+    } else if (gamma - 2.0).abs() <= 0.04 {
+        IccTransferClass::Gamma20
+    } else if (gamma - 2.2).abs() <= 0.04 {
+        IccTransferClass::Gamma22
+    } else {
+        IccTransferClass::Unknown
+    }
+}
+
+/// Classify the TRC tags actually stored in an ICC profile.
+///
+/// The built-in curve families are compared against moxcms' own reference
+/// profiles. Anything else is only reported when all three curves fit one of
+/// the simple gamma values the report can name; otherwise the caller must say
+/// `Unknown` instead of reusing the primaries' default transfer.
+pub fn icc_transfer_class(icc: &[u8]) -> IccTransferClass {
+    if icc_declares_linear_transfer(icc) {
+        return IccTransferClass::Linear;
+    }
+    let Ok(actual) = ColorProfile::new_from_slice(icc) else {
+        return IccTransferClass::Unknown;
+    };
+    let Some(actual_samples) = profile_trc_samples(&actual) else {
+        return IccTransferClass::Unknown;
+    };
+    for (reference, class) in [
+        (ColorProfile::new_srgb(), IccTransferClass::Srgb),
+        (ColorProfile::new_adobe_rgb(), IccTransferClass::Gamma22),
+        (ColorProfile::new_pro_photo_rgb(), IccTransferClass::Gamma18),
+        (ColorProfile::new_bt2020(), IccTransferClass::Gamma22),
+    ] {
+        if profile_trc_samples(&reference)
+            .is_some_and(|reference| trc_samples_match(&actual_samples, &reference, 2.0e-3))
+        {
+            return class;
+        }
+    }
+    pure_gamma_transfer_class(&actual_samples)
+}
+
 /// Identify the common RGB profiles supported by the application from an ICC
 /// payload. The matrix/TRC conversion itself remains defined by the static
 /// profiles above; this function only maps the profile's human-readable name
@@ -790,6 +1069,62 @@ pub fn xyz_d50_to_color_space_matrix(id: ColorSpaceId) -> [f64; 9] {
     matrix_inverse(space_to_xyz)
 }
 
+/// Convert a DNG `ColorMatrix1` (XYZ D50 to the file's linear RGB) into the
+/// matrix that maps those stored samples directly to linear ProPhoto RGB.
+///
+/// `LinearRaw` data is already demosaiced RGB, but its samples still live in
+/// the camera/scanner coordinates named by `ColorMatrix1`. Treating them as
+/// sRGB before the log is the same category of error as applying an unrelated
+/// display matrix to camera-native RAW.
+pub fn dng_color_matrix_to_prophoto(xyz_to_source: [[f32; 3]; 3]) -> Option<[f32; 9]> {
+    let xyz_to_source = [
+        f64::from(xyz_to_source[0][0]),
+        f64::from(xyz_to_source[0][1]),
+        f64::from(xyz_to_source[0][2]),
+        f64::from(xyz_to_source[1][0]),
+        f64::from(xyz_to_source[1][1]),
+        f64::from(xyz_to_source[1][2]),
+        f64::from(xyz_to_source[2][0]),
+        f64::from(xyz_to_source[2][1]),
+        f64::from(xyz_to_source[2][2]),
+    ];
+    let determinant = xyz_to_source[0]
+        * (xyz_to_source[4] * xyz_to_source[8] - xyz_to_source[5] * xyz_to_source[7])
+        - xyz_to_source[1]
+            * (xyz_to_source[3] * xyz_to_source[8] - xyz_to_source[5] * xyz_to_source[6])
+        + xyz_to_source[2]
+            * (xyz_to_source[3] * xyz_to_source[7] - xyz_to_source[4] * xyz_to_source[6]);
+    if !determinant.is_finite() || determinant.abs() < 1e-12 {
+        return None;
+    }
+    let xyz_to_prophoto = xyz_d50_to_color_space_matrix(ColorSpaceId::ProPhotoRgb);
+    // With AsShotNeutral the decoder first balances the declared camera
+    // neutral to [c, c, c]. This camera-from-ProPhoto matrix must therefore
+    // map ProPhoto white to the same equal-camera-white, exactly as LibRaw's
+    // `cam_xyz_coeff` row normalisation does. Normalising after the inverse
+    // would instead rescale rows by unrelated channel factors.
+    let prophoto_to_xyz = matrix_inverse(xyz_to_prophoto);
+    let mut camera_from_prophoto = matrix_multiply(xyz_to_source, prophoto_to_xyz);
+    for row in 0..3 {
+        let start = row * 3;
+        let sum = camera_from_prophoto[start]
+            + camera_from_prophoto[start + 1]
+            + camera_from_prophoto[start + 2];
+        if !sum.is_finite() || sum <= 1e-12 {
+            return None;
+        }
+        for column in 0..3 {
+            camera_from_prophoto[start + column] /= sum;
+        }
+    }
+    let source_to_prophoto = matrix_inverse(camera_from_prophoto);
+    let result = source_to_prophoto.map(|value| value as f32);
+    result
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -909,6 +1244,83 @@ mod tests {
             let rgb = matrix_vector(xyz_d50_to_color_space_matrix(space), d50_white);
             for channel in rgb {
                 assert!((channel - 1.0).abs() < 2e-4, "{space:?}: {rgb:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn dng_color_matrix_preserves_the_balanced_neutral_white_point() {
+        // Nikon D810-style dual-illuminant values: real camera matrices have
+        // non-unit row sums, which must not add a second channel gain after
+        // AsShotNeutral has already balanced the pixels.
+        let xyz_to_camera = [
+            [0.7175, 0.1354, -0.0383],
+            [-0.4693, 1.2670, 0.2400],
+            [0.0162, -0.1657, 0.7853],
+        ];
+        let matrix = dng_color_matrix_to_prophoto(xyz_to_camera).expect("camera matrix");
+        for row in 0..3 {
+            let sum = matrix[row * 3] + matrix[row * 3 + 1] + matrix[row * 3 + 2];
+            assert!(
+                (sum - 1.0).abs() < 2e-5,
+                "source-to-ProPhoto row {row} must preserve neutral white: {matrix:?}"
+            );
+        }
+        let neutral = [0.4721f32, 1.0, 0.6855];
+        let gains = [1.0 / neutral[0], 1.0 / neutral[1], 1.0 / neutral[2]];
+        let maximum = gains.into_iter().fold(0.0f32, f32::max);
+        let balanced = [
+            neutral[0] * gains[0] / maximum,
+            neutral[1] * gains[1] / maximum,
+            neutral[2] * gains[2] / maximum,
+        ];
+        let prophoto = matrix_vector(
+            [
+                f64::from(matrix[0]),
+                f64::from(matrix[1]),
+                f64::from(matrix[2]),
+                f64::from(matrix[3]),
+                f64::from(matrix[4]),
+                f64::from(matrix[5]),
+                f64::from(matrix[6]),
+                f64::from(matrix[7]),
+                f64::from(matrix[8]),
+            ],
+            [
+                f64::from(balanced[0]),
+                f64::from(balanced[1]),
+                f64::from(balanced[2]),
+            ],
+        );
+        for channel in prophoto {
+            assert!(
+                (channel - prophoto[0]).abs() < 1e-5,
+                "balanced AsShotNeutral must stay neutral in ProPhoto: {prophoto:?}"
+            );
+        }
+
+        // The matrices written by the LinearRaw DNG exporter already map D50
+        // white to [1,1,1], so the normalisation must be a no-op there.
+        for space in [
+            ColorSpaceId::ProPhotoRgb,
+            ColorSpaceId::DisplayP3,
+            ColorSpaceId::SRgb,
+        ] {
+            let xyz_to_space = xyz_d50_to_color_space_matrix(space);
+            let rows = [
+                [xyz_to_space[0], xyz_to_space[1], xyz_to_space[2]],
+                [xyz_to_space[3], xyz_to_space[4], xyz_to_space[5]],
+                [xyz_to_space[6], xyz_to_space[7], xyz_to_space[8]],
+            ]
+            .map(|row| row.map(|value| value as f32));
+            let matrix = dng_color_matrix_to_prophoto(rows).expect("written DNG matrix");
+            for row in 0..3 {
+                let sum = matrix[row * 3] + matrix[row * 3 + 1] + matrix[row * 3 + 2];
+                assert!((sum - 1.0).abs() < 2e-5, "{space:?}: {matrix:?}");
+            }
+            let white = apply_linear_matrix([1.0, 1.0, 1.0], matrix);
+            for channel in white {
+                assert!((channel - 1.0).abs() < 2e-5, "{space:?}: {white:?}");
             }
         }
     }

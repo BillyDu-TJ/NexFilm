@@ -1771,22 +1771,177 @@ btnDeleteLibraryImages.addEventListener('click', () => requestImageDeletion(sele
 btnDeleteDevelopImage.addEventListener('click', () => requestImageDeletion([activeId]));
 btnDeleteRollImages.addEventListener('click', () => requestImageDeletion(selectedLibraryIds));
 
-function showToast(message, type = "error") {
+const NEXFILM_DIAGNOSTIC_VERSION = 'NexFilm v1.2.1';
+const DIAGNOSTIC_STAGES = new Set([
+    'import', 'prepare_proxy', 'load_proxy', 'auto_invert', 'auto_area',
+    'export', 'pipeline_warning',
+]);
+
+function diagnosticErrorText(error) {
+    if (error instanceof Error) {
+        return error.message || String(error);
+    }
+    if (typeof error === 'string') return error;
+    if (error?.message) return String(error.message);
+    try {
+        return JSON.stringify(error);
+    } catch {
+        return String(error ?? '');
+    }
+}
+
+function diagnosticFileName(path) {
+    const normalized = String(path || '').replace(/\\/g, '/');
+    return normalized.split('/').filter(Boolean).pop() || normalized || 'unknown';
+}
+
+function diagnosticFileNames(paths) {
+    const list = Array.isArray(paths) ? paths : (paths ? [paths] : []);
+    const names = list.map(diagnosticFileName).filter(Boolean);
+    return names.length ? names.join(', ') : 'unknown';
+}
+
+function importDiagnostic(paths, error) {
+    return {
+        stage: 'import',
+        file: diagnosticFileNames(paths),
+        contract: 'import',
+        domain: {},
+        fallbacks: [],
+        error: diagnosticErrorText(error),
+    };
+}
+
+function diagnosticDomainText(domain = {}) {
+    const field = value => String(value || 'unknown');
+    return `${field(domain.primaries)}/${field(domain.transfer)}/${field(domain.source)}/${field(domain.confidence)} (${String(domain.detail || '')})`;
+}
+
+function buildDiagnosticText(diagnostic = {}) {
+    const stage = DIAGNOSTIC_STAGES.has(diagnostic.stage) ? diagnostic.stage : 'pipeline_warning';
+    const contract = diagnostic.contract || currentPipelineState?.contract || 'unknown';
+    const domain = diagnostic.domain || currentPipelineState?.processing_report?.input_domain || {};
+    const fallbacks = (Array.isArray(diagnostic.fallbacks) ? diagnostic.fallbacks : [])
+        .map(reason => String(reason))
+        .filter(Boolean);
+    return [
+        `${NEXFILM_DIAGNOSTIC_VERSION} | stage=${stage}`,
+        `file=${diagnosticFileName(diagnostic.file)}`,
+        `contract=${contract} | domain=${diagnosticDomainText(domain)}`,
+        `fallbacks=${fallbacks.join(', ')}`,
+        `error=${String(diagnostic.error ?? '')}`,
+    ].join('\n');
+}
+
+function pipelineDiagnostic(stage, error, targetId = activeId, state = currentPipelineState) {
+    const report = state?.processing_report || {};
+    const item = targetId ? findKnownItem(targetId) : null;
+    return {
+        stage,
+        file: item?.file_path || '',
+        contract: state?.contract || currentPipelineState?.contract || 'unknown',
+        domain: report.input_domain || {},
+        fallbacks: Array.isArray(report.fallback_reasons) ? report.fallback_reasons : [],
+        error: diagnosticErrorText(error),
+    };
+}
+
+function isNonReportablePipelineError(error) {
+    const text = diagnosticErrorText(error);
+    return text.includes('STALE_DEVELOPMENT_OPERATION') || text.includes('FILE_MISSING');
+}
+
+function showPipelineFailure(messageKey, error, targetId, stage) {
+    const detail = diagnosticErrorText(error);
+    showToast(i18nText(messageKey, { error: detail }), 'error', {
+        diagnostic: pipelineDiagnostic(stage, detail, targetId),
+    });
+}
+
+async function writeClipboardText(text) {
+    if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand('copy');
+    textarea.remove();
+    if (!copied) throw new Error('Clipboard is unavailable.');
+}
+
+function showToast(message, type = "error", options = {}) {
     message = i18n?.translateLegacy(message) ?? message;
+    const diagnostic = options?.diagnostic || null;
+    const diagnosticText = (diagnostic || type === 'error')
+        ? buildDiagnosticText(diagnostic || {
+            stage: 'pipeline_warning',
+            error: diagnosticErrorText(message),
+        })
+        : null;
+    const dismissDelay = diagnosticText ? 12000 : 5000;
     const toast = document.createElement('div');
-    toast.className = `px-4 py-3 rounded shadow-lg flex items-center gap-3 transform transition-all duration-300 translate-x-full ${type === 'error' ? 'bg-red-900/90 text-red-100 border border-red-700/50' : 'bg-zinc-800/90 text-zinc-100 border border-zinc-700/50'}`;
-    toast.innerHTML = `
-        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            ${type === 'error' ? '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />' : '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />'}
-        </svg>
-        <span class="text-[13px] font-medium tracking-wide">${message}</span>
-    `;
+    toast.className = 'diagnostic-toast flex max-w-md gap-3 rounded px-4 py-3 shadow-lg transform transition-all duration-300 translate-x-full';
+    toast.dataset.tone = type;
+    const icon = document.createElement('span');
+    icon.className = 'h-5 w-5 shrink-0';
+    icon.innerHTML = type === 'error'
+        ? '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>'
+        : '<svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>';
+    const body = document.createElement('div');
+    body.className = 'diagnostic-toast-body min-w-0 flex-1';
+    const text = document.createElement('div');
+    text.className = 'diagnostic-toast-message font-medium tracking-wide';
+    text.textContent = String(message ?? '');
+    body.appendChild(text);
+    if (diagnosticText) {
+        const actions = document.createElement('div');
+        actions.className = 'diagnostic-toast-actions';
+        const copyButton = document.createElement('button');
+        copyButton.type = 'button';
+        copyButton.className = 'diagnostic-toast-action';
+        copyButton.textContent = i18nText('diagnostics.copy');
+        copyButton.addEventListener('click', async event => {
+            event.stopPropagation();
+            try {
+                await writeClipboardText(diagnosticText);
+                copyButton.textContent = i18nText('diagnostics.copied');
+                setTimeout(() => {
+                    if (copyButton.isConnected) copyButton.textContent = i18nText('diagnostics.copy');
+                }, 1500);
+            } catch (error) {
+                console.error('Could not copy diagnostic details', error);
+                copyButton.textContent = i18nText('diagnostics.copyFailed');
+            }
+        });
+        actions.appendChild(copyButton);
+        body.appendChild(actions);
+    }
+    const closeButton = document.createElement('button');
+    closeButton.type = 'button';
+    closeButton.className = 'diagnostic-toast-close shrink-0 text-xs leading-none';
+    closeButton.setAttribute('aria-label', i18nText('diagnostics.close'));
+    closeButton.textContent = '×';
+    toast.append(icon, body, closeButton);
     toastContainer.appendChild(toast);
     requestAnimationFrame(() => toast.classList.remove('translate-x-full'));
-    setTimeout(() => {
+    let autoDismissTimer = null;
+    let removalTimer = null;
+    const dismiss = () => {
+        if (autoDismissTimer !== null) clearTimeout(autoDismissTimer);
+        if (removalTimer !== null) clearTimeout(removalTimer);
+        removalTimer = setTimeout(() => {
+            if (toast.parentNode) toast.parentNode.removeChild(toast);
+        }, 300);
         toast.classList.add('translate-x-full', 'opacity-0');
-        setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 300);
-    }, 5000);
+    };
+    closeButton.addEventListener('click', dismiss);
+    autoDismissTimer = setTimeout(dismiss, dismissDelay);
 }
 
 function updateSliderTrack(el) {
@@ -2166,13 +2321,53 @@ function updatePipelineStatus() {
 
 // Resolver fallback reasons are technical identifiers. Surface the ones that
 // change what the user must do, once per frame, in the UI language.
+const PIPELINE_WARNING_REASONS = new Set([
+    'embedded_icc_parse_failed',
+    'camera_matrix_unresolved',
+    'dng_sample_layout_unresolved',
+    'linear_raw_dng_color_metadata_missing',
+    'scanner_fff_container_unreadable',
+    'scanner_profile_missing_or_stale',
+    'capture_profile_unavailable',
+    'capture_profile_runtime_fallback',
+    'smart_auto_no_trusted_film_base',
+]);
+
+function pipelineWarningReason(reason) {
+    const value = String(reason || '');
+    if (value.includes('anchor_working_basis_mismatch')) return 'anchor_working_basis_mismatch';
+    if (value.startsWith('embedded_icc_parse_failed')) return 'embedded_icc_parse_failed';
+    if (PIPELINE_WARNING_REASONS.has(value)) return value;
+    if (value.startsWith('capture_runtime_failure|') || value.startsWith('profile_capture_fallback|')) {
+        return 'capture_profile_runtime_fallback';
+    }
+    if (value === 'profile_missing'
+        || value === 'profile_unavailable'
+        || value.startsWith('capture_payload_invalid|')
+        || value.startsWith('capture_fit_invalid|')
+        || value === 'dark_reference_missing'
+        || value === 'open_gate_reference_missing') {
+        return 'capture_profile_unavailable';
+    }
+    // An unprofiled scanner TIFF is common and remains report-only.
+    return null;
+}
+
 function showPipelineWarnings(state = currentPipelineState, targetId = activeId) {
     const reasons = state?.processing_report?.fallback_reasons || [];
-    if (!reasons.some(reason => String(reason).includes('anchor_working_basis_mismatch'))) return;
-    const key = `${targetId || 'roll'}:anchor_working_basis_mismatch`;
-    if (shownPipelineWarnings.has(key)) return;
-    shownPipelineWarnings.add(key);
-    showToast(i18nText('calibrationConfig.warning.roll_anchor_working_basis_mismatch'), 'warning');
+    for (const reason of reasons) {
+        const warningReason = pipelineWarningReason(reason);
+        if (!warningReason) continue;
+        const key = `${targetId || 'roll'}:${warningReason}`;
+        if (shownPipelineWarnings.has(key)) continue;
+        shownPipelineWarnings.add(key);
+        const message = warningReason === 'anchor_working_basis_mismatch'
+            ? i18nText('calibrationConfig.warning.roll_anchor_working_basis_mismatch')
+            : i18nText(`pipelineWarning.${warningReason}`);
+        showToast(message, 'warning', {
+            diagnostic: pipelineDiagnostic('pipeline_warning', reason, targetId, state),
+        });
+    }
 }
 
 // Invert Whole Roll is a Roll-only shortcut: it measures the brightest frame of
@@ -4523,15 +4718,16 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
                 arrayBuffer = new Uint8Array(result).buffer;
             }
         } catch(e) {
-            if (e === "PROXY_NOT_READY") {
+            const errorText = diagnosticErrorText(e);
+            if (errorText === "PROXY_NOT_READY") {
                 activeProxyIsFull = false;
                 readyProxyIds.delete(requestedId);
                 if (loadingMask) loadingMask.classList.add('hidden');
                 return false;
             }
-            console.error("Failed to load proxy", e); 
             if (loadingMask) loadingMask.classList.add('hidden');
-            return false;
+            console.error("Failed to load proxy", e);
+            throw e instanceof Error ? e : new Error(errorText);
         }
         if (loadingMask) loadingMask.classList.add('hidden');
     }
@@ -4654,7 +4850,7 @@ async function loadProxyImage(token = null, loadedGeom = current_geom) {
         return true;
     } catch(e) {
         console.error("Error parsing proxy buffer:", e);
-        return false;
+        throw new Error(`Proxy buffer parse failed: ${diagnosticErrorText(e)}`, { cause: e });
     }
 }
 
@@ -7438,9 +7634,10 @@ async function selectImage(id, { force = false } = {}) {
                 }
             })
             .catch(error => {
-                if (myToken === currentImageRequestToken) {
-                    console.error('Background proxy preparation failed', error);
-                }
+                if (myToken !== currentImageRequestToken || id !== activeId) return;
+                if (isNonReportablePipelineError(error)) return;
+                console.error('Background proxy preparation failed', error);
+                showPipelineFailure('develop.proxyPrepareFailed', error, id, 'prepare_proxy');
             });
 
         canvasWrapper.style.display = 'block';
@@ -7460,7 +7657,9 @@ async function selectImage(id, { force = false } = {}) {
         hideThumbnailPlaceholder();
         const lu = document.getElementById('loading-proxy-ui');
         if (lu) { lu.classList.add('hidden'); lu.classList.remove('flex'); }
+        if (isNonReportablePipelineError(e)) return;
         console.error(e);
+        showPipelineFailure('develop.imageLoadFailed', e, id, 'load_proxy');
     }
 }
 
@@ -7486,6 +7685,7 @@ const doImportSingle = async () => {
     document.getElementById('import-choice-modal').classList.add('opacity-0', 'pointer-events-none');
     let importStarted = false;
     let transientIds = [];
+    let importPaths = [];
     try {
         btnImport.textContent = i18nText('develop.importing');
         btnImport.disabled = true;
@@ -7498,6 +7698,7 @@ const doImportSingle = async () => {
         const selectedPaths = uniqueImportPaths(await invoke('open_file_dialog'));
         if (selectedPaths.length > 0) {
             const paths = selectedPaths;
+            importPaths = paths;
             const roll = createLooseImportRoll(paths);
             await beginWorkingImport(roll.roll_id, paths);
             
@@ -7522,7 +7723,9 @@ const doImportSingle = async () => {
         removeTransientItems(transientIds);
         resetWorkingLibrary();
         await renderLibraryAndFilmstrip(true);
-        showToast("Import failed: " + e, "error");
+        showToast("Import failed: " + e, "error", {
+            diagnostic: importDiagnostic(importPaths, e),
+        });
     }
     finally {
         if (!importStarted) restoreImportButtons();
@@ -7532,6 +7735,7 @@ const doImportSingle = async () => {
 const doImportRoll = async () => {
     let importStarted = false;
     let transientIds = [];
+    let importPaths = [];
     try {
         const format = document.getElementById('roll-format').value;
         const date = document.getElementById('roll-date').value;
@@ -7559,6 +7763,7 @@ const doImportRoll = async () => {
         
         const paths = uniqueImportPaths(await invoke('open_file_dialog'));
         if (paths.length > 0) {
+            importPaths = paths;
             initImportToast(paths.length);
             const roll_id = `roll_${Date.now()}_${Math.floor(Math.random()*1000)}`;
             const roll = { roll_id, date, format, film_stock: film, camera, notes, image_paths: paths, density_anchors: {} };
@@ -7592,7 +7797,9 @@ const doImportRoll = async () => {
         removeTransientItems(transientIds);
         resetWorkingLibrary();
         await renderLibraryAndFilmstrip(true);
-        showToast("Import failed: " + e, "error");
+        showToast("Import failed: " + e, "error", {
+            diagnostic: importDiagnostic(importPaths, e),
+        });
     }
     finally {
         if (!importStarted) restoreImportButtons();
@@ -8141,6 +8348,26 @@ btnChooseExportDir.addEventListener('click', async () => {
     }
 });
 
+function summarizeExportFailure(error, limit = 260) {
+    const text = diagnosticErrorText(error).replace(/\s+/g, ' ').trim();
+    return text.length > limit ? `${text.slice(0, limit - 3)}...` : text;
+}
+
+function exportFailureDiagnostic(exportIds, errors, warnings, error = '') {
+    const sections = [];
+    if (errors.length) sections.push('Export errors:', ...errors.map(item => `- ${item}`));
+    if (warnings.length) sections.push('Export warnings:', ...warnings.map(item => `- ${item}`));
+    if (!sections.length && error) sections.push(diagnosticErrorText(error));
+    const targetId = exportIds.length === 1 ? exportIds[0] : activeId;
+    return {
+        ...pipelineDiagnostic('export', sections.join('\n'), targetId),
+        file: exportIds.length === 1
+            ? diagnosticFileName(findKnownItem(exportIds[0])?.file_path)
+            : `${exportIds.length} files`,
+        fallbacks: warnings,
+    };
+}
+
 btnConfirmExport.addEventListener('click', async () => {
     const validationError = updateExportDialogState();
     const exportIds = currentExportIds();
@@ -8165,21 +8392,35 @@ btnConfirmExport.addEventListener('click', async () => {
         const exported = Number(result && result.exported) || 0;
         const skipped = Number(result && result.skipped) || 0;
         const failed = Number(result && result.failed) || 0;
+        const errors = Array.isArray(result && result.errors) ? result.errors : [];
+        const warnings = Array.isArray(result && result.warnings) ? result.warnings : [];
         let message = i18nText('errors.exportSummary', {
             count: exported,
             path: result && result.outputDir ? result.outputDir : outputDirectory,
         });
         if (skipped) message += '\n' + i18nText('export.skippedSummary', { count: skipped });
-        if (failed) message += '\n' + i18nText('export.failedSummary', { count: failed });
-        const warnings = Array.isArray(result && result.warnings) ? result.warnings : [];
+        if (failed) {
+            message += '\n' + i18nText('export.failedSummary', { count: failed });
+            if (errors[0]) {
+                message += '\n' + i18nText('export.failedFirstError', {
+                    error: summarizeExportFailure(errors[0]),
+                });
+            }
+        }
         if (warnings.length) {
             message += '\n' + i18nText('export.pipelineFallbackWarning', { count: warnings.length });
             console.warn('Export pipeline fallback:', ...warnings);
         }
-        showToast(message, failed ? 'error' : (warnings.length ? 'warning' : 'success'));
-        if (failed && result.errors && result.errors[0]) console.error('Export failure:', result.errors[0]);
+        const diagnostic = (failed || warnings.length)
+            ? exportFailureDiagnostic(exportIds, errors, warnings)
+            : undefined;
+        showToast(message, failed ? 'error' : (warnings.length ? 'warning' : 'success'), { diagnostic });
+        if (failed && errors[0]) console.error('Export failure:', errors[0]);
     } catch (error) {
-        showToast('Batch export failed: ' + error, 'error');
+        const detail = diagnosticErrorText(error);
+        showToast(i18nText('errors.exportBatch', { error: detail }), 'error', {
+            diagnostic: exportFailureDiagnostic(exportIds, [], [], detail),
+        });
     } finally {
         exportInProgress = false;
         clearExportProgress();
@@ -8924,6 +9165,24 @@ let previewResolutionInFlight = null;
 let previewResolutionTarget = 0;
 const previewResolutionAttempts = new Map();
 
+function preparedProxyLongEdge(result) {
+    return Number(result?.long_edge ?? result) || 0;
+}
+
+function applyPreparedProxyResult(id, result) {
+    const pipelineState = result?.pipeline_state;
+    if (!pipelineState) return;
+    const cached = imageStates.get(id);
+    if (cached) cached.pipeline_state = pipelineState;
+    // Background prewarm must refresh its cache entry without replacing the
+    // state of the frame the user is actually looking at.
+    if (id !== activeId) return;
+    currentPipelineState = pipelineState;
+    currentPipelineContract = pipelineState.contract || currentPipelineContract || 'legacy_v1';
+    updatePipelineStatus();
+    showPipelineWarnings(currentPipelineState, id);
+}
+
 function ensureProxyPrepared(id, targetLongEdge = null) {
     const existing = proxyPreparePromises.get(id);
     const requestedTarget = Number.isFinite(Number(targetLongEdge))
@@ -8934,11 +9193,16 @@ function ensureProxyPrepared(id, targetLongEdge = null) {
         return existing.promise.then(() => ensureProxyPrepared(id, requestedTarget));
     }
     const entry = { targetLongEdge: requestedTarget, promise: null };
-    const promise = invoke('prepare_proxy', { id, targetLongEdge: requestedTarget }).finally(() => {
-        if (proxyPreparePromises.get(id) === entry) {
-            proxyPreparePromises.delete(id);
-        }
-    });
+    const promise = invoke('prepare_proxy', { id, targetLongEdge: requestedTarget })
+        .then(result => {
+            applyPreparedProxyResult(id, result);
+            return preparedProxyLongEdge(result);
+        })
+        .finally(() => {
+            if (proxyPreparePromises.get(id) === entry) {
+                proxyPreparePromises.delete(id);
+            }
+        });
     entry.promise = promise;
     proxyPreparePromises.set(id, entry);
     return promise;
@@ -9133,7 +9397,10 @@ async function reloadDevelopProxy(geomSnapshot = current_geom, options = {}) {
     } catch (e) {
         if (token !== currentImageRequestToken || targetId !== activeId) return false;
         console.error(e);
-        showToast((options.errorPrefix || "Proxy refresh failed: ") + e, "error");
+        const detail = diagnosticErrorText(e);
+        showToast((options.errorPrefix || "Proxy refresh failed: ") + detail, "error", {
+            diagnostic: pipelineDiagnostic('load_proxy', detail, targetId),
+        });
         return false;
     } finally {
         if (loadingUI && showLoading && token === currentImageRequestToken) {
@@ -9276,6 +9543,13 @@ async function syncActiveFrameAfterRollInvert(rollId) {
     }
 }
 
+function autoInvertRollDiagnostic(rollId, error, frameCount) {
+    const roll = allRolls.find(candidate => candidate.roll_id === rollId);
+    const diagnostic = pipelineDiagnostic('auto_invert', error, activeId);
+    diagnostic.file = `${roll?.film_stock || roll?.roll_id || rollId} (${frameCount} frames)`;
+    return diagnostic;
+}
+
 async function runAutoInvertRoll(rollId) {
     if (!rollId || !rollHasCompleteAnchors(rollId)) return false;
     // A batch is not bound to the Develop view: selecting another frame while
@@ -9350,7 +9624,11 @@ async function runAutoInvertRoll(rollId) {
         for (const frame of frameItems) {
             if (autoInvertRollCancelRequested || batchToken !== autoInvertRollRevision) break;
             try {
-                await invoke('prepare_proxy', { id: frame.id, targetLongEdge: PREVIEW_PROXY_BASE_LONG_EDGE });
+                const prepared = await invoke('prepare_proxy', {
+                    id: frame.id,
+                    targetLongEdge: PREVIEW_PROXY_BASE_LONG_EDGE,
+                });
+                applyPreparedProxyResult(frame.id, prepared);
                 const frameResult = await invoke('auto_invert_roll', {
                     rollId,
                     frameId: frame.id,
@@ -9391,7 +9669,9 @@ async function runAutoInvertRoll(rollId) {
         return true;
     } catch (error) {
         renderAutoInvertRollProgress({ total: frameItems.length, processed: 0, succeeded: 0, failed: 1, done: true });
-        showToast(i18nText('develop.rollAutoInvertFailed', { error }), 'error');
+        showToast(i18nText('develop.rollAutoInvertFailed', { error }), 'error', {
+            diagnostic: autoInvertRollDiagnostic(rollId, error, frameItems.length),
+        });
         return false;
     } finally {
         if (batchToken === autoInvertRollRevision) updateAutoInvertAvailability();
@@ -9407,7 +9687,9 @@ async function runAutoInvert() {
     try {
         await flushPendingBackendSync();
     } catch (error) {
-        showToast("Auto invert failed: " + error, "error");
+        showToast("Auto invert failed: " + error, "error", {
+            diagnostic: pipelineDiagnostic('auto_invert', error, activeId),
+        });
         return;
     }
     const targetId = activeId;
@@ -9419,7 +9701,9 @@ async function runAutoInvert() {
     try {
         await persistGeometryQueued(targetId, geomSnapshot, generation);
     } catch (error) {
-        showToast("Auto invert failed: " + error, "error");
+        showToast("Auto invert failed: " + error, "error", {
+            diagnostic: pipelineDiagnostic('auto_invert', error, targetId),
+        });
         if (targetId === activeId && generation === developOperationRevision) {
             updateAutoInvertAvailability();
         }
@@ -9454,7 +9738,9 @@ async function runAutoInvert() {
         requestThumbnailSync();
     } catch (error) {
         if (!String(error).includes('STALE_DEVELOPMENT_OPERATION')) {
-            showToast("Auto invert failed: " + error, "error");
+            showToast("Auto invert failed: " + error, "error", {
+                diagnostic: pipelineDiagnostic('auto_invert', error, targetId),
+            });
         }
     } finally {
         if (targetId === activeId && generation === developOperationRevision) {
@@ -9605,7 +9891,9 @@ btnAutoArea.addEventListener('click', async () => {
         }
     } catch (error) {
         console.error('Auto Area failed', error);
-        showToast("Auto Area failed: " + error, "error");
+        showToast("Auto Area failed: " + error, "error", {
+            diagnostic: pipelineDiagnostic('auto_area', error, detectionId || activeId),
+        });
     } finally {
         setAutoAreaBusy(detectionId, false);
     }
@@ -11188,7 +11476,9 @@ window.addEventListener('resize', () => {
 document.getElementById('btn-confirm-calibration').addEventListener('click', async () => {
     if (!activeId) return;
     if (!NexFilmGeometry.isValidCalibrationQuad(calibrationPoints)) {
-        showToast(i18nText('errors.autoAreaFailed'), "error");
+        showToast(i18nText('errors.autoAreaFailed'), "error", {
+            diagnostic: pipelineDiagnostic('auto_area', i18nText('errors.autoAreaFailed'), activeId),
+        });
         return;
     }
     calibrationRevision++;
@@ -11211,7 +11501,9 @@ document.getElementById('btn-confirm-calibration').addEventListener('click', asy
         current_geom = previousGeom;
         saveCurrentState();
         console.error("Calibration failed", e);
-        showToast("Failed to save film area.", "error");
+        showToast("Failed to save film area.", "error", {
+            diagnostic: pipelineDiagnostic('auto_area', e, activeId),
+        });
     }
 });
 
@@ -11407,7 +11699,10 @@ listen('import_error', (event) => {
     const pct = totalImportCount > 0 ? (currentImportCount / totalImportCount) * 100 : 0;
     if (bar) bar.style.width = `${pct}%`;
     if (txt) txt.textContent = `${currentImportCount} / ${totalImportCount} (${i18nText('import.failedSuffix', { count: importFailedCount })})`;
-    showToast(`Import failed: ${payload.message || 'database persistence failed'}`, 'error');
+    const importError = payload.message || 'database persistence failed';
+    showToast(`Import failed: ${importError}`, 'error', {
+        diagnostic: importDiagnostic(payload.file_paths || [], importError),
+    });
     renderLibraryAndFilmstrip(true);
 });
 
@@ -11525,7 +11820,9 @@ const handleDrop = async (event) => {
             resetWorkingLibrary();
             restoreImportButtons();
             await renderLibraryAndFilmstrip(true);
-            showToast("Import failed: " + error, "error");
+            showToast("Import failed: " + error, "error", {
+                diagnostic: importDiagnostic(paths, error),
+            });
         }
     } else if (droppedPaths.length > 0) {
         showToast("The dropped files are already imported.", "error");

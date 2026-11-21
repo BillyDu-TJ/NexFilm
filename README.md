@@ -38,11 +38,11 @@
 ## 中文说明
 
 > [!IMPORTANT]
-> NexFilm Engine v1.2.0 是当前稳定版本。Windows 与 macOS 安装包目前未进行代码签名，macOS DMG 也未经过 Apple 公证。请只从本仓库的 Releases 下载，并始终保留原始扫描文件；正式批量输出前，建议先导出少量画面检查结果。
+> NexFilm Engine v1.2.1 是当前稳定版本。Windows 与 macOS 安装包目前未进行代码签名，macOS DMG 也未经过 Apple 公证。请只从本仓库的 Releases 下载，并始终保留原始扫描文件；正式批量输出前，建议先导出少量画面检查结果。
 
 ### 下载与安装
 
-从 [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest) 下载与电脑架构匹配的 v1.2.0 安装包：
+从 [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest) 下载与电脑架构匹配的 v1.2.1 安装包：
 
 | 平台 | 下载文件 | 安装方式 |
 | --- | --- | --- |
@@ -52,15 +52,15 @@
 
 不要下载 Releases 中自动生成的 <code>Source code</code> 压缩包，它们不是可直接运行的安装包。若 macOS 阻止首次启动，请先确认文件来自本仓库，再在 Finder 中右键应用并选择 **打开**，或前往 **系统设置 → 隐私与安全性** 允许启动。
 
-### v1.2.0 更新内容
+### v1.2.1 更新内容
 
-这版最核心的工作是**引入双源 RAW 解码**和**重做 RAW 反相与色彩保真**，并顺带补齐了框选、Contact Sheet 与几处高频修图手感的打磨：
+从功能形态上看，`v1.2.1` 没有新增复杂的调节面板，重点提升**解码稳定性、源文件兼容性、片基反相一致性与异常报错清晰度**；但在工程底层，这一版对直接 RGB 线性化、宽色域/合并 DNG 解码与片基/密度管线进行了深入重构：
 
-- **双源 RAW 解码（LibRaw 0.22.2 + rawler）**：Windows 与 macOS 统一升级到 LibRaw 0.22.2，并接入纯 Rust 的 `rawler` 作为辅助解码源。新机型缺少色彩矩阵时由 `rawler` 补齐矩阵（像素仍以 LibRaw 为准），LibRaw 无法解包的 Bayer RAW 自动切换至 `rawler` 通路；同时可识别 Nikon HE/HE* 压缩给出明确提示，并修复竖拍 RAW 占位图/预览/导出方向不一致及导出偶发偏黄问题（导出严格读取持久化状态）。
-- **RAW 反相与色彩保真优化**：相机 RAW 改在 Camera Native RGB（传感器原生色域）直接扣除片基与计算密度，再把色彩矩阵带到显示端；移除与曝光耦合的片基密度上限，配合保色高光滚降、线性高光恢复与欠曝暗部保护，蓝天、水面及高饱和/强对比画面的色彩层次显著更稳，不易偏青偏灰。
-- **自动胶片范围与框选交互**：检测改用 640px 面积均值降采样并结合同卷空间先验，识别边缘微收防灯板漏入，不确定时退回居中 80% 安全框；新增 `[3:2]` `[1:1]` `[6:7]` `[自由]` 比例锁，支持整框拖动与单边微调。
-- **Contact Sheet 预览弹窗与高清拼版**：点导出先打开预览弹窗确认排版，支持自选文件名、保存目录、JPEG / 无损 PNG 与 3000 / 4500 / 6000 px 三档清晰度；自带片边齿孔的底片可关闭“绘制胶片边框”，按格子尺寸逐帧重绘高清正片再合成。
-- **裁切、曲线、尺孔手感与界面精简**：裁切旋转统一为与拉直一致的顺滑体验，并支持按住 <kbd>Shift</kbd> 精细调节；曲线首尾点可横向自由拖动（端点外水平延展）并实时显示输入/输出读数；修复尺孔采样预览不一致及跨帧粘贴错位漏孔问题；同时移除内置离线文档视图，完整手册统一维护于官网与 `docs/handbook/`。
+- **扫描 JPEG / PNG / TIFF 直通 ProPhoto f32**：直接 RGB 图像不再经过 16 位线性 sRGB 中转，也不在密度计算前压缩色度；结合 `moxcms` 真实 ICC 解析、浮点 TIFF 保留与 EXIF 方向校正，**正常扫描仪导出的 JPEG 现已可在 v1.2.1 中稳定反相**，无片基扫描件也能获得可靠色彩表现。
+- **LinearRaw 与 Lightroom 拼接合并 DNG 完整支持**：同时兼容 IFD0 与 SubIFD 结构，支持通过 `rawler` 读取压缩 LinearRaw、在裁切降采样前执行 DNG Stage-2 `OpcodeList2`（`MapTable` / `MapPolynomial`）逆映射，并按内嵌 ICC 或双光源 `ColorMatrix1/2` + `AsShotNeutral` 还原线性色彩。
+- **统一现代解码与片基锚定**：统一预览、Roll 锚点、Contact Sheet 与批量导出所用的现代解码入口（`RAW_DECODE_VERSION = 15` / `DENSITY_WINDOW_RULE_VERSION = 6`），分离可信片基（`d_min = 0`）与内容兜底，升级后自动失效旧缓存并按新管线刷新。
+- **Canon `.CR2` 预览与 135 齿孔片门修复**：严格校验嵌入 JPEG 预览并跳过 RAW 切片 IFD，防止高像素 `.CR2` 误读数十 MB 的无损传感器数据作缩略图；为横向 `3:2` 135 扫描件增加上/下边界内缩恢复，减少片门误锁定至胶片最外侧边沿的问题。
+- **清晰报错与一键复制诊断**：内嵌 ICC 损坏、相机矩阵/元数据退化、导入、自动反相、自动框选、Develop 与批量导出异常均可在 Toast 中提示明确阶段原因，并支持一键复制结构化诊断信息以便反馈排查。
 
 ### NexFilm 是什么
 
@@ -114,8 +114,7 @@ Library 与 Develop 显示当前工作卷；历史胶卷保存在 **Rolls**。�
 > [!WARNING]
 > 使用 **HE/HE*** 高效率压缩格式拍摄的 Nikon NEF 文件目前无法导入（开源解码库 LibRaw 与 <code>rawler</code> 均暂不支持该专利压缩格式）。此限制当前无法在 NexFilm 内修复；如需导入，请在相机中改用无损压缩/标准 NEF 格式，或先转换为 TIFF/DNG 后再导入。
 
-由于 JPEG 难以获得线性数据，且扫描仪出图几乎没有片基部分，因此不能保证校色效果。请使用 JPEG 时注意校色效果，在效果较差时自行
-通过 RGB 补偿完成校色。
+自 **v1.2.1** 起，扫描得到的 JPEG 与 PNG 会按内嵌 ICC（或 sRGB）直接线性化进入 32 位浮点 ProPhoto 管线，并结合改进后的无片基内容兜底策略计算反相，正常扫描仪导出的 JPEG 也能直接获得稳定可靠的色彩还原；若需更充沛的高光恢复空间或使用硬件标定，仍推荐选用相机 RAW 或 16 位 TIFF。遇到异常源文件触发降级或报错时，可直接点击界面 Toast 上的 **“复制诊断”** 附上阶段日志提交 Issue。
 
 输出格式为 16 位 TIFF、8 位 TIFF、16 位 PNG 和 8 位 JPEG。可嵌入与像素编码匹配的 sRGB、Display P3、Adobe RGB (1998)、Rec.2020、ProPhoto RGB、ACEScg 或 ACES2065-1 ICC 配置文件。尺寸调整保持宽高比，默认不会放大小图，也不会在重名时静默覆盖文件。
 
@@ -184,11 +183,11 @@ cargo tauri build --target aarch64-apple-darwin --bundles dmg
 cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ~~~
 
-### 维护者：发布 v1.2.0
+### 维护者：发布 v1.2.1
 
-仓库使用单一的手动工作流 [Build and Release NexFilm 1.2.0](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml)。运行时输入标签 <code>v1.2.0</code>；工作流会先执行 Rust 与前端校验，随后并行构建 Windows x64、macOS Apple Silicon 和 macOS Intel 安装包，并发布为正式 GitHub Release。
+仓库使用单一的手动工作流 [Build and Release NexFilm 1.2.1](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml)。运行时输入标签 <code>v1.2.1</code>；工作流会先执行 Rust 与前端校验，随后并行构建 Windows x64、macOS Apple Silicon 和 macOS Intel 安装包，并发布为正式 GitHub Release。
 
-发布前请确认 <code>Cargo.toml</code>、<code>Cargo.lock</code> 与 <code>tauri.conf.json</code> 均为 <code>1.2.0</code>，README 与发布说明已同步，提交并推送全部发布文件，再从 Actions 手动运行一次工作流。当前配置为 <code>releaseDraft: false</code>、<code>prerelease: false</code>。
+发布前请确认 <code>Cargo.toml</code>、<code>Cargo.lock</code> 与 <code>tauri.conf.json</code> 均为 <code>1.2.1</code>，README 与发布说明已同步，提交并推送全部发布文件，再从 Actions 手动运行一次工作流。当前配置为 <code>releaseDraft: false</code>、<code>prerelease: false</code>。
 
 ### 已知限制
 
@@ -231,11 +230,11 @@ cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ## English
 
 > [!IMPORTANT]
-> NexFilm Engine v1.2.0 is the current stable release. Windows and macOS packages are currently unsigned, and macOS DMGs are not notarized by Apple. Download only from this repository's Releases page, keep the original scans, and test a small export before processing a full roll.
+> NexFilm Engine v1.2.1 is the current stable release. Windows and macOS packages are currently unsigned, and macOS DMGs are not notarized by Apple. Download only from this repository's Releases page, keep the original scans, and test a small export before processing a full roll.
 
 ### Download and install
 
-Download the v1.2.0 package for your system from [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest):
+Download the v1.2.1 package for your system from [GitHub Releases](https://github.com/BillyDu-TJ/NexFilm/releases/latest):
 
 | Platform | Package | Installation |
 | --- | --- | --- |
@@ -245,15 +244,15 @@ Download the v1.2.0 package for your system from [GitHub Releases](https://githu
 
 The automatically generated <code>Source code</code> archives are not application installers. If macOS blocks the first launch, verify that the DMG came from this repository, then right-click the app in Finder and choose **Open**, or allow it under **System Settings → Privacy & Security**.
 
-### What's new in v1.2.0
+### What's new in v1.2.1
 
-This release focuses primarily on **dual-source RAW decoding** and **camera-native RAW inversion & color fidelity**, alongside tighter film-area framing, Contact Sheet previewing, develop-control polish, and a cleaner workspace:
+From a user-facing feature standpoint, `v1.2.1` introduces no new UI panels and focuses on **decoding stability, broader source compatibility, film-base consistency, and clear error diagnostics**. Beneath the surface, however, it represents a substantial internal overhaul of direct RGB linearization, LinearRaw/merged DNG decoding, and film-base anchoring:
 
-- **Dual-source RAW decoding (LibRaw 0.22.2 + `rawler`).** Both Windows and macOS now ship on LibRaw 0.22.2 paired with `rawler` as an auxiliary Rust decoder: newer cameras missing a LibRaw matrix automatically pull calibration matrices from `rawler` while keeping LibRaw pixels, Bayer files that LibRaw cannot unpack fall back to `rawler` pixels, Nikon HE/HE* compression is identified with clear guidance, and rotated RAW placeholders/thumbnails/exports stay upright while exports read persisted state strictly.
-- **Improved RAW inversion & color fidelity.** Camera RAWs now run base subtraction and density math directly in camera-native RGB instead of clipping channels upfront in ProPhoto, paired with an uncoupled film-base ceiling, hue-preserving highlight rolloff, linear highlight recovery, and underexposed shadow retention so bright skies and saturated tones hold cleanly.
-- **Better film-area detection & framing controls.** Auto-detection moves to 640 px area-averaged sampling with roll-level spatial priors, tucks inward slightly to keep light tables out of the frame, and falls back to a centered 80% safe box instead of full-frame when uncertain. Added `3:2`, `1:1`, `6:7`, and free aspect locks, whole-box dragging, and single-edge pulls.
-- **Contact Sheet preview modal & full-quality export.** Opens a full preview dialog before saving where you can pick the filename, folder, JPEG quality or lossless PNG, and 3000/4500/6000 px output. If your scans already include real film borders and sprockets, uncheck film borders to lay them out cleanly without double borders; each cell is re-rendered from source at target resolution before compositing.
-- **Develop polish & streamlined UI.** Unified crop rotation with the smooth straighten feel plus <kbd>Shift</kbd>-drag fine control. Tone-curve endpoints now slide horizontally across the input axis (holding flat beyond the endpoints) with a live In/Out readout. Fixed sprocket target-color decoding, auto-migrated older samples, and widened pasted edge tolerance so slight frame shifts don't break masking. Removed the in-app documentation view in favor of the dedicated web documentation hub and `docs/handbook/`.
+- **Direct RGB & scanned JPEG / PNG / TIFF straight to ProPhoto f32.** Scanned TIFF, JPEG, and PNG inputs bypass the legacy 16-bit linear-sRGB transport and luminance chroma compression, linearizing directly into `f32` ProPhoto RGB with `moxcms` ICC parsing, `f32`/`f64` float TIFF support, and EXIF orientation handling—so **standard scanner JPEGs now invert cleanly out of the box**.
+- **Complete LinearRaw & Lightroom stitched / merged DNG support.** Handles both IFD0 and SubIFD LinearRaw layouts, compressed LinearRaw decoding via `rawler`, DNG Stage-2 `OpcodeList2` (`MapTable` / `MapPolynomial`) inverse mapping prior to crop or downsampling, and linear color resolution via embedded ICC or dual-illuminant `ColorMatrix1/2` + `AsShotNeutral`.
+- **Unified modern decode entry & film-base anchoring.** Unifies preview, Roll anchor sampling, Contact Sheets, and batch export on one modern decode contract (`RAW_DECODE_VERSION = 15` / `DENSITY_WINDOW_RULE_VERSION = 6`), separating trusted bases (`d_min = 0`) from borderless content fallbacks and refreshing affected caches cleanly on upgrade.
+- **Canon `.CR2` preview & 135 sprocket border fixes.** Tightens embedded JPEG preview detection and skips raw slice IFDs (`0xC640`) so high-res `.CR2` files never read tens of megabytes of lossless sensor slices as thumbnails; recovers inward top/bottom bounds on horizontal `3:2` 135 scans when outer sprocket edges dominate gradient projections.
+- **Pipeline degradation warnings & copyable diagnostics.** Surface actionable stage errors in Toast notifications with a one-click **Copy details** button for ICC parse errors, DNG/scanner/camera-matrix fallbacks, and import, auto-invert, film-area, Develop, or batch-export failures.
 
 ### What is NexFilm?
 
@@ -307,7 +306,7 @@ The input picker supports common camera RAW formats, including DNG, NEF/NRW, CR2
 > [!WARNING]
 > Nikon NEF files recorded with **HE/HE*** high-efficiency RAW compression cannot currently be imported because open-source RAW decoders (LibRaw and `rawler`) do not support this proprietary format yet. NexFilm cannot work around this limitation at present; record in Lossless Compressed / standard NEF in-camera or convert to TIFF/DNG before importing.
 
-Because JPEG is hard to get linear information, we DON'T guarantee the color calibration effect. So if you are unsatisfied about the result, please adjust Printer Light module to optimize. 
+Starting in **v1.2.1**, scanned JPEGs and PNGs linearize directly via embedded ICC (or sRGB) into 32-bit float ProPhoto RGB alongside improved borderless content-fallback handling, so normal scanner JPEGs invert cleanly out of the box. For extra highlight headroom or hardware calibration workflows, 16-bit TIFF or camera RAW remains preferable. If an unusual source file triggers a pipeline fallback or error, click **Copy details** on the Toast notification to share the stage diagnostic in [Issues](https://github.com/BillyDu-TJ/NexFilm/issues).
 
 Exports are 16-bit TIFF, 8-bit TIFF, 16-bit PNG, 8-bit JPEG, linear 16-bit TIFF, linear DNG, or camera RAW DNG. NexFilm can embed a matching sRGB, Display P3, Adobe RGB (1998), Rec.2020, ProPhoto RGB, ACEScg, or ACES2065-1 ICC profile, and linear TIFF files carry the matching linear profile. Resizing preserves aspect ratio, does not enlarge by default, and does not silently overwrite name conflicts.
 
@@ -357,11 +356,11 @@ cargo tauri build --target aarch64-apple-darwin --bundles dmg
 cargo tauri build --target x86_64-apple-darwin --bundles dmg
 ~~~
 
-### Maintainers: publish v1.2.0
+### Maintainers: publish v1.2.1
 
-The repository uses one manual workflow: [Build and Release NexFilm 1.2.0](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml). Run it with tag <code>v1.2.0</code>. It verifies the Rust and frontend sources, then builds Windows x64, macOS Apple Silicon, and macOS Intel packages in parallel and publishes a stable GitHub Release.
+The repository uses one manual workflow: [Build and Release NexFilm 1.2.1](https://github.com/BillyDu-TJ/NexFilm/actions/workflows/release.yml). Run it with tag <code>v1.2.1</code>. It verifies the Rust and frontend sources, then builds Windows x64, macOS Apple Silicon, and macOS Intel packages in parallel and publishes a stable GitHub Release.
 
-Before running it, confirm that <code>Cargo.toml</code>, <code>Cargo.lock</code>, and <code>tauri.conf.json</code> contain version <code>1.2.0</code> and that the README and release notes are synchronized, then commit and push every release file. The current workflow uses <code>releaseDraft: false</code> and <code>prerelease: false</code>.
+Before running it, confirm that <code>Cargo.toml</code>, <code>Cargo.lock</code>, and <code>tauri.conf.json</code> contain version <code>1.2.1</code> and that the README and release notes are synchronized, then commit and push every release file. The current workflow uses <code>releaseDraft: false</code> and <code>prerelease: false</code>.
 
 ### Known limitations
 

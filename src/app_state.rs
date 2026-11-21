@@ -33,7 +33,12 @@ pub const DENSITY_ANCHOR_ALGORITHM_VERSION: &str = "density_anchor_v2";
 /// 5: the film-base gate no longer rejects physically valid high-density
 /// bases caused by underexposure, so frames analysed under rule 4 have to be
 /// re-derived before their base can be trusted again.
-pub const DENSITY_WINDOW_RULE_VERSION: u32 = 5;
+///
+/// 6: a trusted base now anchors the post-subtraction black point instead of
+/// being cancelled by the content 2% endpoint. Frames without a trusted base
+/// preserve each channel's own low endpoint and share only the contrast span,
+/// so every persisted frame-wise window has to be derived once more.
+pub const DENSITY_WINDOW_RULE_VERSION: u32 = 6;
 
 fn default_calibration_profile_payload_version() -> u32 {
     CALIBRATION_PROFILE_PAYLOAD_VERSION
@@ -589,6 +594,7 @@ pub enum InputPrimaries {
     AdobeRgb1998,
     Rec2020,
     ProPhotoRgb,
+    Aces2065,
     AcesCg,
     /// Three-channel camera data that has not been mapped to a known space.
     CameraNative,
@@ -632,6 +638,9 @@ pub enum InputDomainSource {
     DeviceIdentification,
     /// No declaration was available; the file was read as sRGB.
     FallbackSrgb,
+    /// No decoded input-domain record is available yet.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -731,6 +740,16 @@ pub struct PipelineProcessingReport {
     /// persisted before this field existed deserializes to.
     #[serde(default)]
     pub analysis_window_rule: u32,
+    /// Fingerprint of the analysis geometry used for this frame's base and
+    /// display-window measurements. An empty value marks a record written
+    /// before geometry tracking existed, so the next analysis re-measures it.
+    #[serde(default)]
+    pub analysis_geometry_fingerprint: String,
+    /// Version of the analysis-geometry coverage this record was measured
+    /// with. Records written before Capture Corrected and complete Rolls were
+    /// included deserialize to zero and are re-measured once.
+    #[serde(default)]
+    pub analysis_geometry_rule: u32,
     /// Row-major camera RGB -> linear sRGB matrix of this frame's working
     /// buffer. `Some` means the density stage ran in camera-native RGB (a
     /// LibRaw camera RAW), so the normalized positive is mapped to display
@@ -763,6 +782,8 @@ impl PipelineProcessingReport {
             fallback_reason: String::new(),
             input_domain: InputDomainRecord::default(),
             analysis_window_rule: DENSITY_WINDOW_RULE_VERSION,
+            analysis_geometry_fingerprint: String::new(),
+            analysis_geometry_rule: 0,
             camera_to_display: None,
         }
     }

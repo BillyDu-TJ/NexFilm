@@ -23,17 +23,17 @@ NexFilm Engine 面向胶片数字化全流程构建，旨在打破相机数码�
         <tr><th>格式类别</th><th>文件扩展名</th><th>色彩编码与位深</th><th>解码特性与暗房建议</th></tr>
     </thead>
     <tbody>
-        <tr><td><strong>相机原始 RAW</strong></td><td><code>.dng</code>, <code>.nef</code>, <code>.cr2</code>, <code>.cr3</code>, <code>.arw</code>, <code>.raf</code>, <code>.rw2</code>, <code>.orf</code>, <code>.pef</code>, <code>.3fr</code>, <code>.iiq</code> 等主流单反/无反格式</td><td>12-bit / 14-bit / 16-bit 线性传感器原始拜耳（Bayer）马赛克数据</td><td>相机翻拍的最佳输入源。绕过机内白平衡与色调曲线，保留完整的传感器动态范围与线性透射率数据，为高精度去色罩提供充沛的曝光宽容度。</td></tr>
+        <tr><td><strong>相机原始 RAW / DNG</strong></td><td><code>.dng</code>, <code>.nef</code>, <code>.cr2</code>, <code>.cr3</code>, <code>.arw</code>, <code>.raf</code>, <code>.rw2</code>, <code>.orf</code>, <code>.pef</code>, <code>.3fr</code>, <code>.iiq</code> 等主流格式</td><td>12-bit / 14-bit / 16-bit 拜耳马赛克或 LinearRaw 传感器数据</td><td>相机翻拍与全景拼接的理想输入源。绕过机内显示曲线，保留完整动态范围；自 <strong>v1.2.1</strong> 起同时完整支持 IFD0 / SubIFD 结构的压缩 LinearRaw 与 Lightroom 拼接合并 DNG（含 Stage-2 <code>OpcodeList2</code> 逆映射与双光源色彩矩阵解析）。</td></tr>
         <tr><td><strong>哈苏 Flextight / Imacon</strong></td><td><code>.fff</code></td><td>16-bit 线性扫描仪原始传感器数据</td><td>自 <strong>v1.1.0</strong> 起，NexFilm 重构了解码判定逻辑，直接按扫描仪流式线性光学密度解算，不再强依赖 FlexColor 的专有设备识别字符串，解决了将扫描仪文件误判为相机 RAW 的历史问题。</td></tr>
-        <tr><td><strong>工业扫描仪 TIFF</strong></td><td><code>.tif</code>, <code>.tiff</code></td><td>16-bit / 8-bit 未压缩或 LZW 压缩格式</td><td>支持 Epson、Noritsu、Frontier、Plustek 等扫描仪输出的单通道黑白与三通道彩色正片 TIFF。可以按行流式解码百兆乃至 GB 级高分辨率大画幅图像，内存占用保持平稳。</td></tr>
-        <tr><td><strong>标准位图格式</strong></td><td><code>.png</code>, <code>.jpg</code>, <code>.jpeg</code></td><td>8-bit / 16-bit 标准 sRGB 或 Display P3 色彩空间</td><td>支持快速读取预览与测试。受限于 8-bit JPEG 严重的动态范围压缩与片基色罩截断，无法达到 RAW 级别的自动物理校色精度，仅建议用于快速验证构图。</td></tr>
+        <tr><td><strong>工业扫描仪 TIFF</strong></td><td><code>.tif</code>, <code>.tiff</code></td><td>8-bit / 16-bit 整型或 <code>f32</code> / <code>f64</code> 浮点格式</td><td>支持 Epson、Noritsu、Frontier、Plustek 等扫描仪输出的单通道黑白与三通道彩色正片 TIFF；通过 <code>moxcms</code> 解析内嵌 ICC 并处理 EXIF 方向，支持按行流式解码百兆乃至 GB 级高分辨率大画幅图像。</td></tr>
+        <tr><td><strong>标准位图格式（JPEG / PNG）</strong></td><td><code>.png</code>, <code>.jpg</code>, <code>.jpeg</code></td><td>8-bit / 16-bit 内嵌 ICC、Display P3 或 sRGB</td><td>自 <strong>v1.2.1</strong> 起直通 32 位浮点线性 ProPhoto 管线，不再经过 16 位线性 sRGB 中转，并配合无片基内容兜底保留各通道暗部信息；<strong>常规扫描仪导出的 JPEG 亦可直接获得稳定可靠的自动反相效果</strong>。</td></tr>
     </tbody>
 </table>
 
 > [!WARNING] Nikon HE / HE* 高效率压缩 NEF 格式限制
 > 当前内置开源解码器（LibRaw / `rawler`）暂不支持 Nikon 的 `HE`（高效率）与 `HE*`（高效率无损压缩）专利编码 NEF 文件。翻拍底片时，请在相机机内设置中将 RAW 记录格式调整为标准的“无损压缩 RAW”或未压缩 RAW，或在导入前使用官方免费的 Adobe DNG Converter 批量转换为标准线性 DNG 格式。
 
-针对 8-bit JPEG 格式，由于其在扫描或拍摄阶段已经被相机或扫描软件施加了非线性的 sRGB 色调曲线并裁剪了暗部与高光，导致片基色罩与微弱暗部信号相互混淆。在 NexFilm 中处理此类文件时，若自动反相效果不理想，建议通过“印片灯光”面板手动微调三通道曝光增益进行补偿。
+针对常见的扫描仪 **JPEG / PNG** 成片，自 **v1.2.1** 起引擎已能结合内嵌 ICC（通过 `moxcms` 真实解析色度与传递曲线，缺少时按 sRGB 线性化）直接投影到 32 位浮点 ProPhoto 空间，并在缺少未曝光片边时通过内容兜底策略保留独立通道低密度端，因此日常扫描 JPEG 开箱即可得到自然准确的反相色彩。但受限于 8-bit 容器的量化阶调深度与扫片端可能已经裁切的高光细节，遇到严重过曝底片强拉高光、或需要执行硬件密度标定时，仍推荐优先使用相机 RAW 或 16-bit TIFF（亦可用“印片灯光”面板作细微补偿）。
 
 ## 有界代理架构与低内存极速索引 {#bounded-proxy-architecture}
 

@@ -24,8 +24,9 @@ use crate::capability_resolver::{
 use crate::color_science::{
     apply_linear_matrix, canonical_output_space, clamp_positive_transmission_for_density,
     compress_linear_srgb_for_density, convert_encoded_to_linear_rgb_with_matrix,
+    dng_color_matrix_to_prophoto, icc_color_space, icc_transfer_class, icc_trc_matches_standard,
     identify_icc_profile, linear_conversion_matrix, parse_output_space, ColorSpaceId,
-    DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
+    IccRgbTransform, IccTransferClass, DENSITY_CAPTURE_PROFILE, DENSITY_CAPTURE_WORKING_SPACE,
 };
 use crate::core_math::{
     apply_detail_pixel, apply_lens_distortion_uv, apply_linear_highlight_adjustment_rgb,
@@ -35,6 +36,7 @@ use crate::core_math::{
     trim_density_endpoints, DetailSettings, ToneCurveSet, DENSITY_LUMA_COEFFICIENTS,
     DETAIL_LOCAL_DOWNSCALE, DETAIL_REFERENCE_LONG_EDGE,
 };
+use crate::dng_opcode;
 use crate::persistence::{self, RAW_DECODE_VERSION};
 use crate::pipeline::FilmPipeline;
 use crate::scanner_profile::{import_local_profile, record_is_current, ScannerProfileRecord};
@@ -320,6 +322,38 @@ fn extract_tiff_jpeg_preview(path: &str, target_edge: u32) -> Option<Vec<u8>> {
         let Some(entries) = read_at(&mut file, ifd_offset + 2, count.saturating_mul(12) + 4) else {
             continue;
         };
+        let mut raw_ifd = false;
+        for index in 0..count {
+            let entry = &entries[index * 12..index * 12 + 12];
+            let tag = read_u16(&entry[0..2]);
+            // CR2Slices is tag 50752 (0xC640). Its presence marks the IFD as
+            // raw sensor slices, never as a display preview.
+            if tag == 0xc640 {
+                raw_ifd = true;
+            }
+            if tag == 0x0106 {
+                let kind = read_u16(&entry[2..4]);
+                let item_count = read_u32(&entry[4..8]);
+                if let Some(bytes) = value_bytes(&mut file, entry, kind, item_count) {
+                    let photometric = match kind {
+                        3 if bytes.len() >= 2 => read_u16(&bytes[0..2]) as u32,
+                        4 if bytes.len() >= 4 => read_u32(&bytes[0..4]),
+                        _ => 0,
+                    };
+                    if matches!(photometric, 32803 | 34892) {
+                        raw_ifd = true;
+                    }
+                }
+            }
+        }
+        let next_offset = ifd_offset + 2 + count as u64 * 12;
+        let next_ifd = read_at(&mut file, next_offset, 4)
+            .map(|bytes| read_u32(&bytes) as u64)
+            .unwrap_or(0);
+        if next_ifd != 0 {
+            pending.push(next_ifd);
+        }
+
         let mut jpeg_offset = None;
         let mut jpeg_length = None;
         for index in 0..count {
@@ -327,6 +361,21 @@ fn extract_tiff_jpeg_preview(path: &str, target_edge: u32) -> Option<Vec<u8>> {
             let tag = read_u16(&entry[0..2]);
             let kind = read_u16(&entry[2..4]);
             let item_count = read_u32(&entry[4..8]);
+            if tag == 0x014a || tag == 0x8769 {
+                if let Some(bytes) = value_bytes(&mut file, entry, kind, item_count) {
+                    if tag == 0x014a {
+                        for chunk in bytes.chunks_exact(4) {
+                            pending.push(read_u32(chunk) as u64);
+                        }
+                    } else if bytes.len() >= 4 {
+                        pending.push(read_u32(&bytes[0..4]) as u64);
+                    }
+                }
+                continue;
+            }
+            if raw_ifd {
+                continue;
+            }
             let Some(bytes) = value_bytes(&mut file, entry, kind, item_count) else {
                 continue;
             };
@@ -334,13 +383,10 @@ fn extract_tiff_jpeg_preview(path: &str, target_edge: u32) -> Option<Vec<u8>> {
                 jpeg_offset = Some(read_u32(&bytes[0..4]) as u64);
             } else if (tag == 0x0202 || tag == 0x0117) && item_count >= 1 && bytes.len() >= 4 {
                 jpeg_length = Some(read_u32(&bytes[0..4]) as u64);
-            } else if tag == 0x014a && bytes.len() >= 4 {
-                for chunk in bytes.chunks_exact(4) {
-                    pending.push(read_u32(chunk) as u64);
-                }
-            } else if tag == 0x8769 && bytes.len() >= 4 {
-                pending.push(read_u32(&bytes[0..4]) as u64);
             }
+        }
+        if raw_ifd {
+            continue;
         }
         if let (Some(offset), Some(length)) = (jpeg_offset, jpeg_length) {
             if length >= 4
@@ -363,13 +409,6 @@ fn extract_tiff_jpeg_preview(path: &str, target_edge: u32) -> Option<Vec<u8>> {
                         }
                     }
                 }
-            }
-        }
-        let next_offset = ifd_offset + 2 + count as u64 * 12;
-        if let Some(next) = read_at(&mut file, next_offset, 4) {
-            let next = read_u32(&next) as u64;
-            if next != 0 {
-                pending.push(next);
             }
         }
     }
@@ -406,7 +445,15 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
             break;
         }
         let is_sof = matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf);
-        if is_sof && segment_len >= 7 {
+        if is_sof {
+            if !matches!(marker, 0xc0 | 0xc1 | 0xc2) || segment_len < 8 {
+                return None;
+            }
+            let sample_precision = bytes[cursor + 2];
+            let components = bytes[cursor + 7];
+            if sample_precision != 8 || !matches!(components, 1 | 3) {
+                return None;
+            }
             let height = u16::from_be_bytes([bytes[cursor + 3], bytes[cursor + 4]]) as u32;
             let width = u16::from_be_bytes([bytes[cursor + 5], bytes[cursor + 6]]) as u32;
             return Some((width, height));
@@ -721,6 +768,8 @@ fn decode_scanner_fff_tiff_page(
 
 #[derive(Clone, Debug)]
 struct ClassicTiffDirectory {
+    /// Absolute file offset of the IFD these tags were read from.
+    ifd_offset: u64,
     little_endian: bool,
     new_subfile_type: u32,
     width: u32,
@@ -736,6 +785,25 @@ struct ClassicTiffDirectory {
     orientation: u16,
     icc_profile: Option<Vec<u8>>,
     sub_ifd_offsets: Vec<u64>,
+    /// DNG `ColorMatrix1`: XYZ D50 to the stored linear RGB coordinates.
+    color_matrix1: Option<[[f32; 3]; 3]>,
+    /// DNG `ColorMatrix2`, usually the daylight illuminant of a dual-illuminant
+    /// calibration pair.
+    color_matrix2: Option<[[f32; 3]; 3]>,
+    /// DNG `CalibrationIlluminant1` for `color_matrix1`.
+    calibration_illuminant1: Option<u16>,
+    /// DNG `CalibrationIlluminant2` for `color_matrix2`.
+    calibration_illuminant2: Option<u16>,
+    /// DNG `AsShotNeutral`: the camera-space colour that has to read as grey.
+    as_shot_neutral: Option<[f32; 3]>,
+    /// DNG `ActiveArea` as [top, left, bottom, right] in full IFD coordinates.
+    active_area: Option<[u32; 4]>,
+    /// DNG `DefaultCropOrigin` in active-area coordinates.
+    default_crop_origin: Option<[u32; 2]>,
+    /// DNG `DefaultCropSize` in pixels.
+    default_crop_size: Option<[u32; 2]>,
+    /// DNG `OpcodeList2` (`51009`), copied only from the selected LinearRaw IFD.
+    opcode_list2: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug)]
@@ -824,6 +892,69 @@ fn classic_tiff_unsigned_values(
             .collect()),
         _ => Err(format!(
             "Unsupported TIFF integer tag type {}",
+            entry.type_code
+        )),
+    }
+}
+
+fn classic_tiff_rational_values(
+    file: &mut std::fs::File,
+    file_len: u64,
+    little: bool,
+    entry: &ClassicTiffEntry,
+) -> Result<Vec<f64>, String> {
+    if !matches!(entry.type_code, 5 | 10) {
+        return Err(format!(
+            "Unsupported TIFF rational tag type {}",
+            entry.type_code
+        ));
+    }
+    let data = read_classic_tiff_entry_data(file, file_len, little, entry, 16 * 1024 * 1024)?;
+    data.chunks_exact(8)
+        .map(|value| {
+            let numerator = if entry.type_code == 10 {
+                if little {
+                    i32::from_le_bytes(value[..4].try_into().expect("four-byte numerator")) as f64
+                } else {
+                    i32::from_be_bytes(value[..4].try_into().expect("four-byte numerator")) as f64
+                }
+            } else if little {
+                u32::from_le_bytes(value[..4].try_into().expect("four-byte numerator")) as f64
+            } else {
+                u32::from_be_bytes(value[..4].try_into().expect("four-byte numerator")) as f64
+            };
+            let denominator = if entry.type_code == 10 {
+                if little {
+                    i32::from_le_bytes(value[4..8].try_into().expect("four-byte denominator"))
+                        as f64
+                } else {
+                    i32::from_be_bytes(value[4..8].try_into().expect("four-byte denominator"))
+                        as f64
+                }
+            } else if little {
+                u32::from_le_bytes(value[4..8].try_into().expect("four-byte denominator")) as f64
+            } else {
+                u32::from_be_bytes(value[4..8].try_into().expect("four-byte denominator")) as f64
+            };
+            (denominator != 0.0 && numerator.is_finite())
+                .then_some(numerator / denominator)
+                .ok_or_else(|| "TIFF rational has a zero denominator".to_string())
+        })
+        .collect()
+}
+
+fn classic_tiff_numeric_values(
+    file: &mut std::fs::File,
+    file_len: u64,
+    little: bool,
+    entry: &ClassicTiffEntry,
+) -> Result<Vec<f64>, String> {
+    match entry.type_code {
+        3 | 4 => classic_tiff_unsigned_values(file, file_len, little, entry)
+            .map(|values| values.into_iter().map(|value| value as f64).collect()),
+        5 | 10 => classic_tiff_rational_values(file, file_len, little, entry),
+        _ => Err(format!(
+            "Unsupported TIFF numeric tag type {}",
             entry.type_code
         )),
     }
@@ -960,6 +1091,23 @@ fn read_classic_tiff_directory_impl(
     let orientation =
         u16::try_from(first(values(274)?, 1)).map_err(|_| "Invalid TIFF orientation")?;
     let sub_ifd_offsets = values(330)?.unwrap_or_default();
+    let active_area = values(50829)?.and_then(|values| {
+        if values.len() != 4 {
+            return None;
+        }
+        let values = values
+            .into_iter()
+            .map(|value| u32::try_from(value).ok())
+            .collect::<Option<Vec<_>>>()?;
+        Some([values[0], values[1], values[2], values[3]])
+    });
+    let calibration_illuminant1 = values(50778)?
+        .and_then(|values| values.first().copied())
+        .and_then(|value| u16::try_from(value).ok());
+    let calibration_illuminant2 = values(50779)?
+        .and_then(|values| values.first().copied())
+        .and_then(|value| u16::try_from(value).ok());
+    drop(values);
     let icc_profile = entries.get(&34675).and_then(|entry| {
         (entry.type_code == 7)
             .then(|| {
@@ -968,8 +1116,57 @@ fn read_classic_tiff_directory_impl(
             })
             .flatten()
     });
+    let mut rational_values = |tag: u16| -> Result<Option<Vec<f64>>, String> {
+        entries
+            .get(&tag)
+            .map(|entry| classic_tiff_rational_values(&mut file, file_len, little, entry))
+            .transpose()
+    };
+    let dng_color_matrix = |values: Option<Vec<f64>>| {
+        values.and_then(|values| {
+            (values.len() == 9 && values.iter().all(|value| value.is_finite())).then(|| {
+                [
+                    [values[0] as f32, values[1] as f32, values[2] as f32],
+                    [values[3] as f32, values[4] as f32, values[5] as f32],
+                    [values[6] as f32, values[7] as f32, values[8] as f32],
+                ]
+            })
+        })
+    };
+    let color_matrix1 = dng_color_matrix(rational_values(50721)?);
+    let color_matrix2 = dng_color_matrix(rational_values(50722)?);
+    let as_shot_neutral = rational_values(50728)?.and_then(|values| {
+        (values.len() == 3 && values.iter().all(|value| value.is_finite() && *value > 0.0))
+            .then(|| [values[0] as f32, values[1] as f32, values[2] as f32])
+    });
+    let mut crop_values = |tag: u16| -> Result<Option<Vec<f64>>, String> {
+        entries
+            .get(&tag)
+            .map(|entry| classic_tiff_numeric_values(&mut file, file_len, little, entry))
+            .transpose()
+    };
+    let default_crop_origin = crop_values(50719)?.and_then(|values| {
+        (values.len() == 2
+            && values
+                .iter()
+                .all(|value| value.is_finite() && *value >= 0.0))
+        .then(|| [values[0].round() as u32, values[1].round() as u32])
+    });
+    let default_crop_size = crop_values(50720)?.and_then(|values| {
+        (values.len() == 2 && values.iter().all(|value| value.is_finite() && *value > 0.0))
+            .then(|| [values[0].round() as u32, values[1].round() as u32])
+    });
+    let opcode_list2 = entries.get(&51009).and_then(|entry| {
+        matches!(entry.type_code, 1 | 7)
+            .then(|| {
+                read_classic_tiff_entry_data(&mut file, file_len, little, entry, 16 * 1024 * 1024)
+                    .ok()
+            })
+            .flatten()
+    });
 
     Ok(ClassicTiffDirectory {
+        ifd_offset,
         little_endian: little,
         new_subfile_type,
         width,
@@ -985,6 +1182,15 @@ fn read_classic_tiff_directory_impl(
         orientation,
         icc_profile,
         sub_ifd_offsets,
+        color_matrix1,
+        color_matrix2,
+        calibration_illuminant1,
+        calibration_illuminant2,
+        as_shot_neutral,
+        active_area,
+        default_crop_origin,
+        default_crop_size,
+        opcode_list2,
     })
 }
 
@@ -1004,6 +1210,7 @@ fn read_uncompressed_tiff_row(
     directory: &ClassicTiffDirectory,
     row: u32,
     row_bytes: usize,
+    file_len: u64,
 ) -> Result<Vec<u16>, String> {
     let strip_index = usize::try_from(row / directory.rows_per_strip)
         .map_err(|_| "TIFF strip index overflowed")?;
@@ -1030,29 +1237,103 @@ fn read_uncompressed_tiff_row(
             return Err("TIFF scanline exceeds its strip".into());
         }
     }
+    if offset
+        .checked_add(row_bytes as u64)
+        .is_none_or(|end| end > file_len)
+    {
+        return Err(format!(
+            "TIFF scanline ends beyond the {file_len}-byte file"
+        ));
+    }
     file.seek(SeekFrom::Start(offset))
         .map_err(|error| format!("Cannot seek to TIFF scanline: {error}"))?;
-    let mut bytes = vec![0u8; row_bytes];
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(row_bytes).map_err(|_| {
+        format!("TIFF scanline needs {row_bytes} bytes, which does not fit in memory")
+    })?;
+    bytes.resize(row_bytes, 0);
     file.read_exact(&mut bytes)
         .map_err(|error| format!("Cannot read TIFF scanline: {error}"))?;
     let bits = directory.bits_per_sample[0];
+    let sample_count = if bits == 8 { row_bytes } else { row_bytes / 2 };
+    let mut samples = Vec::new();
+    samples.try_reserve_exact(sample_count).map_err(|_| {
+        format!("TIFF scanline needs {sample_count} samples, which does not fit in memory")
+    })?;
     Ok(if bits == 8 {
-        bytes
-            .into_iter()
-            .map(|value| u16::from(value) * 257)
-            .collect()
+        samples.extend(bytes.into_iter().map(|value| u16::from(value) * 257));
+        samples
     } else {
-        bytes
-            .chunks_exact(2)
-            .map(|value| {
-                if directory.little_endian {
-                    u16::from_le_bytes([value[0], value[1]])
-                } else {
-                    u16::from_be_bytes([value[0], value[1]])
-                }
-            })
-            .collect()
+        samples.extend(bytes.chunks_exact(2).map(|value| {
+            if directory.little_endian {
+                u16::from_le_bytes([value[0], value[1]])
+            } else {
+                u16::from_be_bytes([value[0], value[1]])
+            }
+        }));
+        samples
     })
+}
+
+/// Prove every source scanline lies inside the file before the decoder
+/// allocates a row buffer. `StripByteCounts` is optional in many TIFFs, so the
+/// file length and strip offsets have to provide the same bound when it is
+/// absent.
+fn validate_uncompressed_tiff_layout(
+    path: &str,
+    directory: &ClassicTiffDirectory,
+    row_bytes: usize,
+) -> Result<u64, String> {
+    let file_len = std::fs::metadata(path)
+        .map_err(|error| format!("Cannot inspect TIFF {path}: {error}"))?
+        .len();
+    let height = u64::from(directory.height);
+    let rows_per_strip = u64::from(directory.rows_per_strip.max(1));
+    let strip_count = usize::try_from(height.div_ceil(rows_per_strip))
+        .map_err(|_| "TIFF strip count overflowed")?;
+    if directory.strip_offsets.len() < strip_count {
+        return Err(format!(
+            "TIFF declares {strip_count} strips but only {} strip offsets",
+            directory.strip_offsets.len()
+        ));
+    }
+    let row_bytes = u64::try_from(row_bytes)
+        .map_err(|_| "TIFF scanline length does not fit in the file address space".to_string())?;
+    for strip_index in 0..strip_count {
+        let first_row = u64::try_from(strip_index)
+            .map_err(|_| "TIFF strip index overflowed")?
+            .checked_mul(rows_per_strip)
+            .ok_or("TIFF strip row offset overflowed")?;
+        let rows_in_strip = rows_per_strip.min(height - first_row);
+        let required = row_bytes
+            .checked_mul(rows_in_strip)
+            .ok_or("TIFF strip length overflowed")?;
+        let strip_offset = directory.strip_offsets[strip_index];
+        let strip_end = strip_offset
+            .checked_add(required)
+            .ok_or("TIFF strip offset overflowed")?;
+        if strip_end > file_len {
+            return Err(format!(
+                "TIFF strip {strip_index} ends at byte {strip_end}, beyond the {file_len}-byte file"
+            ));
+        }
+        if let Some(byte_count) = directory.strip_byte_counts.get(strip_index) {
+            let declared_end = strip_offset
+                .checked_add(*byte_count)
+                .ok_or("TIFF strip length overflowed")?;
+            if declared_end > file_len {
+                return Err(format!(
+                    "TIFF strip {strip_index} declares {byte_count} bytes, ending beyond the {file_len}-byte file"
+                ));
+            }
+            if required > *byte_count {
+                return Err(format!(
+                    "TIFF strip {strip_index} declares {byte_count} bytes but its {rows_in_strip} rows need {required}"
+                ));
+            }
+        }
+    }
+    Ok(file_len)
 }
 
 fn decode_uncompressed_tiff_directory_reduced(
@@ -1091,21 +1372,9 @@ fn decode_uncompressed_tiff_directory_reduced(
         .ok_or_else(|| "TIFF scanline length overflowed".to_string())?;
     // An uncompressed page declares its own geometry, so a wrong or hostile
     // header can ask for a buffer far larger than the file can possibly hold.
-    // Reject that before allocating: a failed multi-gigabyte allocation aborts
-    // the process instead of returning an error.
-    if !directory.strip_byte_counts.is_empty() {
-        let payload_bytes: u64 = directory.strip_byte_counts.iter().copied().sum();
-        let file_len = std::fs::metadata(path)
-            .map_err(|error| format!("Cannot inspect TIFF {path}: {error}"))?
-            .len();
-        let declared_bytes = (row_bytes as u64).saturating_mul(u64::from(directory.height));
-        if payload_bytes > file_len || payload_bytes < declared_bytes {
-            return Err(format!(
-                "TIFF declares {declared_bytes} bytes of pixels but carries {payload_bytes} \
-                 in a {file_len}-byte file"
-            ));
-        }
-    }
+    // Validate the source rows before allocating, even when the preview target
+    // is tiny and StripByteCounts is absent.
+    let file_len = validate_uncompressed_tiff_layout(path, &directory, row_bytes)?;
     let output_len = usize::try_from(output_width)
         .ok()
         .and_then(|width| usize::try_from(output_height).ok()?.checked_mul(width))
@@ -1124,7 +1393,7 @@ fn decode_uncompressed_tiff_directory_reduced(
     if output_width == directory.width && output_height == directory.height {
         for output_y in 0..output_height {
             let source_row =
-                read_uncompressed_tiff_row(&mut file, &directory, output_y, row_bytes)?;
+                read_uncompressed_tiff_row(&mut file, &directory, output_y, row_bytes, file_len)?;
             let output_start =
                 usize::try_from(output_y).unwrap() * usize::try_from(output_width).unwrap() * 3;
             let output_row = &mut output
@@ -1160,11 +1429,11 @@ fn decode_uncompressed_tiff_directory_reduced(
         let top = source_y.floor() as u32;
         let bottom = (top + 1).min(directory.height - 1);
         let vertical_weight = (source_y - f64::from(top)) as f32;
-        let top_row = read_uncompressed_tiff_row(&mut file, &directory, top, row_bytes)?;
+        let top_row = read_uncompressed_tiff_row(&mut file, &directory, top, row_bytes, file_len)?;
         let bottom_row = if bottom == top {
             top_row.clone()
         } else {
-            read_uncompressed_tiff_row(&mut file, &directory, bottom, row_bytes)?
+            read_uncompressed_tiff_row(&mut file, &directory, bottom, row_bytes, file_len)?
         };
         let row_start =
             usize::try_from(output_y).unwrap() * usize::try_from(output_width).unwrap() * 3;
@@ -1198,35 +1467,458 @@ fn decode_uncompressed_tiff_reduced(
     decode_uncompressed_tiff_directory_reduced(path, directory, target_long_edge)
 }
 
+const DEFAULT_TIFF_DECODE_BUDGET_BYTES: usize = 2 * 1024 * 1024 * 1024;
+const MIN_TIFF_DECODE_BUDGET_BYTES: usize = 16 * 1024 * 1024;
+const MAX_TIFF_DECODE_BUDGET_BYTES: usize = 8 * 1024 * 1024 * 1024;
+
+/// Explicit decode budget for the general TIFF reader. The uncompressed
+/// streaming reader stays the default for large scans; this budget only governs
+/// compressed, tiled, rotated and floating-point pages that need a full buffer.
+fn tiff_decode_budget_bytes() -> usize {
+    std::env::var("NEXFILM_TIFF_MAX_DECODE_BYTES")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_TIFF_DECODE_BUDGET_BYTES)
+        .clamp(MIN_TIFF_DECODE_BUDGET_BYTES, MAX_TIFF_DECODE_BUDGET_BYTES)
+}
+
+fn tiff_rgb_channels(color_type: tiff::ColorType) -> Option<(usize, u8)> {
+    match color_type {
+        tiff::ColorType::RGB(bits) => Some((3, bits)),
+        tiff::ColorType::RGBA(bits) => Some((4, bits)),
+        _ => None,
+    }
+}
+
+fn tiff_pixels_to_rgb_f32(
+    width: u32,
+    height: u32,
+    channels: usize,
+    pixels: tiff::decoder::DecodingResult,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    let pixel_count = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or_else(|| "TIFF dimensions overflowed".to_string())?;
+    let expected = pixel_count
+        .checked_mul(channels)
+        .ok_or_else(|| "TIFF sample count overflowed".to_string())?;
+    let check_len = |length: usize| {
+        (length == expected)
+            .then_some(())
+            .ok_or_else(|| format!("TIFF decoder returned {length} samples, expected {expected}"))
+    };
+    let mut rgb = Vec::new();
+    rgb.try_reserve_exact(pixel_count * 3)
+        .map_err(|_| format!("TIFF image needs {} bytes", pixel_count * 12))?;
+    match pixels {
+        tiff::decoder::DecodingResult::U8(samples) => {
+            check_len(samples.len())?;
+            for pixel in samples.chunks_exact(channels) {
+                rgb.extend(pixel[..3].iter().map(|value| f32::from(*value) / 255.0));
+            }
+        }
+        tiff::decoder::DecodingResult::U16(samples) => {
+            check_len(samples.len())?;
+            for pixel in samples.chunks_exact(channels) {
+                rgb.extend(pixel[..3].iter().map(|value| f32::from(*value) / 65535.0));
+            }
+        }
+        tiff::decoder::DecodingResult::F32(samples) => {
+            check_len(samples.len())?;
+            for pixel in samples.chunks_exact(channels) {
+                rgb.extend_from_slice(&pixel[..3]);
+            }
+        }
+        tiff::decoder::DecodingResult::F64(samples) => {
+            check_len(samples.len())?;
+            for pixel in samples.chunks_exact(channels) {
+                rgb.extend(pixel[..3].iter().map(|value| *value as f32));
+            }
+        }
+        _ => {
+            return Err(format!(
+                "Unsupported TIFF sample representation for {width}x{height} RGB image"
+            ));
+        }
+    }
+    ImageBuffer::from_raw(width, height, rgb)
+        .ok_or_else(|| "Cannot construct TIFF RGB f32 image".to_string())
+}
+
+/// Apply EXIF orientation to the decoded pixels. The generic TIFF decoder does
+/// not rotate for tag 274, while the uncompressed fast path deliberately
+/// rejects such pages; doing it here keeps preview, Film Area and export on the
+/// same geometry.
+fn apply_tiff_orientation(
+    image: ImageBuffer<Rgb<f32>, Vec<f32>>,
+    orientation: u16,
+) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+    if orientation <= 1 || orientation > 8 {
+        return image;
+    }
+    let (width, height) = image.dimensions();
+    let swap = matches!(orientation, 5..=8);
+    let (output_width, output_height) = if swap {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let mut output = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(output_width, output_height);
+    for y in 0..height {
+        for x in 0..width {
+            let (target_x, target_y) = match orientation {
+                2 => (width - 1 - x, y),
+                3 => (width - 1 - x, height - 1 - y),
+                4 => (x, height - 1 - y),
+                5 => (y, x),
+                6 => (height - 1 - y, x),
+                7 => (height - 1 - y, width - 1 - x),
+                8 => (y, width - 1 - x),
+                _ => (x, y),
+            };
+            *output.get_pixel_mut(target_x, target_y) = *image.get_pixel(x, y);
+        }
+    }
+    output
+}
+
+/// A classic TIFF reader whose header points at one selected IFD.
+///
+/// The `tiff` crate can only advance through the IFD0 next pointers, not seek
+/// directly to a SubIFD offset. DNG LinearRaw pages commonly live in a SubIFD
+/// that is not in that chain, so present the same file with its header IFD
+/// offset rewritten. Tag values and strip offsets remain absolute, so every
+/// other offset stays valid.
+struct ClassicTiffIfdReader {
+    file: std::fs::File,
+    file_len: u64,
+    header: [u8; 8],
+    overlays: Vec<(u64, Vec<u8>)>,
+    position: u64,
+}
+
+impl ClassicTiffIfdReader {
+    fn new(path: &str, ifd_offset: Option<u64>) -> Result<Self, String> {
+        let mut file = std::fs::File::open(path)
+            .map_err(|error| format!("Cannot open TIFF {path}: {error}"))?;
+        let file_len = file
+            .metadata()
+            .map_err(|error| format!("Cannot inspect TIFF {path}: {error}"))?
+            .len();
+        let mut header = [0u8; 8];
+        file.read_exact(&mut header)
+            .map_err(|error| format!("Cannot read TIFF header: {error}"))?;
+        let little = match &header[..2] {
+            b"II" => true,
+            b"MM" => false,
+            _ => return Err("Unsupported TIFF byte order".into()),
+        };
+        if read_endian_u16(&header, 2, little) != Some(42) {
+            return Err(
+                "BigTIFF or invalid TIFF is not supported by the selected IFD reader".into(),
+            );
+        }
+        let selected_ifd_offset = if let Some(ifd_offset) = ifd_offset {
+            let ifd_offset = u32::try_from(ifd_offset)
+                .map_err(|_| "DNG LinearRaw IFD offset exceeds classic TIFF limits".to_string())?;
+            if little {
+                header[4..8].copy_from_slice(&ifd_offset.to_le_bytes());
+            } else {
+                header[4..8].copy_from_slice(&ifd_offset.to_be_bytes());
+            }
+            Some(u64::from(ifd_offset))
+        } else {
+            None
+        };
+        let mut overlays = Vec::new();
+        if let Some(ifd_offset) = selected_ifd_offset {
+            file.seek(SeekFrom::Start(ifd_offset))
+                .map_err(|error| format!("Cannot seek to TIFF IFD: {error}"))?;
+            let mut count_bytes = [0u8; 2];
+            file.read_exact(&mut count_bytes)
+                .map_err(|error| format!("Cannot read TIFF IFD count: {error}"))?;
+            let entry_count = usize::from(read_endian_u16(&count_bytes, 0, little).unwrap_or(0));
+            let mut entries = vec![0u8; entry_count.saturating_mul(12)];
+            file.read_exact(&mut entries)
+                .map_err(|error| format!("Cannot read TIFF IFD entries: {error}"))?;
+            for (index, entry) in entries.chunks_exact(12).enumerate() {
+                if read_endian_u16(entry, 0, little) != Some(262) {
+                    continue;
+                }
+                // The `tiff` crate rejects DNG's LinearRaw photometric value
+                // even though the strip layout is ordinary chunky RGB. Present
+                // the selected IFD as RGB only to that decoder.
+                let rgb = if little {
+                    2u16.to_le_bytes()
+                } else {
+                    2u16.to_be_bytes()
+                };
+                overlays.push((ifd_offset + 2 + index as u64 * 12 + 8, rgb.to_vec()));
+            }
+        }
+        Ok(Self {
+            file,
+            file_len,
+            header,
+            overlays,
+            position: 0,
+        })
+    }
+}
+
+impl Read for ClassicTiffIfdReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let mut written = 0usize;
+        while written < buffer.len() {
+            if self.position < 8 {
+                let start = self.position as usize;
+                let length = (8 - start).min(buffer.len() - written);
+                buffer[written..written + length]
+                    .copy_from_slice(&self.header[start..start + length]);
+                self.position += length as u64;
+                written += length;
+                continue;
+            }
+            if let Some((start, data)) = self.overlays.iter().find(|(start, data)| {
+                self.position >= *start && self.position < *start + data.len() as u64
+            }) {
+                let offset = usize::try_from(self.position - *start).unwrap();
+                let length = (data.len() - offset).min(buffer.len() - written);
+                buffer[written..written + length].copy_from_slice(&data[offset..offset + length]);
+                self.position += length as u64;
+                written += length;
+                continue;
+            }
+            let next_overlay = self
+                .overlays
+                .iter()
+                .filter_map(|(start, _)| (*start > self.position).then_some(*start))
+                .min()
+                .unwrap_or(u64::MAX);
+            let length = usize::try_from(
+                next_overlay
+                    .saturating_sub(self.position)
+                    .min((buffer.len() - written) as u64),
+            )
+            .unwrap_or(buffer.len() - written);
+            if length == 0 {
+                break;
+            }
+            self.file.seek(SeekFrom::Start(self.position))?;
+            let read = self.file.read(&mut buffer[written..written + length])?;
+            if read == 0 {
+                break;
+            }
+            self.position += read as u64;
+            written += read;
+        }
+        Ok(written)
+    }
+}
+
+impl Seek for ClassicTiffIfdReader {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        let next = match position {
+            SeekFrom::Start(value) => Some(value),
+            SeekFrom::Current(delta) => self.position.checked_add_signed(delta),
+            SeekFrom::End(delta) => self.file_len.checked_add_signed(delta),
+        }
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "TIFF reader position overflowed",
+            )
+        })?;
+        self.position = next;
+        Ok(next)
+    }
+}
+
+fn decode_tiff_direct_f32_with_budget_and_ifd(
+    path: &str,
+    target_long_edge: u32,
+    budget_bytes: usize,
+    selected_directory: Option<&ClassicTiffDirectory>,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    let (image, orientation) = decode_tiff_direct_full_f32_with_budget_and_ifd(
+        path,
+        target_long_edge,
+        budget_bytes,
+        selected_directory,
+    )?;
+    Ok(fit_linear_transmission_long_edge(
+        apply_tiff_orientation(image, orientation),
+        target_long_edge,
+    ))
+}
+
+/// Decode the selected IFD at its stored resolution and hand the caller the
+/// unrotated buffer. LinearRaw `OpcodeList2` uses pre-rotation active-area
+/// coordinates, so the opcode pass has to run between this function and the
+/// orientation/scale wrapper above.
+fn decode_tiff_direct_full_f32_with_budget_and_ifd(
+    path: &str,
+    target_long_edge: u32,
+    budget_bytes: usize,
+    selected_directory: Option<&ClassicTiffDirectory>,
+) -> Result<(ImageBuffer<Rgb<f32>, Vec<f32>>, u16), String> {
+    // The row-streaming reader avoids a second full-size buffer for the common
+    // uncompressed, upright scan. Everything else uses the tiff crate with an
+    // explicit, finite budget.
+    if selected_directory.is_none() {
+        if let Ok(encoded) = decode_uncompressed_tiff_reduced(path, target_long_edge) {
+            let mut image =
+                ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
+            image
+                .as_mut()
+                .par_chunks_exact_mut(3)
+                .zip(encoded.as_raw().par_chunks_exact(3))
+                .for_each(|(target, source)| {
+                    for channel in 0..3 {
+                        target[channel] = f32::from(source[channel]) / 65535.0;
+                    }
+                });
+            return Ok((image, 1));
+        }
+    }
+
+    use tiff::decoder::{Decoder, Limits};
+
+    let mut limits = Limits::default();
+    limits.decoding_buffer_size = budget_bytes;
+    limits.intermediate_buffer_size = budget_bytes;
+    limits.ifd_value_size = 16 * 1024 * 1024;
+    let reader = ClassicTiffIfdReader::new(
+        path,
+        selected_directory.map(|directory| directory.ifd_offset),
+    )?;
+    let mut decoder = Decoder::new(BufReader::new(reader))
+        .map_err(|error| match selected_directory {
+            Some(directory) => format!(
+                "Cannot decode compressed LinearRaw DNG IFD at byte {} in {path}: {error}",
+                directory.ifd_offset
+            ),
+            None => format!("Invalid TIFF {path}: {error}"),
+        })?
+        .with_limits(limits);
+    let (width, height) = decoder
+        .dimensions()
+        .map_err(|error| format!("Cannot read TIFF dimensions: {error}"))?;
+    let color_type = decoder
+        .colortype()
+        .map_err(|error| format!("Cannot read TIFF colour type: {error}"))?;
+    let (channels, bits) = tiff_rgb_channels(color_type)
+        .ok_or_else(|| format!("Unsupported TIFF colour type: {color_type:?}"))?;
+    if let Some(directory) = selected_directory {
+        if (width, height) != (directory.width, directory.height)
+            || u16::from(bits) != directory.bits_per_sample[0]
+        {
+            return Err(format!(
+                "Selected LinearRaw IFD at byte {} declares {}x{} at {} bits, \
+                 but the TIFF decoder returned {width}x{height} at {bits} bits",
+                directory.ifd_offset,
+                directory.width,
+                directory.height,
+                directory.bits_per_sample[0]
+            ));
+        }
+    }
+    let bytes_per_sample = usize::from(bits.div_ceil(8));
+    let required = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(channels))
+        .and_then(|samples| samples.checked_mul(bytes_per_sample))
+        .ok_or_else(|| "TIFF image size overflowed".to_string())?;
+    if required > budget_bytes {
+        return Err(format!(
+            "TIFF image needs {required} bytes, above the configured decode budget of {budget_bytes} bytes"
+        ));
+    }
+    let pixels = decoder
+        .read_image()
+        .map_err(|error| format!("Cannot decode TIFF pixels: {error}"))?;
+    let image = tiff_pixels_to_rgb_f32(width, height, channels, pixels)?;
+    let orientation = selected_directory
+        .map(|directory| directory.orientation)
+        .or_else(|| {
+            read_classic_tiff_directory(path, 0)
+                .ok()
+                .map(|directory| directory.orientation)
+        })
+        .unwrap_or(1);
+    Ok((image, orientation))
+}
+
+fn decode_tiff_direct_f32_with_budget(
+    path: &str,
+    target_long_edge: u32,
+    budget_bytes: usize,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    decode_tiff_direct_f32_with_budget_and_ifd(path, target_long_edge, budget_bytes, None)
+}
+
+fn decode_tiff_direct_f32(
+    path: &str,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    decode_tiff_direct_f32_with_budget(path, target_long_edge, tiff_decode_budget_bytes())
+}
+
+fn decode_tiff_direct_full_f32_at_ifd(
+    path: &str,
+    directory: &ClassicTiffDirectory,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    decode_tiff_direct_full_f32_with_budget_and_ifd(
+        path,
+        u32::MAX,
+        tiff_decode_budget_bytes(),
+        Some(directory),
+    )
+    .map(|(image, _)| image)
+}
+
 fn decode_uncompressed_linear_dng_reduced(
     path: &str,
     target_long_edge: u32,
 ) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
-    let root = read_classic_tiff_directory(path, 0)?;
-    let mut best = None::<ClassicTiffDirectory>;
-    for offset in root.sub_ifd_offsets {
-        let Ok(candidate) = read_classic_tiff_subdirectory(path, offset) else {
-            continue;
-        };
-        if candidate.photometric != 34892
-            || candidate.compression != 1
-            || candidate.samples_per_pixel < 3
-        {
-            continue;
-        }
-        let candidate_pixels = u64::from(candidate.width) * u64::from(candidate.height);
-        let best_pixels = best
-            .as_ref()
-            .map(|directory| u64::from(directory.width) * u64::from(directory.height))
-            .unwrap_or(0);
-        if candidate_pixels > best_pixels {
-            best = Some(candidate);
-        }
+    let directory =
+        dng_linear_raw_directory(path).ok_or("DNG has no uncompressed LinearRaw RGB IFD")?;
+    if directory.compression != 1 {
+        return Err("DNG LinearRaw page is compressed".to_string());
     }
-    let directory = best.ok_or("DNG has no uncompressed LinearRaw RGB SubIFD")?;
+    if directory.opcode_list2.is_some() {
+        let encoded =
+            decode_uncompressed_tiff_directory_reduced(path, directory.clone(), u32::MAX)?;
+        let mut image = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
+        image
+            .as_mut()
+            .par_chunks_exact_mut(3)
+            .zip(encoded.as_raw().par_chunks_exact(3))
+            .for_each(|(target, source)| {
+                for channel in 0..3 {
+                    target[channel] = f32::from(source[channel]) / 65535.0;
+                }
+            });
+        let image = finalize_linear_raw_dng_rgb(image, &directory, target_long_edge)?;
+        let mut output = ImageBuffer::<Rgb<u16>, Vec<u16>>::new(image.width(), image.height());
+        output
+            .as_mut()
+            .par_chunks_exact_mut(3)
+            .zip(image.as_raw().par_chunks_exact(3))
+            .for_each(|(target, source)| {
+                for channel in 0..3 {
+                    target[channel] = (source[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
+                }
+            });
+        return Ok(output);
+    }
     decode_uncompressed_tiff_directory_reduced(path, directory, target_long_edge)
 }
 
+#[cfg(test)]
 fn linearize_scanner_fff(
     image: ImageBuffer<Rgb<u16>, Vec<u16>>,
     target: ColorSpaceId,
@@ -1257,6 +1949,65 @@ fn linearize_scanner_fff_with_input(
         }
     });
     image
+}
+
+/// Decode an Imacon/Flextight page straight into the unbounded ProPhoto f32
+/// contract. The container's gamma and primaries are applied per sample before
+/// the matrix, so the wide-gamut orange mask never passes through a clipped
+/// u16 linear-sRGB intermediate.
+fn decode_scanner_fff_prophoto_estimate(
+    path: &str,
+    target_long_edge: u32,
+    profile: Option<&crate::scanner_profile::ScannerInputProfile>,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    let encoded = decode_uncompressed_tiff_reduced(path, target_long_edge)
+        .or_else(|_| decode_scanner_fff_tiff_page(path, 0))?;
+    let input = scanner_fff_container_input(path).unwrap_or(ScannerFffInput::DOCUMENTED_DEFAULT);
+    let working_space = if profile.is_some() {
+        ColorSpaceId::SRgb
+    } else {
+        ColorSpaceId::ProPhotoRgb
+    };
+    let matrix = linear_conversion_matrix(input.input_color_space(), working_space);
+    let mut estimate = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
+    estimate
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(encoded.as_raw().par_chunks_exact(3))
+        .for_each(|(target, pixel)| {
+            let linear = apply_linear_matrix(
+                [
+                    (f32::from(pixel[0]) / 65535.0).powf(input.gamma),
+                    (f32::from(pixel[1]) / 65535.0).powf(input.gamma),
+                    (f32::from(pixel[2]) / 65535.0).powf(input.gamma),
+                ],
+                matrix,
+            );
+            target.copy_from_slice(&linear);
+        });
+    if let Some(profile) = profile {
+        // A bound Scanner Profile keeps its historical order: decode the FFF
+        // container into linear sRGB, apply the profile there, then convert to
+        // the shared ProPhoto working basis. Keeping this in f32 removes the
+        // u16 clipping that used to truncate wide-gamut scanner data.
+        profile.apply_linear_rgb_image(&mut estimate)?;
+        let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
+        estimate.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+            pixel.copy_from_slice(&clamp_positive_transmission_for_density(
+                apply_linear_matrix([pixel[0], pixel[1], pixel[2]], matrix),
+            ));
+        });
+    } else {
+        estimate.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+            pixel.copy_from_slice(&clamp_positive_transmission_for_density([
+                pixel[0], pixel[1], pixel[2],
+            ]));
+        });
+    }
+    Ok(fit_linear_transmission_long_edge(
+        estimate,
+        target_long_edge,
+    ))
 }
 
 fn normalize_path(path: &str) -> String {
@@ -1521,6 +2272,7 @@ fn embedded_icc_bytes(path: &str) -> Option<Vec<u8>> {
     }
 }
 
+#[cfg(test)]
 fn embedded_input_profile(path: &str) -> Option<ColorSpaceId> {
     identify_icc_profile(&embedded_icc_bytes(path)?)
 }
@@ -1533,12 +2285,20 @@ fn embedded_input_profile(path: &str) -> Option<ColorSpaceId> {
 /// is the input-domain contract every generic TIFF/JPEG/PNG falls back to.
 fn resolve_direct_encoded_space(path: &str) -> (ColorSpaceId, bool) {
     if let Some(icc) = embedded_icc_bytes(path) {
-        if let Some(profile) = identify_icc_profile(&icc) {
-            return (
-                profile,
-                crate::color_science::icc_declares_linear_transfer(&icc),
-            );
+        let linear_transfer = crate::color_science::icc_declares_linear_transfer(&icc);
+        if let Some(profile) = icc_color_space(&icc) {
+            return (profile, linear_transfer);
         }
+        if IccRgbTransform::from_icc_to_linear_prophoto(&icc).is_ok() {
+            // The real transform in `decode_direct_rgb_prophoto_estimate` owns
+            // the primaries and TRC. This fallback only supplies the static
+            // reporting value and must still preserve a declared linear curve.
+            return (ColorSpaceId::SRgb, linear_transfer);
+        }
+        if let Some(profile) = identify_icc_profile(&icc) {
+            return (profile, linear_transfer);
+        }
+        return (ColorSpaceId::SRgb, linear_transfer);
     }
     (ColorSpaceId::SRgb, false)
 }
@@ -1763,6 +2523,7 @@ fn decode_develop_preview_base64(path: &str, max_edge: u32) -> Option<String> {
     })
 }
 
+#[cfg(test)]
 fn build_response_buffer(
     width: u32,
     height: u32,
@@ -1801,6 +2562,7 @@ fn build_response_buffer(
     out_buffer
 }
 
+#[cfg(test)]
 fn build_response_buffer_from_proxy(
     proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>,
     base_color: &BaseColor,
@@ -1822,6 +2584,7 @@ fn build_response_buffer_from_proxy_with_state(
     proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>,
     base_color: &BaseColor,
     pipeline_state: &PipelineState,
+    geom: &GeometryState,
     quality: Option<&crate::raw_backend::QualityMask>,
     is_full_proxy: bool,
 ) -> Vec<u8> {
@@ -1832,7 +2595,7 @@ fn build_response_buffer_from_proxy_with_state(
     } else {
         pipeline_base_density(pipeline_state, base_color)
     };
-    let base_analyzed = pipeline_has_base(pipeline_state, base_color);
+    let base_analyzed = pipeline_base_analysis_complete(pipeline_state, base_color, geom);
     let flags = u32::from(base_analyzed)
         | match pipeline_state.contract {
             ProcessingContract::LegacyV1 => 0,
@@ -1974,13 +2737,23 @@ fn compute_auto_base(proxy: &ImageBuffer<Rgb<u16>, Vec<u16>>) -> BaseColor {
 /// channel is the base rather than the brightest scene content.
 fn compute_frame_base_density_f32(
     proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
-) -> Result<([f32; 3], f32), String> {
+) -> Result<([f32; 3], f32), &'static str> {
     let mut channels: [Vec<f32>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut saw_base_sampling_ceiling = false;
     for pixel in proxy.as_raw().chunks_exact(3) {
         if pixel
             .iter()
-            .any(|value| !value.is_finite() || *value <= 0.0 || *value >= 0.98)
+            .any(|value| !value.is_finite() || *value <= 0.0)
         {
+            continue;
+        }
+        if pixel
+            .iter()
+            .any(|value| *value >= FILM_BASE_SAMPLE_MAX_TRANSMISSION)
+        {
+            saw_base_sampling_ceiling = true;
+        }
+        if pixel.iter().any(|value| *value >= 0.995) {
             continue;
         }
         for channel in 0..3 {
@@ -1989,7 +2762,11 @@ fn compute_frame_base_density_f32(
     }
     let sampled = channels[0].len();
     if sampled == 0 {
-        return Err("The frame contains no usable film-base samples.".to_string());
+        return Err(if saw_base_sampling_ceiling {
+            "film_base_saturated"
+        } else {
+            "missing_film_base_reference"
+        });
     }
     let tail = ((sampled as f32 * 0.01).ceil() as usize).clamp(1, sampled);
     let density = std::array::from_fn(|channel| {
@@ -2006,7 +2783,7 @@ fn compute_frame_base_density_f32(
 fn compute_auto_base_f32(
     proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
     geom: &GeometryState,
-) -> Result<([f32; 3], f32), String> {
+) -> Result<([f32; 3], f32), &'static str> {
     // Smart Auto estimates a display-base candidate only from the selected
     // film geometry. It is never promoted to a physical anchor.
     if geom.calibration_points.is_none() {
@@ -2015,11 +2792,25 @@ fn compute_auto_base_f32(
         // trustworthy D-min candidate, so use content-driven mapping instead.
         return Ok(([0.0; 3], 0.0));
     }
-    let mut values = collect_film_area_rgb32(proxy, None, geom, true);
+    let samples = collect_film_area_rgb32(proxy, None, geom, true);
+    let mut saw_base_sampling_ceiling = false;
+    let mut values = Vec::with_capacity(samples.len());
+    for sample in samples {
+        if sample
+            .iter()
+            .any(|value| *value >= FILM_BASE_SAMPLE_MAX_TRANSMISSION)
+        {
+            saw_base_sampling_ceiling = true;
+            continue;
+        }
+        values.push(sample);
+    }
     if values.len() < 8 {
-        // No trustworthy base candidate is a valid low-confidence outcome;
-        // callers continue with the content-driven zero-reference fallback.
-        return Ok(([0.0; 3], 0.0));
+        return Err(if saw_base_sampling_ceiling {
+            "film_base_saturated"
+        } else {
+            "film_base_too_few_samples"
+        });
     }
     values.sort_unstable_by(|a, b| {
         density_luma([-a[0].log10(), -a[1].log10(), -a[2].log10()]).total_cmp(&density_luma([
@@ -2041,16 +2832,34 @@ fn compute_auto_base_f32(
     Ok((density, confidence))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FilmBaseState {
+    /// Measured on the frame's clear film with enough evidence to remove it as
+    /// the neutral black anchor.
+    Trusted,
+    /// No trustworthy base. The density stage keeps each content channel's own
+    /// low endpoint instead of inventing a neutral reference.
+    ContentFallback,
+    /// A candidate was sampled, but failed the quality gate. The reason has to
+    /// reach the processing report so this state is never mistaken for a
+    /// successful measurement.
+    Invalid,
+}
+
 /// Result of the film-base estimate that the unified density stage consumes.
-/// `usable` is the quality gate: an implausible or missing base must fall back
-/// to the content mapping instead of producing a cast, because after
-/// unification the film base is the only neutral reference.
+#[derive(Debug)]
 struct FilmBaseEstimate {
     density: [f32; 3],
     confidence: f32,
     source: &'static str,
-    usable: bool,
+    state: FilmBaseState,
     fallback_reason: Option<&'static str>,
+}
+
+impl FilmBaseEstimate {
+    fn is_trusted(&self) -> bool {
+        self.state == FilmBaseState::Trusted
+    }
 }
 
 /// Sample count a rebate-band candidate needs before it can be believed.
@@ -2059,8 +2868,20 @@ const FILM_BASE_BAND_MIN_SAMPLES: usize = 64;
 const FILM_BASE_BAND_WIDTH: f32 = 0.010;
 /// Sample count the in-area low-density tail needs (matches `compute_auto_base_f32`).
 const FILM_BASE_TAIL_MIN_SAMPLES: usize = 8;
-/// A clear base sits close to full transmission; anything denser is not a base.
-const FILM_BASE_MIN_DENSITY: f32 = 0.02;
+/// Base candidates are accepted only below this transmission. Content
+/// endpoints keep the separate `0.995` line, because a bright candidate and a
+/// clipped content highlight mean different things.
+const FILM_BASE_SAMPLE_MAX_TRANSMISSION: f32 = 0.98;
+/// A rebate is sampled as a coherent band, so it can tolerate a nearly clear
+/// ETTR base while requiring support on more than one side.
+const FILM_BASE_BAND_MIN_DENSITY: f32 = 0.005;
+/// The in-area tail has to rise above numerical zero, but it still comes from a
+/// confirmed Film Area and therefore needs a less conservative floor than the
+/// whole-frame last resort.
+const FILM_BASE_TAIL_MIN_DENSITY: f32 = 0.008;
+/// The frame-wide quantile is only a content fallback; keeping a distinct floor
+/// makes that weaker evidence explicit.
+const FILM_BASE_FRAME_MIN_DENSITY: f32 = 0.010;
 /// How far the rebate band may sit *denser* than the in-area tail and still
 /// describe the same physical base.
 ///
@@ -2072,10 +2893,28 @@ const FILM_BASE_MIN_DENSITY: f32 = 0.02;
 /// positive renders as a cast.
 const FILM_BASE_BAND_AGREEMENT: f32 = 0.05;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FilmBaseCandidateKind {
+    RebateBand,
+    FilmAreaTail,
+    FrameQuantile,
+}
+
+impl FilmBaseCandidateKind {
+    fn minimum_density(self) -> f32 {
+        match self {
+            Self::RebateBand => FILM_BASE_BAND_MIN_DENSITY,
+            Self::FilmAreaTail => FILM_BASE_TAIL_MIN_DENSITY,
+            Self::FrameQuantile => FILM_BASE_FRAME_MIN_DENSITY,
+        }
+    }
+}
+
 fn validate_film_base_candidate(
     density: [f32; 3],
     samples: usize,
     minimum_samples: usize,
+    kind: FilmBaseCandidateKind,
 ) -> Result<(), &'static str> {
     if samples < minimum_samples {
         return Err("film_base_too_few_samples");
@@ -2083,7 +2922,7 @@ fn validate_film_base_candidate(
     if density.iter().any(|value| !value.is_finite()) {
         return Err("film_base_non_finite");
     }
-    if density.iter().any(|value| *value < FILM_BASE_MIN_DENSITY) {
+    if density.iter().any(|value| *value < kind.minimum_density()) {
         return Err("film_base_out_of_range");
     }
     Ok(())
@@ -2126,97 +2965,204 @@ fn median_channel_density(samples: &mut [[f32; 3]]) -> [f32; 3] {
     })
 }
 
+/// A rebate is not one lucky bright strip. At least two sides of the confirmed
+/// Film Area have to contain samples that agree with the candidate, so an open
+/// gate edge, a lamp reflection or a stitched white border cannot become the
+/// frame's black anchor on its own.
+fn film_base_band_has_spatial_support(
+    points: &[[f32; 2]; 4],
+    band: &[([f32; 2], [f32; 3])],
+    candidate: [f32; 3],
+) -> bool {
+    const CHANNEL_TOLERANCE: f32 = 0.08;
+    const MIN_COHERENT_SAMPLES: usize = 32;
+    const MIN_SAMPLES_PER_SIDE: usize = 8;
+    const MIN_SUPPORTED_SIDES: usize = 2;
+
+    let edge_of = |uv: [f32; 2]| -> Option<usize> {
+        points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .take(4)
+            .enumerate()
+            .map(|(index, (start, end))| {
+                let edge = [end[0] - start[0], end[1] - start[1]];
+                let offset = [uv[0] - start[0], uv[1] - start[1]];
+                let length_squared = edge[0] * edge[0] + edge[1] * edge[1];
+                let t = if length_squared > 1.0e-12 {
+                    ((offset[0] * edge[0] + offset[1] * edge[1]) / length_squared).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let distance = [offset[0] - edge[0] * t, offset[1] - edge[1] * t];
+                (index, distance[0] * distance[0] + distance[1] * distance[1])
+            })
+            .min_by(|left, right| left.1.total_cmp(&right.1))
+            .map(|(index, _)| index)
+    };
+
+    let mut side_samples = [0usize; 4];
+    let mut coherent = 0usize;
+    for (uv, pixel) in band {
+        let density = pixel.map(|value| -value.max(1.0e-6).log10());
+        if density
+            .iter()
+            .zip(candidate.iter())
+            .any(|(value, candidate)| (*value - *candidate).abs() > CHANNEL_TOLERANCE)
+        {
+            continue;
+        }
+        coherent += 1;
+        if let Some(side) = edge_of(*uv) {
+            side_samples[side] += 1;
+        }
+    }
+    coherent >= MIN_COHERENT_SAMPLES
+        && side_samples
+            .iter()
+            .filter(|count| **count >= MIN_SAMPLES_PER_SIDE)
+            .count()
+            >= MIN_SUPPORTED_SIDES
+}
+
 /// Film-base estimate in the documented sampling priority order:
 ///
 /// 1. the visible rebate / orange mask band on both sides of the Film Area,
 ///    taken as a robust median and only believed when it agrees with the
 ///    in-area tail;
 /// 2. the lowest-density tail inside the Film Area;
-/// 3. the brightest in-frame quantile as an explicitly discounted last resort.
+/// 3. the brightest in-frame quantile as an explicitly reported content
+///    fallback, never as a neutral black anchor.
 ///
-/// A candidate that fails the quality gate is reported as unusable, and the
-/// caller keeps the content-driven mapping instead of neutralising on it.
+/// A candidate that fails the quality gate is reported as invalid, and the
+/// caller keeps the channel-specific content mapping instead of neutralising
+/// on it.
 fn estimate_film_base_f32(
     proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
     geom: &GeometryState,
 ) -> FilmBaseEstimate {
-    let unusable = |fallback_reason: &'static str| FilmBaseEstimate {
+    let invalid = |fallback_reason: &'static str| FilmBaseEstimate {
         density: [0.0; 3],
         confidence: 0.0,
-        source: "unavailable",
-        usable: false,
+        source: crate::pipeline::INVALID_FILM_BASE_SOURCE,
+        state: FilmBaseState::Invalid,
         fallback_reason: Some(fallback_reason),
+    };
+    let content_fallback = |confidence: f32| FilmBaseEstimate {
+        density: [0.0; 3],
+        confidence,
+        source: crate::pipeline::CONTENT_FALLBACK_SOURCE,
+        state: FilmBaseState::ContentFallback,
+        fallback_reason: Some("smart_auto_no_trusted_film_base"),
     };
 
     let mut gate_failure = None;
     if geom.calibration_points.is_some() {
         // 1. Rebate band just inside and outside the confirmed Film Area.
-        let mut band = collect_film_area_band_rgb32(proxy, None, geom, FILM_BASE_BAND_WIDTH);
-        let band_density = if band.is_empty() {
+        let band = collect_film_area_band_rgb32(proxy, None, geom, FILM_BASE_BAND_WIDTH);
+        let band_saw_sampling_ceiling = band.iter().any(|(_, pixel)| {
+            pixel
+                .iter()
+                .any(|value| *value >= FILM_BASE_SAMPLE_MAX_TRANSMISSION)
+        });
+        let mut base_band: Vec<[f32; 3]> = band
+            .iter()
+            .filter_map(|(_, pixel)| {
+                (!pixel
+                    .iter()
+                    .any(|value| *value >= FILM_BASE_SAMPLE_MAX_TRANSMISSION))
+                .then_some(*pixel)
+            })
+            .collect();
+        let band_density = if base_band.is_empty() {
             None
         } else {
-            Some(median_channel_density(&mut band))
+            Some(median_channel_density(&mut base_band))
+        };
+        // 2. Lowest-density tail inside the Film Area.
+        let (tail_density, tail_confidence, tail_usable) = match compute_auto_base_f32(proxy, geom)
+        {
+            Ok((density, confidence)) => {
+                let samples =
+                    (confidence * (proxy.width() * proxy.height()).max(1) as f32).round() as usize;
+                match validate_film_base_candidate(
+                    density,
+                    samples,
+                    FILM_BASE_TAIL_MIN_SAMPLES,
+                    FilmBaseCandidateKind::FilmAreaTail,
+                ) {
+                    Ok(()) => (density, confidence, true),
+                    Err(reason) => {
+                        gate_failure = Some(reason);
+                        (density, confidence, false)
+                    }
+                }
+            }
+            Err(reason) => {
+                gate_failure = Some(reason);
+                ([0.0; 3], 0.0, false)
+            }
         };
 
-        // 2. Lowest-density tail inside the Film Area.
-        let tail = compute_auto_base_f32(proxy, geom).unwrap_or(([0.0; 3], 0.0));
-        let tail_usable = validate_film_base_candidate(
-            tail.0,
-            (tail.1 * (proxy.width() * proxy.height()).max(1) as f32).round() as usize,
-            FILM_BASE_TAIL_MIN_SAMPLES,
-        )
-        .map_err(|reason| {
-            gate_failure = Some(reason);
-        })
-        .is_ok()
-            && tail.1 > 0.0;
-
         if let Some(band_density) = band_density {
-            let agrees = film_base_band_agrees(band_density, tail.0);
-            if validate_film_base_candidate(band_density, band.len(), FILM_BASE_BAND_MIN_SAMPLES)
-                .is_ok()
-                && agrees
-            {
+            let validation = validate_film_base_candidate(
+                band_density,
+                base_band.len(),
+                FILM_BASE_BAND_MIN_SAMPLES,
+                FilmBaseCandidateKind::RebateBand,
+            );
+            let has_tail_reference = tail_usable && tail_confidence > 0.0;
+            let agrees = has_tail_reference && film_base_band_agrees(band_density, tail_density);
+            let support = geom.calibration_points.as_ref().is_some_and(|points| {
+                film_base_band_has_spatial_support(points, &band, band_density)
+            });
+            if validation.is_ok() && agrees && support {
                 return FilmBaseEstimate {
                     density: band_density,
                     confidence: 0.95,
                     source: "film_edge_band",
-                    usable: true,
+                    state: FilmBaseState::Trusted,
                     fallback_reason: None,
                 };
             }
+            if let Err(reason) = validation {
+                gate_failure = Some(reason);
+            } else if !support {
+                gate_failure = Some("film_base_band_insufficient_support");
+            } else if !agrees {
+                gate_failure = Some("film_base_band_disagrees");
+            }
+        } else if band_saw_sampling_ceiling {
+            gate_failure = Some("film_base_saturated");
         }
 
         if tail_usable {
             return FilmBaseEstimate {
-                density: tail.0,
-                confidence: tail.1,
+                density: tail_density,
+                confidence: tail_confidence,
                 source: "film_area_low_density_tail",
-                usable: true,
+                state: FilmBaseState::Trusted,
                 fallback_reason: None,
             };
         }
     }
 
     // 3. Brightest in-frame quantile. This is the estimator the retired path
-    // used; it over-subtracts whenever the frame has no clear base in it, so it
-    // is gated and its confidence is deliberately halved.
+    // used; it over-subtracts whenever the frame has no clear base in it. It
+    // remains useful as a content-fallback diagnosis, but subtracting its
+    // candidate would invent a neutral reference the frame does not have.
     match compute_frame_base_density_f32(proxy) {
         Ok((density, confidence)) => match validate_film_base_candidate(
             density,
             (confidence * (proxy.width() * proxy.height()).max(1) as f32).round() as usize,
             1,
+            FilmBaseCandidateKind::FrameQuantile,
         ) {
-            Ok(()) if confidence > 0.0 => FilmBaseEstimate {
-                density,
-                confidence: (confidence * 0.5).max(0.05),
-                source: "content_high_quantile",
-                usable: true,
-                fallback_reason: None,
-            },
-            Ok(()) | Err(_) => unusable(gate_failure.unwrap_or("missing_film_base_reference")),
+            Ok(()) if confidence > 0.0 => content_fallback((confidence * 0.5).max(0.05)),
+            Ok(()) => invalid(gate_failure.unwrap_or("missing_film_base_reference")),
+            Err(reason) => invalid(gate_failure.unwrap_or(reason)),
         },
-        Err(_) => unusable(gate_failure.unwrap_or("missing_film_base_reference")),
+        Err(reason) => invalid(gate_failure.unwrap_or(reason)),
     }
 }
 
@@ -2594,6 +3540,7 @@ fn relative_transmission_to_transport_proxy(
     transport
 }
 
+#[cfg(test)]
 fn linear_srgb_u16_to_prophoto_f32(
     source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
 ) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
@@ -2806,19 +3753,167 @@ fn smart_auto_frame_base_density(
 /// True when this frame's persisted display window was derived with rules that
 /// no longer apply, so it has to be re-derived before it is trusted again.
 ///
-/// Only the frame-wise routes are affected: a complete Roll calibration derives
-/// its endpoints from the sampled anchors, which no window rule can invalidate.
+/// A complete Roll, and Capture Corrected with complete anchors, derive their
+/// endpoints from the sampled anchors, which no window rule can invalidate.
+/// Their per-frame geometry invalidation is tracked separately.
 fn frame_needs_window_reanalysis(state: &PipelineState) -> bool {
-    if matches!(
-        state.contract,
-        ProcessingContract::RollAnchoredProPhotoV11 | ProcessingContract::CaptureCorrectedV11
-    ) {
+    if state.contract == ProcessingContract::RollAnchoredProPhotoV11
+        || (state.contract == ProcessingContract::CaptureCorrectedV11
+            && roll_density_mapping_with_frame_base(state, None, None).is_some())
+    {
         return false;
     }
     state.processing_report.analysis_window_rule < crate::app_state::DENSITY_WINDOW_RULE_VERSION
 }
 
+const ANALYSIS_GEOMETRY_FINGERPRINT_VERSION: u32 = 1;
+/// Records that their per-frame measurements were made with the analysis
+/// geometry coverage that includes Capture Corrected and complete Rolls.
+/// `PipelineProcessingReport::analysis_geometry_fingerprint` already existed in
+/// Phase 2.1, so an old record can carry the current fingerprint while still
+/// having skipped those two contracts. This version forces exactly that one
+/// upgrade re-measurement without moving the global density-window version.
+const ANALYSIS_GEOMETRY_RULE_VERSION: u32 = 1;
+/// Complete Roll records one more decision than the geometry fingerprint: the
+/// frame base was either measured on the current Film Area or deliberately
+/// replaced by the Roll anchor. Version 1 could mark a failed measurement as
+/// complete, so those records must be analysed once more.
+const COMPLETE_ROLL_FRAME_BASE_RULE_VERSION: u32 = 2;
+
+fn required_analysis_geometry_rule(state: &PipelineState) -> u32 {
+    if state.contract == ProcessingContract::RollAnchoredProPhotoV11 {
+        COMPLETE_ROLL_FRAME_BASE_RULE_VERSION
+    } else {
+        ANALYSIS_GEOMETRY_RULE_VERSION
+    }
+}
+
+fn analysis_geometry_fingerprint(geom: &GeometryState) -> String {
+    fn mix(hash: &mut u64, bytes: &[u8]) {
+        for byte in bytes {
+            *hash ^= u64::from(*byte);
+            *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    fn mix_f32(hash: &mut u64, value: f32) {
+        // Canonicalize negative zero so an unchanged geometry cannot produce a
+        // second analysis merely because the sign bit was rewritten.
+        let bits = if value == 0.0 { 0 } else { value.to_bits() };
+        mix(hash, &bits.to_le_bytes());
+    }
+    fn mix_bool(hash: &mut u64, value: bool) {
+        mix(hash, &[u8::from(value)]);
+    }
+    fn mix_i32(hash: &mut u64, value: i32) {
+        mix(hash, &value.to_le_bytes());
+    }
+
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    mix(
+        &mut hash,
+        &ANALYSIS_GEOMETRY_FINGERPRINT_VERSION.to_le_bytes(),
+    );
+    mix_bool(&mut hash, geom.calibration_confirmed);
+    match geom.calibration_points {
+        Some(points) => {
+            mix_bool(&mut hash, true);
+            for point in points {
+                mix_f32(&mut hash, point[0]);
+                mix_f32(&mut hash, point[1]);
+            }
+        }
+        None => mix_bool(&mut hash, false),
+    }
+    mix_f32(&mut hash, geom.crop_rect.x);
+    mix_f32(&mut hash, geom.crop_rect.y);
+    mix_f32(&mut hash, geom.crop_rect.width);
+    mix_f32(&mut hash, geom.crop_rect.height);
+    // The sampling map ignores sub-hundredth-degree angles; keep that detail
+    // out of the fingerprint so a no-op save cannot invalidate the analysis.
+    mix_f32(
+        &mut hash,
+        if geom.angle.abs() > 0.01 {
+            geom.angle
+        } else {
+            0.0
+        },
+    );
+    mix_f32(&mut hash, geom.perspective_vertical);
+    mix_f32(&mut hash, geom.perspective_horizontal);
+    mix_f32(&mut hash, geom.perspective_aspect);
+    mix_f32(&mut hash, geom.perspective_scale);
+    mix_f32(&mut hash, geom.lens_distortion);
+    mix_i32(&mut hash, geom.rotate_90_count.rem_euclid(4));
+    mix_bool(&mut hash, geom.flip_h);
+    mix_bool(&mut hash, geom.flip_v);
+    format!("v{ANALYSIS_GEOMETRY_FINGERPRINT_VERSION}-{hash:016x}")
+}
+
+/// True when this contract derives per-frame measurements from the frame's
+/// current crop/perspective/Film Area. A complete Roll keeps its fixed
+/// anchor-owned D-min/D-max mapping, and Capture Corrected keeps its independent
+/// correction path, but both still measure a per-frame base and window on the
+/// current analysis geometry.
+fn frame_uses_frame_wise_analysis_geometry(state: &PipelineState) -> bool {
+    !is_smart_auto_compatibility(state)
+        && matches!(
+            state.contract,
+            ProcessingContract::SmartAutoProPhotoV11
+                | ProcessingContract::RollBaseProPhotoV11
+                | ProcessingContract::RollAnchoredProPhotoV11
+                | ProcessingContract::CaptureCorrectedV11
+        )
+}
+
+fn analysis_geometry_is_current(state: &PipelineState, geom: &GeometryState) -> bool {
+    !state
+        .processing_report
+        .analysis_geometry_fingerprint
+        .is_empty()
+        && state.processing_report.analysis_geometry_fingerprint
+            == analysis_geometry_fingerprint(geom)
+}
+
+fn analysis_geometry_rule_is_current(state: &PipelineState) -> bool {
+    if !matches!(
+        state.contract,
+        ProcessingContract::RollAnchoredProPhotoV11 | ProcessingContract::CaptureCorrectedV11
+    ) {
+        return true;
+    }
+    state.processing_report.analysis_geometry_rule >= required_analysis_geometry_rule(state)
+}
+
+#[cfg(test)]
+fn frame_needs_analysis_geometry_reanalysis(state: &PipelineState, geom: &GeometryState) -> bool {
+    frame_uses_frame_wise_analysis_geometry(state)
+        && (!analysis_geometry_is_current(state, geom) || !analysis_geometry_rule_is_current(state))
+}
+
+/// Persist the fact that a changed geometry invalidated this frame's base and
+/// display-window measurements. The geometry fingerprint itself stays at the
+/// last measured value so reopening the record still reports stale analysis.
+fn invalidate_analysis_if_geometry_changed(
+    state: &mut PipelineState,
+    previous: &GeometryState,
+    next: &GeometryState,
+) -> bool {
+    if !frame_uses_frame_wise_analysis_geometry(state)
+        || analysis_geometry_fingerprint(previous) == analysis_geometry_fingerprint(next)
+    {
+        return false;
+    }
+    state.processing_report.analysis_window_rule = 0;
+    true
+}
+
 fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
+    // A copied base is only a place-holder until this frame has pixels to
+    // measure. It must not satisfy the completed-analysis gate on any contract,
+    // including a frame that also carries a Roll anchor.
+    if state.processing_report.base_source == crate::pipeline::INHERITED_FILM_BASE_SOURCE {
+        return false;
+    }
     if state.contract == ProcessingContract::LegacyV1 {
         *base_color != BaseColor::default()
     } else if is_smart_auto_compatibility(state) {
@@ -2834,9 +3929,50 @@ fn pipeline_has_base(state: &PipelineState, base_color: &BaseColor) -> bool {
             .as_ref()
             .is_some_and(|anchor| anchor_matches_resolved_contract(anchor, state))
             || (state.processing_report.base_source != "unresolved"
-                && !state.processing_report.base_source.is_empty()
+                && crate::pipeline::base_source_is_trusted(&state.processing_report.base_source)
                 && *base_color != BaseColor::default())
     }
+}
+
+/// True once the frame has a deliberate base decision, including the two
+/// non-anchor outcomes. The renderer must be allowed to use a content fallback;
+/// otherwise a frame that correctly refused a bad candidate would remain stuck
+/// behind "BASE_COLOR_NOT_ANALYZED".
+fn pipeline_base_analysis_complete(
+    state: &PipelineState,
+    base_color: &BaseColor,
+    geom: &GeometryState,
+) -> bool {
+    let fallback_decision = matches!(
+        state.processing_report.base_source.as_str(),
+        crate::pipeline::CONTENT_FALLBACK_SOURCE | crate::pipeline::INVALID_FILM_BASE_SOURCE
+    );
+    let has_decision = pipeline_has_base(state, base_color) || fallback_decision;
+    let complete_roll_frame_base_decided = state.contract
+        != ProcessingContract::RollAnchoredProPhotoV11
+        || !matches!(
+            state.processing_report.base_source.as_str(),
+            "" | "unresolved"
+                | crate::pipeline::INHERITED_FILM_BASE_SOURCE
+                | crate::pipeline::INVALID_FILM_BASE_SOURCE
+                | crate::pipeline::CONTENT_FALLBACK_SOURCE
+        );
+    if !frame_uses_frame_wise_analysis_geometry(state) {
+        return pipeline_has_base(state, base_color)
+            || (fallback_decision
+                && state.processing_report.analysis_window_rule
+                    >= crate::app_state::DENSITY_WINDOW_RULE_VERSION);
+    }
+    let window_rule_current = state.contract == ProcessingContract::RollAnchoredProPhotoV11
+        || (state.contract == ProcessingContract::CaptureCorrectedV11
+            && roll_density_mapping_with_frame_base(state, None, None).is_some())
+        || state.processing_report.analysis_window_rule
+            >= crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+    has_decision
+        && complete_roll_frame_base_decided
+        && window_rule_current
+        && analysis_geometry_is_current(state, geom)
+        && analysis_geometry_rule_is_current(state)
 }
 
 /// True when a frame carries the display endpoints a positive is rendered with.
@@ -3014,6 +4150,7 @@ fn preserve_content_span(limits: &mut AutoColorLimits, minimum_span: f32) {
     }
 }
 
+#[cfg(test)]
 fn preserve_smart_auto_content_span(limits: &mut AutoColorLimits) {
     preserve_content_span(limits, 0.8);
 }
@@ -3023,16 +4160,58 @@ fn preserve_smart_auto_content_span(limits: &mut AutoColorLimits) {
 /// 98% densities; the value only exists so the display mapping has a range to
 /// divide by on a clipped, synthetic or broken frame.
 const MINIMUM_USABLE_CONTENT_SPAN: f32 = 0.05;
+/// A low-contrast frame still needs enough display range to avoid multiplying
+/// quantisation and channel noise into the print.
+const MIN_DISPLAY_DENSITY_SPAN: f32 = 0.8;
 
-/// Widen a channel whose content window collapsed to (almost) nothing.
-///
-/// Deliberately not a display floor: a per-channel floor of the sort the shared
-/// scale used moves the balance *between* channels whenever the shortest one
-/// sits under it. Measured over this workspace's fixtures, an 0.8 D floor moved
-/// a Fujifilm RAF's neutral surface from B/G 1.068 (matching the retired v1.0.2
-/// recipe's 1.022) to 1.158 without changing anything a user asked for.
-fn guard_collapsed_content_window(limits: &mut AutoColorLimits) {
-    preserve_content_span(limits, MINIMUM_USABLE_CONTENT_SPAN);
+fn has_trusted_render_base(anchors: &DensityAnchors, base_density: [f32; 3]) -> bool {
+    anchors.has_base()
+        || (base_density.iter().all(|value| value.is_finite())
+            && base_density.iter().any(|value| *value > 0.0))
+}
+
+/// The trusted base is the measured black anchor after the density stage has
+/// subtracted it channel by channel. The content still supplies the white
+/// point, but its 2% shadow endpoint must not move the base away from black.
+fn anchor_trusted_content_window(limits: &mut AutoColorLimits) -> bool {
+    let observed_span = density_luma(limits.d_max);
+    for channel in 0..3 {
+        limits.d_min[channel] = 0.0;
+        if !limits.d_max[channel].is_finite()
+            || limits.d_max[channel] <= MINIMUM_USABLE_CONTENT_SPAN
+        {
+            limits.d_max[channel] = MINIMUM_USABLE_CONTENT_SPAN;
+        }
+    }
+    observed_span < MIN_DISPLAY_DENSITY_SPAN
+}
+
+/// With no trusted base, keep each channel's own low endpoint: that endpoint
+/// contains the channel's share of the orange mask, and preserving it is what
+/// neutralises the mask without a bounded grey-world shift. Only the contrast
+/// span is shared, which prevents a clipped channel's tiny range from being
+/// multiplied into noise.
+fn content_fallback_window(limits: &mut AutoColorLimits) -> bool {
+    let observed_span = density_luma(limits.d_max) - density_luma(limits.d_min);
+    let mut spans = [
+        limits.d_max[0] - limits.d_min[0],
+        limits.d_max[1] - limits.d_min[1],
+        limits.d_max[2] - limits.d_min[2],
+    ];
+    spans.sort_unstable_by(f32::total_cmp);
+    let shared_span = spans[1]
+        .is_finite()
+        .then_some(spans[1])
+        .filter(|span| *span > 1.0e-4)
+        .unwrap_or(MIN_DISPLAY_DENSITY_SPAN)
+        .max(MIN_DISPLAY_DENSITY_SPAN);
+    for channel in 0..3 {
+        if !limits.d_min[channel].is_finite() {
+            limits.d_min[channel] = 0.0;
+        }
+        limits.d_max[channel] = limits.d_min[channel] + shared_span;
+    }
+    observed_span < MIN_DISPLAY_DENSITY_SPAN
 }
 
 /// Resolve the display window for a frame-wise (content-window) route.
@@ -3079,33 +4258,12 @@ fn prepare_content_render_limits(
         );
     }
 
-    let observed_span = density_luma(limits.d_max) - density_luma(limits.d_min);
-    let channel_offsets = if base_density.iter().any(|value| *value > 0.0) {
-        // A frame that measured its own film base keeps the window its content
-        // measured, channel by channel.
-        //
-        // The endpoints are co-sited: each channel takes its value from the
-        // same pixels the frame ranked, so a coloured object cannot move one
-        // channel's endpoint on its own, while a capture whose three channels
-        // do not respond alike still gets each channel's own density range.
-        // Collapsing the three onto one shared density scale instead - which
-        // the unified pipeline did - turns that response difference into a
-        // cast: measured over the workspace's own fixtures, the shared scale
-        // moved the neutral surface of a Fujifilm RAF to B/G 1.599, a Nikon
-        // NEF to R/G 0.683 and a Noritsu JPEG to R/G 0.692, while the co-sited
-        // window stayed within 0.03 of the retired v1.0.2 recipe on every one
-        // of them. No per-channel correction is applied on top: the window
-        // already carries each channel's response, and the bounded span
-        // response that used to be layered on it existed only for two merged
-        // Lightroom scans whose files clip a channel outright.
-        guard_collapsed_content_window(limits);
-        [0.0; 3]
+    let short_content = if has_trusted_render_base(anchors, base_density) {
+        anchor_trusted_content_window(limits)
     } else {
-        let offsets = share_smart_auto_density_scale(limits);
-        preserve_smart_auto_content_span(limits);
-        offsets
+        content_fallback_window(limits)
     };
-    (channel_offsets, observed_span < MIN_DISPLAY_DENSITY_SPAN)
+    ([0.0; 3], short_content)
 }
 
 fn roll_physical_density_span(
@@ -3287,6 +4445,94 @@ fn detect_frame_highlight_fraction(
     Some(fraction.clamp(ROLL_HIGHLIGHT_FLOOR, ROLL_HIGHLIGHT_CEILING))
 }
 
+struct CompleteRollFrameMeasurement {
+    estimate: FilmBaseEstimate,
+    highlight: Option<f32>,
+}
+
+const COMPLETE_ROLL_FRAME_BASE_UNMEASURED_REASON: &str = "complete_roll_frame_base_unmeasured";
+
+/// Re-measure the per-frame parameters that sit on top of a complete Roll's
+/// fixed anchor mapping. The D-min/D-max anchors themselves are never touched;
+/// only this frame's base offset and diagnostic white-point fraction are
+/// derived again from the current Film Area. The highlight is calibration data,
+/// not a per-frame display endpoint.
+fn measure_complete_roll_frame_parameters(
+    proxy: &ImageBuffer<Rgb<f32>, Vec<f32>>,
+    state: &PipelineState,
+    geom: &GeometryState,
+) -> Option<CompleteRollFrameMeasurement> {
+    if state.contract != ProcessingContract::RollAnchoredProPhotoV11 {
+        return None;
+    }
+    let anchor_base = pipeline_base_density(state, &BaseColor::default());
+    if !anchor_base.iter().all(|value| *value > 0.0) {
+        return None;
+    }
+    let estimate = estimate_film_base_f32(proxy, geom);
+    let highlight = estimate.is_trusted().then(|| {
+        roll_physical_density_span(&state.density_anchors, anchor_base)
+            .and_then(|span| detect_frame_highlight_fraction(proxy, estimate.density, span))
+    });
+    Some(CompleteRollFrameMeasurement {
+        estimate,
+        highlight: highlight.flatten(),
+    })
+}
+
+/// The explicit frame-base decision for one Complete Roll frame.
+///
+/// A trusted measurement becomes that frame's base offset. Everything else is
+/// an intentional fallback to the Roll anchor (offset zero), with a reason in
+/// the processing report. The old frame's base is never reused after the Film
+/// Area changes.
+struct CompleteRollFrameBaseDecision {
+    base_density: [f32; 3],
+    base_confidence: f32,
+    base_source: &'static str,
+    frame_base: Option<[f32; 3]>,
+    highlight: Option<f32>,
+    fallback_reason: Option<&'static str>,
+}
+
+fn complete_roll_frame_base_decision(
+    proxy: Option<&ImageBuffer<Rgb<f32>, Vec<f32>>>,
+    state: &PipelineState,
+    geom: &GeometryState,
+) -> Option<CompleteRollFrameBaseDecision> {
+    let anchor_base = pipeline_base_density(state, &BaseColor::default());
+    if !anchor_base.iter().all(|value| *value > 0.0) {
+        return None;
+    }
+    let fallback = || CompleteRollFrameBaseDecision {
+        base_density: anchor_base,
+        base_confidence: 0.0,
+        base_source: crate::pipeline::COMPLETE_ROLL_ANCHOR_FALLBACK_SOURCE,
+        frame_base: None,
+        highlight: None,
+        fallback_reason: Some(COMPLETE_ROLL_FRAME_BASE_UNMEASURED_REASON),
+    };
+    let Some(proxy) = proxy else {
+        return Some(fallback());
+    };
+    let measurement = measure_complete_roll_frame_parameters(proxy, state, geom)?;
+    if !measurement.estimate.is_trusted() {
+        return Some(fallback());
+    }
+    Some(CompleteRollFrameBaseDecision {
+        base_density: measurement.estimate.density,
+        base_confidence: measurement.estimate.confidence,
+        base_source: match measurement.estimate.source {
+            "film_edge_band" => "film_edge_band",
+            "film_area_low_density_tail" => "detected_film_base",
+            _ => "content_estimate",
+        },
+        frame_base: Some(measurement.estimate.density),
+        highlight: measurement.highlight,
+        fallback_reason: None,
+    })
+}
+
 /// Which picture blocks set one frame's highlight.
 ///
 /// The blocks are already 32x32 averages, and blocks touching the light table,
@@ -3416,6 +4662,10 @@ fn film_block_luma_profile(
 /// before rendering, so the display mapping is the relative span
 /// `[D-min_frame - D-min_roll, D-max - D-min_roll]`. `frame_base` carries the
 /// per-frame measurement that keeps mask removal exact on every frame.
+///
+/// A Complete Roll's white point is a Roll property. `highlight_fraction` is
+/// accepted for Capture Corrected, whose independent correction path still
+/// uses it, but it is deliberately ignored for Complete Roll.
 fn roll_density_mapping_with_frame_base(
     state: &PipelineState,
     frame_base: Option<[f32; 3]>,
@@ -3464,13 +4714,17 @@ fn roll_density_mapping_with_frame_base(
     // A fully exposed leader is the film's maximum density. Real scenes keep
     // highlight headroom below it, so the white point uses only the measured
     // fraction of the span that this Roll's content actually reaches.
-    let highlight = state
-        .density_anchors
-        .highlight_fraction
-        .or(highlight_fraction)
-        .filter(|value| value.is_finite())
-        .map(|value| value.clamp(ROLL_HIGHLIGHT_FLOOR, ROLL_HIGHLIGHT_CEILING))
-        .unwrap_or(1.0);
+    let highlight = match state.contract {
+        ProcessingContract::RollAnchoredProPhotoV11 => state.density_anchors.highlight_fraction,
+        ProcessingContract::CaptureCorrectedV11 => state
+            .density_anchors
+            .highlight_fraction
+            .or(highlight_fraction),
+        _ => None,
+    }
+    .filter(|value| value.is_finite())
+    .map(|value| value.clamp(ROLL_HIGHLIGHT_FLOOR, ROLL_HIGHLIGHT_CEILING))
+    .unwrap_or(1.0);
     Some(RenderMapping {
         mode: RenderMode::RollAnchored,
         density_low: offset,
@@ -4024,31 +5278,6 @@ fn preview_proxy_decode_mode(target_long_edge: u32) -> DecodeMode {
     }
 }
 
-fn convert_linear_image_in_place(
-    mut image: ImageBuffer<Rgb<u16>, Vec<u16>>,
-    source: ColorSpaceId,
-    target: ColorSpaceId,
-) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
-    if source == target {
-        return image;
-    }
-    let matrix = linear_conversion_matrix(source, target);
-    image.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
-        let converted = apply_linear_matrix(
-            [
-                pixel[0] as f32 / 65535.0,
-                pixel[1] as f32 / 65535.0,
-                pixel[2] as f32 / 65535.0,
-            ],
-            matrix,
-        );
-        for channel in 0..3 {
-            pixel[channel] = (converted[channel].clamp(0.0, 1.0) * 65535.0).round() as u16;
-        }
-    });
-    image
-}
-
 fn convert_encoded_u16_image_for_working_space(
     mut image: ImageBuffer<Rgb<u16>, Vec<u16>>,
     source_profile: ColorSpaceId,
@@ -4098,6 +5327,7 @@ fn decode_reduced_tiff_for_working_space(
     ))
 }
 
+#[cfg(test)]
 fn decode_tiff_for_smart_auto(
     path: &str,
     target_long_edge: u32,
@@ -4114,7 +5344,13 @@ fn decode_tiff_for_smart_auto(
 /// no embedded ICC profile. Scanner FFF frames are scanner-linear by contract
 /// and are excluded, so this only describes ordinary profile-less RGB TIFFs.
 fn tiff_smart_auto_input_is_estimated(path: &str) -> bool {
-    is_tiff_extension(path) && !is_scanner_fff_tiff(path) && embedded_input_profile(path).is_none()
+    // A custom ICC that does not match one of the built-in descriptions is
+    // still a declaration: the real transform can use it, so the input is not
+    // an unprofiled sRGB estimate.
+    is_tiff_extension(path)
+        && !is_scanner_fff_tiff(path)
+        && embedded_icc_bytes(path)
+            .is_none_or(|icc| IccRgbTransform::from_icc_to_linear_prophoto(&icc).is_err())
 }
 
 /// Primaries and transfer curve a known colour space declares.
@@ -4127,9 +5363,160 @@ fn input_domain_for_color_space(id: ColorSpaceId) -> (InputPrimaries, InputTrans
         ColorSpaceId::ProPhotoRgb | ColorSpaceId::ProPhotoRgbD65 => {
             (InputPrimaries::ProPhotoRgb, InputTransferCurve::Gamma18)
         }
-        ColorSpaceId::Aces2065 | ColorSpaceId::AcesCg => {
-            (InputPrimaries::AcesCg, InputTransferCurve::Linear)
+        ColorSpaceId::Aces2065 => (InputPrimaries::Aces2065, InputTransferCurve::Linear),
+        ColorSpaceId::AcesCg => (InputPrimaries::AcesCg, InputTransferCurve::Linear),
+    }
+}
+
+const EMBEDDED_ICC_PARSE_FAILED_REASON: &str = "embedded_icc_parse_failed";
+
+fn compact_pipeline_error(error: &str) -> String {
+    let mut compact = error
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace(';', ",");
+    if compact.chars().count() > 160 {
+        compact = compact.chars().take(157).collect::<String>() + "...";
+    }
+    compact
+}
+
+fn embedded_icc_parse_failure_reason(error: &str) -> String {
+    format!(
+        "{EMBEDDED_ICC_PARSE_FAILED_REASON}:{}",
+        compact_pipeline_error(error)
+    )
+}
+
+fn input_domain_detail_with_note(detail: String, note: Option<&str>) -> String {
+    match note {
+        Some(note) if !note.is_empty() => {
+            if detail.is_empty() {
+                note.to_string()
+            } else {
+                format!("{detail}; {note}")
+            }
         }
+        _ => detail,
+    }
+}
+
+fn push_unique_reason(reasons: &mut Vec<String>, reason: impl Into<String>) {
+    let reason = reason.into();
+    if !reasons.iter().any(|existing| existing == &reason) {
+        reasons.push(reason);
+    }
+}
+
+fn extend_unique_fallback_reasons(
+    report: &mut PipelineProcessingReport,
+    reasons: impl IntoIterator<Item = String>,
+) {
+    for reason in reasons {
+        push_unique_reason(&mut report.fallback_reasons, reason);
+    }
+}
+
+/// Degradations already encoded in the resolved input-domain record. The
+/// detail string is also the copyable technical report, so the mapping keeps
+/// the user-facing reason stable while retaining the original parser error.
+fn input_domain_fallback_reasons(domain: &InputDomainRecord) -> Vec<String> {
+    let detail = domain.detail.as_str();
+    let mut reasons = Vec::new();
+    if let Some(start) = detail.find(EMBEDDED_ICC_PARSE_FAILED_REASON) {
+        push_unique_reason(&mut reasons, detail[start..].trim().to_string());
+    }
+    if detail.contains("dng_sample_layout_unresolved_libraw_camera_native") {
+        push_unique_reason(&mut reasons, "dng_sample_layout_unresolved");
+    }
+    if detail.contains("linear_raw_dng_without_icc_or_colormatrix_read_as_linear_srgb") {
+        push_unique_reason(&mut reasons, "linear_raw_dng_color_metadata_missing");
+    }
+    if detail.contains("flextight_container_record_unreadable") {
+        push_unique_reason(&mut reasons, "scanner_fff_container_unreadable");
+    }
+    reasons
+}
+
+fn proxy_additional_fallback_reasons(
+    input_domain: &InputDomainRecord,
+    working_basis: WorkingBasis,
+    camera_to_display: Option<[f32; 9]>,
+    scanner_profile_bound: bool,
+    scanner_profile_resolved: bool,
+    capture_fallback_reason: Option<&str>,
+) -> Vec<String> {
+    let mut reasons = input_domain_fallback_reasons(input_domain);
+    if scanner_profile_bound && !scanner_profile_resolved {
+        push_unique_reason(&mut reasons, "scanner_profile_missing_or_stale");
+    }
+    if working_basis == WorkingBasis::CameraNative && camera_to_display.is_none() {
+        push_unique_reason(&mut reasons, "camera_matrix_unresolved");
+    }
+    if let Some(reason) = capture_fallback_reason {
+        push_unique_reason(
+            &mut reasons,
+            if reason == "capture_profile_unavailable" {
+                "capture_profile_unavailable"
+            } else {
+                "capture_profile_runtime_fallback"
+            },
+        );
+    }
+    reasons
+}
+
+fn is_decoded_input_fallback_reason(reason: &str) -> bool {
+    matches!(
+        reason,
+        "camera_matrix_unresolved"
+            | "dng_sample_layout_unresolved"
+            | "linear_raw_dng_color_metadata_missing"
+            | "scanner_fff_container_unreadable"
+            | "scanner_profile_missing_or_stale"
+            | "scanner_tiff_input_space_estimated"
+            | "capture_profile_unavailable"
+            | "capture_profile_runtime_fallback"
+    ) || reason.starts_with("embedded_icc_parse_failed:")
+        || reason.starts_with("capture_runtime_failure|")
+        || reason.starts_with("profile_capture_fallback|")
+        || reason.starts_with("capture_fit_invalid|")
+}
+
+/// Keep decoded-pixel metadata when a database row replaces the in-memory
+/// pipeline state. The row is authoritative for edits, but it cannot describe
+/// pixels that were decoded after it was written.
+fn preserve_decoded_proxy_report(
+    report: &mut PipelineProcessingReport,
+    decoded_input_domain: &InputDomainRecord,
+    decoded_camera_to_display: Option<[f32; 9]>,
+    decoded_fallback_reasons: impl IntoIterator<Item = String>,
+) {
+    if report.camera_to_display.is_none() {
+        report.camera_to_display = decoded_camera_to_display;
+    }
+    if report.input_domain.source == InputDomainSource::Unknown
+        && decoded_input_domain.source != InputDomainSource::Unknown
+    {
+        report.input_domain = decoded_input_domain.clone();
+    }
+    extend_unique_fallback_reasons(
+        report,
+        decoded_fallback_reasons
+            .into_iter()
+            .filter(|reason| is_decoded_input_fallback_reason(reason)),
+    );
+}
+
+fn input_transfer_from_icc_class(class: IccTransferClass) -> InputTransferCurve {
+    match class {
+        IccTransferClass::Linear => InputTransferCurve::Linear,
+        IccTransferClass::Srgb => InputTransferCurve::Srgb,
+        IccTransferClass::Gamma18 => InputTransferCurve::Gamma18,
+        IccTransferClass::Gamma20 => InputTransferCurve::Gamma20,
+        IccTransferClass::Gamma22 => InputTransferCurve::Gamma22,
+        IccTransferClass::Unknown => InputTransferCurve::Unknown,
     }
 }
 
@@ -4145,6 +5532,8 @@ fn input_primaries_from_profile_name(name: &str) -> InputPrimaries {
         InputPrimaries::DisplayP3
     } else if lowered.contains("2020") {
         InputPrimaries::Rec2020
+    } else if lowered.contains("aces2065") || lowered.contains("ap0") {
+        InputPrimaries::Aces2065
     } else if lowered.contains("acescg") {
         InputPrimaries::AcesCg
     } else if lowered.contains("srgb") || lowered.contains("iec 61966") {
@@ -4193,6 +5582,7 @@ impl ScannerFffInput {
             InputPrimaries::DisplayP3 => ColorSpaceId::DisplayP3,
             InputPrimaries::Rec2020 => ColorSpaceId::Rec2020,
             InputPrimaries::ProPhotoRgb => ColorSpaceId::ProPhotoRgb,
+            InputPrimaries::Aces2065 => ColorSpaceId::Aces2065,
             InputPrimaries::AcesCg => ColorSpaceId::AcesCg,
             _ => ColorSpaceId::SRgb,
         }
@@ -4215,6 +5605,7 @@ fn scanner_fff_plist_value(head: &[u8], key: &str) -> Option<String> {
     let tail = &head[start + needle.len()..];
     // The value element follows the key within a few dozen bytes.
     let window = &tail[..tail.len().min(160)];
+    let mut nearest = None::<(usize, usize, &str)>;
     for (open, close) in [
         ("<string>", "</string>"),
         ("<real>", "</real>"),
@@ -4226,18 +5617,19 @@ fn scanner_fff_plist_value(head: &[u8], key: &str) -> Option<String> {
         else {
             continue;
         };
-        let value_start = open_start + open.len();
-        let Some(close_offset) = window[value_start..]
-            .windows(close.len())
-            .position(|candidate| candidate.eq_ignore_ascii_case(close.as_bytes()))
-        else {
-            continue;
-        };
-        let raw = &window[value_start..value_start + close_offset];
-        let text = String::from_utf8_lossy(raw).trim().to_string();
-        if !text.is_empty() {
-            return Some(text);
+        if nearest.is_none_or(|(nearest_start, _, _)| open_start < nearest_start) {
+            nearest = Some((open_start, open.len(), close));
         }
+    }
+    let (open_start, open_len, close) = nearest?;
+    let value_start = open_start + open_len;
+    let close_offset = window[value_start..]
+        .windows(close.len())
+        .position(|candidate| candidate.eq_ignore_ascii_case(close.as_bytes()))?;
+    let raw = &window[value_start..value_start + close_offset];
+    let text = String::from_utf8_lossy(raw).trim().to_string();
+    if !text.is_empty() {
+        return Some(text);
     }
     None
 }
@@ -4280,76 +5672,392 @@ fn scanner_fff_container_input(path: &str) -> Option<ScannerFffInput> {
     }
 }
 
-/// True when a DNG stores uncompressed LinearRaw RGB samples. That is how
-/// VueScan-style scanner DNGs and the application's own linear DNG export
-/// differ from camera DNGs, and the difference has to be read from the file
-/// rather than assumed from the suffix. Scanner DNGs put the developed image in
-/// a SubIFD; the export writer writes a single IFD, so both have to be checked.
-fn dng_has_uncompressed_linear_raw_rgb(path: &str) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DngSampleKind {
+    /// A Bayer/X-Trans mosaic that LibRaw has to demosaic.
+    CameraRaw,
+    /// Already-rendered RGB samples in the file's declared linear domain.
+    LinearRaw,
+    /// The TIFF directory chain did not expose either sample layout.
+    Unknown,
+}
+
+/// Classify a DNG from its TIFF metadata. A camera DNG can carry a rendered
+/// preview in IFD0 and its mosaic in a SubIFD, while a scanner DNG usually does
+/// the reverse. The CFA tag therefore wins whenever any page declares it; only
+/// a file with no CFA page and a LinearRaw page is treated as rendered RGB.
+fn dng_sample_kind(path: &str) -> DngSampleKind {
     let Ok(root) = read_classic_tiff_directory(path, 0) else {
-        return false;
+        return DngSampleKind::Unknown;
     };
-    if root.photometric == 34892 && root.compression == 1 && root.samples_per_pixel >= 3 {
-        return true;
+    let mut directories = vec![root.clone()];
+    directories.extend(
+        root.sub_ifd_offsets
+            .iter()
+            .filter_map(|offset| read_classic_tiff_subdirectory(path, *offset).ok()),
+    );
+    if directories
+        .iter()
+        .any(|directory| directory.photometric == 32803)
+    {
+        DngSampleKind::CameraRaw
+    } else if directories
+        .iter()
+        .any(|directory| directory.photometric == 34892)
+    {
+        DngSampleKind::LinearRaw
+    } else {
+        DngSampleKind::Unknown
     }
-    root.sub_ifd_offsets.iter().any(|offset| {
-        read_classic_tiff_subdirectory(path, *offset).is_ok_and(|candidate| {
-            candidate.photometric == 34892
-                && candidate.compression == 1
-                && candidate.samples_per_pixel >= 3
-        })
-    })
+}
+
+/// The largest LinearRaw RGB page. The export writer puts it in IFD0; scanner
+/// DNGs commonly put it in a SubIFD. Reading the best page instead of assuming
+/// either layout keeps the streaming decoder and its colour metadata aligned.
+fn dng_linear_raw_directory(path: &str) -> Option<ClassicTiffDirectory> {
+    let root = read_classic_tiff_directory(path, 0).ok()?;
+    let mut best = (root.photometric == 34892 && root.samples_per_pixel >= 3).then(|| root.clone());
+    for offset in &root.sub_ifd_offsets {
+        if let Ok(candidate) = read_classic_tiff_subdirectory(path, *offset) {
+            if candidate.photometric != 34892 || candidate.samples_per_pixel < 3 {
+                continue;
+            }
+            let candidate_pixels = u64::from(candidate.width) * u64::from(candidate.height);
+            let best_pixels = best
+                .as_ref()
+                .map(|directory| u64::from(directory.width) * u64::from(directory.height))
+                .unwrap_or(0);
+            if candidate_pixels > best_pixels {
+                best = Some(candidate);
+            }
+        }
+    }
+    let mut selected = best?;
+    if selected.ifd_offset != root.ifd_offset {
+        // DNG stores the colour calibration and white balance on IFD0 even
+        // when the full-resolution LinearRaw page lives in a SubIFD.
+        if selected.icc_profile.is_none() {
+            selected.icc_profile = root.icc_profile;
+        }
+        if selected.color_matrix1.is_none() {
+            selected.color_matrix1 = root.color_matrix1;
+        }
+        if selected.color_matrix2.is_none() {
+            selected.color_matrix2 = root.color_matrix2;
+        }
+        if selected.calibration_illuminant1.is_none() {
+            selected.calibration_illuminant1 = root.calibration_illuminant1;
+        }
+        if selected.calibration_illuminant2.is_none() {
+            selected.calibration_illuminant2 = root.calibration_illuminant2;
+        }
+        if selected.as_shot_neutral.is_none() {
+            selected.as_shot_neutral = root.as_shot_neutral;
+        }
+        if selected.orientation <= 1 && root.orientation > 1 {
+            selected.orientation = root.orientation;
+        }
+    }
+    Some(selected)
+}
+
+#[derive(Clone, Copy)]
+struct DngColorMatrixChoice {
+    matrix: [[f32; 3]; 3],
+    tag: &'static str,
+    illuminant: u16,
+}
+
+/// DNG's two calibration matrices describe tungsten and daylight. Choose the
+/// daylight-family one first so a neutral daylight exposure is not pushed
+/// through the Standard Light A matrix merely because it is `ColorMatrix1`.
+fn select_dng_color_matrix(directory: &ClassicTiffDirectory) -> Option<DngColorMatrixChoice> {
+    let mut candidates = Vec::new();
+    if let Some(matrix) = directory.color_matrix1 {
+        candidates.push(DngColorMatrixChoice {
+            matrix,
+            tag: "colormatrix1",
+            illuminant: directory.calibration_illuminant1.unwrap_or(21),
+        });
+    }
+    if let Some(matrix) = directory.color_matrix2 {
+        candidates.push(DngColorMatrixChoice {
+            matrix,
+            tag: "colormatrix2",
+            illuminant: directory.calibration_illuminant2.unwrap_or(21),
+        });
+    }
+    candidates
+        .into_iter()
+        .filter(|choice| dng_color_matrix_to_prophoto(choice.matrix).is_some())
+        .min_by_key(|choice| calibration_illuminant_rank(choice.illuminant))
+}
+
+/// Keep aligned with `rawler_backend::rawler_camera_to_srgb`; Standard Light A
+/// is the explicit last choice rather than an ordinary "other" illuminant.
+fn calibration_illuminant_rank(illuminant: u16) -> u8 {
+    match illuminant {
+        21 => 0, // D65
+        23 => 1, // D50
+        20 => 2, // D55
+        1 => 3,  // Daylight
+        9 => 4,  // Fine weather
+        10 => 5, // Cloudy
+        11 => 6, // Shade
+        17 => 9, // Standard Light A
+        _ => 7,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LinearRawColorSource {
+    /// A recognised embedded ICC profile names the stored primaries.
+    Profile(ColorSpaceId),
+    /// The DNG's own XYZ-to-source matrix was inverted into source-to-ProPhoto.
+    ColorMatrix([f32; 9]),
+    /// No usable declaration was present; the samples are read as linear sRGB.
+    EstimatedSrgb,
+}
+
+#[derive(Clone, Debug)]
+struct LinearRawDngDomain {
+    color_source: LinearRawColorSource,
+    as_shot_neutral: Option<[f32; 3]>,
+    icc_transform: Option<IccRgbTransform>,
+    input_domain: InputDomainRecord,
+}
+
+impl LinearRawDngDomain {
+    fn color_matrix_to(&self, target: ColorSpaceId) -> [f32; 9] {
+        let source_to_prophoto = match self.color_source {
+            LinearRawColorSource::Profile(source) => {
+                linear_conversion_matrix(source, ColorSpaceId::ProPhotoRgb)
+            }
+            LinearRawColorSource::ColorMatrix(matrix) => matrix,
+            LinearRawColorSource::EstimatedSrgb => {
+                linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb)
+            }
+        };
+        if target == ColorSpaceId::ProPhotoRgb {
+            source_to_prophoto
+        } else {
+            let prophoto_to_target = linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, target);
+            apply_matrix_product(prophoto_to_target, source_to_prophoto)
+        }
+    }
+
+    fn white_balance_gains(&self) -> [f32; 3] {
+        let Some(neutral) = self.as_shot_neutral else {
+            return [1.0; 3];
+        };
+        if neutral
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0 || *value > 64.0)
+        {
+            return [1.0; 3];
+        }
+        let gains = [1.0 / neutral[0], 1.0 / neutral[1], 1.0 / neutral[2]];
+        let maximum = gains.into_iter().fold(0.0f32, f32::max);
+        (maximum > 0.0 && maximum.is_finite())
+            .then(|| gains.map(|gain| gain / maximum))
+            .unwrap_or([1.0; 3])
+    }
+}
+
+fn apply_matrix_product(left: [f32; 9], right: [f32; 9]) -> [f32; 9] {
+    let mut result = [0.0f32; 9];
+    for row in 0..3 {
+        for column in 0..3 {
+            result[row * 3 + column] = (0..3)
+                .map(|index| left[row * 3 + index] * right[index * 3 + column])
+                .sum();
+        }
+    }
+    result
+}
+
+fn resolve_linear_raw_dng_domain(path: &str) -> LinearRawDngDomain {
+    let directory = dng_linear_raw_directory(path);
+    let opcode_suffix = directory
+        .as_ref()
+        .is_some_and(|directory| directory.opcode_list2.is_some())
+        .then_some("_opcode_list2_stage2_linearized")
+        .unwrap_or("");
+    let icc = directory
+        .as_ref()
+        .and_then(|directory| directory.icc_profile.as_deref());
+    let identified = icc.and_then(icc_color_space);
+    let (icc_transform, icc_parse_failure) = match icc {
+        Some(bytes) => match IccRgbTransform::from_icc_to_linear_prophoto(bytes) {
+            Ok(transform) => (Some(transform), None),
+            Err(error) => (None, Some(embedded_icc_parse_failure_reason(&error))),
+        },
+        None => (None, None),
+    };
+    let icc_parse_failure = icc_parse_failure.as_deref();
+    let as_shot_neutral = directory
+        .as_ref()
+        .and_then(|directory| directory.as_shot_neutral);
+
+    if let Some(space) = identified {
+        let (primaries, encoded_transfer) = input_domain_for_color_space(space);
+        let linear = icc_transform
+            .as_ref()
+            .is_none_or(IccRgbTransform::declares_linear_transfer);
+        let transfer = if linear {
+            InputTransferCurve::Linear
+        } else if icc.is_some_and(|icc| icc_trc_matches_standard(icc, space)) {
+            encoded_transfer
+        } else {
+            icc.map(icc_transfer_class)
+                .map(input_transfer_from_icc_class)
+                .unwrap_or(InputTransferCurve::Unknown)
+        };
+        return LinearRawDngDomain {
+            color_source: LinearRawColorSource::Profile(space),
+            as_shot_neutral,
+            icc_transform,
+            input_domain: InputDomainRecord {
+                primaries,
+                transfer,
+                reference: if linear {
+                    InputReference::LinearTransmission
+                } else {
+                    InputReference::DisplayReferred
+                },
+                normalization: "linear_raw_dng_full_range".to_string(),
+                source: InputDomainSource::EmbeddedIcc,
+                confidence: InputDomainConfidence::Verified,
+                estimated: false,
+                detail: input_domain_detail_with_note(
+                    format!(
+                        "linear_raw_dng_{}{opcode_suffix}",
+                        crate::color_science::profile_name(space),
+                    ),
+                    icc_parse_failure,
+                ),
+            },
+        };
+    }
+
+    if let Some(transform) = icc_transform.clone() {
+        let transfer = icc
+            .map(icc_transfer_class)
+            .map(input_transfer_from_icc_class)
+            .unwrap_or(InputTransferCurve::Unknown);
+        let linear = transform.declares_linear_transfer() || transfer == InputTransferCurve::Linear;
+        return LinearRawDngDomain {
+            color_source: LinearRawColorSource::EstimatedSrgb,
+            as_shot_neutral,
+            icc_transform,
+            input_domain: InputDomainRecord {
+                primaries: InputPrimaries::ScannerDevice,
+                transfer,
+                reference: if linear {
+                    InputReference::LinearTransmission
+                } else {
+                    InputReference::DisplayReferred
+                },
+                normalization: "linear_raw_dng_custom_icc_full_range".to_string(),
+                source: InputDomainSource::EmbeddedIcc,
+                confidence: InputDomainConfidence::Verified,
+                estimated: false,
+                detail: input_domain_detail_with_note(
+                    format!("linear_raw_dng_custom_icc_to_prophoto{opcode_suffix}"),
+                    icc_parse_failure,
+                ),
+            },
+        };
+    }
+
+    if let Some(choice) = directory.as_ref().and_then(select_dng_color_matrix) {
+        let matrix = dng_color_matrix_to_prophoto(choice.matrix).expect("checked above");
+        return LinearRawDngDomain {
+            color_source: LinearRawColorSource::ColorMatrix(matrix),
+            as_shot_neutral,
+            icc_transform: None,
+            input_domain: InputDomainRecord {
+                primaries: InputPrimaries::ScannerDevice,
+                transfer: InputTransferCurve::Linear,
+                reference: InputReference::LinearTransmission,
+                normalization: format!("linear_raw_dng_{}_full_range", choice.tag),
+                source: InputDomainSource::RawMetadata,
+                confidence: InputDomainConfidence::Declared,
+                estimated: false,
+                detail: input_domain_detail_with_note(
+                    format!(
+                        "linear_raw_dng_{}_illuminant{}_to_prophoto{opcode_suffix}",
+                        choice.tag, choice.illuminant,
+                    ),
+                    icc_parse_failure,
+                ),
+            },
+        };
+    }
+
+    LinearRawDngDomain {
+        color_source: LinearRawColorSource::EstimatedSrgb,
+        as_shot_neutral,
+        icc_transform: None,
+        input_domain: InputDomainRecord {
+            primaries: InputPrimaries::Srgb,
+            transfer: InputTransferCurve::Linear,
+            reference: InputReference::LinearTransmission,
+            normalization: "linear_raw_dng_full_range".to_string(),
+            source: InputDomainSource::DeviceIdentification,
+            confidence: InputDomainConfidence::Estimated,
+            estimated: true,
+            detail: input_domain_detail_with_note(
+                format!(
+                    "linear_raw_dng_without_icc_or_colormatrix_read_as_linear_srgb{opcode_suffix}"
+                ),
+                icc_parse_failure,
+            ),
+        },
+    }
 }
 
 /// Resolve the input domain for one file. This is the only stage that is
 /// allowed to differ between input classes: the density maths, neutralisation,
 /// white point and display mapping after it are shared by every input.
 ///
-/// Priority order: embedded ICC, scanner Input Profile or container record,
-/// RAW/DNG metadata, scanner device identification, then an estimated sRGB
-/// fallback. The suffix only selects a decoder.
+/// The decoder and this record share the same metadata predicates: the DNG
+/// sample layout decides camera-native versus LinearRaw, scanner FFF uses its
+/// container record, and a bound scanner profile applies to direct RGB and
+/// scanner FFF inputs.
 fn resolve_input_domain(
     path: &str,
     scanner_profile: Option<&crate::scanner_profile::ScannerInputProfile>,
 ) -> InputDomainRecord {
-    if let Some(icc) = embedded_icc_bytes(path) {
-        // A profile the application cannot name is not a declaration it can use,
-        // so the resolution continues to the RAW and device branches below.
-        if let Some(profile) = identify_icc_profile(&icc) {
-            // The name identifies the primaries only. A profile whose tone curves
-            // are the identity curve describes linear light, which is what the
-            // application's own linear exports carry; reading it as the display
-            // transfer curve would linearise the samples twice.
-            let linear = crate::color_science::icc_declares_linear_transfer(&icc);
-            let (primaries, encoded_transfer) = input_domain_for_color_space(profile);
-            let transfer = if linear {
-                InputTransferCurve::Linear
-            } else {
-                encoded_transfer
-            };
+    if is_scanner_fff_tiff(path) {
+        let container = scanner_fff_container_input(path);
+        if let Some(profile) = scanner_profile {
+            let characterized = profile.verified
+                && profile.confidence
+                    == crate::scanner_profile::ScannerProfileConfidence::Characterized;
             return InputDomainRecord {
-                primaries,
-                transfer,
-                reference: if transfer == InputTransferCurve::Linear {
-                    InputReference::LinearTransmission
+                primaries: InputPrimaries::ScannerDevice,
+                transfer: InputTransferCurve::Linear,
+                reference: InputReference::LinearTransmission,
+                normalization: "scanner_profile_linear_rgb".to_string(),
+                source: InputDomainSource::ScannerInputProfile,
+                confidence: if characterized {
+                    InputDomainConfidence::Verified
                 } else {
-                    InputReference::DisplayReferred
+                    InputDomainConfidence::Declared
                 },
-                normalization: "embedded_icc_full_range".to_string(),
-                source: InputDomainSource::EmbeddedIcc,
-                confidence: InputDomainConfidence::Verified,
-                estimated: false,
-                detail: if linear {
-                    format!("{} linear", crate::color_science::profile_name(profile))
-                } else {
-                    crate::color_science::profile_name(profile).to_string()
-                },
+                estimated: !characterized,
+                detail: format!(
+                    "flextight_container_gamma_{:.2}_then_{}_{}",
+                    container
+                        .unwrap_or(ScannerFffInput::DOCUMENTED_DEFAULT)
+                        .gamma,
+                    profile.manufacturer,
+                    profile.model
+                ),
             };
         }
-    }
-
-    if is_scanner_fff_tiff(path) {
-        return match scanner_fff_container_input(path) {
+        return match container {
             Some(container) => InputDomainRecord {
                 primaries: container.primaries,
                 transfer: container.transfer_curve(),
@@ -4373,9 +6081,27 @@ fn resolve_input_domain(
         };
     }
 
-    if let Some(profile) = scanner_profile
-        .filter(|_| !is_raw_extension(path) || is_dng_extension(path) || is_scanner_fff_tiff(path))
-    {
+    if is_dng_extension(path) {
+        return match dng_sample_kind(path) {
+            DngSampleKind::LinearRaw => resolve_linear_raw_dng_domain(path).input_domain,
+            DngSampleKind::CameraRaw | DngSampleKind::Unknown => InputDomainRecord {
+                primaries: InputPrimaries::CameraNative,
+                transfer: InputTransferCurve::CameraRaw,
+                reference: InputReference::LinearTransmission,
+                normalization: "camera_dng_raw_levels".to_string(),
+                source: InputDomainSource::RawMetadata,
+                confidence: InputDomainConfidence::Declared,
+                estimated: false,
+                detail: if dng_sample_kind(path) == DngSampleKind::CameraRaw {
+                    "libraw_camera_dng_camera_native".to_string()
+                } else {
+                    "dng_sample_layout_unresolved_libraw_camera_native".to_string()
+                },
+            },
+        };
+    }
+
+    if let Some(profile) = scanner_profile.filter(|_| !is_raw_extension(path)) {
         let characterized = profile.verified
             && profile.confidence
                 == crate::scanner_profile::ScannerProfileConfidence::Characterized;
@@ -4395,55 +6121,6 @@ fn resolve_input_domain(
         };
     }
 
-    if is_dng_extension(path) {
-        if dng_has_uncompressed_linear_raw_rgb(path) {
-            // A LinearRaw DNG holds developed RGB, so the samples are linear in
-            // whatever space the file declares. Its colour matrix names that
-            // space, and the ICC payload, when the writer stored one, is the
-            // more precise declaration.
-            let identified = read_classic_tiff_directory(path, 0)
-                .ok()
-                .and_then(|directory| directory.icc_profile)
-                .and_then(|icc| identify_icc_profile(&icc));
-            return InputDomainRecord {
-                primaries: identified
-                    .map(|space| input_domain_for_color_space(space).0)
-                    .unwrap_or(InputPrimaries::Srgb),
-                transfer: InputTransferCurve::Linear,
-                reference: InputReference::LinearTransmission,
-                normalization: "scanner_dng_linear_raw_full_range".to_string(),
-                source: if identified.is_some() {
-                    InputDomainSource::EmbeddedIcc
-                } else {
-                    InputDomainSource::DeviceIdentification
-                },
-                confidence: if identified.is_some() {
-                    InputDomainConfidence::Verified
-                } else {
-                    InputDomainConfidence::Estimated
-                },
-                estimated: identified.is_none(),
-                detail: match identified {
-                    Some(space) => format!(
-                        "linear_raw_dng_{}",
-                        crate::color_science::profile_name(space)
-                    ),
-                    None => "linear_raw_scanner_dng_read_as_linear_srgb".to_string(),
-                },
-            };
-        }
-        return InputDomainRecord {
-            primaries: InputPrimaries::CameraNative,
-            transfer: InputTransferCurve::CameraRaw,
-            reference: InputReference::LinearTransmission,
-            normalization: "camera_dng_raw_levels".to_string(),
-            source: InputDomainSource::RawMetadata,
-            confidence: InputDomainConfidence::Declared,
-            estimated: false,
-            detail: "libraw_camera_matrix_to_prophoto_estimate".to_string(),
-        };
-    }
-
     if is_raw_extension(path) {
         return InputDomainRecord {
             primaries: InputPrimaries::CameraNative,
@@ -4453,8 +6130,109 @@ fn resolve_input_domain(
             source: InputDomainSource::RawMetadata,
             confidence: InputDomainConfidence::Declared,
             estimated: false,
-            detail: "libraw_camera_matrix_to_prophoto_estimate".to_string(),
+            detail: "libraw_camera_native".to_string(),
         };
+    }
+
+    let mut embedded_icc_parse_failure = None;
+    if let Some(icc) = embedded_icc_bytes(path) {
+        let icc_transform = IccRgbTransform::from_icc_to_linear_prophoto(&icc);
+        embedded_icc_parse_failure = icc_transform
+            .as_ref()
+            .err()
+            .map(|error| embedded_icc_parse_failure_reason(error));
+        let icc_parse_note = embedded_icc_parse_failure.as_deref();
+        if let Some(profile) = icc_color_space(&icc) {
+            let linear = crate::color_science::icc_declares_linear_transfer(&icc);
+            let (primaries, encoded_transfer) = input_domain_for_color_space(profile);
+            let transfer = if linear {
+                InputTransferCurve::Linear
+            } else if icc_trc_matches_standard(&icc, profile) {
+                encoded_transfer
+            } else {
+                input_transfer_from_icc_class(icc_transfer_class(&icc))
+            };
+            return InputDomainRecord {
+                primaries,
+                transfer,
+                reference: if transfer == InputTransferCurve::Linear {
+                    InputReference::LinearTransmission
+                } else {
+                    InputReference::DisplayReferred
+                },
+                normalization: "embedded_icc_full_range".to_string(),
+                source: InputDomainSource::EmbeddedIcc,
+                confidence: InputDomainConfidence::Verified,
+                estimated: false,
+                detail: input_domain_detail_with_note(
+                    if linear {
+                        format!("{} linear", crate::color_science::profile_name(profile))
+                    } else if transfer == InputTransferCurve::Unknown {
+                        format!("{} custom_trc", crate::color_science::profile_name(profile))
+                    } else {
+                        crate::color_science::profile_name(profile).to_string()
+                    },
+                    icc_parse_note,
+                ),
+            };
+        }
+        if icc_transform.is_ok() {
+            // The description did not match a built-in name, but the profile is
+            // a valid RGB declaration. Its actual matrix/TRC drives decoding;
+            // report the custom primaries instead of pretending it is sRGB.
+            let transfer = input_transfer_from_icc_class(icc_transfer_class(&icc));
+            let linear = transfer == InputTransferCurve::Linear;
+            return InputDomainRecord {
+                primaries: InputPrimaries::ScannerDevice,
+                transfer,
+                reference: if linear {
+                    InputReference::LinearTransmission
+                } else {
+                    InputReference::DisplayReferred
+                },
+                normalization: "embedded_icc_custom_full_range".to_string(),
+                source: InputDomainSource::EmbeddedIcc,
+                confidence: InputDomainConfidence::Verified,
+                estimated: false,
+                detail: input_domain_detail_with_note(
+                    "embedded_icc_custom_matrix_or_lut".to_string(),
+                    icc_parse_note,
+                ),
+            };
+        }
+        if let Some(profile) = identify_icc_profile(&icc) {
+            let linear = crate::color_science::icc_declares_linear_transfer(&icc);
+            let (primaries, encoded_transfer) = input_domain_for_color_space(profile);
+            let transfer = if linear {
+                InputTransferCurve::Linear
+            } else {
+                input_transfer_from_icc_class(icc_transfer_class(&icc))
+            };
+            return InputDomainRecord {
+                primaries,
+                transfer: if transfer == InputTransferCurve::Unknown {
+                    encoded_transfer
+                } else {
+                    transfer
+                },
+                reference: if linear {
+                    InputReference::LinearTransmission
+                } else {
+                    InputReference::DisplayReferred
+                },
+                normalization: "embedded_icc_full_range".to_string(),
+                source: InputDomainSource::EmbeddedIcc,
+                confidence: InputDomainConfidence::Verified,
+                estimated: false,
+                detail: input_domain_detail_with_note(
+                    format!(
+                        "{} (name_only_fallback)",
+                        crate::color_science::profile_name(profile)
+                    ),
+                    icc_parse_note,
+                ),
+            };
+        }
     }
 
     // Priority 5: read as sRGB and say that the domain was assumed. An
@@ -4467,7 +6245,16 @@ fn resolve_input_domain(
         source: InputDomainSource::FallbackSrgb,
         confidence: InputDomainConfidence::Estimated,
         estimated: true,
-        detail: if is_tiff_extension(path) {
+        detail: if let Some(note) = embedded_icc_parse_failure.as_deref() {
+            input_domain_detail_with_note(
+                if is_tiff_extension(path) {
+                    "tiff_with_unreadable_embedded_icc".to_string()
+                } else {
+                    "encoded_rgb_with_unreadable_embedded_icc".to_string()
+                },
+                Some(note),
+            )
+        } else if is_tiff_extension(path) {
             "tiff_without_embedded_icc".to_string()
         } else {
             "encoded_rgb_without_embedded_icc".to_string()
@@ -4497,6 +6284,53 @@ fn encoded_pixel_to_prophoto_estimate_with_transfer(
     clamp_positive_transmission_for_density(linear)
 }
 
+fn dynamic_image_to_rgb_f32(
+    image: image::DynamicImage,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    match image {
+        image::DynamicImage::ImageRgb32F(buffer) => Ok(buffer),
+        image::DynamicImage::ImageRgba32F(buffer) => {
+            let mut rgb = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(buffer.width(), buffer.height());
+            for (target, source) in rgb.pixels_mut().zip(buffer.pixels()) {
+                *target = Rgb([source[0], source[1], source[2]]);
+            }
+            Ok(rgb)
+        }
+        image => {
+            let encoded = image.into_rgb16();
+            let mut rgb = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
+            rgb.as_mut()
+                .par_chunks_exact_mut(3)
+                .zip(encoded.as_raw().par_chunks_exact(3))
+                .for_each(|(target, source)| {
+                    for channel in 0..3 {
+                        target[channel] = f32::from(source[channel]) / 65535.0;
+                    }
+                });
+            Ok(rgb)
+        }
+    }
+}
+
+fn decode_direct_rgb_encoded_f32(
+    path: &str,
+    target_long_edge: u32,
+    mode: DecodeMode,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    let target_long_edge = target_long_edge.min(estimate_target_long_edge(mode)).max(1);
+    if is_tiff_extension(path) {
+        return decode_tiff_direct_f32(path, target_long_edge);
+    }
+    image::open(path)
+        .map_err(|error| format!("Image decode failed for {path}: {error:?}"))
+        .and_then(dynamic_image_to_rgb_f32)
+        .map(|image| fit_linear_transmission_long_edge(image, target_long_edge))
+}
+
+fn direct_rgb_icc_transform(path: &str, target: ColorSpaceId) -> Option<IccRgbTransform> {
+    embedded_icc_bytes(path).and_then(|icc| IccRgbTransform::from_icc_to(&icc, target).ok())
+}
+
 /// Convert a direct RGB image into the Smart Auto working space.
 ///
 /// TIFF, JPEG and PNG all follow one transfer/matrix path. Uncompressed TIFF is
@@ -4513,43 +6347,24 @@ fn decode_direct_rgb_prophoto_estimate(
     if is_scanner_fff_tiff(path) {
         return Err("scanner_fff_uses_scanner_linear_path".to_string());
     }
-    let target_long_edge = target_long_edge.min(estimate_target_long_edge(mode)).max(1);
-    let encoded = if is_tiff_extension(path) {
-        decode_uncompressed_tiff_reduced(path, target_long_edge).or_else(|stream_error| {
-            image::open(path)
-                .map(|image| image.into_rgb16())
-                .map_err(|image_error| {
-                    format!(
-                        "TIFF decode failed for {path}: streaming reader: {stream_error}; image decoder: {image_error:?}"
-                    )
-                })
-        })?
-    } else {
-        image::open(path)
-            .map(|image| image.into_rgb16())
-            .map_err(|error| format!("Image decode failed for {path}: {error:?}"))?
-    };
+    let mut estimate = decode_direct_rgb_encoded_f32(path, target_long_edge, mode)?;
     let (source_profile, linear_transfer) = resolve_direct_encoded_space(path);
-    let mut estimate = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
-    estimate
-        .as_mut()
-        .par_chunks_exact_mut(3)
-        .zip(encoded.as_raw().par_chunks_exact(3))
-        .for_each(|(target, pixel)| {
-            target.copy_from_slice(&encoded_pixel_to_prophoto_estimate_with_transfer(
-                [
-                    f32::from(pixel[0]) / 65535.0,
-                    f32::from(pixel[1]) / 65535.0,
-                    f32::from(pixel[2]) / 65535.0,
-                ],
+    if let Some(transform) = direct_rgb_icc_transform(path, ColorSpaceId::ProPhotoRgb) {
+        transform.apply_encoded_rgb(estimate.as_mut())?;
+        estimate.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+            let clamped = clamp_positive_transmission_for_density([pixel[0], pixel[1], pixel[2]]);
+            pixel.copy_from_slice(&clamped);
+        });
+    } else {
+        estimate.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+            pixel.copy_from_slice(&encoded_pixel_to_prophoto_estimate_with_transfer(
+                [pixel[0], pixel[1], pixel[2]],
                 source_profile,
                 linear_transfer,
             ));
         });
-    Ok(fit_linear_transmission_long_edge(
-        estimate,
-        target_long_edge,
-    ))
+    }
+    Ok(estimate)
 }
 
 /// Backwards-compatible name for the TIFF-only callers and tests. The direct
@@ -4687,15 +6502,281 @@ fn decode_reduced_dng_for_working_space(
     path: &str,
     target_long_edge: u32,
 ) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
-    // VueScan LinearRaw DNG stores already-interpolated, linear RGB samples.
-    // Read its uncompressed SubIFD directly so a 1.6 GB scan never has to be
-    // unpacked into a second full-size LibRaw buffer merely to build a proxy.
+    // LegacyV1 and Smart Auto compatibility deliberately keep the v1.0.2
+    // transport: uncompressed LinearRaw samples are copied as linear sRGB u16.
+    // Modern decodes must use `decode_linear_raw_dng_prophoto_estimate` or
+    // `decode_modern_input` instead. Reject other DNG layouts here so callers
+    // fall back to the explicit camera-RAW decoder rather than accepting an
+    // embedded preview from the generic image decoder.
+    if dng_sample_kind(path) != DngSampleKind::LinearRaw {
+        return Err(format!(
+            "DNG is not a rendered LinearRaw sample layout: {path}"
+        ));
+    }
     let image = decode_uncompressed_linear_dng_reduced(path, target_long_edge)?;
-    Ok(convert_linear_image_in_place(
-        image,
-        ColorSpaceId::SRgb,
-        DENSITY_CAPTURE_PROFILE,
+    Ok(image)
+}
+
+fn linear_raw_active_origin(directory: &ClassicTiffDirectory) -> (u32, u32) {
+    directory
+        .active_area
+        .map(|[top, left, _, _]| (left, top))
+        .unwrap_or((0, 0))
+}
+
+/// Full-image crop rectangle selected by DNG `DefaultCropOrigin`/`Size`.
+///
+/// Both tags are relative to `ActiveArea`. The returned tuple is
+/// `(left, top, width, height)` and is always clipped to the decoded IFD.
+fn linear_raw_crop_rect(
+    directory: &ClassicTiffDirectory,
+    width: u32,
+    height: u32,
+) -> (u32, u32, u32, u32) {
+    let active = directory
+        .active_area
+        .and_then(|[top, left, bottom, right]| {
+            (bottom > top && right > left).then_some((left, top, right - left, bottom - top))
+        });
+    let (mut left, mut top, mut crop_width, mut crop_height) =
+        match (directory.default_crop_origin, directory.default_crop_size) {
+            (Some(origin), Some(size)) => {
+                let active_left = active.map(|area| area.0).unwrap_or(0);
+                let active_top = active.map(|area| area.1).unwrap_or(0);
+                (
+                    active_left.saturating_add(origin[0]),
+                    active_top.saturating_add(origin[1]),
+                    size[0],
+                    size[1],
+                )
+            }
+            _ => active.unwrap_or((0, 0, width, height)),
+        };
+    left = left.min(width.saturating_sub(1));
+    top = top.min(height.saturating_sub(1));
+    crop_width = crop_width.min(width.saturating_sub(left)).max(1);
+    crop_height = crop_height.min(height.saturating_sub(top)).max(1);
+    (left, top, crop_width, crop_height)
+}
+
+fn apply_linear_raw_opcode_list2(
+    image: &mut ImageBuffer<Rgb<f32>, Vec<f32>>,
+    directory: &ClassicTiffDirectory,
+) -> Result<Option<dng_opcode::OpcodeListSummary>, String> {
+    let Some(opcode_list) = directory.opcode_list2.as_deref() else {
+        return Ok(None);
+    };
+    let (active_left, active_top) = linear_raw_active_origin(directory);
+    let summary = dng_opcode::apply_opcode_list2(
+        opcode_list,
+        image.width(),
+        image.height(),
+        active_left,
+        active_top,
+        image.as_mut(),
+    )
+    .map_err(|error| {
+        format!(
+            "Cannot apply DNG OpcodeList2 from the selected LinearRaw IFD at byte {}: {error}",
+            directory.ifd_offset
+        )
+    })?;
+    Ok(Some(summary))
+}
+
+/// Run stage-2 opcodes on the full-resolution active area, then crop, rotate
+/// and finally fit the requested long edge. This ordering is required because
+/// opcode coordinates live before crop and orientation, and because nonlinear
+/// polynomials must not see already-averaged pixels.
+fn finalize_linear_raw_dng_rgb(
+    mut image: ImageBuffer<Rgb<f32>, Vec<f32>>,
+    directory: &ClassicTiffDirectory,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    apply_linear_raw_opcode_list2(&mut image, directory)?;
+    let (width, height) = image.dimensions();
+    let (left, top, crop_width, crop_height) = linear_raw_crop_rect(directory, width, height);
+    if (left, top, crop_width, crop_height) != (0, 0, width, height) {
+        image = image::imageops::crop_imm(&image, left, top, crop_width, crop_height).to_image();
+    }
+    let image = apply_tiff_orientation(image, directory.orientation);
+    Ok(fit_linear_transmission_long_edge(image, target_long_edge))
+}
+
+fn decode_linear_raw_dng_rgb_f32(
+    path: &str,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    // VueScan LinearRaw DNG stores already-interpolated, linear RGB samples.
+    // Read its uncompressed IFD directly so a 1.6 GB scan never has to be
+    // unpacked into a second full-size LibRaw buffer merely to build a proxy.
+    let directory = dng_linear_raw_directory(path)
+        .ok_or_else(|| format!("DNG has no LinearRaw RGB IFD: {path}"))?;
+    let mut attempts = Vec::new();
+    if directory.compression == 1 {
+        let decode_target = if directory.opcode_list2.is_some() {
+            u32::MAX
+        } else {
+            target_long_edge
+        };
+        match decode_uncompressed_tiff_directory_reduced(path, directory.clone(), decode_target) {
+            Ok(encoded) => {
+                let mut image =
+                    ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
+                image
+                    .as_mut()
+                    .par_chunks_exact_mut(3)
+                    .zip(encoded.as_raw().par_chunks_exact(3))
+                    .for_each(|(target, source)| {
+                        for channel in 0..3 {
+                            target[channel] = f32::from(source[channel]) / 65535.0;
+                        }
+                    });
+                if directory.opcode_list2.is_some() {
+                    match finalize_linear_raw_dng_rgb(image, &directory, target_long_edge) {
+                        Ok(image) => return Ok(image),
+                        Err(error) => attempts.push(format!("opcode list 2: {error}")),
+                    }
+                } else {
+                    return Ok(image);
+                }
+            }
+            Err(error) => attempts.push(format!("streaming reader: {error}")),
+        }
+    } else {
+        attempts.push(format!(
+            "streaming reader: skipped (compression {})",
+            directory.compression
+        ));
+    }
+
+    match decode_tiff_direct_full_f32_at_ifd(path, &directory)
+        .and_then(|image| finalize_linear_raw_dng_rgb(image, &directory, target_long_edge))
+    {
+        Ok(image) => return Ok(image),
+        Err(error) => attempts.push(format!(
+            "TIFF decoder for IFD at byte {}: {error}",
+            directory.ifd_offset
+        )),
+    }
+
+    let budget = tiff_decode_budget_bytes();
+    let expected_rgb_bytes = u64::from(directory.width)
+        .checked_mul(u64::from(directory.height))
+        .and_then(|pixels| pixels.checked_mul(3))
+        .and_then(|samples| samples.checked_mul(std::mem::size_of::<f32>() as u64));
+    if expected_rgb_bytes.is_none_or(|required| required > budget as u64) {
+        attempts.push(format!(
+            "rawler: expected LinearRaw RGB needs {} bytes, above the configured decode \
+             budget of {budget} bytes",
+            expected_rgb_bytes
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "more".to_string())
+        ));
+    } else {
+        match crate::rawler_backend::decode_linear_raw_rgb(path) {
+            Ok(decoded) => {
+                let pixel_count = usize::try_from(decoded.width)
+                    .ok()
+                    .and_then(|width| {
+                        usize::try_from(decoded.height)
+                            .ok()
+                            .map(|height| width * height)
+                    })
+                    .ok_or_else(|| "rawler LinearRaw dimensions overflowed".to_string())?;
+                let required = pixel_count
+                    .checked_mul(3)
+                    .and_then(|samples| samples.checked_mul(std::mem::size_of::<f32>()))
+                    .ok_or_else(|| "rawler LinearRaw buffer size overflowed".to_string())?;
+                if required > budget {
+                    attempts.push(format!(
+                        "rawler: decoded RGB needs {required} bytes, above the configured decode \
+                     budget of {budget} bytes"
+                    ));
+                } else if decoded.pixels.len() != pixel_count * 3 {
+                    attempts.push(format!(
+                        "rawler: returned {} samples for {}x{} RGB",
+                        decoded.pixels.len(),
+                        decoded.width,
+                        decoded.height
+                    ));
+                } else {
+                    let image = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_raw(
+                        decoded.width,
+                        decoded.height,
+                        decoded.pixels,
+                    )
+                    .ok_or_else(|| "Cannot construct rawler LinearRaw RGB image".to_string())?;
+                    let mut final_directory = directory.clone();
+                    if final_directory.orientation <= 1 && decoded.orientation > 1 {
+                        final_directory.orientation = decoded.orientation;
+                    }
+                    match finalize_linear_raw_dng_rgb(image, &final_directory, target_long_edge) {
+                        Ok(image) => return Ok(image),
+                        Err(error) => attempts.push(format!("rawler opcode list 2: {error}")),
+                    }
+                }
+            }
+            Err(error) => attempts.push(format!("rawler: {error}")),
+        }
+    }
+
+    Err(format!(
+        "LinearRaw DNG decode failed for {path} (selected IFD at byte {}, compression {}): {}",
+        directory.ifd_offset,
+        directory.compression,
+        attempts.join("; ")
     ))
+}
+
+/// Modern LinearRaw path: keep the stored RGB unbounded and map it directly to
+/// ProPhoto f32 using the embedded ICC or DNG colour matrix.
+fn decode_linear_raw_dng_prophoto_estimate(
+    path: &str,
+    target_long_edge: u32,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    if dng_sample_kind(path) != DngSampleKind::LinearRaw {
+        return Err(format!(
+            "DNG is not a rendered LinearRaw sample layout: {path}"
+        ));
+    }
+    let encoded = decode_linear_raw_dng_rgb_f32(path, target_long_edge)?;
+    let domain = resolve_linear_raw_dng_domain(path);
+    let gains = domain.white_balance_gains();
+    let mut estimate = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(encoded.width(), encoded.height());
+    if let Some(transform) = domain.icc_transform.as_ref() {
+        estimate
+            .as_mut()
+            .par_chunks_exact_mut(3)
+            .zip(encoded.as_raw().par_chunks_exact(3))
+            .for_each(|(target, pixel)| {
+                target[0] = pixel[0] * gains[0];
+                target[1] = pixel[1] * gains[1];
+                target[2] = pixel[2] * gains[2];
+            });
+        transform.apply_encoded_rgb(estimate.as_mut())?;
+        estimate.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+            let clamped = clamp_positive_transmission_for_density([pixel[0], pixel[1], pixel[2]]);
+            pixel.copy_from_slice(&clamped);
+        });
+        return Ok(estimate);
+    }
+    let matrix = domain.color_matrix_to(ColorSpaceId::ProPhotoRgb);
+    estimate
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .zip(encoded.as_raw().par_chunks_exact(3))
+        .for_each(|(target, pixel)| {
+            let balanced = [
+                pixel[0] * gains[0],
+                pixel[1] * gains[1],
+                pixel[2] * gains[2],
+            ];
+            target.copy_from_slice(&clamp_positive_transmission_for_density(
+                apply_linear_matrix(balanced, matrix),
+            ));
+        });
+    Ok(estimate)
 }
 
 fn rgb16_image_from_bytes(
@@ -4735,42 +6816,6 @@ fn rgb16_image_from_bytes(
             }
         });
     Ok(image_buffer)
-}
-
-fn rgb32_pixels_from_bytes(
-    width: u32,
-    height: u32,
-    colors: usize,
-    bits: u16,
-    bytes: &[u8],
-) -> Result<(u32, u32, Vec<f32>), String> {
-    if colors < 3 || bits != 16 {
-        return Err(format!(
-            "Unexpected LibRaw output: {colors} channels at {bits} bits"
-        ));
-    }
-    let pixel_count = (width as usize)
-        .checked_mul(height as usize)
-        .ok_or_else(|| "LibRaw image dimensions overflowed".to_string())?;
-    let required_bytes = pixel_count
-        .checked_mul(colors)
-        .and_then(|samples| samples.checked_mul(std::mem::size_of::<u16>()))
-        .ok_or_else(|| "LibRaw image buffer size overflowed".to_string())?;
-    if bytes.len() < required_bytes {
-        return Err("LibRaw returned a truncated image buffer".to_string());
-    }
-    let mut pixels = vec![0.0f32; pixel_count * 3];
-    pixels
-        .par_chunks_exact_mut(3)
-        .enumerate()
-        .for_each(|(index, pixel)| {
-            let source = index * colors * std::mem::size_of::<u16>();
-            for (channel, value) in pixel.iter_mut().enumerate() {
-                let offset = source + channel * std::mem::size_of::<u16>();
-                *value = u16::from_ne_bytes([bytes[offset], bytes[offset + 1]]) as f32 / 65535.0;
-            }
-        });
-    Ok((width, height, pixels))
 }
 
 fn raw_decode_failure_hint(path: &str) -> Option<&'static str> {
@@ -4922,9 +6967,12 @@ fn estimate_target_long_edge(mode: DecodeMode) -> u32 {
 /// production decode entry uses. The harness in `raw_backend.rs` records it
 /// alongside the direct RAW-backend verdicts so the matrix cannot describe a
 /// bypassed path as the app's behaviour.
+#[cfg(test)]
 pub(crate) fn decode_route_for_diagnostic(path: &str) -> &'static str {
     if is_scanner_fff_tiff(path) {
         "scanner-fff-stream"
+    } else if is_dng_extension(path) && dng_sample_kind(path) == DngSampleKind::LinearRaw {
+        "linear-raw-dng-stream"
     } else if is_direct_image_extension(path) {
         "direct-image"
     } else {
@@ -4939,6 +6987,7 @@ pub(crate) fn decode_route_for_diagnostic(path: &str) -> &'static str {
 /// row-streaming TIFF reader. Calling `decode_image_buffer` here instead would
 /// exercise the generic tiff crate page decoder and its 512 MB strip limit,
 /// which is not the path the application takes for these scans.
+#[cfg(test)]
 pub(crate) fn decode_routed_for_diagnostic(path: &str) -> Result<(u32, u32), String> {
     decode_export_source(path).map(|image| (image.width(), image.height()))
 }
@@ -4974,11 +7023,19 @@ fn decode_prophoto_estimate_image_buffer_with_policy(
 /// A LibRaw camera RAW stays in camera RGB: on an orange-masked negative the
 /// blue channel is tiny, and a camera matrix (whose blue row subtracts a large
 /// share of green) plus the luma-relative gamut floor applied before the log
-/// rewrote exactly the pixels that print blue. DNG keeps the ProPhoto
-/// estimate: a LinearRaw DNG is already a rendered scan, and the reduced DNG
-/// reader that serves it cannot be told apart from a Bayer DNG by the path.
+/// rewrote exactly the pixels that print blue. A DNG is classified from its
+/// CFA/LinearRaw pages, not its suffix: Bayer and X-Trans captures stay
+/// camera-native, while rendered LinearRaw samples use the ProPhoto estimate.
 fn smart_auto_working_basis(path: &str) -> crate::app_state::WorkingBasis {
-    if is_raw_extension(path) && !is_scanner_fff_tiff(path) && !is_dng_extension(path) {
+    let camera_raw = if is_dng_extension(path) {
+        matches!(
+            dng_sample_kind(path),
+            DngSampleKind::CameraRaw | DngSampleKind::Unknown
+        )
+    } else {
+        is_raw_extension(path) && !is_scanner_fff_tiff(path)
+    };
+    if camera_raw {
         crate::app_state::WorkingBasis::CameraNative
     } else {
         crate::app_state::WorkingBasis::ProPhotoEstimate
@@ -5040,15 +7097,12 @@ fn decode_prophoto_basis_estimate(
     mode: DecodeMode,
     white_balance: crate::raw_backend::WhiteBalancePolicy,
 ) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
-    if is_scanner_fff_tiff(path) {
-        // An Imacon/Flextight FFF is a rendered RGB page, not a maze of sensor
-        // samples: LibRaw rejects the file outright, and the reduced TIFF reader
-        // is the decoder that owns its input domain.
-        let linear = decode_tiff_for_smart_auto(path, estimate_target_long_edge(mode))?;
-        return Ok(linear_srgb_u16_to_prophoto_f32(&linear));
-    }
-    if !is_raw_extension(path) {
-        return decode_direct_rgb_prophoto_estimate(path, estimate_target_long_edge(mode), mode);
+    if is_scanner_fff_tiff(path)
+        || (is_dng_extension(path) && dng_sample_kind(path) == DngSampleKind::LinearRaw)
+        || !is_raw_extension(path)
+    {
+        return decode_modern_input(path, mode, None, estimate_target_long_edge(mode), false)
+            .map(|decoded| decoded.image);
     }
 
     let options = crate::raw_backend::DecodeOptions {
@@ -5092,6 +7146,124 @@ fn decode_scanner_profiled_estimate_image_buffer(
         .map(|(image, _)| image)
 }
 
+struct ModernDecodedInput {
+    image: ImageBuffer<Rgb<f32>, Vec<f32>>,
+    working_basis: WorkingBasis,
+    input_domain: InputDomainRecord,
+    camera_to_display: Option<[f32; 9]>,
+}
+
+fn decode_direct_rgb_linear_srgb_f32(
+    path: &str,
+    target_long_edge: u32,
+    mode: DecodeMode,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    let mut linear = decode_direct_rgb_encoded_f32(path, target_long_edge, mode)?;
+    let (source_profile, linear_transfer) = resolve_direct_encoded_space(path);
+    if let Some(transform) = direct_rgb_icc_transform(path, ColorSpaceId::SRgb) {
+        transform.apply_encoded_rgb(linear.as_mut())?;
+    } else {
+        let to_srgb = linear_conversion_matrix(source_profile, ColorSpaceId::SRgb);
+        linear.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+            let encoded = [pixel[0], pixel[1], pixel[2]];
+            let linear_rgb = if linear_transfer {
+                apply_linear_matrix(encoded, to_srgb)
+            } else {
+                convert_encoded_to_linear_rgb_with_matrix(encoded, source_profile, to_srgb)
+            };
+            pixel.copy_from_slice(&linear_rgb);
+        });
+    }
+    Ok(linear)
+}
+
+fn apply_bound_scanner_profile_to_prophoto(
+    profile: &crate::scanner_profile::ScannerInputProfile,
+    mut linear_srgb: ImageBuffer<Rgb<f32>, Vec<f32>>,
+) -> Result<ImageBuffer<Rgb<f32>, Vec<f32>>, String> {
+    profile.apply_linear_rgb_image(&mut linear_srgb)?;
+    let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
+    linear_srgb
+        .as_mut()
+        .par_chunks_exact_mut(3)
+        .for_each(|pixel| {
+            pixel.copy_from_slice(&clamp_positive_transmission_for_density(
+                apply_linear_matrix([pixel[0], pixel[1], pixel[2]], matrix),
+            ));
+        });
+    Ok(linear_srgb)
+}
+
+/// The single decode gateway for every modern processing contract.
+///
+/// It classifies the file once, applies the decoder that owns that input class,
+/// and returns the pixels together with the basis, input-domain record and
+/// optional camera display matrix that actually produced them.
+fn decode_modern_input(
+    path: &str,
+    mode: DecodeMode,
+    profile: Option<&crate::scanner_profile::ScannerInputProfile>,
+    target_long_edge: u32,
+    suppress_chroma_noise: bool,
+) -> Result<ModernDecodedInput, String> {
+    let working_basis = smart_auto_working_basis(path);
+    let input_domain = resolve_input_domain(path, profile);
+    let dng_kind = is_dng_extension(path).then(|| dng_sample_kind(path));
+
+    if is_scanner_fff_tiff(path) {
+        return Ok(ModernDecodedInput {
+            image: decode_scanner_fff_prophoto_estimate(path, target_long_edge, profile)?,
+            working_basis,
+            input_domain,
+            camera_to_display: None,
+        });
+    }
+
+    if dng_kind == Some(DngSampleKind::LinearRaw) {
+        return Ok(ModernDecodedInput {
+            image: decode_linear_raw_dng_prophoto_estimate(path, target_long_edge)?,
+            working_basis,
+            input_domain,
+            camera_to_display: None,
+        });
+    }
+
+    if is_raw_extension(path) {
+        let (mut estimate, camera_to_display) = decode_smart_auto_estimate_with_policy(
+            path,
+            mode,
+            crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
+        )?;
+        estimate = fit_linear_transmission_long_edge(estimate, target_long_edge);
+        if suppress_chroma_noise {
+            suppress_raw_density_chroma_noise(&mut estimate);
+        }
+        return Ok(ModernDecodedInput {
+            image: estimate,
+            working_basis,
+            input_domain,
+            camera_to_display,
+        });
+    }
+
+    if let Some(profile) = profile {
+        let linear_srgb = decode_direct_rgb_linear_srgb_f32(path, target_long_edge, mode)?;
+        return Ok(ModernDecodedInput {
+            image: apply_bound_scanner_profile_to_prophoto(profile, linear_srgb)?,
+            working_basis,
+            input_domain,
+            camera_to_display: None,
+        });
+    }
+
+    Ok(ModernDecodedInput {
+        image: decode_direct_rgb_prophoto_estimate(path, target_long_edge, mode)?,
+        working_basis,
+        input_domain,
+        camera_to_display: None,
+    })
+}
+
 /// The Smart Auto working buffer of any input, with the camera -> sRGB matrix
 /// its positive is displayed through (`None` for the ProPhoto estimate).
 fn decode_scanner_profiled_estimate_with_matrix(
@@ -5116,67 +7288,10 @@ fn decode_scanner_profiled_estimate_with_matrix_options(
     target_long_edge: u32,
     suppress_chroma_noise: bool,
 ) -> Result<(ImageBuffer<Rgb<f32>, Vec<f32>>, Option<[f32; 9]>), String> {
-    // A Bayer capture belongs to LibRaw, and a scanner profile never applies to
-    // one. Scanner FFF is the exception that only looks like a camera RAW: the
-    // extension is shared, the container is a rendered page.
-    if is_raw_extension(path) && !is_scanner_fff_tiff(path) {
-        if is_dng_extension(path) {
-            if let Ok(linear) = decode_reduced_dng_for_working_space(path, target_long_edge) {
-                return Ok((linear_srgb_u16_to_prophoto_f32(&linear), None));
-            }
-        }
-        let (mut estimate, matrix) = decode_smart_auto_estimate_with_policy(
-            path,
-            mode,
-            crate::raw_backend::WhiteBalancePolicy::NormalizedAsShot,
-        )?;
-        estimate = fit_linear_transmission_long_edge(estimate, target_long_edge);
-        if suppress_chroma_noise {
-            suppress_raw_density_chroma_noise(&mut estimate);
-        }
-        return Ok((estimate, matrix));
-    }
     let profile = profile.filter(|_| !is_dng_extension(path));
-    // Every unbound direct RGB input (TIFF, JPEG, PNG) follows the same encoded
-    // domain -> ProPhoto path. A bound scanner profile expects the historical
-    // linear-sRGB transport, so that branch keeps its existing handling below.
-    if profile.is_none() && is_direct_image_extension(path) && !is_scanner_fff_tiff(path) {
-        let estimate = decode_direct_rgb_prophoto_estimate(path, target_long_edge, mode)?;
-        return Ok((estimate, None));
-    }
-    let source = if is_tiff_extension(path) || is_scanner_fff_tiff(path) {
-        // Large scans must come from the streaming reader: the generic image
-        // decoder refuses anything past its own allocation ceiling, which turned
-        // every big TIFF and every scanner FFF into an export failure.
-        decode_reduced_tiff_for_working_space(path, target_long_edge)
-            .or_else(|_| decode_image_buffer(path, mode))?
-    } else {
-        decode_image_buffer(path, mode)?
-    };
-    let mut linear = ImageBuffer::<Rgb<f32>, Vec<f32>>::new(source.width(), source.height());
-    linear
-        .as_mut()
-        .par_chunks_exact_mut(3)
-        .zip(source.as_raw().par_chunks_exact(3))
-        .for_each(|(target, pixel)| {
-            target.copy_from_slice(&[
-                pixel[0] as f32 / 65535.0,
-                pixel[1] as f32 / 65535.0,
-                pixel[2] as f32 / 65535.0,
-            ]);
-        });
-    if let Some(profile) = profile {
-        profile.apply_linear_rgb_image(&mut linear)?;
-    }
-    let matrix = linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
-    linear.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
-        let rgb = apply_linear_matrix(
-            compress_linear_srgb_for_density([pixel[0], pixel[1], pixel[2]]),
-            matrix,
-        );
-        pixel.copy_from_slice(&rgb);
-    });
-    Ok((linear, None))
+    let decoded =
+        decode_modern_input(path, mode, profile, target_long_edge, suppress_chroma_noise)?;
+    Ok((decoded.image, decoded.camera_to_display))
 }
 
 fn reference_density_extreme(
@@ -5587,9 +7702,9 @@ pub fn aggregate_roll_density_references(
 }
 
 fn decode_export_source(path: &str) -> Result<ImageBuffer<Rgb<u16>, Vec<u16>>, String> {
-    // Use the same direct source decoder as Develop for large scanner files.
-    // This keeps preview/export colors aligned and avoids LibRaw's additional
-    // full-resolution allocation for LinearRaw DNG.
+    // LegacyV1 and the retired Smart Auto compatibility marker still consume
+    // the historical u16 transport. Modern exports decode through
+    // `decode_modern_input` and never enter this helper.
     if is_dng_extension(path) {
         return decode_reduced_dng_for_working_space(path, u32::MAX)
             .or_else(|_| decode_image_buffer(path, DecodeMode::ExportFull));
@@ -5660,6 +7775,7 @@ fn persist_import_batch(
         .map_err(|error| format!("Failed to commit imported images: {error}"))
 }
 
+#[cfg(test)]
 fn default_pipeline_state_for_import(
     loose: bool,
     target_roll: &str,
@@ -5671,6 +7787,11 @@ fn default_pipeline_state_for_import(
 fn pipeline_image_kind(path: &str) -> PipelineImageKind {
     if !Path::new(path).is_file() {
         PipelineImageKind::Missing
+    } else if is_dng_extension(path) {
+        match dng_sample_kind(path) {
+            DngSampleKind::LinearRaw => PipelineImageKind::DirectRgb,
+            DngSampleKind::CameraRaw | DngSampleKind::Unknown => PipelineImageKind::RawBayer,
+        }
     } else if is_raw_extension(path) && !is_scanner_fff_tiff(path) {
         PipelineImageKind::RawBayer
     } else if is_direct_image_extension(path)
@@ -5814,6 +7935,12 @@ fn state_from_resolution_with_frame_base(
     report.input_domain = persisted.processing_report.input_domain.clone();
     // So does the basis of the working buffer the positive is displayed from.
     report.camera_to_display = persisted.processing_report.camera_to_display;
+    preserve_decoded_proxy_report(
+        &mut report,
+        &persisted.processing_report.input_domain,
+        persisted.processing_report.camera_to_display,
+        persisted.processing_report.fallback_reasons.iter().cloned(),
+    );
     let expected_domain = match resolution.resolved_path {
         ProcessingContract::CaptureCorrectedV11 => "relative_transmission_rgb",
         ProcessingContract::LegacyV1 => "legacy_linear_srgb",
@@ -5847,11 +7974,18 @@ fn state_from_resolution_with_frame_base(
         report.tone_mapping_mode = persisted.processing_report.tone_mapping_mode.clone();
         report.uses_physical_anchors = persisted.processing_report.uses_physical_anchors;
         report.analysis_data_domain = persisted.processing_report.analysis_data_domain.clone();
+        report.analysis_window_rule = persisted.processing_report.analysis_window_rule;
+        report.analysis_geometry_fingerprint = persisted
+            .processing_report
+            .analysis_geometry_fingerprint
+            .clone();
+        report.analysis_geometry_rule = persisted.processing_report.analysis_geometry_rule;
         report.render_route = persisted.processing_report.render_route.clone();
         report.fallback_reason = persisted.processing_report.fallback_reason.clone();
-        report
-            .fallback_reasons
-            .extend(persisted.processing_report.fallback_reasons.iter().cloned());
+        extend_unique_fallback_reasons(
+            &mut report,
+            persisted.processing_report.fallback_reasons.iter().cloned(),
+        );
     }
     state.processing_report = report;
     if let Some(mapping) =
@@ -5906,6 +8040,17 @@ fn resolution_key(resolution: &PipelineResolution) -> String {
             resolution.requested_path, resolution.resolved_path, resolution.resolved_profile_id
         )
     })
+}
+
+fn proxy_runtime_key(
+    resolution_key: &str,
+    use_smart_auto_compatibility: bool,
+    geom: &GeometryState,
+) -> String {
+    format!(
+        "{resolution_key}|smart_auto_compatibility={use_smart_auto_compatibility}|analysis_geometry={}",
+        analysis_geometry_fingerprint(geom)
+    )
 }
 
 fn resolution_density_provenance(
@@ -6519,7 +8664,11 @@ fn filmstrip_item(item: &FilmItem) -> FilmstripItem {
         embedded_thumbnail_base64: item.embedded_thumbnail_base64.clone(),
         rendered_thumbnail_base64: item.rendered_thumbnail_base64.clone(),
         thumbnail_kind: item.thumbnail_kind().to_string(),
-        base_analyzed: pipeline_has_base(item.effective_pipeline_state(), &item.base_color),
+        base_analyzed: pipeline_base_analysis_complete(
+            item.effective_pipeline_state(),
+            &item.base_color,
+            &item.geom,
+        ),
         state_available: true,
         file_missing,
     }
@@ -7126,6 +9275,7 @@ fn write_linear_dng_export(
         description: description.as_deref(),
         software: &software,
         timestamp: &timestamp,
+        opcode_list2: None,
     };
     let bytes = crate::dng_writer::linear_dng_bytes(&request)?;
     write_bytes_atomically(output_path, &bytes)
@@ -7464,6 +9614,12 @@ pub struct ActiveImageState {
     pub pipeline_state: PipelineState,
 }
 
+#[derive(serde::Serialize)]
+pub struct PreparedProxyResult {
+    pub long_edge: u32,
+    pub pipeline_state: PipelineState,
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  LRU Proxy Cache — strict bounded-capacity enforcement
 // ═══════════════════════════════════════════════════════════════════════════
@@ -7551,19 +9707,17 @@ pub async fn switch_active_image(
     item.params = params;
     item.geom = geom;
     item.base_color = base_color;
-    // The camera matrix is a property of the decoded file. A record persisted
-    // before this frame's first decode in this session does not carry it yet,
-    // but the retained working proxy does not change basis by being reselected.
-    let decoded_camera_to_display = item.pipeline_state.processing_report.camera_to_display;
+    // The camera matrix, decoded input domain and decode-time fallbacks are
+    // properties of the in-memory pixels. A database row written before this
+    // frame's first decode in the session cannot replace them.
+    let decoded_report = item.effective_pipeline_state().processing_report.clone();
     item.pipeline_state = pipeline_state;
-    if item
-        .pipeline_state
-        .processing_report
-        .camera_to_display
-        .is_none()
-    {
-        item.pipeline_state.processing_report.camera_to_display = decoded_camera_to_display;
-    }
+    preserve_decoded_proxy_report(
+        &mut item.pipeline_state.processing_report,
+        &decoded_report.input_domain,
+        decoded_report.camera_to_display,
+        decoded_report.fallback_reasons,
+    );
     clear_retired_legacy_domain(&mut item.pipeline_state);
 
     // Return the current resolved capability, not the persisted request. This
@@ -7595,7 +9749,11 @@ pub async fn switch_active_image(
     Ok(ActiveImageState {
         params: item.params.clone(),
         geom: item.geom.clone(),
-        base_analyzed: pipeline_has_base(&resolved_state, &item.base_color),
+        base_analyzed: pipeline_base_analysis_complete(
+            &resolved_state,
+            &item.base_color,
+            &item.geom,
+        ),
         developed: frame_has_display_endpoints(&item.params),
         pipeline_state: resolved_state,
     })
@@ -7606,7 +9764,7 @@ pub async fn prepare_proxy(
     id: String,
     target_long_edge: Option<u32>,
     state: State<'_, EngineState>,
-) -> Result<u32, String> {
+) -> Result<PreparedProxyResult, String> {
     let target_long_edge = preview_proxy_target_long_edge(target_long_edge);
     let item_arc = state.items.get(&id).ok_or("Image ID not found")?.clone();
     let (
@@ -7617,6 +9775,7 @@ pub async fn prepare_proxy(
         cached_resolution_key,
         has_prophoto_estimate,
         has_capture_corrected,
+        analysis_geometry,
     ) = {
         let item = read_lock(&item_arc);
         if std::fs::File::open(&item.file_path).is_err() {
@@ -7635,6 +9794,7 @@ pub async fn prepare_proxy(
             item.runtime_pipeline_key.clone(),
             item.prophoto_estimate_proxy.is_some(),
             item.relative_transmission_proxy.is_some(),
+            item.geom.clone(),
         )
     };
     let rolls = read_lock(&state.rolls).clone();
@@ -7650,6 +9810,7 @@ pub async fn prepare_proxy(
         persistence::load_scanner_profiles(&connection)
             .map_err(|error| format!("Failed to load scanner profiles: {error}"))?
     };
+    let scanner_profile_bound = roll.is_some_and(|roll| roll.scanner_profile_id.is_some());
     let scanner_profile = roll
         .and_then(|roll| roll.scanner_profile_id.as_deref())
         .and_then(|profile_id| {
@@ -7659,7 +9820,8 @@ pub async fn prepare_proxy(
         })
         .filter(|record| record_is_current(record))
         .map(|record| record.profile.clone());
-    if roll.is_some_and(|roll| roll.scanner_profile_id.is_some()) && scanner_profile.is_none() {
+    let scanner_profile_resolved = scanner_profile.is_some();
+    if scanner_profile_bound && !scanner_profile_resolved {
         eprintln!("[Scanner Pipeline] Bound scanner profile is missing or stale; using source RGB unchanged");
     }
     let initial_resolution =
@@ -7669,12 +9831,25 @@ pub async fn prepare_proxy(
     // technical report and every later stage see the same domain.
     let input_domain = resolve_input_domain(&file_path, scanner_profile.as_ref());
     persisted_state.processing_report.input_domain = input_domain.clone();
+    let known_proxy_fallback_reasons = proxy_additional_fallback_reasons(
+        &input_domain,
+        WorkingBasis::ProPhotoEstimate,
+        None,
+        scanner_profile_bound,
+        scanner_profile_resolved,
+        None,
+    );
+    extend_unique_fallback_reasons(
+        &mut persisted_state.processing_report,
+        known_proxy_fallback_reasons.iter().cloned(),
+    );
     let use_smart_auto_compatibility_proxy = initial_resolution.resolved_path
         == ProcessingContract::SmartAutoProPhotoV11
         && is_smart_auto_compatibility(&persisted_state);
-    let initial_resolution_key = format!(
-        "{}|smart_auto_compatibility={use_smart_auto_compatibility_proxy}",
-        resolution_key(&initial_resolution)
+    let initial_resolution_key = proxy_runtime_key(
+        &resolution_key(&initial_resolution),
+        use_smart_auto_compatibility_proxy,
+        &analysis_geometry,
     );
     let auxiliary_ready = match initial_resolution.resolved_path {
         ProcessingContract::CaptureCorrectedV11 => has_capture_corrected,
@@ -7692,14 +9867,30 @@ pub async fn prepare_proxy(
     {
         // The proxy is already the one this frame renders: a base inherited
         // from another frame can still be replaced on it right here.
-        {
+        let pipeline_state = {
             let mut item = write_lock(&item_arc);
+            item.pipeline_state.processing_report.input_domain = input_domain.clone();
+            extend_unique_fallback_reasons(
+                &mut item.pipeline_state.processing_report,
+                known_proxy_fallback_reasons.iter().cloned(),
+            );
+            if let Some(runtime) = item.runtime_pipeline_state.as_mut() {
+                runtime.processing_report.input_domain = input_domain.clone();
+                extend_unique_fallback_reasons(
+                    &mut runtime.processing_report,
+                    known_proxy_fallback_reasons.iter().cloned(),
+                );
+            }
             if let Err(error) = remeasure_inherited_film_base(&mut item) {
                 eprintln!("[Film Base] inherited film base re-measurement failed: {error}");
             }
-        }
+            item.effective_pipeline_state().clone()
+        };
         track_proxy_loaded(&state, &id);
-        return Ok(current_long_edge);
+        return Ok(PreparedProxyResult {
+            long_edge: current_long_edge,
+            pipeline_state,
+        });
     }
 
     let contract = initial_resolution.resolved_path;
@@ -7722,11 +9913,14 @@ pub async fn prepare_proxy(
         prophoto_estimate: Option<ImageBuffer<Rgb<f32>, Vec<f32>>>,
         capture_corrected: Option<CaptureCorrectedProxyData>,
         fallback_reason: Option<String>,
+        input_domain: InputDomainRecord,
         /// Camera -> sRGB matrix of a camera-native working buffer.
         camera_to_display: Option<[f32; 9]>,
+        working_basis: WorkingBasis,
     }
 
     let decode_path = file_path.clone();
+    let resolved_input_domain = input_domain.clone();
     let prepared =
         tokio::task::spawn_blocking(move || -> Result<_, String> {
             let decode_mode = preview_proxy_decode_mode(target_long_edge);
@@ -7744,7 +9938,9 @@ pub async fn prepare_proxy(
                             prophoto_estimate: None,
                             capture_corrected: Some(capture_corrected),
                             fallback_reason: None,
+                            input_domain: resolved_input_domain.clone(),
                             camera_to_display: None,
+                            working_basis: WorkingBasis::ProPhotoEstimate,
                         });
                     }
                     Err(error) => {
@@ -7774,7 +9970,9 @@ pub async fn prepare_proxy(
                             prophoto_estimate: Some(estimate),
                             capture_corrected: None,
                             fallback_reason: Some(error),
+                            input_domain: resolved_input_domain.clone(),
                             camera_to_display,
+                            working_basis: smart_auto_working_basis(&decode_path),
                         });
                     }
                 }
@@ -7808,69 +10006,32 @@ pub async fn prepare_proxy(
                     prophoto_estimate: Some(estimate),
                     capture_corrected: None,
                     fallback_reason: None,
+                    input_domain: resolved_input_domain.clone(),
                     camera_to_display: None,
+                    working_basis: WorkingBasis::ProPhotoEstimate,
                 });
             }
             if contract != ProcessingContract::LegacyV1 {
-                let mut camera_to_display = None;
-                let mut estimate = if scanner_profile.is_some()
-                    && !is_raw_extension(&decode_path)
-                    && !is_dng_extension(&decode_path)
-                {
-                    decode_scanner_profiled_estimate_with_matrix(
-                        &decode_path,
-                        decode_mode,
-                        scanner_profile.as_ref(),
-                        target_long_edge,
-                    )?
-                    .0
-                } else if is_dng_extension(&decode_path) {
-                    let linear = decode_reduced_dng_for_working_space(&decode_path, target_long_edge)
-                        .or_else(|_| decode_image_buffer(&decode_path, decode_mode))?;
-                    linear_srgb_u16_to_prophoto_f32(&linear)
-                } else if is_scanner_fff_tiff(&decode_path) {
-                    // Scanner FFF has no ICC tag for its device RGB and must
-                    // never be handed to LibRaw, so keep it on the TIFF decoder
-                    // without the generic-image fallback below.
-                    let linear = decode_tiff_for_smart_auto(&decode_path, target_long_edge)?;
-                    linear_srgb_u16_to_prophoto_f32(&linear)
-                } else if is_direct_image_extension(&decode_path) {
-                    // All TIFF/JPEG/PNG inputs use one encoded-domain decoder.
-                    // The streaming TIFF reader and the generic-image fallback
-                    // live inside it, so the canvas cannot diverge from export
-                    // or Roll-anchor analysis.
-                    decode_direct_rgb_prophoto_estimate(
-                        &decode_path,
-                        target_long_edge,
-                        decode_mode,
-                    )?
-                } else {
-                    let (estimate, matrix) = decode_scanner_profiled_estimate_with_matrix(
-                        &decode_path,
-                        decode_mode,
-                        scanner_profile.as_ref(),
-                        target_long_edge,
-                    )?;
-                    camera_to_display = matrix;
-                    estimate
-                };
-                let (width, height) = estimate.dimensions();
-                let ratio = (target_long_edge as f32 / width.max(height) as f32).min(1.0);
-                if ratio < 0.999 {
-                    estimate = image::imageops::resize(
-                        &estimate,
-                        (width as f32 * ratio).max(1.0) as u32,
-                        (height as f32 * ratio).max(1.0) as u32,
-                        FilterType::Triangle,
-                    );
-                }
-                let transport = prophoto_estimate_to_transport_proxy(&estimate);
+                let decoded = decode_modern_input(
+                    &decode_path,
+                    decode_mode,
+                    scanner_profile.as_ref(),
+                    target_long_edge,
+                    true,
+                )?;
+                debug_assert_eq!(
+                    decoded.working_basis,
+                    smart_auto_working_basis(&decode_path)
+                );
+                let transport = prophoto_estimate_to_transport_proxy(&decoded.image);
                 return Ok(PreparedProxy {
                     transport,
-                    prophoto_estimate: Some(estimate),
+                    prophoto_estimate: Some(decoded.image),
                     capture_corrected: None,
                     fallback_reason: None,
-                    camera_to_display,
+                    input_domain: decoded.input_domain,
+                    camera_to_display: decoded.camera_to_display,
+                    working_basis: decoded.working_basis,
                 });
             }
 
@@ -7896,7 +10057,9 @@ pub async fn prepare_proxy(
                     prophoto_estimate: Some(estimate),
                     capture_corrected: None,
                     fallback_reason: None,
+                    input_domain: resolved_input_domain.clone(),
                     camera_to_display,
+                    working_basis: WorkingBasis::ProPhotoEstimate,
                 });
             }
             let img_buffer = if is_dng_extension(&decode_path) {
@@ -7925,7 +10088,9 @@ pub async fn prepare_proxy(
                 prophoto_estimate: None,
                 capture_corrected: None,
                 fallback_reason: None,
+                input_domain: resolved_input_domain.clone(),
                 camera_to_display: None,
+                working_basis: WorkingBasis::ProPhotoEstimate,
             })
         })
         .await
@@ -7940,35 +10105,51 @@ pub async fn prepare_proxy(
     // frame. Measure the frame's own film base so mask removal stays exact, and
     // how much of the film span its scene actually reaches so the print is not
     // pushed towards black.
-    let anchor_base = pipeline_base_density(&persisted_state, &BaseColor::default());
-    let detected_base = prepared
-        .prophoto_estimate
-        .as_ref()
-        .filter(|_| {
-            matches!(
-                final_resolution.resolved_path,
-                ProcessingContract::RollAnchoredProPhotoV11
-                    | ProcessingContract::CaptureCorrectedV11
-            )
-        })
-        .and_then(|estimate| {
-            if anchor_base.iter().all(|value| *value > 0.0) {
-                detect_frame_base_density(estimate, anchor_base)
-            } else {
-                None
-            }
-        });
-    let detected_highlight = detected_base
-        .zip(roll_physical_density_span(
-            &persisted_state.density_anchors,
-            anchor_base,
-        ))
-        .and_then(|(base, span)| {
-            prepared
-                .prophoto_estimate
-                .as_ref()
-                .and_then(|estimate| detect_frame_highlight_fraction(estimate, base, span))
-        });
+    let analysis_state =
+        state_from_resolution_with_frame_base(&persisted_state, &final_resolution, None, None);
+    let anchor_base = pipeline_base_density(&analysis_state, &BaseColor::default());
+    let roll_measurement = prepared.prophoto_estimate.as_ref().and_then(|estimate| {
+        measure_complete_roll_frame_parameters(estimate, &analysis_state, &analysis_geometry)
+    });
+    let (detected_base, detected_highlight) = if let Some(measurement) = roll_measurement {
+        (
+            measurement
+                .estimate
+                .is_trusted()
+                .then_some(measurement.estimate.density),
+            measurement.highlight,
+        )
+    } else {
+        let detected_base = prepared
+            .prophoto_estimate
+            .as_ref()
+            .filter(|_| {
+                matches!(
+                    final_resolution.resolved_path,
+                    ProcessingContract::RollAnchoredProPhotoV11
+                        | ProcessingContract::CaptureCorrectedV11
+                )
+            })
+            .and_then(|estimate| {
+                if anchor_base.iter().all(|value| *value > 0.0) {
+                    detect_frame_base_density(estimate, anchor_base)
+                } else {
+                    None
+                }
+            });
+        let detected_highlight = detected_base
+            .zip(roll_physical_density_span(
+                &analysis_state.density_anchors,
+                anchor_base,
+            ))
+            .and_then(|(base, span)| {
+                prepared
+                    .prophoto_estimate
+                    .as_ref()
+                    .and_then(|estimate| detect_frame_highlight_fraction(estimate, base, span))
+            });
+        (detected_base, detected_highlight)
+    };
     let mut final_state = state_from_resolution_with_frame_base(
         &persisted_state,
         &final_resolution,
@@ -7976,7 +10157,21 @@ pub async fn prepare_proxy(
         detected_highlight,
     );
     clear_retired_legacy_domain(&mut final_state);
-    final_state.processing_report.input_domain = input_domain;
+    final_state.processing_report.input_domain = prepared.input_domain.clone();
+    let capture_fallback_reason = (contract == ProcessingContract::CaptureCorrectedV11)
+        .then_some(prepared.fallback_reason.as_deref())
+        .flatten();
+    extend_unique_fallback_reasons(
+        &mut final_state.processing_report,
+        proxy_additional_fallback_reasons(
+            &prepared.input_domain,
+            prepared.working_basis,
+            prepared.camera_to_display,
+            scanner_profile_bound,
+            scanner_profile_resolved,
+            capture_fallback_reason,
+        ),
+    );
     // The positive of a camera-native working buffer is displayed through the
     // matrix of the decode that produced it, everywhere it is rendered.
     final_state.processing_report.camera_to_display = prepared.camera_to_display;
@@ -8000,14 +10195,14 @@ pub async fn prepare_proxy(
             report.fallback_reason = "scanner_tiff_input_space_estimated".to_string();
         }
     }
-    let final_resolution_key = format!(
-        "{}|smart_auto_compatibility={}",
-        resolution_key(&final_resolution),
-        use_smart_auto_compatibility_proxy
+    let final_resolution_key = proxy_runtime_key(
+        &resolution_key(&final_resolution),
+        use_smart_auto_compatibility_proxy,
+        &analysis_geometry,
     );
     let density_provenance = resolution_density_provenance(&final_resolution);
     let loaded_long_edge = prepared.transport.width().max(prepared.transport.height());
-    let retained_long_edge = {
+    let (retained_long_edge, pipeline_state) = {
         let mut item = write_lock(&item_arc);
         // Legacy and loose Smart Auto compatibility keep the historical
         // linear-sRGB u16 source; anchored Smart Auto and Capture Corrected
@@ -8047,6 +10242,14 @@ pub async fn prepare_proxy(
         clear_retired_legacy_domain(&mut item.pipeline_state);
         item.pipeline_state.processing_report.input_domain =
             final_state.processing_report.input_domain.clone();
+        extend_unique_fallback_reasons(
+            &mut item.pipeline_state.processing_report,
+            final_state
+                .processing_report
+                .fallback_reasons
+                .iter()
+                .cloned(),
+        );
         item.pipeline_state.processing_report.camera_to_display =
             final_state.processing_report.camera_to_display;
         item.runtime_pipeline_state = Some(final_state);
@@ -8058,10 +10261,16 @@ pub async fn prepare_proxy(
         if let Err(error) = remeasure_inherited_film_base(&mut item) {
             eprintln!("[Film Base] inherited film base re-measurement failed: {error}");
         }
-        loaded_long_edge.max(retained_long_edge)
+        (
+            loaded_long_edge.max(retained_long_edge),
+            item.effective_pipeline_state().clone(),
+        )
     };
     track_proxy_loaded(&state, &id);
-    Ok(retained_long_edge)
+    Ok(PreparedProxyResult {
+        long_edge: retained_long_edge,
+        pipeline_state,
+    })
 }
 
 #[tauri::command]
@@ -8102,14 +10311,19 @@ pub async fn analyze_proxy_base_color(
 
     tokio::task::spawn_blocking(move || {
         ensure_current_development_generation(&epoch, generation)?;
-        let (base_color, runtime_pipeline_state, persisted_pipeline_state) = {
+        let (
+            base_color,
+            runtime_pipeline_state,
+            persisted_pipeline_state,
+            (roll_frame_base, roll_frame_highlight),
+        ) = {
             let item = read_lock(&item_arc);
             let mut effective = item.effective_pipeline_state().clone();
             clear_retired_legacy_domain(&mut effective);
             // A frame whose window was derived by an older release is analysed
             // once more, so the retired per-channel content offsets cannot keep
             // rendering a cast that the current rules no longer produce.
-            if pipeline_has_base(&effective, &item.base_color)
+            if pipeline_base_analysis_complete(&effective, &item.base_color, &item.geom)
                 && !frame_needs_window_reanalysis(&effective)
             {
                 return Ok(());
@@ -8123,11 +10337,14 @@ pub async fn analyze_proxy_base_color(
                     compute_auto_base(proxy),
                     effective,
                     item.pipeline_state.clone(),
+                    (None, None),
                 )
             } else {
                 let smart_auto_compatibility = is_smart_auto_compatibility(&effective);
                 let capture_corrected =
                     effective.contract == ProcessingContract::CaptureCorrectedV11;
+                let roll_anchored =
+                    effective.contract == ProcessingContract::RollAnchoredProPhotoV11;
                 let input = if capture_corrected {
                     item.relative_transmission_proxy.as_ref()
                 } else {
@@ -8138,6 +10355,10 @@ pub async fn analyze_proxy_base_color(
                     .then_some(item.relative_transmission_quality.as_ref())
                     .flatten();
                 let mut pending_base_fallback: Option<&'static str> = None;
+                let mut pending_base_state = FilmBaseState::Trusted;
+                let mut complete_roll_fallback_reason: Option<&'static str> = None;
+                let mut roll_frame_base = None;
+                let mut roll_frame_highlight = None;
                 let (density, estimated_confidence, estimated_source) = if smart_auto_compatibility
                 {
                     let proxy = item
@@ -8152,24 +10373,37 @@ pub async fn analyze_proxy_base_color(
                             -(base.base_b as f32 / 65535.0).max(1.0e-6).log10(),
                         ],
                         1.0,
-                        "compatibility_base",
+                        "compatibility_base".to_string(),
                     )
                 } else if let Some(quality) = quality {
                     (
                         compute_auto_base_capture_corrected(input, quality, &item.geom)?,
                         0.9,
-                        "detected_film_base",
+                        "detected_film_base".to_string(),
+                    )
+                } else if roll_anchored {
+                    let decision =
+                        complete_roll_frame_base_decision(Some(input), &effective, &item.geom)
+                            .ok_or_else(|| "complete_roll_analysis_unavailable".to_string())?;
+                    roll_frame_base = decision.frame_base;
+                    roll_frame_highlight = decision.highlight;
+                    complete_roll_fallback_reason = decision.fallback_reason;
+                    (
+                        decision.base_density,
+                        decision.base_confidence,
+                        decision.base_source.to_string(),
                     )
                 } else {
                     // The film base is the only neutral reference the unified
                     // density stage has, so it is estimated in the documented
                     // sampling order and quality-gated. A candidate that fails
-                    // the gate leaves the frame on the content mapping and is
-                    // reported as "missing_film_base_reference" instead of
-                    // silently neutralising on a scene sample.
+                    // the gate leaves the frame on the channel-specific content
+                    // mapping and is reported by name instead of silently
+                    // neutralising on a scene sample.
                     let estimate = estimate_film_base_f32(input, &item.geom);
                     pending_base_fallback = estimate.fallback_reason;
-                    if estimate.usable {
+                    pending_base_state = estimate.state;
+                    if estimate.is_trusted() {
                         (
                             estimate.density,
                             estimate.confidence,
@@ -8177,27 +10411,32 @@ pub async fn analyze_proxy_base_color(
                                 "film_edge_band" => "film_edge_band",
                                 "film_area_low_density_tail" => "detected_film_base",
                                 _ => "content_estimate",
-                            },
+                            }
+                            .to_string(),
                         )
                     } else if effective.density_anchors.has_roll_full_exposure() {
                         // A sampled leader fixes D-max. If no edge rebate or low-density
                         // tail was identifiable, infer the missing base from the
                         // confirmed Film Area content minimum.
+                        pending_base_state = FilmBaseState::Trusted;
+                        pending_base_fallback = None;
                         (
                             compute_content_limits_f32(input, quality, &item.geom, [0.0; 3])?.d_min,
                             0.8,
-                            "detected_film_base",
+                            "detected_film_base".to_string(),
                         )
                     } else {
                         (
                             estimate.density,
                             estimate.confidence,
-                            "missing_film_base_reference",
+                            estimate.source.to_string(),
                         )
                     }
                 };
                 let mut runtime = effective;
                 let mut persisted = item.pipeline_state.clone();
+                let measured_geometry = analysis_geometry_fingerprint(&item.geom);
+                let measured_rule = required_analysis_geometry_rule(&runtime);
                 for report in [
                     &mut runtime.processing_report,
                     &mut persisted.processing_report,
@@ -8213,11 +10452,23 @@ pub async fn analyze_proxy_base_color(
                     };
                     report.uses_physical_anchors = runtime.density_anchors.has_base();
                     report.analysis_window_rule = crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+                    report.analysis_geometry_fingerprint = measured_geometry.clone();
+                    report.analysis_geometry_rule = measured_rule;
                     let (open, saturated, invalid) = smart_auto_exclusion_counts(input, &item.geom);
                     report.excluded_open_light_pixels = open;
                     report.excluded_saturated_pixels = saturated;
                     report.excluded_invalid_pixels = invalid;
-                    if estimated_confidence <= 0.0
+                    if let Some(reason) = complete_roll_fallback_reason {
+                        if !report
+                            .fallback_reasons
+                            .iter()
+                            .any(|existing| existing == reason)
+                        {
+                            report.fallback_reasons.push(reason.to_string());
+                        }
+                        report.fallback_reason = reason.to_string();
+                    }
+                    if pending_base_state != FilmBaseState::Trusted
                         && !report
                             .fallback_reasons
                             .iter()
@@ -8227,7 +10478,9 @@ pub async fn analyze_proxy_base_color(
                             .fallback_reasons
                             .push("smart_auto_no_trusted_film_base".to_string());
                     }
-                    if let Some(reason) = pending_base_fallback {
+                    if pending_base_state != FilmBaseState::Trusted {
+                        let reason =
+                            pending_base_fallback.unwrap_or("smart_auto_no_trusted_film_base");
                         if !report
                             .fallback_reasons
                             .iter()
@@ -8238,7 +10491,33 @@ pub async fn analyze_proxy_base_color(
                         report.fallback_reason = reason.to_string();
                     }
                 }
-                (base_color_from_density(density), runtime, persisted)
+                if roll_anchored {
+                    if let Some(mapping) = roll_density_mapping_with_frame_base(
+                        &runtime,
+                        roll_frame_base,
+                        roll_frame_highlight,
+                    ) {
+                        runtime.content_range = None;
+                        runtime.render_mapping = mapping.clone();
+                        runtime.processing_report.render_route =
+                            "RollAnchoredDirectInvert".to_string();
+                        runtime.processing_report.tone_mapping_mode =
+                            "roll_anchored_fixed".to_string();
+                        persisted.content_range = None;
+                        persisted.render_mapping = mapping;
+                        persisted.processing_report.render_route =
+                            "RollAnchoredDirectInvert".to_string();
+                        persisted.processing_report.tone_mapping_mode =
+                            "roll_anchored_fixed".to_string();
+                    }
+                }
+                let measured_base_color = base_color_from_density(density);
+                (
+                    measured_base_color,
+                    runtime,
+                    persisted,
+                    (roll_frame_base, roll_frame_highlight),
+                )
             }
         };
 
@@ -8246,7 +10525,7 @@ pub async fn analyze_proxy_base_color(
         ensure_current_development_generation(&epoch, generation)?;
         let mut effective = item.effective_pipeline_state().clone();
         clear_retired_legacy_domain(&mut effective);
-        if pipeline_has_base(&effective, &item.base_color)
+        if pipeline_base_analysis_complete(&effective, &item.base_color, &item.geom)
             && !frame_needs_window_reanalysis(&effective)
         {
             return Ok(());
@@ -8257,9 +10536,15 @@ pub async fn analyze_proxy_base_color(
             &base_color,
             &persisted_pipeline_state,
         )?;
+        let roll_anchored =
+            item.effective_pipeline_state().contract == ProcessingContract::RollAnchoredProPhotoV11;
         item.base_color = base_color;
         item.pipeline_state = persisted_pipeline_state;
         item.runtime_pipeline_state = Some(runtime_pipeline_state);
+        if roll_anchored {
+            item.runtime_frame_base = roll_frame_base;
+            item.runtime_frame_highlight = roll_frame_highlight;
+        }
         item.pristine_proxy = None;
         Ok(())
     })
@@ -8284,7 +10569,7 @@ fn choose_pasted_film_base(
     frame_measurement: Option<([f32; 3], String, String)>,
     measured: Option<FilmBaseEstimate>,
 ) -> ([f32; 3], String, String, bool) {
-    if let Some(estimate) = measured.filter(|estimate| estimate.usable) {
+    if let Some(estimate) = measured.filter(FilmBaseEstimate::is_trusted) {
         return (
             estimate.density,
             estimate.source.to_string(),
@@ -8308,18 +10593,61 @@ fn choose_pasted_film_base(
 /// Everything that depends on the base moves with it: the stored colour, the
 /// provenance the technical report shows, and — on a sampled Roll — the
 /// display mapping, which is the Roll anchor plus *this* frame's own base.
+fn mark_installed_film_base_analysis(
+    state: &mut PipelineState,
+    geom: &GeometryState,
+    source: &str,
+    measured_on_frame: bool,
+) {
+    if source == crate::pipeline::INHERITED_FILM_BASE_SOURCE {
+        // An inherited or placeholder base says nothing about this frame's
+        // current Film Area, on any contract. Clearing the markers keeps the
+        // next analysis open instead of turning the old offset into a completed
+        // result.
+        state.processing_report.analysis_window_rule = 0;
+        state
+            .processing_report
+            .analysis_geometry_fingerprint
+            .clear();
+        state.processing_report.analysis_geometry_rule = 0;
+        return;
+    }
+    let complete_roll = state.contract == ProcessingContract::RollAnchoredProPhotoV11;
+    let deliberate_complete_roll_decision = measured_on_frame
+        && !matches!(
+            source,
+            crate::pipeline::INVALID_FILM_BASE_SOURCE | crate::pipeline::CONTENT_FALLBACK_SOURCE
+        )
+        || source == crate::pipeline::COMPLETE_ROLL_ANCHOR_FALLBACK_SOURCE;
+    if complete_roll && !deliberate_complete_roll_decision {
+        // A Complete Roll that could not decide a frame-specific base keeps the
+        // analysis open as well.
+        state.processing_report.analysis_window_rule = 0;
+        state
+            .processing_report
+            .analysis_geometry_fingerprint
+            .clear();
+        state.processing_report.analysis_geometry_rule = 0;
+        return;
+    }
+    state.processing_report.analysis_window_rule = crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+    state.processing_report.analysis_geometry_fingerprint = analysis_geometry_fingerprint(geom);
+    state.processing_report.analysis_geometry_rule = required_analysis_geometry_rule(state);
+}
+
 fn install_film_base(
     item: &mut FilmItem,
     density: [f32; 3],
     source: &str,
     confidence: &str,
+    measured_on_frame: bool,
 ) -> Result<(), String> {
     let base_color = base_color_from_density(density);
     let mut runtime = item.effective_pipeline_state().clone();
     clear_retired_legacy_domain(&mut runtime);
     runtime.processing_report.base_source = source.to_string();
     runtime.processing_report.base_confidence = confidence.to_string();
-    runtime.processing_report.analysis_window_rule = crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+    mark_installed_film_base_analysis(&mut runtime, &item.geom, source, measured_on_frame);
     // A complete Roll has no per-frame window of its own: it renders from the
     // sampled anchors, offset by the base this frame actually recorded. A
     // mapping copied from another frame would carry that frame's exposure.
@@ -8368,21 +10696,48 @@ fn inherited_film_base_measurement(
     (state.processing_report.base_source == crate::pipeline::INHERITED_FILM_BASE_SOURCE
         && geom.calibration_points.is_some())
     .then(|| estimate_film_base_f32(proxy, geom))
-    .filter(|estimate| estimate.usable)
+    .filter(|estimate| estimate.is_trusted())
+}
+
+/// Measure the film base with the proxy that belongs to the active contract.
+/// Capture Corrected stores relative transmission rather than a ProPhoto
+/// estimate; asking only for the latter leaves every Capture frame on the
+/// copied place-holder.
+fn measure_frame_film_base(item: &FilmItem) -> Option<FilmBaseEstimate> {
+    if item.geom.calibration_points.is_none() {
+        return None;
+    }
+    if item.effective_pipeline_state().contract == ProcessingContract::CaptureCorrectedV11 {
+        let proxy = item.relative_transmission_proxy.as_ref()?;
+        let quality = item.relative_transmission_quality.as_ref()?;
+        let density = compute_auto_base_capture_corrected(proxy, quality, &item.geom).ok()?;
+        return Some(FilmBaseEstimate {
+            density,
+            confidence: 0.9,
+            source: "detected_film_base",
+            state: FilmBaseState::Trusted,
+            fallback_reason: None,
+        });
+    }
+    item.prophoto_estimate_proxy
+        .as_ref()
+        .map(|proxy| estimate_film_base_f32(proxy, &item.geom))
+        .filter(FilmBaseEstimate::is_trusted)
 }
 
 /// Replace a base this frame inherited with its own measurement, the first time
 /// the frame has pixels to measure. Returns true when it was replaced.
 fn remeasure_inherited_film_base(item: &mut FilmItem) -> Result<bool, String> {
-    let Some(proxy) = item.prophoto_estimate_proxy.as_ref() else {
+    if item.pipeline_state.processing_report.base_source
+        != crate::pipeline::INHERITED_FILM_BASE_SOURCE
+    {
         return Ok(false);
-    };
-    let Some(estimate) = inherited_film_base_measurement(&item.pipeline_state, &item.geom, proxy)
-    else {
+    }
+    let Some(estimate) = measure_frame_film_base(item) else {
         return Ok(false);
     };
     let confidence = format!("{:.3}", estimate.confidence);
-    install_film_base(item, estimate.density, estimate.source, &confidence)?;
+    install_film_base(item, estimate.density, estimate.source, &confidence, true)?;
     Ok(true)
 }
 
@@ -8409,17 +10764,13 @@ pub async fn apply_film_base(
         // A pasted film base is only a starting point: the base is the neutral
         // reference of *this* frame's clear film, so measure it here whenever
         // the frame's own Film Area analysis is available.
-        let measured = item
-            .geom
-            .calibration_points
-            .is_some()
-            .then(|| item.prophoto_estimate_proxy.as_ref())
-            .flatten()
-            .map(|proxy| estimate_film_base_f32(proxy, &item.geom));
-        let frame_measurement = crate::pipeline::base_is_frame_measurement(
-            &item.pipeline_state.processing_report.base_source,
-            &item.base_color,
-        )
+        let measured = measure_frame_film_base(&item);
+        let frame_measurement = (analysis_geometry_is_current(&item.pipeline_state, &item.geom)
+            && analysis_geometry_rule_is_current(&item.pipeline_state)
+            && crate::pipeline::base_is_frame_measurement(
+                &item.pipeline_state.processing_report.base_source,
+                &item.base_color,
+            ))
         .then(|| {
             (
                 crate::pipeline::base_density_from_base_color(&item.base_color),
@@ -8432,7 +10783,13 @@ pub async fn apply_film_base(
         });
         let (effective_density, base_source, base_confidence, measured_on_frame) =
             choose_pasted_film_base(base_density, frame_measurement, measured);
-        install_film_base(&mut item, effective_density, &base_source, &base_confidence)?;
+        install_film_base(
+            &mut item,
+            effective_density,
+            &base_source,
+            &base_confidence,
+            measured_on_frame,
+        )?;
         Ok(AppliedFilmBase {
             base_density: effective_density,
             base_source,
@@ -8465,7 +10822,7 @@ pub async fn analyze_proxy_density_limits(
             let item = read_lock(&item_arc);
             let mut effective = item.effective_pipeline_state().clone();
             clear_retired_legacy_domain(&mut effective);
-            if !pipeline_has_base(&effective, &item.base_color) {
+            if !pipeline_base_analysis_complete(&effective, &item.base_color, &item.geom) {
                 return Err("BASE_COLOR_NOT_ANALYZED".to_string());
             }
             (
@@ -8753,14 +11110,18 @@ pub async fn auto_invert_roll(
                 let mut item = write_lock(&item_arc);
                 let mut pipeline = item.effective_pipeline_state().clone();
                 pipeline.density_anchors = worker_anchors.clone();
-                let (frame_base, highlight_fraction) =
-                    resolve_frame_render_parameters(&item, &pipeline);
-                if item.runtime_frame_base.is_none() {
-                    item.runtime_frame_base = frame_base;
-                }
-                if item.runtime_frame_highlight.is_none() {
-                    item.runtime_frame_highlight = highlight_fraction;
-                }
+                // A batch run must not reuse the old geometry's frame base or
+                // accept a whole-frame histogram as a Film Area measurement.
+                let decision = complete_roll_frame_base_decision(
+                    item.prophoto_estimate_proxy.as_ref(),
+                    &pipeline,
+                    &item.geom,
+                )
+                .ok_or_else(|| "complete_roll_anchors_required".to_string())?;
+                let frame_base = decision.frame_base;
+                let highlight_fraction = decision.highlight;
+                item.runtime_frame_base = frame_base;
+                item.runtime_frame_highlight = highlight_fraction;
                 let mapping =
                     roll_density_mapping_with_frame_base(&pipeline, frame_base, highlight_fraction)
                         .ok_or_else(|| "complete_roll_anchors_required".to_string())?;
@@ -8773,12 +11134,37 @@ pub async fn auto_invert_roll(
                 pipeline.processing_report.tone_mapping_mode = "roll_anchored_fixed".to_string();
                 pipeline.processing_report.fallback_reason.clear();
                 apply_roll_anchor_report(&mut pipeline);
+                pipeline.processing_report.base_source = decision.base_source.to_string();
+                pipeline.processing_report.base_confidence =
+                    format!("{:.3}", decision.base_confidence);
+                if let Some(reason) = decision.fallback_reason {
+                    if !pipeline
+                        .processing_report
+                        .fallback_reasons
+                        .iter()
+                        .any(|existing| existing == reason)
+                    {
+                        pipeline
+                            .processing_report
+                            .fallback_reasons
+                            .push(reason.to_string());
+                    }
+                    pipeline.processing_report.fallback_reason = reason.to_string();
+                }
+                pipeline.processing_report.analysis_window_rule =
+                    crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+                pipeline.processing_report.analysis_geometry_fingerprint =
+                    analysis_geometry_fingerprint(&item.geom);
+                pipeline.processing_report.analysis_geometry_rule =
+                    required_analysis_geometry_rule(&pipeline);
                 let mut params = item.params.clone();
                 params.density.d_min = mapping.density_low;
                 params.density.d_max = mapping.density_high;
+                let base_color = base_color_from_density(decision.base_density);
                 persist_tuning_parameters(&item.roll_id, &item.file_path, &params)?;
-                persist_pipeline_state(&item.roll_id, &item.file_path, &pipeline)?;
+                persist_base_and_pipeline(&item.roll_id, &item.file_path, &base_color, &pipeline)?;
                 item.params = params;
+                item.base_color = base_color;
                 item.pipeline_state = pipeline.clone();
                 item.runtime_pipeline_state = Some(pipeline);
                 item.pristine_proxy = Some(compute_pristine_proxy(
@@ -9318,9 +11704,26 @@ pub async fn update_geometry(
     tokio::task::spawn_blocking(move || {
         let mut item = write_lock(&item_arc);
         ensure_current_development_generation(&epoch, generation)?;
+        let previous_geom = item.geom.clone();
         let framing_changed = geometry_framing_changed(&item.geom, &geom);
-        persist_geometry(&item.roll_id, &item.file_path, &geom)?;
+        let mut next_pipeline = item.pipeline_state.clone();
+        let invalidated =
+            invalidate_analysis_if_geometry_changed(&mut next_pipeline, &previous_geom, &geom);
+        // Geometry and the analysis state that depends on it form one record.
+        // A single transaction keeps a failed write from leaving new geometry
+        // beside the old completion marks after a restart.
+        persist_geometry_and_pipeline(&item.roll_id, &item.file_path, &geom, &next_pipeline)?;
         item.geom = geom;
+        item.pipeline_state = next_pipeline;
+        if invalidated {
+            // Keep the resolved runtime contract, but make its analysis state
+            // stale too so the current UI session cannot skip the re-measurement.
+            if let Some(runtime) = item.runtime_pipeline_state.as_mut() {
+                runtime.processing_report.analysis_window_rule = 0;
+            }
+            item.runtime_frame_base = None;
+            item.runtime_frame_highlight = None;
+        }
         if framing_changed {
             // The stored render was produced from the previous framing. Keeping
             // it would let the Library, the Develop placeholder, and the crop
@@ -10085,6 +12488,7 @@ pub fn get_proxy_response_buffer(state: &EngineState, id: &str) -> Result<Vec<u8
                 proxy,
                 &item.base_color,
                 &pipeline_state,
+                &item.geom,
                 item.relative_transmission_quality.as_ref(),
                 true,
             )
@@ -10780,6 +13184,9 @@ fn collect_film_area_rgb32(
         let region_margin = 1.0 / proxy.width().max(proxy.height()).max(1) as f32;
         !has_film_area || point_in_film_area(uv, &points, region_margin)
     })
+    .into_iter()
+    .map(|(_, pixel)| pixel)
+    .collect()
 }
 
 /// Collect co-sited RGB samples from the ring that borders the confirmed Film
@@ -10790,7 +13197,7 @@ fn collect_film_area_band_rgb32(
     quality: Option<&crate::raw_backend::QualityMask>,
     geom: &GeometryState,
     band: f32,
-) -> Vec<[f32; 3]> {
+) -> Vec<([f32; 2], [f32; 3])> {
     let Some(points) = geom.calibration_points else {
         return Vec::new();
     };
@@ -10807,7 +13214,7 @@ fn collect_mapped_rgb32(
     geom: &GeometryState,
     reject_saturated: bool,
     in_region: impl Fn([f32; 2]) -> bool,
-) -> Vec<[f32; 3]> {
+) -> Vec<([f32; 2], [f32; 3])> {
     const SAMPLE_EDGE: u32 = 512;
     let (source_width, source_height) = proxy.dimensions();
     let longest = source_width.max(source_height).max(1);
@@ -10854,7 +13261,7 @@ fn collect_mapped_rgb32(
             }) {
                 continue;
             }
-            values.push(pixel);
+            values.push((crop_uv, pixel));
         }
     }
     values
@@ -11289,6 +13696,7 @@ fn render_shader_equivalent(
     )
 }
 
+#[cfg(test)]
 fn render_shader_equivalent_with_state(
     source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
     params: &TuningParams,
@@ -11504,6 +13912,10 @@ pub struct BatchExportResult {
     output_dir: String,
     errors: Vec<String>,
     warnings: Vec<String>,
+}
+
+fn modern_export_failure(stage: &str, file_path: &str, error: impl std::fmt::Display) -> String {
+    format!("Modern export stage={stage} failed for {file_path}: {error}")
 }
 
 fn export_sharpening(value: &str) -> Result<Option<(f32, f32)>, String> {
@@ -13069,6 +15481,19 @@ pub async fn batch_export_images(
             serde_json::json!({ "processed": skipped_count, "total": count }),
         );
         let processed_count = std::sync::atomic::AtomicUsize::new(skipped_count);
+        let finish_export_frame = |stage: &str, id: &str| {
+            let processed =
+                processed_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let _ = progress_app.emit(
+                "export_progress",
+                serde_json::json!({
+                    "processed": processed,
+                    "total": count,
+                    "id": id,
+                    "stage": stage,
+                }),
+            );
+        };
 
         // Process one full-resolution image at a time. Each image still uses
         // Rayon internally, but the outer loop is deliberately sequential so
@@ -13197,7 +15622,12 @@ pub async fn batch_export_images(
                         let (input, quality_mask, camera_to_display) = match decoded_f32 {
                             Ok(decoded) => decoded,
                             Err(error) => {
-                                lock_mutex(&failures).push(format!("Failed to decode {}: {error}", file_path));
+                                lock_mutex(&failures).push(modern_export_failure(
+                                    "decode",
+                                    &file_path,
+                                    error,
+                                ));
+                                finish_export_frame("decode", &snapshot.id);
                                 return;
                             }
                         };
@@ -13229,7 +15659,12 @@ pub async fn batch_export_images(
                         ) {
                             Ok(dimensions) => dimensions,
                             Err(error) => {
-                                lock_mutex(&failures).push(format!("Invalid export dimensions for {}: {error}", file_path));
+                                lock_mutex(&failures).push(modern_export_failure(
+                                    "dimensions",
+                                    &file_path,
+                                    error,
+                                ));
+                                finish_export_frame("dimensions", &snapshot.id);
                                 return;
                             }
                         };
@@ -13243,7 +15678,12 @@ pub async fn batch_export_images(
                             match encode_export_output(out_buffer, export_format, output_space) {
                             Ok(buffer) => buffer,
                             Err(error) => {
-                                lock_mutex(&failures).push(format!("Failed to convert {} to {}: {error}", file_path, color_space));
+                                lock_mutex(&failures).push(modern_export_failure(
+                                    "color_conversion",
+                                    &file_path,
+                                    format!("conversion to {color_space}: {error}"),
+                                ));
+                                finish_export_frame("color_conversion", &snapshot.id);
                                 return;
                             }
                         };
@@ -13255,8 +15695,13 @@ pub async fn batch_export_images(
                             quality,
                         ) {
                             Ok(()) => { success_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
-                            Err(error) => lock_mutex(&failures).push(error),
+                            Err(error) => lock_mutex(&failures).push(modern_export_failure(
+                                "write",
+                                &file_path,
+                                error,
+                            )),
                         }
+                        finish_export_frame("complete", &snapshot.id);
                         return;
                     }
 
@@ -13395,14 +15840,14 @@ pub async fn batch_export_images(
                     }
                 }
                 Err(error) => {
-                    lock_mutex(&failures).push(format!("Failed to decode {}: {error}", file_path))
+                    lock_mutex(&failures).push(modern_export_failure(
+                        "decode",
+                        &file_path,
+                        error,
+                    ))
                 }
             }
-            let processed = processed_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-            let _ = progress_app.emit(
-                "export_progress",
-                serde_json::json!({ "processed": processed, "total": count, "id": snapshot.id }),
-            );
+            finish_export_frame("complete", &snapshot.id);
         });
 
         let failures = failures
@@ -16279,30 +18724,58 @@ fn persist_tuning_parameters(
     )
 }
 
-fn persist_geometry(roll_id: &str, file_path: &str, geom: &GeometryState) -> Result<(), String> {
-    let serialized = serde_json::to_string(geom)
-        .map_err(|error| format!("Failed to serialize geometry: {error}"))?;
-    persist_single_image_update(
+fn persist_geometry_and_pipeline(
+    roll_id: &str,
+    file_path: &str,
+    geom: &GeometryState,
+    pipeline_state: &PipelineState,
+) -> Result<(), String> {
+    let mut connection = persistence::open_connection()
+        .map_err(|error| format!("Failed to open image database: {error}"))?;
+    persist_geometry_and_pipeline_on_connection(
+        &mut connection,
         roll_id,
         file_path,
-        "UPDATE image_states SET geom = ?1, updated_at = ?2 WHERE roll_id = ?3 AND file_path = ?4",
-        serialized,
+        geom,
+        pipeline_state,
     )
 }
 
-fn persist_base_color(
+fn persist_geometry_and_pipeline_on_connection(
+    connection: &mut rusqlite::Connection,
     roll_id: &str,
     file_path: &str,
-    base_color: &BaseColor,
+    geom: &GeometryState,
+    pipeline_state: &PipelineState,
 ) -> Result<(), String> {
-    let serialized = serde_json::to_string(base_color)
-        .map_err(|error| format!("Failed to serialize base color: {error}"))?;
-    persist_single_image_update(
-        roll_id,
-        file_path,
-        "UPDATE image_states SET base_color = ?1, updated_at = ?2 WHERE roll_id = ?3 AND file_path = ?4",
-        serialized,
-    )
+    let geometry = serde_json::to_string(geom)
+        .map_err(|error| format!("Failed to serialize geometry: {error}"))?;
+    let pipeline = serde_json::to_string(pipeline_state)
+        .map_err(|error| format!("Failed to serialize pipeline state: {error}"))?;
+    let transaction = connection
+        .transaction()
+        .map_err(|error| format!("Failed to begin geometry transaction: {error}"))?;
+    let changed = transaction
+        .execute(
+            "UPDATE image_states
+             SET geom = ?1, pipeline_state = ?2, math_version = ?3, updated_at = ?4
+             WHERE roll_id = ?5 AND file_path = ?6",
+            rusqlite::params![
+                geometry,
+                pipeline,
+                persistence::math_version_for_contract(pipeline_state.contract),
+                persistence::now_timestamp(),
+                roll_id,
+                file_path,
+            ],
+        )
+        .map_err(|error| format!("Failed to persist geometry and analysis state: {error}"))?;
+    if changed != 1 {
+        return Err(format!("Persisted image state was not found: {file_path}"));
+    }
+    transaction
+        .commit()
+        .map_err(|error| format!("Failed to commit geometry transaction: {error}"))
 }
 
 fn persist_base_and_pipeline(
@@ -16923,57 +19396,461 @@ pub fn generate_processed_thumbnail(item: &FilmItem) -> Option<String> {
 #[cfg(test)]
 mod import_contract_tests {
     use super::{
-        aggregate_roll_density_references, apply_camera_display_gamma, base_color_from_density,
+        aggregate_roll_density_references, analysis_geometry_fingerprint,
+        apply_camera_display_gamma, base_color_from_density,
         build_response_buffer_from_proxy_with_state, clear_retired_legacy_domain,
         compute_auto_base, compute_auto_base_f32, compute_auto_color_limits,
         compute_content_limits_f32, compute_content_limits_f32_with_bounds,
         compute_frame_base_density_f32, decode_direct_rgb_prophoto_estimate, decode_image_buffer,
-        decode_import_preview_base64, decode_profiled_tiff_prophoto_estimate,
-        decode_prophoto_basis_estimate, decode_prophoto_estimate_image_buffer,
-        decode_prophoto_estimate_image_buffer_with_policy, decode_prophoto_transport_sample,
-        decode_reduced_dng_for_working_space, decode_reduced_tiff_for_working_space,
-        decode_scanner_profiled_estimate_image_buffer, decode_tiff_for_smart_auto,
-        decode_uncompressed_tiff_reduced, default_pipeline_state_for_import, density_luma,
-        detect_frame_base_density, detect_frame_highlight_fraction, embedded_input_profile,
-        encode_export_buffer, encode_prophoto_transport_sample, encoded_pixel_to_prophoto_estimate,
-        encoded_pixel_to_prophoto_estimate_with_transfer, estimate_film_base_f32,
-        film_block_luma_profile, fixed_roll_density_mapping, frame_needs_window_reanalysis,
-        highlight_block_index, is_better_preview_edge, is_dng_extension,
+        decode_import_preview_base64, decode_linear_raw_dng_prophoto_estimate, decode_modern_input,
+        decode_profiled_tiff_prophoto_estimate, decode_prophoto_basis_estimate,
+        decode_prophoto_estimate_image_buffer, decode_prophoto_estimate_image_buffer_with_policy,
+        decode_prophoto_transport_sample, decode_reduced_dng_for_working_space,
+        decode_reduced_tiff_for_working_space, decode_scanner_profiled_estimate_image_buffer,
+        decode_tiff_direct_f32, decode_tiff_direct_f32_with_budget, decode_tiff_for_smart_auto,
+        decode_uncompressed_linear_dng_reduced, decode_uncompressed_tiff_reduced,
+        default_pipeline_state_for_import, density_luma, detect_frame_base_density,
+        detect_frame_highlight_fraction, dng_linear_raw_directory, dng_sample_kind,
+        embedded_input_profile, encode_export_buffer, encode_prophoto_transport_sample,
+        encoded_pixel_to_prophoto_estimate, encoded_pixel_to_prophoto_estimate_with_transfer,
+        estimate_film_base_f32, extract_tiff_jpeg_preview, film_block_luma_profile,
+        fixed_roll_density_mapping, frame_needs_analysis_geometry_reanalysis,
+        frame_needs_window_reanalysis, highlight_block_index,
+        invalidate_analysis_if_geometry_changed, is_better_preview_edge, is_dng_extension,
         is_lightweight_direct_preview, is_noritsu_rendered_image, is_raw_extension,
-        is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension,
+        is_scanner_fff_tiff, is_smart_auto_compatibility, is_tiff_extension, jpeg_dimensions,
         libraw_decode_error_message, linear_srgb_u16_to_prophoto_f32, linearize_scanner_fff,
         measure_roll_highlight_frames, persist_import_batch, pipeline_base_density,
         pipeline_has_base, point_in_film_area, prepare_content_render_limits,
         preserve_smart_auto_content_span, prophoto_estimate_to_transport_proxy,
-        raw_decode_failure_hint, reference_density_extreme, render_f32_shader_equivalent,
-        render_shader_equivalent, resolve_direct_encoded_space, resolve_input_domain,
-        rgb16_image_from_bytes, roll_density_mapping_with_frame_base, roll_physical_density_span,
-        sample_reference_frame_path, sampled_frame_paths_from_anchors,
-        share_smart_auto_density_scale, srgb_proxy_u16_to_prophoto_f32,
+        raw_decode_failure_hint, read_classic_tiff_directory, reference_density_extreme,
+        render_f32_shader_equivalent, render_shader_equivalent, resolve_direct_encoded_space,
+        resolve_input_domain, rgb16_image_from_bytes, roll_density_mapping_with_frame_base,
+        roll_physical_density_span, sample_reference_frame_path, sampled_frame_paths_from_anchors,
+        share_smart_auto_density_scale, smart_auto_working_basis, srgb_proxy_u16_to_prophoto_f32,
         suppress_raw_density_chroma_noise, tiff_smart_auto_input_is_estimated,
-        trim_density_endpoints, AutoColorLimits, DecodeMode, CAMERA_DISPLAY_GAMMA_TOE,
-        CHANNEL_CONTROL_SCALE, IMPORT_PREVIEW_LONG_EDGE, MINIMUM_USABLE_CONTENT_SPAN,
-        PROXY_LONG_EDGE,
+        trim_density_endpoints, write_linear_dng_export, AutoColorLimits, DecodeMode,
+        DngSampleKind, FilmBaseState, CAMERA_DISPLAY_GAMMA_TOE, CHANNEL_CONTROL_SCALE,
+        IMPORT_PREVIEW_LONG_EDGE, MINIMUM_USABLE_CONTENT_SPAN, PROXY_LONG_EDGE,
     };
     use super::{
-        export_base_color_from_snapshot, export_render_inputs_from_snapshot, ExportItemSnapshot,
-        PipelineImageKind, PipelineResolverInput, RAW_DECODE_VERSION,
+        export_base_color_from_snapshot, export_render_inputs_from_snapshot, pipeline_image_kind,
+        resolve_pipeline, ExportItemSnapshot, PipelineImageKind, PipelineResolverInput,
+        RAW_DECODE_VERSION,
     };
     use crate::app_state::{
         BaseColor, DataDomain, DensityAnchor, DensityAnchorConfidence, DensityAnchorProvenance,
         DensityAnchorScope, DensityAnchorSource, DensityAnchors, EngineState, FilmItem, FilmMode,
-        GeometryState, PipelineState, ProcessingContract, RenderMapping, RenderMode, Roll,
-        TuningParams,
+        GeometryState, InputDomainSource, InputPrimaries, InputReference, InputTransferCurve,
+        PipelineState, ProcessingContract, RenderMapping, RenderMode, Roll, TuningParams,
+        WorkingBasis,
     };
     use crate::color_science::{
         apply_linear_matrix, clamp_positive_transmission_for_density,
         compress_linear_srgb_for_density, convert_encoded_to_linear_rgb_with_matrix,
-        linear_conversion_matrix, ColorSpaceId, DENSITY_CAPTURE_PROFILE,
+        dng_color_matrix_to_prophoto, identify_icc_profile, linear_conversion_matrix,
+        xyz_d50_to_color_space_matrix, ColorSpaceId, DENSITY_CAPTURE_PROFILE,
     };
     use base64::Engine as _;
-    use image::{ImageBuffer, Rgb};
+    use image::{GenericImageView, ImageBuffer, Rgb};
     use rayon::prelude::*;
     use std::sync::{Arc, RwLock};
+
+    fn import_contract_root(name: &str) -> std::path::PathBuf {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("import-contract-tests")
+            .join(format!(
+                "{name}-{}-{}",
+                std::process::id(),
+                super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            ));
+        std::fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn synthetic_jpeg(
+        width: u16,
+        height: u16,
+        sof_marker: u8,
+        precision: u8,
+        components: u8,
+    ) -> Vec<u8> {
+        let payload_len = 6 + components as usize * 3;
+        let segment_len = payload_len + 2;
+        let mut bytes = vec![0xff, 0xd8, 0xff, sof_marker];
+        bytes.extend_from_slice(&(segment_len as u16).to_be_bytes());
+        bytes.push(precision);
+        bytes.extend_from_slice(&height.to_be_bytes());
+        bytes.extend_from_slice(&width.to_be_bytes());
+        bytes.push(components);
+        for component in 1..=components {
+            bytes.extend_from_slice(&[component, 0x11, 0]);
+        }
+        bytes.extend_from_slice(&[0xff, 0xd9]);
+        bytes
+    }
+
+    fn put_u16_le(bytes: &mut [u8], offset: usize, value: u16) {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_u32_le(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn put_tiff_entry(
+        bytes: &mut [u8],
+        offset: usize,
+        tag: u16,
+        kind: u16,
+        count: u32,
+        value: u32,
+    ) {
+        put_u16_le(bytes, offset, tag);
+        put_u16_le(bytes, offset + 2, kind);
+        put_u32_le(bytes, offset + 4, count);
+        if kind == 3 {
+            put_u16_le(bytes, offset + 8, value as u16);
+        } else {
+            put_u32_le(bytes, offset + 8, value);
+        }
+    }
+
+    fn synthetic_tiff_preview_fixture(
+        preview: &[u8],
+        raw_preview: &[u8],
+        raw_photometric: Option<u16>,
+        raw_cr2_slice: bool,
+        gap_before_raw_ifd: usize,
+    ) -> Vec<u8> {
+        const IFD0_OFFSET: usize = 8;
+        const IFD0_SIZE: usize = 2 + 2 * 12 + 4;
+        let preview_offset = IFD0_OFFSET + IFD0_SIZE;
+        let raw_ifd_offset = preview_offset + preview.len() + gap_before_raw_ifd;
+        let raw_entry_count =
+            2 + usize::from(raw_photometric.is_some()) + usize::from(raw_cr2_slice);
+        let raw_ifd_size = 2 + raw_entry_count * 12 + 4;
+        let raw_offset = raw_ifd_offset + raw_ifd_size;
+        let mut bytes = vec![0u8; raw_offset + raw_preview.len()];
+
+        bytes[0..2].copy_from_slice(b"II");
+        put_u16_le(&mut bytes, 2, 42);
+        put_u32_le(&mut bytes, 4, IFD0_OFFSET as u32);
+        put_u16_le(&mut bytes, IFD0_OFFSET, 2);
+        put_tiff_entry(
+            &mut bytes,
+            IFD0_OFFSET + 2,
+            0x0111,
+            4,
+            1,
+            preview_offset as u32,
+        );
+        put_tiff_entry(
+            &mut bytes,
+            IFD0_OFFSET + 14,
+            0x0117,
+            4,
+            1,
+            preview.len() as u32,
+        );
+        put_u32_le(&mut bytes, IFD0_OFFSET + 26, raw_ifd_offset as u32);
+
+        put_u16_le(&mut bytes, raw_ifd_offset, raw_entry_count as u16);
+        let mut entry_offset = raw_ifd_offset + 2;
+        if let Some(photometric) = raw_photometric {
+            put_tiff_entry(&mut bytes, entry_offset, 0x0106, 3, 1, photometric as u32);
+            entry_offset += 12;
+        }
+        if raw_cr2_slice {
+            put_tiff_entry(&mut bytes, entry_offset, 0xc640, 3, 1, 1);
+            entry_offset += 12;
+        }
+        put_tiff_entry(&mut bytes, entry_offset, 0x0111, 4, 1, raw_offset as u32);
+        put_tiff_entry(
+            &mut bytes,
+            entry_offset + 12,
+            0x0117,
+            4,
+            1,
+            raw_preview.len() as u32,
+        );
+        put_u32_le(&mut bytes, entry_offset + 24, 0);
+
+        bytes[preview_offset..preview_offset + preview.len()].copy_from_slice(preview);
+        bytes[raw_offset..].copy_from_slice(raw_preview);
+        bytes
+    }
+
+    fn synthetic_raw_ifd0_with_subifd_preview(preview: &[u8]) -> Vec<u8> {
+        const IFD_OFFSET: usize = 8;
+        const IFD_SIZE: usize = 2 + 2 * 12 + 4;
+        let sub_ifd_offset = IFD_OFFSET + IFD_SIZE;
+        let preview_offset = sub_ifd_offset + IFD_SIZE + 520 * 1024;
+        let mut bytes = vec![0u8; preview_offset + preview.len()];
+
+        bytes[0..2].copy_from_slice(b"II");
+        put_u16_le(&mut bytes, 2, 42);
+        put_u32_le(&mut bytes, 4, IFD_OFFSET as u32);
+        put_u16_le(&mut bytes, IFD_OFFSET, 2);
+        put_tiff_entry(&mut bytes, IFD_OFFSET + 2, 0x0106, 3, 1, 32803);
+        put_tiff_entry(
+            &mut bytes,
+            IFD_OFFSET + 14,
+            0x014a,
+            4,
+            1,
+            sub_ifd_offset as u32,
+        );
+        put_u32_le(&mut bytes, IFD_OFFSET + 26, 0);
+
+        put_u16_le(&mut bytes, sub_ifd_offset, 2);
+        put_tiff_entry(
+            &mut bytes,
+            sub_ifd_offset + 2,
+            0x0111,
+            4,
+            1,
+            preview_offset as u32,
+        );
+        put_tiff_entry(
+            &mut bytes,
+            sub_ifd_offset + 14,
+            0x0117,
+            4,
+            1,
+            preview.len() as u32,
+        );
+        put_u32_le(&mut bytes, sub_ifd_offset + 26, 0);
+        bytes[preview_offset..].copy_from_slice(preview);
+        bytes
+    }
+
+    #[test]
+    fn tiff_preview_rejects_lossless_cfa_jpeg_candidates() {
+        let preview = synthetic_jpeg(8688, 5792, 0xc0, 8, 3);
+        let raw = synthetic_jpeg(4448, 2960, 0xc3, 14, 1);
+        let fixture = synthetic_tiff_preview_fixture(&preview, &raw, None, false, 0);
+        let root = import_contract_root("tiff-preview-lossless");
+        let path = root.join("fixture.cr2");
+        std::fs::write(&path, fixture).unwrap();
+
+        let extracted = extract_tiff_jpeg_preview(path.to_string_lossy().as_ref(), 1024).unwrap();
+
+        assert_eq!(extracted, preview);
+        assert_eq!(jpeg_dimensions(&extracted), Some((8688, 5792)));
+        assert_eq!(jpeg_dimensions(&raw), None);
+    }
+
+    #[test]
+    fn tiff_preview_skips_raw_pixel_ifds() {
+        let preview = synthetic_jpeg(160, 120, 0xc0, 8, 3);
+        let raw = synthetic_jpeg(4448, 2960, 0xc0, 8, 3);
+        let root = import_contract_root("tiff-preview-raw-ifd");
+        for (name, photometric, cr2_slice) in [
+            ("cfa.cr2", Some(32803), false),
+            ("cr2-slices.cr2", None, true),
+        ] {
+            let fixture =
+                synthetic_tiff_preview_fixture(&preview, &raw, photometric, cr2_slice, 520 * 1024);
+            let path = root.join(name);
+            std::fs::write(&path, fixture).unwrap();
+
+            let extracted =
+                extract_tiff_jpeg_preview(path.to_string_lossy().as_ref(), 1024).unwrap();
+
+            assert_eq!(extracted, preview, "{name}");
+            assert_eq!(jpeg_dimensions(&raw), Some((4448, 2960)));
+        }
+    }
+
+    #[test]
+    fn tiff_preview_reads_a_preview_subifd_beneath_a_raw_ifd0() {
+        let preview = synthetic_jpeg(160, 120, 0xc0, 8, 3);
+        let fixture = synthetic_raw_ifd0_with_subifd_preview(&preview);
+        let root = import_contract_root("tiff-preview-raw-root-subifd");
+        let path = root.join("fixture.cr2");
+        std::fs::write(&path, fixture).unwrap();
+
+        let extracted = extract_tiff_jpeg_preview(path.to_string_lossy().as_ref(), 1024).unwrap();
+
+        assert_eq!(extracted, preview);
+        assert_eq!(jpeg_dimensions(&extracted), Some((160, 120)));
+    }
+
+    #[test]
+    #[ignore = "manual Canon 5DS CR2 preview, gate and render diagnostic"]
+    fn canon_5ds_cr2_preview_and_gate_diagnostic() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let output_root = root.join("target").join("canon-5ds-cr2-diagnostic");
+        std::fs::create_dir_all(&output_root).unwrap();
+        for name in ["4 (11).CR2", "4 (12).CR2"] {
+            let path = root.join("test_picture").join("佳能5DS").join(name);
+            let path_string = path.to_string_lossy().to_string();
+            let stem = path
+                .file_stem()
+                .map(|value| value.to_string_lossy().to_string())
+                .unwrap();
+            let ifd0 = read_classic_tiff_directory(&path_string, 0).unwrap();
+            let preview =
+                extract_tiff_jpeg_preview(&path_string, IMPORT_PREVIEW_LONG_EDGE).unwrap();
+            let preview_dimensions = jpeg_dimensions(&preview).unwrap();
+            println!(
+                "[CR2 PREVIEW] {stem}: ifd0_offset={} strip_offset={} strip_bytes={} extracted_bytes={} dimensions={preview_dimensions:?}",
+                ifd0.ifd_offset,
+                ifd0.strip_offsets.first().copied().unwrap_or_default(),
+                ifd0.strip_byte_counts.first().copied().unwrap_or_default(),
+                preview.len(),
+            );
+            assert_eq!(preview.len(), ifd0.strip_byte_counts[0] as usize);
+
+            let encoded =
+                decode_import_preview_base64(&path_string, IMPORT_PREVIEW_LONG_EDGE).unwrap();
+            let encoded_bytes = base64::engine::general_purpose::STANDARD
+                .decode(&encoded)
+                .unwrap();
+            let preview_image = image::load_from_memory(&encoded_bytes).unwrap();
+            preview_image
+                .save(output_root.join(format!("{stem}-import-preview.jpg")))
+                .unwrap();
+            let preview_gate = super::detect_film_border_from_encoded(
+                &encoded,
+                Some("135"),
+                Some(&GeometryState::default()),
+            )
+            .unwrap();
+            println!(
+                "[CR2 PREVIEW GATE] {stem}: preview={:?} status={} confidence={:?} points={:?}",
+                preview_image.dimensions(),
+                preview_gate.status,
+                preview_gate.confidence,
+                preview_gate.points
+            );
+
+            let legacy = report_legacy_transport(&path_string, 1200).unwrap();
+            let legacy_gate = crate::film_border::detect_film_border(
+                &image::DynamicImage::ImageRgb16(legacy.clone()),
+            );
+            println!(
+                "[CR2 U16 GATE] {stem}: image={:?} status={} confidence={:?} points={:?}",
+                legacy.dimensions(),
+                legacy_gate.status,
+                legacy_gate.confidence,
+                legacy_gate.points
+            );
+
+            let develop = decode_modern_input(
+                &path_string,
+                DecodeMode::DevelopProxy,
+                None,
+                PROXY_LONG_EDGE as u32,
+                false,
+            )
+            .unwrap();
+            println!(
+                "[CR2 MODERN] {stem}: DevelopProxy={:?}",
+                develop.image.dimensions()
+            );
+            let export =
+                decode_modern_input(&path_string, DecodeMode::ExportFull, None, u32::MAX, false)
+                    .unwrap();
+            println!(
+                "[CR2 MODERN] {stem}: ExportFull={:?}",
+                export.image.dimensions()
+            );
+            drop(export);
+
+            let estimate = &develop.image;
+            for (label, points) in [
+                ("full-frame", None),
+                ("preview-gate", Some(preview_gate.points)),
+                ("u16-gate", Some(legacy_gate.points)),
+            ] {
+                let mut geom = GeometryState::default();
+                if let Some(points) = points {
+                    geom.calibration_points = Some(points);
+                    geom.calibration_confirmed = true;
+                }
+                let base = estimate_film_base_f32(&estimate, &geom);
+                let base_density = if base.is_trusted() {
+                    base.density
+                } else {
+                    [0.0; 3]
+                };
+                let mut limits = compute_content_limits_f32_with_bounds(
+                    &estimate,
+                    None,
+                    &geom,
+                    base_density,
+                    None,
+                )
+                .unwrap();
+                let (offsets, short_content) = prepare_content_render_limits(
+                    &mut limits,
+                    &DensityAnchors::default(),
+                    base_density,
+                );
+                let mut params = TuningParams::default();
+                params.density.d_min = limits.d_min;
+                params.density.d_max = limits.d_max;
+                let render_source = if base.is_trusted() {
+                    match base.source {
+                        "film_edge_band" => "film_edge_band",
+                        "film_area_low_density_tail" => "detected_film_base",
+                        source => source,
+                    }
+                } else {
+                    base.source
+                };
+                let mut state = PipelineState::smart_auto();
+                state.processing_report.base_source = render_source.to_string();
+                state.processing_report.base_confidence = format!("{:.3}", base.confidence);
+                state.processing_report.camera_to_display = develop.camera_to_display;
+                let rendered = render_f32_shader_equivalent(
+                    estimate,
+                    None,
+                    &params,
+                    &geom,
+                    &base_color_from_density(base_density),
+                    &state,
+                    None,
+                );
+                println!(
+                    "[CR2 RENDER] {stem} {label}: base_source={} base=({:.4},{:.4},{:.4}) d_min=({:.4},{:.4},{:.4}) d_max=({:.4},{:.4},{:.4}) offsets=({:.4},{:.4},{:.4}) short_content={short_content}",
+                    base.source,
+                    base.density[0],
+                    base.density[1],
+                    base.density[2],
+                    limits.d_min[0],
+                    limits.d_min[1],
+                    limits.d_min[2],
+                    limits.d_max[0],
+                    limits.d_max[1],
+                    limits.d_max[2],
+                    offsets[0],
+                    offsets[1],
+                    offsets[2],
+                );
+                ab_render_report(&format!("{stem}-{label}"), &rendered);
+                if label != "full-frame" {
+                    assert!(
+                        base.is_trusted(),
+                        "{stem} {label}: the gate render must use a trusted film base"
+                    );
+                    let full = render_full_percentages(&rendered);
+                    assert!(
+                        full.iter().all(|percentage| *percentage < 10.0),
+                        "{stem} {label}: gate render is overexposed, full={full:?}"
+                    );
+                }
+                report_balance(&stem, label, &rendered);
+                ab_save_preview(
+                    output_root.join(format!("{stem}-{label}-rendered.jpg")),
+                    &rendered,
+                );
+            }
+        }
+    }
 
     #[test]
     fn import_only_directly_decodes_small_encoded_images() {
@@ -17428,6 +20305,1480 @@ mod import_contract_tests {
         std::fs::remove_dir_all(root).unwrap();
     }
 
+    fn patch_little_endian_tiff_short_tag(path: &std::path::Path, tag: u16, value: u16) {
+        let mut bytes = std::fs::read(path).unwrap();
+        assert_eq!(&bytes[..2], b"II");
+        let ifd_offset = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let entries = u16::from_le_bytes(bytes[ifd_offset..ifd_offset + 2].try_into().unwrap());
+        let mut patched = false;
+        for index in 0..usize::from(entries) {
+            let entry = ifd_offset + 2 + index * 12;
+            if u16::from_le_bytes(bytes[entry..entry + 2].try_into().unwrap()) == tag {
+                assert_eq!(
+                    u16::from_le_bytes(bytes[entry + 2..entry + 4].try_into().unwrap()),
+                    3
+                );
+                bytes[entry + 8..entry + 10].copy_from_slice(&value.to_le_bytes());
+                patched = true;
+                break;
+            }
+        }
+        assert!(patched, "TIFF tag {tag} was not found");
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn patch_little_endian_tiff_long_tag(path: &std::path::Path, tag: u16, value: u32) {
+        let mut bytes = std::fs::read(path).unwrap();
+        assert_eq!(&bytes[..2], b"II");
+        let ifd_offset = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let entries = u16::from_le_bytes(bytes[ifd_offset..ifd_offset + 2].try_into().unwrap());
+        let mut patched = false;
+        for index in 0..usize::from(entries) {
+            let entry = ifd_offset + 2 + index * 12;
+            if u16::from_le_bytes(bytes[entry..entry + 2].try_into().unwrap()) == tag {
+                assert_eq!(
+                    u16::from_le_bytes(bytes[entry + 2..entry + 4].try_into().unwrap()),
+                    4
+                );
+                bytes[entry + 8..entry + 12].copy_from_slice(&value.to_le_bytes());
+                patched = true;
+                break;
+            }
+        }
+        assert!(patched, "TIFF tag {tag} was not found");
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn rename_little_endian_tiff_tag(path: &std::path::Path, tag: u16, replacement: u16) {
+        let mut bytes = std::fs::read(path).unwrap();
+        assert_eq!(&bytes[..2], b"II");
+        let ifd_offset = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let entries = u16::from_le_bytes(bytes[ifd_offset..ifd_offset + 2].try_into().unwrap());
+        let mut patched = false;
+        for index in 0..usize::from(entries) {
+            let entry = ifd_offset + 2 + index * 12;
+            if u16::from_le_bytes(bytes[entry..entry + 2].try_into().unwrap()) == tag {
+                bytes[entry..entry + 2].copy_from_slice(&replacement.to_le_bytes());
+                patched = true;
+                break;
+            }
+        }
+        assert!(patched, "TIFF tag {tag} was not found");
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn patch_little_endian_tiff_rational_tag(path: &std::path::Path, tag: u16, values: &[f32]) {
+        let mut bytes = std::fs::read(path).unwrap();
+        assert_eq!(&bytes[..2], b"II");
+        let ifd_offset = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+        let entries = u16::from_le_bytes(bytes[ifd_offset..ifd_offset + 2].try_into().unwrap());
+        let mut patched = false;
+        for index in 0..usize::from(entries) {
+            let entry = ifd_offset + 2 + index * 12;
+            if u16::from_le_bytes(bytes[entry..entry + 2].try_into().unwrap()) != tag {
+                continue;
+            }
+            assert_eq!(
+                u16::from_le_bytes(bytes[entry + 2..entry + 4].try_into().unwrap()),
+                5
+            );
+            assert_eq!(
+                u32::from_le_bytes(bytes[entry + 4..entry + 8].try_into().unwrap()) as usize,
+                values.len()
+            );
+            let total = values.len() * 8;
+            let payload = if total <= 4 {
+                entry + 8
+            } else {
+                u32::from_le_bytes(bytes[entry + 8..entry + 12].try_into().unwrap()) as usize
+            };
+            for (index, value) in values.iter().enumerate() {
+                let numerator = (value * 10_000.0).round().max(0.0) as u32;
+                let offset = payload + index * 8;
+                bytes[offset..offset + 4].copy_from_slice(&numerator.to_le_bytes());
+                bytes[offset + 4..offset + 8].copy_from_slice(&10_000u32.to_le_bytes());
+            }
+            patched = true;
+            break;
+        }
+        assert!(patched, "TIFF tag {tag} was not found");
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn dng_sample_layout_selects_camera_native_or_linear_raw_contract() {
+        let root = import_contract_root("dng-layout");
+        let path = root.join("frame.dng");
+        let source = ImageBuffer::from_pixel(2, 2, Rgb([10_000u16, 20_000, 30_000]));
+        write_linear_dng_export(&source, &path, ColorSpaceId::DisplayP3, None).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+
+        assert_eq!(dng_sample_kind(&path_text), DngSampleKind::LinearRaw);
+        assert_eq!(
+            pipeline_image_kind(&path_text),
+            PipelineImageKind::DirectRgb
+        );
+        assert_eq!(
+            smart_auto_working_basis(&path_text),
+            WorkingBasis::ProPhotoEstimate
+        );
+        let linear_domain = resolve_input_domain(&path_text, None);
+        assert_eq!(linear_domain.primaries, InputPrimaries::DisplayP3);
+        assert_eq!(linear_domain.transfer, InputTransferCurve::Linear);
+        assert_eq!(linear_domain.source, InputDomainSource::EmbeddedIcc);
+
+        // A Bayer/CFA page must win even when the same file still carries an
+        // embedded preview profile.
+        patch_little_endian_tiff_short_tag(&path, 262, 32803);
+        assert_eq!(dng_sample_kind(&path_text), DngSampleKind::CameraRaw);
+        assert_eq!(pipeline_image_kind(&path_text), PipelineImageKind::RawBayer);
+        assert_eq!(
+            smart_auto_working_basis(&path_text),
+            WorkingBasis::CameraNative
+        );
+        let camera_domain = resolve_input_domain(&path_text, None);
+        assert_eq!(camera_domain.primaries, InputPrimaries::CameraNative);
+        assert_eq!(camera_domain.transfer, InputTransferCurve::CameraRaw);
+        assert_eq!(camera_domain.source, InputDomainSource::RawMetadata);
+        assert!(!camera_domain.estimated);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_dng_with_a_capture_profile_never_selects_capture_corrected() {
+        let root = import_contract_root("dng-resolver-kind");
+        let path = root.join("frame.dng");
+        let source = ImageBuffer::from_pixel(2, 2, Rgb([10_000u16, 20_000, 30_000]));
+        write_linear_dng_export(&source, &path, ColorSpaceId::DisplayP3, None).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+        let profile = crate::capability_resolver::ResolverProfile {
+            profile_id: "profile-a".to_string(),
+            payload_digest: "payload-a".to_string(),
+            available: true,
+            capture_validation_error: None,
+            fit_validation_error: None,
+            capture_separation_fitted: false,
+            has_dark: true,
+            has_open_gate: true,
+            has_flat: false,
+        };
+        let resolver_input = |image_kind| PipelineResolverInput {
+            persisted_contract: ProcessingContract::SmartAutoProPhotoV11,
+            roll_profile_id: Some(profile.profile_id.clone()),
+            profile: Some(profile.clone()),
+            image_kind,
+            density_anchors: DensityAnchors::default(),
+            raw_decode_version: RAW_DECODE_VERSION,
+            working_basis: smart_auto_working_basis(&path_text),
+            runtime_failure: None,
+        };
+
+        let linear_raw = resolve_pipeline(&resolver_input(pipeline_image_kind(&path_text)));
+        assert_eq!(
+            linear_raw.requested_path,
+            ProcessingContract::CaptureCorrectedV11
+        );
+        assert_ne!(
+            linear_raw.resolved_path,
+            ProcessingContract::CaptureCorrectedV11
+        );
+        assert!(linear_raw
+            .processing_report
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason.contains("capture_requires_raw_bayer")));
+
+        patch_little_endian_tiff_short_tag(&path, 262, 32803);
+        let camera_raw = resolve_pipeline(&resolver_input(pipeline_image_kind(&path_text)));
+        assert_eq!(
+            camera_raw.resolved_path,
+            ProcessingContract::CaptureCorrectedV11
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_dng_uses_its_icc_from_the_ifd0_fast_reader() {
+        let root = import_contract_root("linear-dng");
+        let path = root.join("frame.dng");
+        let source = ImageBuffer::from_fn(2, 2, |x, y| {
+            Rgb([
+                12_000 + (x + y) as u16 * 1_000,
+                24_000 + x as u16 * 500,
+                36_000 + y as u16 * 700,
+            ])
+        });
+        write_linear_dng_export(&source, &path, ColorSpaceId::DisplayP3, None).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+
+        let directory = read_classic_tiff_directory(&path_text, 0).unwrap();
+        assert_eq!(directory.photometric, 34892);
+        assert!(directory.icc_profile.is_some());
+        let ifd0 = decode_uncompressed_linear_dng_reduced(&path_text, u32::MAX).unwrap();
+        assert_eq!(ifd0.as_raw(), source.as_raw());
+
+        let working = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
+        let expected = expected_icc_prophoto_estimate(
+            &source,
+            directory.icc_profile.as_deref().expect("linear DNG ICC"),
+        );
+        assert_estimate_matches(&working, &expected);
+
+        let proxy = decode_scanner_profiled_estimate_image_buffer(
+            &path_text,
+            DecodeMode::DevelopProxy,
+            None,
+            2560,
+        )
+        .unwrap();
+        let export = decode_scanner_profiled_estimate_image_buffer(
+            &path_text,
+            DecodeMode::ExportFull,
+            None,
+            u32::MAX,
+        )
+        .unwrap();
+        assert_eq!(proxy.as_raw(), export.as_raw());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_dng_subifd_page_inherits_the_ifd0_icc() {
+        let root = import_contract_root("linear-dng-subifd");
+        let path = root.join("frame.dng");
+        let source = ImageBuffer::from_fn(2, 2, |x, y| {
+            Rgb([
+                (14_000 + (x + y) * 1_200) as u16,
+                (22_000 + x * 900) as u16,
+                (34_000 + y * 700) as u16,
+            ])
+        });
+        let icc = crate::color_science::build_linear_icc_profile(ColorSpaceId::DisplayP3);
+        write_linear_raw_dng_with_subifd(&path, &source, &icc);
+        let path_text = path.to_string_lossy().to_string();
+
+        assert_eq!(dng_sample_kind(&path_text), DngSampleKind::LinearRaw);
+        let directory = dng_linear_raw_directory(&path_text).expect("LinearRaw SubIFD");
+        assert_eq!(directory.photometric, 34892);
+        assert_eq!(directory.icc_profile.as_deref(), Some(icc.as_slice()));
+        let root_ifd = read_classic_tiff_directory(&path_text, 0).expect("IFD0");
+        assert_eq!(root_ifd.icc_profile.as_deref(), Some(icc.as_slice()));
+        assert_ne!(root_ifd.ifd_offset, directory.ifd_offset);
+        let decoded = decode_uncompressed_linear_dng_reduced(&path_text, u32::MAX).unwrap();
+        assert_eq!(decoded.as_raw(), source.as_raw());
+
+        let working = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
+        let expected = expected_icc_prophoto_estimate(&source, &icc);
+        assert_estimate_matches(&working, &expected);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_subifd_inherits_ifd0_metadata_and_prefers_the_daylight_matrix() {
+        let root = import_contract_root("linear-dng-subifd-inheritance");
+        let path = root.join("frame.dng");
+        let source = ImageBuffer::from_raw(
+            2,
+            1,
+            vec![10_000u16, 20_000, 30_000, 40_000, 50_000, 60_000],
+        )
+        .unwrap();
+        let tungsten = [
+            [1.45, 0.12, -0.08],
+            [-0.32, 1.20, -0.02],
+            [0.03, -0.18, 0.95],
+        ];
+        let daylight_f64 = xyz_d50_to_color_space_matrix(ColorSpaceId::DisplayP3);
+        let daylight = [
+            [
+                daylight_f64[0] as f32,
+                daylight_f64[1] as f32,
+                daylight_f64[2] as f32,
+            ],
+            [
+                daylight_f64[3] as f32,
+                daylight_f64[4] as f32,
+                daylight_f64[5] as f32,
+            ],
+            [
+                daylight_f64[6] as f32,
+                daylight_f64[7] as f32,
+                daylight_f64[8] as f32,
+            ],
+        ];
+        let neutral = [0.5, 1.0, 0.8];
+        write_linear_raw_dng_with_root_metadata(
+            &path,
+            &source,
+            tungsten,
+            Some(daylight),
+            17,
+            Some(21),
+            neutral,
+            6,
+        );
+        let path_text = path.to_string_lossy().to_string();
+
+        let directory = dng_linear_raw_directory(&path_text).expect("LinearRaw SubIFD");
+        assert_ne!(directory.ifd_offset, 8, "the full page must be the SubIFD");
+        assert_eq!(directory.calibration_illuminant1, Some(17));
+        assert_eq!(directory.calibration_illuminant2, Some(21));
+        assert_eq!(directory.orientation, 6);
+        let directory_neutral = directory.as_shot_neutral.expect("inherited neutral");
+        for (actual, expected) in directory_neutral.into_iter().zip(neutral) {
+            assert!((actual - expected).abs() < 2e-5);
+        }
+        assert_eq!(directory.color_matrix1, Some(tungsten));
+        let directory_daylight = directory.color_matrix2.expect("inherited D65 matrix");
+        for (actual, expected) in directory_daylight
+            .iter()
+            .flatten()
+            .zip(daylight.iter().flatten())
+        {
+            assert!((actual - expected).abs() < 2e-4);
+        }
+
+        let domain = super::resolve_linear_raw_dng_domain(&path_text);
+        assert_eq!(domain.input_domain.source, InputDomainSource::RawMetadata);
+        assert!(!domain.input_domain.estimated);
+        assert!(
+            domain.input_domain.detail.contains("colormatrix2"),
+            "the D65 ColorMatrix2 must win over Standard Light A: {}",
+            domain.input_domain.detail
+        );
+        assert!(domain.input_domain.detail.contains("illuminant21"));
+        let expected_matrix = dng_color_matrix_to_prophoto(daylight).unwrap();
+        let actual_matrix = domain.color_matrix_to(ColorSpaceId::ProPhotoRgb);
+        for (actual, expected) in actual_matrix.iter().zip(expected_matrix) {
+            assert!((actual - expected).abs() < 2e-4);
+        }
+
+        let decoded = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
+        assert_eq!(
+            decoded.dimensions(),
+            (1, 2),
+            "the inherited IFD0 orientation must rotate the SubIFD page exactly once"
+        );
+        let gains = domain.white_balance_gains();
+        for (x, y, samples) in [
+            (0, 0, [10_000.0f32, 20_000.0, 30_000.0]),
+            (0, 1, [40_000.0f32, 50_000.0, 60_000.0]),
+        ] {
+            let expected = clamp_positive_transmission_for_density(apply_linear_matrix(
+                [
+                    samples[0] / 65535.0 * gains[0],
+                    samples[1] / 65535.0 * gains[1],
+                    samples[2] / 65535.0 * gains[2],
+                ],
+                expected_matrix,
+            ));
+            let actual = decoded.get_pixel(x, y).0;
+            for channel in 0..3 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 5.0e-5,
+                    "SubIFD metadata inheritance changed the decoded pixel: \
+                     expected={expected:?} actual={actual:?}"
+                );
+            }
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compressed_linear_raw_subifd_is_decoded_instead_of_the_ifd0_preview() {
+        use std::io::Write as _;
+
+        let root = import_contract_root("linear-dng-compressed-subifd");
+        let path = root.join("frame.dng");
+        let source = ImageBuffer::from_fn(3, 2, |x, y| {
+            Rgb([
+                (12_000 + x * 1_100 + y * 700) as u16,
+                (24_000 + x * 500 + y * 1_300) as u16,
+                (34_000 + x * 300 + y * 900) as u16,
+            ])
+        });
+        let icc = crate::color_science::build_linear_icc_profile(ColorSpaceId::DisplayP3);
+        let raw: Vec<u8> = source
+            .as_raw()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&raw).unwrap();
+        let compressed = encoder.finish().unwrap();
+        write_linear_raw_dng_with_compressed_subifd(
+            &path,
+            &source,
+            Some(&icc),
+            8,
+            &compressed,
+            None,
+        );
+        let path_text = path.to_string_lossy().to_string();
+
+        let directory = dng_linear_raw_directory(&path_text).expect("LinearRaw SubIFD");
+        assert_ne!(directory.ifd_offset, 8);
+        assert_eq!(directory.compression, 8);
+        let domain = resolve_input_domain(&path_text, None);
+        assert_eq!(domain.primaries, InputPrimaries::DisplayP3);
+        assert_eq!(domain.transfer, InputTransferCurve::Linear);
+        assert_eq!(domain.source, InputDomainSource::EmbeddedIcc);
+
+        let decoded = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
+        assert_eq!(
+            decoded.dimensions(),
+            (2, 3),
+            "the SubIFD page must be decoded and inherit IFD0 orientation 6"
+        );
+        let mut oriented = ImageBuffer::from_pixel(source.height(), source.width(), Rgb([0u16; 3]));
+        for y in 0..source.height() {
+            for x in 0..source.width() {
+                oriented.put_pixel(source.height() - 1 - y, x, *source.get_pixel(x, y));
+            }
+        }
+        let expected = expected_icc_prophoto_estimate(&oriented, &icc);
+        assert_estimate_matches(&decoded, &expected);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_opcode_list2_runs_before_proxy_downsampling() {
+        let root = import_contract_root("linear-dng-opcode-list2");
+        let path = root.join("frame.dng");
+        let coefficients = vec![
+            vec![0.05, 0.10, 0.0, 0.20],
+            vec![0.03, 0.08, 0.0, 0.15],
+            vec![0.01, 0.05, 0.0, 0.10],
+        ];
+        let expected = [[0.30f32, 0.20, 0.12], [0.05, 0.10, 0.03]];
+        let samples = expected
+            .iter()
+            .flat_map(|pixel| {
+                pixel
+                    .iter()
+                    .zip(coefficients.iter())
+                    .map(|(target, polynomial)| {
+                        let stored = solve_test_polynomial(polynomial, f64::from(*target));
+                        (stored * 65535.0).round().clamp(0.0, 65535.0) as u16
+                    })
+            })
+            .collect::<Vec<_>>();
+        let opcode_list = test_map_polynomial_opcode_list(2, 1, &coefficients);
+        let bytes = crate::dng_writer::linear_dng_bytes(&crate::dng_writer::LinearDngRequest {
+            width: 2,
+            height: 1,
+            rgb16: &samples,
+            xyz_to_space: xyz_d50_to_color_space_matrix(ColorSpaceId::ProPhotoRgb),
+            icc_profile: None,
+            camera_model: "OpcodeList2 test",
+            description: None,
+            software: "NexFilm test",
+            timestamp: "2026:01:01 00:00:00",
+            opcode_list2: Some(&opcode_list),
+        })
+        .unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+
+        let directory = dng_linear_raw_directory(&path_text).expect("LinearRaw page");
+        assert_eq!(
+            directory.opcode_list2.as_deref(),
+            Some(opcode_list.as_slice()),
+            "the selected LinearRaw IFD must expose its OpcodeList2"
+        );
+        let summary = crate::dng_opcode::apply_opcode_list2(
+            directory.opcode_list2.as_deref().unwrap(),
+            2,
+            1,
+            super::linear_raw_active_origin(&directory).0,
+            super::linear_raw_active_origin(&directory).1,
+            &mut [0.0; 6],
+        )
+        .unwrap();
+        assert_eq!(summary.map_polynomial_count, 3);
+        assert_eq!(summary.map_table_count, 0);
+
+        let export = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
+        assert_eq!(export.dimensions(), (2, 1));
+        for (x, expected_pixel) in expected.iter().enumerate() {
+            let actual = export.get_pixel(x as u32, 0).0;
+            for channel in 0..3 {
+                assert!(
+                    (actual[channel] - expected_pixel[channel]).abs() < 1.0e-4,
+                    "pixel {x} channel {channel} after stage 2: \
+                     expected={expected_pixel:?} actual={actual:?}"
+                );
+            }
+        }
+
+        let proxy = decode_linear_raw_dng_prophoto_estimate(&path_text, 1).unwrap();
+        assert_eq!(proxy.dimensions(), (1, 1));
+        let expected_mean = [
+            (export.get_pixel(0, 0)[0] + export.get_pixel(1, 0)[0]) * 0.5,
+            (export.get_pixel(0, 0)[1] + export.get_pixel(1, 0)[1]) * 0.5,
+            (export.get_pixel(0, 0)[2] + export.get_pixel(1, 0)[2]) * 0.5,
+        ];
+        let actual_mean = proxy.get_pixel(0, 0).0;
+        for channel in 0..3 {
+            assert!(
+                (actual_mean[channel] - expected_mean[channel]).abs() < 1.0e-4,
+                "proxy must average already-linearised samples: \
+                 expected={expected_mean:?} actual={actual_mean:?}"
+            );
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_opcode_list2_matches_streaming_and_tiff_subifd_paths() {
+        use std::io::Write as _;
+
+        let root = import_contract_root("linear-dng-opcode-paths");
+        let source = ImageBuffer::from_raw(
+            2,
+            2,
+            vec![
+                10_000u16, 20_000, 30_000, 40_000, 50_000, 60_000, 12_000, 22_000, 32_000, 42_000,
+                52_000, 62_000,
+            ],
+        )
+        .unwrap();
+        let polynomials = vec![
+            vec![0.0, 0.0, 1.0],
+            vec![0.0, 0.0, 1.0],
+            vec![0.0, 0.0, 1.0],
+        ];
+        let opcode_list =
+            test_map_polynomial_opcode_list(source.width(), source.height(), &polynomials);
+
+        let streaming_path = root.join("streaming.dng");
+        let bytes = crate::dng_writer::linear_dng_bytes(&crate::dng_writer::LinearDngRequest {
+            width: source.width(),
+            height: source.height(),
+            rgb16: source.as_raw(),
+            xyz_to_space: xyz_d50_to_color_space_matrix(ColorSpaceId::ProPhotoRgb),
+            icc_profile: None,
+            camera_model: "OpcodeList2 path test",
+            description: None,
+            software: "NexFilm test",
+            timestamp: "2026:01:01 00:00:00",
+            opcode_list2: Some(&opcode_list),
+        })
+        .unwrap();
+        std::fs::write(&streaming_path, bytes).unwrap();
+
+        let tiff_path = root.join("deflate-subifd.dng");
+        let raw: Vec<u8> = source
+            .as_raw()
+            .iter()
+            .flat_map(|value| value.to_le_bytes())
+            .collect();
+        let mut encoder =
+            flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&raw).unwrap();
+        let compressed = encoder.finish().unwrap();
+        write_linear_raw_dng_with_compressed_subifd(
+            &tiff_path,
+            &source,
+            None,
+            8,
+            &compressed,
+            Some(&opcode_list),
+        );
+
+        let streaming = super::decode_linear_raw_dng_rgb_f32(
+            streaming_path.to_string_lossy().as_ref(),
+            u32::MAX,
+        )
+        .unwrap();
+        let tiff =
+            super::decode_linear_raw_dng_rgb_f32(tiff_path.to_string_lossy().as_ref(), u32::MAX)
+                .unwrap();
+        assert_eq!(streaming.dimensions(), source.dimensions());
+        assert_eq!(tiff.dimensions(), source.dimensions());
+        for (index, source_pixel) in source.as_raw().chunks_exact(3).enumerate() {
+            let expected = [
+                (f32::from(source_pixel[0]) / 65535.0).powi(2),
+                (f32::from(source_pixel[1]) / 65535.0).powi(2),
+                (f32::from(source_pixel[2]) / 65535.0).powi(2),
+            ];
+            let actual: [f32; 3] = streaming.as_raw()[index * 3..index * 3 + 3]
+                .try_into()
+                .unwrap();
+            for channel in 0..3 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 1.0e-6,
+                    "streaming path pixel {index} channel {channel}: \
+                     expected={expected:?} actual={actual:?}"
+                );
+            }
+        }
+        // The compressed page lives in a SubIFD, so the helper's IFD0
+        // orientation 6 is inherited and must run after opcode linearisation.
+        let expected_oriented = super::apply_tiff_orientation(streaming, 6);
+        for (actual, expected) in tiff
+            .as_raw()
+            .chunks_exact(3)
+            .zip(expected_oriented.as_raw().chunks_exact(3))
+        {
+            for channel in 0..3 {
+                assert!(
+                    (actual[channel] - expected[channel]).abs() < 1.0e-6,
+                    "TIFF and streaming paths must agree after the shared \
+                     opcode/orientation order: expected={expected:?} actual={actual:?}"
+                );
+            }
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unsupported_compressed_linear_raw_subifd_returns_a_readable_error() {
+        let root = import_contract_root("linear-dng-unsupported-subifd");
+        let path = root.join("frame.dng");
+        let source = ImageBuffer::from_pixel(2, 2, Rgb([10_000u16, 20_000, 30_000]));
+        write_linear_raw_dng_with_compressed_subifd(&path, &source, None, 7, &[1, 2, 3, 4], None);
+        let path_text = path.to_string_lossy().to_string();
+
+        let error = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap_err();
+        assert!(
+            error.contains("selected IFD"),
+            "the error must name the selected LinearRaw IFD: {error}"
+        );
+        assert!(
+            error.contains("compression 7") || error.contains("IFD at byte"),
+            "the error must make the unsupported compressed page readable: {error}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_dng_proxy_and_export_keep_one_domain_across_scales() {
+        let root = import_contract_root("linear-dng-scale-parity");
+        let path = root.join("frame.dng");
+        let source = ImageBuffer::from_pixel(8, 4, Rgb([18_000u16, 24_000, 30_000]));
+        write_linear_dng_export(&source, &path, ColorSpaceId::DisplayP3, None).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+
+        let proxy = decode_scanner_profiled_estimate_image_buffer(
+            &path_text,
+            DecodeMode::DevelopProxy,
+            None,
+            4,
+        )
+        .unwrap();
+        let export = decode_scanner_profiled_estimate_image_buffer(
+            &path_text,
+            DecodeMode::ExportFull,
+            None,
+            u32::MAX,
+        )
+        .unwrap();
+        assert_eq!(proxy.dimensions(), (4, 2));
+        assert_eq!(export.dimensions(), (8, 4));
+
+        let directory = read_classic_tiff_directory(&path_text, 0).unwrap();
+        let expected_image = expected_icc_prophoto_estimate(
+            &source,
+            directory.icc_profile.as_deref().expect("linear DNG ICC"),
+        );
+        let expected = expected_image.get_pixel(0, 0).0;
+        for image in [&proxy, &export] {
+            for pixel in image.pixels() {
+                for channel in 0..3 {
+                    assert!(
+                        (pixel.0[channel] - expected[channel]).abs() < 1.0e-5,
+                        "proxy and export must share the LinearRaw input domain: \
+                         expected={expected:?} actual={:?}",
+                        pixel.0
+                    );
+                }
+            }
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn legacy_dng_transport_keeps_the_u16_srgb_contract() {
+        let root = import_contract_root("legacy-linear-dng");
+        let path = root.join("frame.dng");
+        let source = ImageBuffer::from_pixel(2, 2, Rgb([10_000u16, 20_000, 30_000]));
+        write_linear_dng_export(&source, &path, ColorSpaceId::DisplayP3, None).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+
+        let legacy = decode_reduced_dng_for_working_space(&path_text, u32::MAX).unwrap();
+        assert_eq!(
+            legacy.as_raw(),
+            source.as_raw(),
+            "LegacyV1 and compatibility must keep the historical linear-sRGB u16 transport"
+        );
+        let modern = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
+        let modern_srgb = apply_linear_matrix(
+            modern.get_pixel(0, 0).0,
+            linear_conversion_matrix(ColorSpaceId::ProPhotoRgb, ColorSpaceId::SRgb),
+        );
+        assert!(
+            modern_srgb
+                .iter()
+                .zip(source.get_pixel(0, 0).0.iter())
+                .any(|(actual, encoded)| {
+                    (*actual - f32::from(*encoded) / 65535.0).abs() > 1.0e-4
+                }),
+            "the modern path must interpret the embedded Display P3 profile"
+        );
+
+        patch_little_endian_tiff_short_tag(&path, 262, 32803);
+        assert!(
+            decode_reduced_dng_for_working_space(&path_text, u32::MAX).is_err(),
+            "camera DNGs must fall back to the explicit RAW decoder"
+        );
+        assert!(decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).is_err());
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_dng_without_icc_uses_colormatrix1() {
+        let root = import_contract_root("linear-dng-colormatrix");
+        let path = root.join("frame.dng");
+        let samples = [10_000u16, 24_000, 38_000];
+        let xyz_to_space = xyz_d50_to_color_space_matrix(ColorSpaceId::DisplayP3);
+        let matrix_f32 = [
+            [
+                xyz_to_space[0] as f32,
+                xyz_to_space[1] as f32,
+                xyz_to_space[2] as f32,
+            ],
+            [
+                xyz_to_space[3] as f32,
+                xyz_to_space[4] as f32,
+                xyz_to_space[5] as f32,
+            ],
+            [
+                xyz_to_space[6] as f32,
+                xyz_to_space[7] as f32,
+                xyz_to_space[8] as f32,
+            ],
+        ];
+        let bytes = crate::dng_writer::linear_dng_bytes(&crate::dng_writer::LinearDngRequest {
+            width: 1,
+            height: 1,
+            rgb16: &samples,
+            xyz_to_space,
+            icc_profile: None,
+            camera_model: "matrix-only test",
+            description: None,
+            software: "NexFilm test",
+            timestamp: "2026:01:01 00:00:00",
+            opcode_list2: None,
+        })
+        .unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+
+        let domain = resolve_input_domain(&path_text, None);
+        assert_eq!(domain.primaries, InputPrimaries::ScannerDevice);
+        assert_eq!(domain.transfer, InputTransferCurve::Linear);
+        assert_eq!(domain.source, InputDomainSource::RawMetadata);
+        assert!(!domain.estimated);
+
+        let decoded = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
+        let expected = apply_linear_matrix(
+            [
+                f32::from(samples[0]) / 65535.0,
+                f32::from(samples[1]) / 65535.0,
+                f32::from(samples[2]) / 65535.0,
+            ],
+            dng_color_matrix_to_prophoto(matrix_f32).unwrap(),
+        );
+        let actual = decoded.get_pixel(0, 0).0;
+        for channel in 0..3 {
+            assert!(
+                (actual[channel] - expected[channel]).abs() < 5.0e-5,
+                "ColorMatrix1 must drive the decoded domain: \
+                 expected={expected:?} actual={actual:?}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_dng_as_shot_neutral_balances_samples_and_icc_wins_over_colormatrix1() {
+        let root = import_contract_root("linear-dng-as-shot-neutral");
+        let path = root.join("frame.dng");
+        let samples = [32_768u16, 65_535, 52_428];
+        let xyz_to_space = xyz_d50_to_color_space_matrix(ColorSpaceId::SRgb);
+        let matrix_f32 = [
+            [
+                xyz_to_space[0] as f32,
+                xyz_to_space[1] as f32,
+                xyz_to_space[2] as f32,
+            ],
+            [
+                xyz_to_space[3] as f32,
+                xyz_to_space[4] as f32,
+                xyz_to_space[5] as f32,
+            ],
+            [
+                xyz_to_space[6] as f32,
+                xyz_to_space[7] as f32,
+                xyz_to_space[8] as f32,
+            ],
+        ];
+        let write = |icc: Option<&[u8]>| {
+            let bytes = crate::dng_writer::linear_dng_bytes(&crate::dng_writer::LinearDngRequest {
+                width: 1,
+                height: 1,
+                rgb16: &samples,
+                xyz_to_space,
+                icc_profile: icc,
+                camera_model: "as-shot-neutral test",
+                description: None,
+                software: "NexFilm test",
+                timestamp: "2026:01:01 00:00:00",
+                opcode_list2: None,
+            })
+            .unwrap();
+            std::fs::write(&path, bytes).unwrap();
+        };
+
+        write(None);
+        let path_text = path.to_string_lossy().to_string();
+        patch_little_endian_tiff_rational_tag(&path, 50728, &[0.5, 1.0, 0.8]);
+        let domain = super::resolve_linear_raw_dng_domain(&path_text);
+        assert!(matches!(
+            domain.color_source,
+            super::LinearRawColorSource::ColorMatrix(_)
+        ));
+        let neutral = domain.as_shot_neutral.expect("AsShotNeutral");
+        for (actual, expected) in neutral.into_iter().zip([0.5f32, 1.0, 0.8]) {
+            assert!((actual - expected).abs() < 1.0e-5);
+        }
+        let gains = domain.white_balance_gains();
+        for (actual, expected) in gains.into_iter().zip([1.0f32, 0.5, 0.625]) {
+            assert!((actual - expected).abs() < 1.0e-5, "gains={gains:?}");
+        }
+        let balanced_neutral = [
+            neutral[0] * gains[0],
+            neutral[1] * gains[1],
+            neutral[2] * gains[2],
+        ];
+        assert!(
+            balanced_neutral
+                .iter()
+                .all(|value| (*value - balanced_neutral[0]).abs() < 1.0e-5),
+            "the declared neutral must balance to equal channels: {balanced_neutral:?}"
+        );
+        let decoded = decode_linear_raw_dng_prophoto_estimate(&path_text, u32::MAX).unwrap();
+        let expected = clamp_positive_transmission_for_density(apply_linear_matrix(
+            [
+                f32::from(samples[0]) / 65535.0 * gains[0],
+                f32::from(samples[1]) / 65535.0 * gains[1],
+                f32::from(samples[2]) / 65535.0 * gains[2],
+            ],
+            dng_color_matrix_to_prophoto(matrix_f32).unwrap(),
+        ));
+        let actual = decoded.get_pixel(0, 0).0;
+        for channel in 0..3 {
+            assert!(
+                (actual[channel] - expected[channel]).abs() < 5.0e-5,
+                "AsShotNeutral/ColorMatrix1 must drive the decoded pixel: \
+                 expected={expected:?} actual={actual:?}"
+            );
+        }
+
+        let srgb_icc = crate::color_science::build_linear_icc_profile(ColorSpaceId::SRgb);
+        write(Some(&srgb_icc));
+        patch_little_endian_tiff_rational_tag(&path, 50728, &[0.5, 1.0, 0.8]);
+        let icc_domain = super::resolve_linear_raw_dng_domain(&path_text);
+        assert!(matches!(
+            icc_domain.color_source,
+            super::LinearRawColorSource::Profile(ColorSpaceId::SRgb)
+        ));
+        assert_eq!(
+            icc_domain.input_domain.source,
+            InputDomainSource::EmbeddedIcc
+        );
+        assert!(
+            !icc_domain.input_domain.detail.contains("colormatrix1"),
+            "an embedded ICC must not be reported as a ColorMatrix1 fallback"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn linear_raw_dng_without_any_colour_declaration_is_reported_as_estimated_srgb() {
+        let root = import_contract_root("linear-dng-no-colour-declaration");
+        let path = root.join("frame.dng");
+        let bytes = crate::dng_writer::linear_dng_bytes(&crate::dng_writer::LinearDngRequest {
+            width: 1,
+            height: 1,
+            rgb16: &[20_000, 30_000, 40_000],
+            xyz_to_space: xyz_d50_to_color_space_matrix(ColorSpaceId::SRgb),
+            icc_profile: None,
+            camera_model: "uncalibrated test",
+            description: None,
+            software: "NexFilm test",
+            timestamp: "2026:01:01 00:00:00",
+            opcode_list2: None,
+        })
+        .unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        rename_little_endian_tiff_tag(&path, 50721, 65_001);
+        rename_little_endian_tiff_tag(&path, 50728, 65_002);
+        let path_text = path.to_string_lossy().to_string();
+
+        let domain = resolve_input_domain(&path_text, None);
+        assert_eq!(domain.primaries, InputPrimaries::Srgb);
+        assert_eq!(domain.transfer, InputTransferCurve::Linear);
+        assert_eq!(domain.reference, InputReference::LinearTransmission);
+        assert_eq!(domain.source, InputDomainSource::DeviceIdentification);
+        assert!(domain.estimated);
+        assert_eq!(
+            domain.confidence,
+            crate::app_state::InputDomainConfidence::Estimated
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "read-only user-supplied JPEG XL LinearRaw panorama; run explicitly for release diagnostics"]
+    fn compressed_linear_raw_panorama_sample_diagnostic() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("test_picture")
+            .join("_DSC7587-3-Pano.dng");
+        if !path.is_file() {
+            return;
+        }
+        let path_text = path.to_string_lossy().to_string();
+        let directory = dng_linear_raw_directory(&path_text).expect("LinearRaw page");
+        let domain = resolve_input_domain(&path_text, None);
+        println!(
+            "[DNG DIAG] IFD={} {}x{} bits={:?} compression={} photometric={} orientation={}",
+            directory.ifd_offset,
+            directory.width,
+            directory.height,
+            directory.bits_per_sample,
+            directory.compression,
+            directory.photometric,
+            directory.orientation
+        );
+        println!(
+            "[DNG DIAG] domain source={:?} primaries={:?} transfer={:?} detail={} estimated={}",
+            domain.source, domain.primaries, domain.transfer, domain.detail, domain.estimated
+        );
+        println!(
+            "[DNG DIAG] matrices=({},{}) illuminants=({:?},{:?}) neutral={:?} gains={:?}",
+            directory.color_matrix1.is_some(),
+            directory.color_matrix2.is_some(),
+            directory.calibration_illuminant1,
+            directory.calibration_illuminant2,
+            directory.as_shot_neutral,
+            super::resolve_linear_raw_dng_domain(&path_text).white_balance_gains()
+        );
+        let opcode_list = directory
+            .opcode_list2
+            .clone()
+            .expect("the panorama must carry OpcodeList2");
+        println!(
+            "[DNG DIAG] opcode_list2 bytes={} active_area={:?} crop_origin={:?} crop_size={:?}",
+            opcode_list.len(),
+            directory.active_area,
+            directory.default_crop_origin,
+            directory.default_crop_size
+        );
+        {
+            let mut raw = crate::rawler_backend::decode_linear_raw_rgb(&path_text)
+                .expect("rawler full-resolution LinearRaw decode");
+            assert_eq!((raw.width, raw.height), (directory.width, directory.height));
+            let stats = |pixels: &[f32]| {
+                let mut mean = [0.0f64; 3];
+                let mut minimum = [f32::INFINITY; 3];
+                let mut maximum = [f32::NEG_INFINITY; 3];
+                for pixel in pixels.chunks_exact(3) {
+                    for channel in 0..3 {
+                        let value = pixel[channel];
+                        mean[channel] += f64::from(value);
+                        minimum[channel] = minimum[channel].min(value);
+                        maximum[channel] = maximum[channel].max(value);
+                    }
+                }
+                let count = (pixels.len() / 3).max(1) as f64;
+                (mean.map(|sum| sum / count), minimum, maximum)
+            };
+            let (before, before_min, before_max) = stats(&raw.pixels);
+            let raw_domain = super::resolve_linear_raw_dng_domain(&path_text);
+            let gains = raw_domain.white_balance_gains();
+            let matrix = raw_domain.color_matrix_to(ColorSpaceId::ProPhotoRgb);
+            let mut before_prophoto_mean = [0.0f64; 3];
+            let mut before_prophoto_samples = [Vec::new(), Vec::new(), Vec::new()];
+            for (index, pixel) in raw.pixels.chunks_exact(3).enumerate() {
+                let mapped = clamp_positive_transmission_for_density(apply_linear_matrix(
+                    [
+                        pixel[0] * gains[0],
+                        pixel[1] * gains[1],
+                        pixel[2] * gains[2],
+                    ],
+                    matrix,
+                ));
+                for channel in 0..3 {
+                    before_prophoto_mean[channel] += f64::from(mapped[channel]);
+                    if index % 17 == 0 {
+                        before_prophoto_samples[channel].push(mapped[channel]);
+                    }
+                }
+            }
+            let before_prophoto_count = (raw.pixels.len() / 3).max(1) as f64;
+            println!(
+                "[DNG DIAG] pre-opcode ProPhoto mean=({:.5},{:.5},{:.5}) R/G={:.4} B/G={:.4}",
+                before_prophoto_mean[0] / before_prophoto_count,
+                before_prophoto_mean[1] / before_prophoto_count,
+                before_prophoto_mean[2] / before_prophoto_count,
+                before_prophoto_mean[0] / before_prophoto_mean[1].max(1e-9),
+                before_prophoto_mean[2] / before_prophoto_mean[1].max(1e-9)
+            );
+            for channel in 0..3 {
+                let mut values = std::mem::take(&mut before_prophoto_samples[channel]);
+                values.sort_unstable_by(f32::total_cmp);
+                let percentile =
+                    |fraction: f32| values[((values.len() - 1) as f32 * fraction) as usize];
+                println!(
+                    "[DNG DIAG] pre-opcode {} p01={:.5} p50={:.5} p99={:.5} max={:.5}",
+                    ["R", "G", "B"][channel],
+                    percentile(0.01),
+                    percentile(0.50),
+                    percentile(0.99),
+                    values.last().copied().unwrap_or(0.0)
+                );
+            }
+            let (active_left, active_top) = super::linear_raw_active_origin(&directory);
+            let summary = crate::dng_opcode::apply_opcode_list2(
+                &opcode_list,
+                raw.width,
+                raw.height,
+                active_left,
+                active_top,
+                &mut raw.pixels,
+            )
+            .expect("apply the panorama OpcodeList2");
+            let (after, after_min, after_max) = stats(&raw.pixels);
+            println!(
+                "[DNG DIAG] opcodes parsed={} polynomial={} table={} optional_skipped={} writes={}",
+                summary.opcode_count,
+                summary.map_polynomial_count,
+                summary.map_table_count,
+                summary.skipped_optional_count,
+                summary.pixel_writes
+            );
+            println!(
+                "[DNG DIAG] OpcodeList2 before mean=({:.5},{:.5},{:.5}) min={:?} max={:?}",
+                before[0], before[1], before[2], before_min, before_max
+            );
+            println!(
+                "[DNG DIAG] OpcodeList2 after  mean=({:.5},{:.5},{:.5}) min={:?} max={:?}",
+                after[0], after[1], after[2], after_min, after_max
+            );
+            assert_eq!(summary.map_polynomial_count, 3);
+            assert_eq!(
+                summary.pixel_writes,
+                u64::from(raw.width) * u64::from(raw.height) * 3
+            );
+            assert!(
+                after[0] > after[1] && after[1] > after[2],
+                "stage-2 linearisation must restore R > G > B before colour conversion: {after:?}"
+            );
+        }
+        assert_eq!(
+            domain.source,
+            InputDomainSource::RawMetadata,
+            "the panorama must use its DNG colour metadata"
+        );
+        assert!(
+            domain.detail.contains("colormatrix2"),
+            "D65 ColorMatrix2 must be selected: {}",
+            domain.detail
+        );
+
+        let proxy = decode_modern_input(
+            &path_text,
+            DecodeMode::DevelopProxy,
+            None,
+            PROXY_LONG_EDGE as u32,
+            false,
+        )
+        .unwrap();
+        let export =
+            decode_modern_input(&path_text, DecodeMode::ExportFull, None, u32::MAX, false).unwrap();
+        println!(
+            "[DNG DIAG] decoded proxy={}x{} export={}x{}",
+            proxy.image.width(),
+            proxy.image.height(),
+            export.image.width(),
+            export.image.height()
+        );
+        assert_eq!(proxy.input_domain.source, InputDomainSource::RawMetadata);
+        assert_eq!(export.input_domain.source, InputDomainSource::RawMetadata);
+        assert_eq!(
+            proxy.image.width().max(proxy.image.height()),
+            PROXY_LONG_EDGE as u32
+        );
+        assert!(export.image.width().max(export.image.height()) > 7_000);
+
+        let image = &export.image;
+        let total = f64::from(image.width()) * f64::from(image.height());
+        let mut means = [0.0f64; 3];
+        let mut saturated = [0.0f64; 3];
+        let mut over_one = [0.0f64; 3];
+        let mut sampled = [Vec::new(), Vec::new(), Vec::new()];
+        for (index, pixel) in image.as_raw().chunks_exact(3).enumerate() {
+            for channel in 0..3 {
+                let value = pixel[channel];
+                means[channel] += f64::from(value);
+                if value >= 0.999 {
+                    saturated[channel] += 1.0;
+                }
+                if value >= 1.0 {
+                    over_one[channel] += 1.0;
+                }
+                if index % 17 == 0 {
+                    sampled[channel].push(value);
+                }
+            }
+        }
+        println!(
+            "[DNG DIAG] decoded mean=({:.5},{:.5},{:.5}) R/G={:.4} B/G={:.4}",
+            means[0] / total,
+            means[1] / total,
+            means[2] / total,
+            means[0] / means[1].max(1e-9),
+            means[2] / means[1].max(1e-9)
+        );
+        assert!(
+            means[0] > means[1] && means[1] > means[2],
+            "decoded ProPhoto means must keep the orange-negative order R > G > B: {means:?}"
+        );
+        for channel in 0..3 {
+            let mut values = std::mem::take(&mut sampled[channel]);
+            values.sort_unstable_by(f32::total_cmp);
+            let percentile =
+                |fraction: f32| values[((values.len() - 1) as f32 * fraction) as usize];
+            println!(
+                "[DNG DIAG] {} p01={:.5} p50={:.5} p99={:.5} max={:.5} \
+                 >=0.999={:.3}% >=1.0={:.3}%",
+                ["R", "G", "B"][channel],
+                percentile(0.01),
+                percentile(0.50),
+                percentile(0.99),
+                values.last().copied().unwrap_or(0.0),
+                100.0 * saturated[channel] / total,
+                100.0 * over_one[channel] / total
+            );
+        }
+
+        let working = ImageBuffer::<Rgb<u16>, Vec<u16>>::from_fn(
+            proxy.image.width(),
+            proxy.image.height(),
+            |x, y| {
+                let pixel = proxy.image.get_pixel(x, y).0;
+                Rgb(pixel.map(|value| (value.clamp(0.0, 1.0) * 65535.0).round() as u16))
+            },
+        );
+        let border =
+            crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(working));
+        let mut geom = GeometryState::default();
+        if border.confidence == crate::film_border::DetectionConfidence::High {
+            geom.calibration_points = Some(border.points);
+        }
+        println!(
+            "[DNG DIAG] film border confidence={:?} status={} points={:?}",
+            border.confidence, border.status, geom.calibration_points
+        );
+        let proxy_image = &proxy.image;
+        let film_base = estimate_film_base_f32(proxy_image, &geom);
+        let (analyzed_base, confidence) =
+            compute_auto_base_f32(proxy_image, &geom).expect("auto film base");
+        println!(
+            "[DNG DIAG] film base estimate density={:?} source={} usable={} fallback={:?}",
+            film_base.density,
+            film_base.source,
+            film_base.is_trusted(),
+            film_base.fallback_reason
+        );
+        println!(
+            "[DNG DIAG] auto base density={:?} confidence={:.4}",
+            analyzed_base, confidence
+        );
+        assert!(
+            analyzed_base[0] < analyzed_base[1] && analyzed_base[1] < analyzed_base[2],
+            "the automatic film base must keep the orange-negative density order \
+             D_R < D_G < D_B: {analyzed_base:?}"
+        );
+        let base_color = base_color_from_density(analyzed_base);
+        let mut state = default_pipeline_state_for_import(true, "DNG_DIAG", &[]);
+        // Match the existing _DSC7587 TIFF baseline: use the measured frame
+        // base as the display zero, so R/G is directly comparable.
+        state.density_anchors.d_min_base = Some(DensityAnchor {
+            density: analyzed_base,
+            source: DensityAnchorSource::EstimatedFromContent,
+            scope: DensityAnchorScope::Frame,
+            confidence: DensityAnchorConfidence::Estimated,
+            reference_id: None,
+            provenance: DensityAnchorProvenance {
+                input_domain: DataDomain::ProPhotoEstimate,
+                raw_decode_version: Some(crate::persistence::RAW_DECODE_VERSION),
+                algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+                legacy: false,
+                ..Default::default()
+            },
+        });
+        let base = pipeline_base_density(&state, &base_color);
+        let mut limits = compute_content_limits_f32_with_bounds(
+            proxy_image,
+            None,
+            &geom,
+            base,
+            roll_physical_density_span(&state.density_anchors, base),
+        )
+        .expect("content limits");
+        let (channel_offsets, _) =
+            prepare_content_render_limits(&mut limits, &state.density_anchors, base);
+        println!(
+            "[DNG DIAG] d_min={:?} d_max={:?} offsets={:?}",
+            limits.d_min, limits.d_max, channel_offsets
+        );
+        assert!(
+            limits.d_max.iter().all(|value| value.is_finite())
+                && limits.d_max[0] > 0.45
+                && limits.d_max[2] > 0.70,
+            "the linearised panorama must recover a real per-channel density span: {:?}",
+            limits.d_max
+        );
+        state.render_mapping.mode = RenderMode::PreserveTone;
+        state.render_mapping.density_low = limits.d_min;
+        state.render_mapping.density_high = limits.d_max;
+        state.render_mapping.channel_offsets = channel_offsets;
+        let mut params = TuningParams::default();
+        params.density.d_min = limits.d_min;
+        params.density.d_max = limits.d_max;
+        let rendered =
+            render_f32_shader_equivalent(image, None, &params, &geom, &base_color, &state, None);
+        let mut all_means = [0.0f64; 3];
+        let mut center_means = [0.0f64; 3];
+        let mut center_count = 0.0f64;
+        let mut ground_means = [0.0f64; 3];
+        let mut ground_count = 0.0f64;
+        for (y, row) in rendered.rows().enumerate() {
+            for (x, pixel) in row.enumerate() {
+                for channel in 0..3 {
+                    all_means[channel] += f64::from(pixel[channel]);
+                }
+                if (0.25..0.75).contains(&(x as f64 / rendered.width() as f64))
+                    && (0.25..0.75).contains(&(y as f64 / rendered.height() as f64))
+                {
+                    for channel in 0..3 {
+                        center_means[channel] += f64::from(pixel[channel]);
+                    }
+                    center_count += 1.0;
+                }
+                if (0.30..0.55).contains(&(x as f64 / rendered.width() as f64))
+                    && (0.60..0.85).contains(&(y as f64 / rendered.height() as f64))
+                {
+                    for channel in 0..3 {
+                        ground_means[channel] += f64::from(pixel[channel]);
+                    }
+                    ground_count += 1.0;
+                }
+            }
+        }
+        let all_total = total.max(1.0);
+        let center_total = center_count.max(1.0);
+        println!(
+            "[DNG DIAG] rendered all mean=({:.1},{:.1},{:.1}) R/G={:.3} B/G={:.3}",
+            all_means[0] / all_total,
+            all_means[1] / all_total,
+            all_means[2] / all_total,
+            all_means[0] / all_means[1].max(1.0),
+            all_means[2] / all_means[1].max(1.0)
+        );
+        let all_rg = all_means[0] / all_means[1].max(1.0);
+        let all_bg = all_means[2] / all_means[1].max(1.0);
+        println!(
+            "[DNG DIAG] rendered center mean=({:.1},{:.1},{:.1}) R/G={:.3} B/G={:.3}",
+            center_means[0] / center_total,
+            center_means[1] / center_total,
+            center_means[2] / center_total,
+            center_means[0] / center_means[1].max(1.0),
+            center_means[2] / center_means[1].max(1.0)
+        );
+        let center_rg = center_means[0] / center_means[1].max(1.0);
+        let center_bg = center_means[2] / center_means[1].max(1.0);
+        println!(
+            "[DNG DIAG] rendered mid-grey ground mean=({:.1},{:.1},{:.1}) R/G={:.3} B/G={:.3}",
+            ground_means[0] / ground_count.max(1.0),
+            ground_means[1] / ground_count.max(1.0),
+            ground_means[2] / ground_count.max(1.0),
+            ground_means[0] / ground_means[1].max(1.0),
+            ground_means[2] / ground_means[1].max(1.0)
+        );
+        let ground_rg = ground_means[0] / ground_means[1].max(1.0);
+        let ground_bg = ground_means[2] / ground_means[1].max(1.0);
+        assert!(
+            (0.90..=1.20).contains(&all_rg)
+                && (0.85..=1.20).contains(&all_bg)
+                && (0.90..=1.15).contains(&center_rg)
+                && (0.90..=1.15).contains(&center_bg)
+                && (0.90..=1.25).contains(&ground_rg)
+                && (0.80..=1.15).contains(&ground_bg),
+            "the rendered panorama must avoid both the cyan TIFF cast and the \
+             magenta non-linearised cast: all=({all_rg:.3},{all_bg:.3}) \
+             center=({center_rg:.3},{center_bg:.3}) ground=({ground_rg:.3},{ground_bg:.3})"
+        );
+        assert!(
+            saturated.iter().all(|count| *count / total < 0.01),
+            "no channel may be broadly clipped at the LinearRaw decode"
+        );
+        assert!(
+            all_rg > 0.72,
+            "the rendered red channel must improve on the previous 0.687 TIFF cast"
+        );
+    }
+
+    #[test]
+    fn scanner_fff_modern_decode_keeps_the_container_gamma_in_f32() {
+        let root = import_contract_root("fff-f32");
+        let path = root.join("scan.fff");
+        write_synthetic_fff(&path, 0x0009_2800, 0, false);
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.seek(SeekFrom::Start(16)).unwrap();
+            file.write_all(
+                b"<key>Gamma</key><real>2.2</real>\
+                  <key>RGBProfile</key><string>Adobe RGB (1998)</string>",
+            )
+            .unwrap();
+        }
+        let path_text = path.to_string_lossy().to_string();
+        assert!(is_scanner_fff_tiff(&path_text));
+
+        let decoded =
+            decode_modern_input(&path_text, DecodeMode::DevelopProxy, None, 2560, false).unwrap();
+        assert_eq!(decoded.working_basis, WorkingBasis::ProPhotoEstimate);
+        assert_eq!(decoded.input_domain.primaries, InputPrimaries::AdobeRgb1998);
+        assert_eq!(decoded.input_domain.transfer, InputTransferCurve::Gamma22);
+        assert_eq!(
+            decoded.input_domain.source,
+            InputDomainSource::ScannerContainerRecord
+        );
+        assert!(!decoded.input_domain.estimated);
+
+        let encoded = 1_000.0f32 / 65535.0;
+        let expected = apply_linear_matrix(
+            [encoded.powf(2.2); 3],
+            linear_conversion_matrix(ColorSpaceId::AdobeRgb, ColorSpaceId::ProPhotoRgb),
+        );
+        let actual = decoded.image.get_pixel(0, 0).0;
+        for channel in 0..3 {
+            assert!(
+                (actual[channel] - expected[channel]).abs() < 1.0e-5,
+                "FFF gamma/profile must reach the f32 working image: \
+                 expected={expected:?} actual={actual:?}"
+            );
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn scanner_fff_applies_a_bound_profile_in_the_modern_f32_path() {
+        let root = import_contract_root("fff-profile-f32");
+        let path = root.join("scan.fff");
+        write_synthetic_fff(&path, 0x0009_2800, 0, false);
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            file.seek(SeekFrom::Start(16)).unwrap();
+            file.write_all(
+                b"<key>Gamma</key><real>2.2</real>\
+                  <key>RGBProfile</key><string>Adobe RGB (1998)</string>",
+            )
+            .unwrap();
+        }
+        let path_text = path.to_string_lossy().to_string();
+        let unbound =
+            decode_modern_input(&path_text, DecodeMode::DevelopProxy, None, 2560, false).unwrap();
+        let profile = crate::scanner_profile::ScannerInputProfile {
+            profile_id: "fff-profile".to_string(),
+            manufacturer: "Flextight".to_string(),
+            model: "X5".to_string(),
+            driver_software: "FlexColor".to_string(),
+            resolution: 4000,
+            bit_depth: 16,
+            positive_negative_mode: "negative".to_string(),
+            infrared: false,
+            multi_exposure: false,
+            lamp_holder: "holder".to_string(),
+            file_transfer_curve: "linear".to_string(),
+            crop_geometry: "full".to_string(),
+            input_encoding: "linear_rgb".to_string(),
+            icc_digest: "digest".to_string(),
+            config_digest: String::new(),
+            profile_source: "local".to_string(),
+            license: "internal".to_string(),
+            verified: false,
+            confidence: crate::scanner_profile::ScannerProfileConfidence::Estimated,
+            target: crate::scanner_profile::ScannerProfileTarget::LinearRgb,
+            compatible_film_class: "colour-negative".to_string(),
+            matrix: [[2.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            offset: [0.0; 3],
+        };
+        let bound_domain = resolve_input_domain(&path_text, Some(&profile));
+        let bound = decode_scanner_profiled_estimate_image_buffer(
+            &path_text,
+            DecodeMode::DevelopProxy,
+            Some(&profile),
+            2560,
+        )
+        .unwrap();
+
+        assert_eq!(bound_domain.source, InputDomainSource::ScannerInputProfile);
+        assert!(bound_domain
+            .detail
+            .contains("flextight_container_gamma_2.20"));
+        let unbound_pixel = unbound.image.get_pixel(0, 0).0;
+        let bound_pixel = bound.get_pixel(0, 0).0;
+        let linear_srgb = apply_linear_matrix(
+            [1_000.0f32 / 65535.0; 3].map(|value| value.powf(2.2)),
+            linear_conversion_matrix(ColorSpaceId::AdobeRgb, ColorSpaceId::SRgb),
+        );
+        let expected = apply_linear_matrix(
+            [linear_srgb[0] * 2.0, linear_srgb[1], linear_srgb[2]],
+            linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb),
+        );
+        for channel in 0..3 {
+            assert!(
+                (bound_pixel[channel] - expected[channel]).abs() < 1.0e-6,
+                "the bound scanner profile must run after FFF linearisation: \
+                 channel={channel} expected={expected:?} bound={bound_pixel:?}"
+            );
+        }
+        assert!(bound_pixel
+            .iter()
+            .zip(unbound_pixel.iter())
+            .any(|(bound, unbound)| (*bound - *unbound).abs() > 1.0e-5));
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn supplied_scanner_and_camera_fff_fixtures_are_routed_separately() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test_picture");
@@ -17850,50 +22201,6 @@ mod import_contract_tests {
             means[2] / green,
             means[0] - means[2]
         );
-    }
-
-    /// Per-channel film-base density from the frame's brightest samples, the way
-    /// the v1.0.2 path estimates it. `scoped_to_area` restricts the samples to
-    /// the declared Film Area.
-    fn ab_frame_base_density(
-        image: &ImageBuffer<Rgb<f32>, Vec<f32>>,
-        geom: &GeometryState,
-        scoped_to_area: bool,
-    ) -> [f32; 3] {
-        let points =
-            geom.calibration_points
-                .unwrap_or([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]);
-        let mut channels = [Vec::new(), Vec::new(), Vec::new()];
-        for (index, pixel) in image.as_raw().chunks_exact(3).enumerate() {
-            if pixel
-                .iter()
-                .any(|value| !value.is_finite() || *value <= 0.0)
-            {
-                continue;
-            }
-            if scoped_to_area {
-                let x = (index as u32 % image.width()) as f32
-                    / image.width().saturating_sub(1).max(1) as f32;
-                let y = (index as u32 / image.width()) as f32
-                    / image.height().saturating_sub(1).max(1) as f32;
-                if !point_in_film_area([x, y], &points, 0.0) {
-                    continue;
-                }
-            }
-            for channel in 0..3 {
-                channels[channel].push(pixel[channel]);
-            }
-        }
-        std::array::from_fn(|channel| {
-            let values = &mut channels[channel];
-            if values.is_empty() {
-                return 0.0;
-            }
-            values.sort_unstable_by(|left, right| right.total_cmp(left));
-            let tail = ((values.len() as f32 * 0.01).ceil() as usize).clamp(1, values.len());
-            let mean = values.iter().take(tail).sum::<f32>() / tail as f32;
-            -mean.max(1.0e-6).log10()
-        })
     }
 
     fn ab_probe_region(
@@ -18991,12 +23298,11 @@ mod import_contract_tests {
         };
         let measured = limits.clone();
         prepare_content_render_limits(&mut limits, &anchors, base.density);
-        assert_ne!(limits.d_min, [0.0; 3]);
         assert_ne!(limits.d_max, [1.9; 3]);
-        // A partial Roll anchor carries a base but no sampled full exposure, so
-        // it cannot define endpoints: the frame keeps the window its own content
-        // measured, channel by channel.
-        assert_eq!(limits.d_min, measured.d_min);
+        // A partial Roll anchor carries a trusted base but no sampled full
+        // exposure. The base therefore anchors black at the post-subtraction
+        // origin, while the content still supplies each channel's white point.
+        assert_eq!(limits.d_min, [0.0; 3]);
         assert_eq!(limits.d_max, measured.d_max);
         let spans = [
             limits.d_max[0] - limits.d_min[0],
@@ -20037,7 +24343,7 @@ mod import_contract_tests {
             base_preview.density[0],
             base_preview.density[1],
             base_preview.density[2],
-            base_preview.usable,
+            base_preview.is_trusted(),
             base_preview.source
         );
 
@@ -20225,7 +24531,7 @@ mod import_contract_tests {
             base_export.density[0],
             base_export.density[1],
             base_export.density[2],
-            base_export.usable,
+            base_export.is_trusted(),
             base_export.source
         );
         let frame_base_export = detect_frame_base_density(&export_est, base_preview.density)
@@ -20822,6 +25128,7 @@ mod import_contract_tests {
             &transport,
             &base_color,
             &pipeline_state,
+            &GeometryState::default(),
             None,
             true,
         );
@@ -21026,8 +25333,8 @@ mod import_contract_tests {
         sums.map(|sum| sum / total.max(1.0))
     }
 
-    /// A frame that measured its own film base keeps the density window its
-    /// content measured, channel by channel.
+    /// A frame that measured its own film base anchors black on that base,
+    /// while keeping each channel's content-derived white point.
     ///
     /// This is the promise the workspace's own fixtures settled: collapsing the
     /// three channels onto one shared density scale turned a Fujifilm RAF's
@@ -21057,8 +25364,10 @@ mod import_contract_tests {
             prepare_content_render_limits(&mut limits, &DensityAnchors::default(), base_density);
 
         assert_eq!(offsets, [0.0; 3]);
-        // Fewer density units in the short channel means a shorter window, so
-        // every channel still covers the full display range.
+        assert_eq!(limits.d_min, [0.0; 3]);
+        assert_eq!(limits.d_max, measured.d_max);
+        // Fewer density units in the short channel mean a shorter window above
+        // the base, so every channel still covers its own display range.
         let span = |limits: &AutoColorLimits| {
             [
                 limits.d_max[0] - limits.d_min[0],
@@ -21067,14 +25376,14 @@ mod import_contract_tests {
             ]
         };
         let prepared = span(&limits);
-        let raw = span(&measured);
+        let raw = measured.d_max;
         assert!(
             prepared[0] < prepared[1] * 0.85,
             "the short channel must keep its own shorter span: {prepared:?} (measured {raw:?})"
         );
         for channel in 0..3 {
-            // The window is the content's own endpoints: no span floor is
-            // applied on this route.
+            // The low endpoint is the measured base; the high endpoint is the
+            // content's own co-sited white point.
             assert!(
                 (prepared[channel] - raw[channel]).abs() < 1.0e-6
                     || (prepared[channel] - MINIMUM_USABLE_CONTENT_SPAN).abs() < 1.0e-6,
@@ -21201,27 +25510,24 @@ mod import_contract_tests {
         }
     }
 
-    /// A frame-wide colour *shift* is absorbed by a per-channel window, and that
-    /// is the price of the shape the fixtures asked for.
+    /// A frame-wide colour shift is absorbed when it moves the trusted base with
+    /// it, which is what a capture or lamp tint does to the clear film.
     ///
-    /// Each channel's film base and its co-sited endpoints move together when
-    /// the whole frame is tinted (a multiplicative tint over the transmission is
-    /// a constant offset in density), so subtracting the base and re-deriving
-    /// the window from the content leaves the print where it was. The retired
-    /// v1.0.2 recipe behaves the same way. The alternative - one shared density
-    /// scale - does respond to such a tint, but it is also what turned every
-    /// ordinary fixture in this workspace green or blue, so this test only
-    /// records the trade-off instead of failing in either direction.
+    /// A tint that appears after the base was measured is a real capture
+    /// difference and must not be hidden by the old bounded grey-world shift.
     #[test]
-    fn a_frame_wide_tint_is_absorbed_by_the_per_channel_window() {
+    fn a_frame_wide_tint_is_neutralized_by_its_trusted_base() {
         let geom = GeometryState::default();
         let base_density = [0.42, 0.58, 0.74];
+        let tint = [1.18f32, 1.0, 0.85];
         let original = synthetic_negative_frame(64, 48, [1.0, 1.0, 1.0]);
-        let tinted = synthetic_negative_frame(64, 48, [1.18, 1.0, 0.85]);
+        let tinted = synthetic_negative_frame(64, 48, tint);
+        let tinted_base =
+            std::array::from_fn(|channel| base_density[channel] - tint[channel].log10());
 
         let (original_render, original_limits, _) =
             render_unified_frame(&original, &geom, base_density);
-        let (tinted_render, tinted_limits, _) = render_unified_frame(&tinted, &geom, base_density);
+        let (tinted_render, tinted_limits, _) = render_unified_frame(&tinted, &geom, tinted_base);
         let original_means = rendered_channel_means(&original_render);
         let tinted_means = rendered_channel_means(&tinted_render);
         let original_rg = original_means[0] / original_means[1].max(1.0);
@@ -21230,8 +25536,8 @@ mod import_contract_tests {
             "[TINT] R/G {original_rg:.4} -> {tinted_rg:.4}; window low {:?} -> {:?}",
             original_limits.d_min, tinted_limits.d_min
         );
-        // The scene itself is unchanged, so the print keeps its balance: the
-        // window moved with the tint rather than printing it.
+        // The scene and its clear base moved together, so the print keeps its
+        // balance after subtracting that base.
         assert!(
             (tinted_rg - original_rg).abs() < 0.05,
             "a frame-wide tint must not be printed as a cast: {original_rg:.4} -> {tinted_rg:.4}"
@@ -21401,7 +25707,7 @@ mod import_contract_tests {
                 geom.calibration_points = Some(border.points);
             }
             let estimate = estimate_film_base_f32(&working, &geom);
-            let base = if estimate.usable {
+            let base = if estimate.is_trusted() {
                 estimate.density
             } else {
                 [0.0; 3]
@@ -21519,20 +25825,48 @@ mod import_contract_tests {
     /// Area is only believed when it agrees with the in-area low-density tail.
     #[test]
     fn film_base_quality_gate_rejects_implausible_candidates() {
-        assert!(super::validate_film_base_candidate([0.3, 0.45, 0.6], 512, 64).is_ok());
+        assert!(super::validate_film_base_candidate(
+            [0.3, 0.45, 0.6],
+            512,
+            64,
+            super::FilmBaseCandidateKind::RebateBand
+        )
+        .is_ok());
         assert_eq!(
-            super::validate_film_base_candidate([0.3, 0.45, 0.6], 4, 64),
+            super::validate_film_base_candidate(
+                [0.3, 0.45, 0.6],
+                4,
+                64,
+                super::FilmBaseCandidateKind::RebateBand
+            ),
             Err("film_base_too_few_samples")
         );
         assert_eq!(
-            super::validate_film_base_candidate([0.0, 0.45, 0.6], 512, 64),
+            super::validate_film_base_candidate(
+                [0.0, 0.45, 0.6],
+                512,
+                64,
+                super::FilmBaseCandidateKind::RebateBand
+            ),
             Err("film_base_out_of_range")
         );
         // Underexposure raises the whole base density and the camera-native
         // channel spread. Those are physically valid film-base measurements,
         // not evidence that the candidate is scene content.
-        assert!(super::validate_film_base_candidate([2.3, 2.6, 2.9], 512, 64).is_ok());
-        assert!(super::validate_film_base_candidate([1.4, 0.2, 0.3], 512, 64).is_ok());
+        assert!(super::validate_film_base_candidate(
+            [2.3, 2.6, 2.9],
+            512,
+            64,
+            super::FilmBaseCandidateKind::FilmAreaTail
+        )
+        .is_ok());
+        assert!(super::validate_film_base_candidate(
+            [1.4, 0.2, 0.3],
+            512,
+            64,
+            super::FilmBaseCandidateKind::FrameQuantile
+        )
+        .is_ok());
         assert!(super::film_base_band_agrees(
             [0.30, 0.45, 0.60],
             [0.35, 0.50, 0.65]
@@ -21546,8 +25880,9 @@ mod import_contract_tests {
         // and must say so instead of neutralising on a fabricated candidate.
         let saturated = ImageBuffer::from_pixel(64, 64, Rgb([1.0f32, 1.0, 1.0]));
         let no_base = estimate_film_base_f32(&saturated, &GeometryState::default());
-        assert!(!no_base.usable);
-        assert_eq!(no_base.fallback_reason, Some("missing_film_base_reference"));
+        assert!(!no_base.is_trusted());
+        assert_eq!(no_base.fallback_reason, Some("film_base_saturated"));
+        assert_eq!(no_base.state, FilmBaseState::Invalid);
 
         // With a confirmed Film Area and a visible rebate, both the rebate band
         // and the in-area tail must stay near the bright rebate instead of
@@ -21569,7 +25904,7 @@ mod import_contract_tests {
             }
         }
         let estimate = estimate_film_base_f32(&frame, &geom);
-        assert!(estimate.usable);
+        assert!(estimate.is_trusted());
         assert!(
             matches!(
                 estimate.source,
@@ -21585,12 +25920,205 @@ mod import_contract_tests {
             estimate.source
         );
 
-        // Without a Film Area the brightest in-frame quantile is the documented
-        // last resort, and it is explicitly discounted.
+        // Without a Film Area the brightest in-frame quantile is only a content
+        // fallback. It must not subtract a scene sample as if it were a
+        // measured film base.
         let no_area = estimate_film_base_f32(&frame, &GeometryState::default());
-        assert!(no_area.usable);
-        assert_eq!(no_area.source, "content_high_quantile");
-        assert!(no_area.confidence <= 0.5);
+        assert!(!no_area.is_trusted());
+        assert_eq!(no_area.state, FilmBaseState::ContentFallback);
+        assert_eq!(no_area.source, "content_fallback");
+        assert_eq!(no_area.density, [0.0; 3]);
+        assert_eq!(
+            no_area.fallback_reason,
+            Some("smart_auto_no_trusted_film_base")
+        );
+    }
+
+    #[test]
+    fn ettr_bright_bases_use_each_sources_threshold_and_report_saturation() {
+        let mut geom = GeometryState::default();
+        geom.calibration_points = Some([[0.10, 0.10], [0.90, 0.10], [0.90, 0.90], [0.10, 0.90]]);
+
+        for transmission in [0.96f32, 0.97] {
+            let frame = ImageBuffer::from_pixel(128, 128, Rgb([transmission; 3]));
+            let estimate = estimate_film_base_f32(&frame, &geom);
+            assert_eq!(
+                estimate.state,
+                FilmBaseState::Trusted,
+                "{transmission}: {estimate:?}"
+            );
+            let expected = -transmission.log10();
+            for channel in 0..3 {
+                assert!(
+                    (estimate.density[channel] - expected).abs() < 1.0e-4,
+                    "{transmission}: expected a clear base at {expected:.5} D, got {:?}",
+                    estimate.density
+                );
+            }
+        }
+
+        let saturated = ImageBuffer::from_pixel(128, 128, Rgb([0.99f32; 3]));
+        let estimate = estimate_film_base_f32(&saturated, &geom);
+        assert_eq!(estimate.state, FilmBaseState::Invalid);
+        assert_eq!(estimate.fallback_reason, Some("film_base_saturated"));
+        assert_eq!(estimate.density, [0.0; 3]);
+    }
+
+    #[test]
+    fn a_sampled_base_without_a_leader_anchors_black_and_changes_the_print() {
+        let geom = GeometryState::default();
+        let base = [0.42, 0.58, 0.74];
+        let frame = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_fn(64, 64, |x, y| {
+            let u = x as f32 / 63.0;
+            let v = y as f32 / 63.0;
+            let scene = 0.15 + 0.85 * v + 0.12 * u;
+            Rgb(std::array::from_fn(|channel| {
+                10.0f32.powf(-(base[channel] + scene))
+            }))
+        });
+        let anchors = |density: [f32; 3]| DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density,
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("base-only".to_string()),
+                provenance: Default::default(),
+            }),
+            ..DensityAnchors::default()
+        };
+        let render = |base_density: [f32; 3]| {
+            let anchors = anchors(base_density);
+            let mut limits =
+                compute_content_limits_f32_with_bounds(&frame, None, &geom, base_density, None)
+                    .unwrap();
+            let measured_high = limits.d_max;
+            prepare_content_render_limits(&mut limits, &anchors, base_density);
+            assert_eq!(
+                limits.d_min, [0.0; 3],
+                "the sampled base must be the post-subtraction black point"
+            );
+            assert_eq!(limits.d_max, measured_high);
+
+            let mut state = PipelineState::from_roll_anchors(anchors);
+            state.processing_report.base_source = "roll_anchor_prophoto_estimate".to_string();
+            state.render_mapping.density_low = limits.d_min;
+            state.render_mapping.density_high = limits.d_max;
+            let mut params = TuningParams::default();
+            params.density.d_min = limits.d_min;
+            params.density.d_max = limits.d_max;
+            render_f32_shader_equivalent(
+                &frame,
+                None,
+                &params,
+                &geom,
+                &base_color_from_density(base_density),
+                &state,
+                None,
+            )
+        };
+
+        let first = render(base);
+        let second = render([base[0] + 0.12, base[1] + 0.12, base[2] + 0.12]);
+        assert_ne!(
+            first.as_raw(),
+            second.as_raw(),
+            "changing the sampled base must move the rendered black point"
+        );
+    }
+
+    #[test]
+    fn content_fallback_preserves_channel_lows_and_shares_only_the_span() {
+        let original_lows = [0.15, 0.45, 0.75];
+        let mut limits = AutoColorLimits {
+            d_min: original_lows,
+            d_max: [0.16, 1.45, 1.75],
+            base_density: [0.0; 3],
+            pipeline_state: None,
+        };
+        let (offsets, _) =
+            prepare_content_render_limits(&mut limits, &DensityAnchors::default(), [0.0; 3]);
+
+        assert_eq!(offsets, [0.0; 3]);
+        assert_eq!(limits.d_min, original_lows);
+        let spans = [
+            limits.d_max[0] - limits.d_min[0],
+            limits.d_max[1] - limits.d_min[1],
+            limits.d_max[2] - limits.d_min[2],
+        ];
+        assert!((spans[0] - spans[1]).abs() < 1.0e-6);
+        assert!((spans[1] - spans[2]).abs() < 1.0e-6);
+        assert!(
+            (spans[0] - 1.0).abs() < 1.0e-6,
+            "the collapsed red channel must not drive its own gain: {spans:?}"
+        );
+    }
+
+    #[test]
+    fn content_fallback_neutralizes_an_unbounded_orange_mask() {
+        const BASE_TRANSMISSION: [f32; 3] = [0.62, 0.34, 0.20];
+        let geom = GeometryState::default();
+        let frame = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_fn(96, 96, |x, y| {
+            let u = x as f32 / 95.0;
+            let v = y as f32 / 95.0;
+            let scene = 0.20 + 0.85 * v + 0.18 * u;
+            Rgb(std::array::from_fn(|channel| {
+                BASE_TRANSMISSION[channel] * 10.0f32.powf(-scene)
+            }))
+        });
+        let (render, limits, offsets) = render_unified_frame(&frame, &geom, [0.0; 3]);
+
+        assert_eq!(offsets, [0.0; 3]);
+        assert!(
+            limits.d_min.iter().copied().fold(f32::MIN, f32::max)
+                - limits.d_min.iter().copied().fold(f32::MAX, f32::min)
+                > 0.30,
+            "the fixture must carry a large orange-mask offset: {:?}",
+            limits.d_min
+        );
+        let center = render.get_pixel(48, 48).0;
+        let spread = center.iter().copied().max().unwrap_or_default()
+            - center.iter().copied().min().unwrap_or_default();
+        assert!(
+            spread <= 4,
+            "the same neutral scene sample must stay neutral without a trusted base: {center:?}"
+        );
+    }
+
+    #[test]
+    fn a_single_bright_edge_cannot_supply_rebate_evidence() {
+        let points = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+        let bright = [-0.97f32.log10(); 3];
+        let dark = [-0.55f32.log10(); 3];
+        let mut band = Vec::new();
+        for index in 0..100 {
+            let t = index as f32 / 99.0;
+            band.push(([t, 0.0], [0.97f32; 3]));
+            band.push(([t, 1.0], [0.55f32; 3]));
+            band.push(([0.0, t], [0.55f32; 3]));
+            band.push(([1.0, t], [0.55f32; 3]));
+        }
+        assert!(!super::film_base_band_has_spatial_support(
+            &points, &band, bright
+        ));
+
+        for side in 0..4 {
+            for index in 0..100 {
+                let t = index as f32 / 99.0;
+                let uv = match side {
+                    0 => [t, 0.0],
+                    1 => [t, 1.0],
+                    2 => [0.0, t],
+                    _ => [1.0, t],
+                };
+                let pixel = if side == 0 { bright } else { dark };
+                band.push((uv, [pixel[0]; 3]));
+            }
+        }
+        assert!(
+            !super::film_base_band_has_spatial_support(&points, &band, bright),
+            "a bright strip on one side is not a rebate around the gate"
+        );
     }
 
     #[test]
@@ -21753,6 +26281,19 @@ mod import_contract_tests {
             means[0] / means[1].max(1.0e-9),
             means[2] / means[1].max(1.0e-9)
         );
+    }
+
+    fn render_full_percentages(image: &image::ImageBuffer<image::Rgb<u16>, Vec<u16>>) -> [f64; 3] {
+        let total = u64::from(image.width()) * u64::from(image.height());
+        let mut full = [0u64; 3];
+        for pixel in image.as_raw().chunks_exact(3) {
+            for (channel, value) in pixel.iter().enumerate() {
+                if *value == u16::MAX {
+                    full[channel] += 1;
+                }
+            }
+        }
+        full.map(|count| 100.0 * count as f64 / total.max(1) as f64)
     }
 
     /// The working-domain image the unified pipeline actually consumes for one
@@ -21956,14 +26497,14 @@ mod import_contract_tests {
             println!(
                 "[BASE] source={} usable={} density=({:.4},{:.4},{:.4}) confidence={:.4} fallback={:?}",
                 estimate.source,
-                estimate.usable,
+                estimate.is_trusted(),
                 estimate.density[0],
                 estimate.density[1],
                 estimate.density[2],
                 estimate.confidence,
                 estimate.fallback_reason
             );
-            let base_density = if estimate.usable {
+            let base_density = if estimate.is_trusted() {
                 estimate.density
             } else {
                 [0.0; 3]
@@ -22031,7 +26572,7 @@ mod import_contract_tests {
                 );
             }
             let mut state = PipelineState::smart_auto();
-            state.processing_report.base_source = if estimate.usable {
+            state.processing_report.base_source = if estimate.is_trusted() {
                 "detected_film_base"
             } else {
                 "missing_film_base_reference"
@@ -22339,6 +26880,7 @@ mod import_contract_tests {
                 println!("\n[SKIP] {stem}: the retired recipe could not decode this file");
                 continue;
             };
+            ab_save_preview(out_root.join(format!("{stem}-legacy-input.jpg")), &legacy);
             let border = crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(
                 legacy.clone(),
             ));
@@ -22402,7 +26944,7 @@ mod import_contract_tests {
 
             // ---- Scenario 2 and 3: the per-frame Film Area path -------------
             let frame_base = estimate_film_base_f32(&estimate, &geom);
-            let base_density = if frame_base.usable {
+            let base_density = if frame_base.is_trusted() {
                 frame_base.density
             } else {
                 [0.0; 3]
@@ -22417,7 +26959,7 @@ mod import_contract_tests {
             println!(
                 "[BASE] source={} usable={} density=({:.4},{:.4},{:.4}) confidence={:.3} fallback={:?}",
                 frame_base.source,
-                frame_base.usable,
+                frame_base.is_trusted(),
                 frame_base.density[0],
                 frame_base.density[1],
                 frame_base.density[2],
@@ -22425,7 +26967,8 @@ mod import_contract_tests {
                 frame_base.fallback_reason
             );
 
-            let base_trusted = frame_base.usable && base_density.iter().any(|value| *value > 0.0);
+            let base_trusted =
+                frame_base.is_trusted() && base_density.iter().any(|value| *value > 0.0);
             if !base_trusted {
                 // Scenarios 2 and 3 both require a confirmed Film Area whose
                 // clear base can actually be measured. Without one the frame has
@@ -22991,6 +27534,468 @@ mod import_contract_tests {
         std::fs::write(path, bytes).unwrap();
     }
 
+    fn custom_icc_profile(
+        mut profile: moxcms::ColorProfile,
+        description: &str,
+        gamma: Option<f32>,
+    ) -> Vec<u8> {
+        profile.description = Some(moxcms::ProfileText::Localizable(vec![
+            moxcms::LocalizableString::new(
+                "en".to_string(),
+                "US".to_string(),
+                description.to_string(),
+            ),
+        ]));
+        if let Some(gamma) = gamma {
+            let curve = moxcms::curve_from_gamma(gamma);
+            profile.red_trc = Some(curve.clone());
+            profile.green_trc = Some(curve.clone());
+            profile.blue_trc = Some(curve);
+        }
+        profile.encode().unwrap()
+    }
+
+    fn write_rgb32f_tiff(path: &std::path::Path, width: u32, height: u32, pixels: &[f32]) {
+        let file = std::fs::File::create(path).unwrap();
+        let writer = std::io::BufWriter::new(file);
+        let mut encoder = tiff::encoder::TiffEncoder::new(writer).unwrap();
+        encoder
+            .write_image::<tiff::encoder::colortype::RGB32Float>(width, height, pixels)
+            .unwrap();
+    }
+
+    /// One uncompressed 16x16 RGB16 tile for a smaller image. This exercises
+    /// the tiled page path without pulling in a system TIFF writer.
+    fn write_tiled_rgb16_tiff(path: &std::path::Path, width: u32, height: u32) {
+        fn push_entry(bytes: &mut Vec<u8>, tag: u16, type_code: u16, count: u32, value: u32) {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&type_code.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        const IFD_OFFSET: u32 = 8;
+        const SHORT: u16 = 3;
+        const LONG: u16 = 4;
+        let tile_width = width;
+        let tile_height = height;
+        let entry_count: u16 = 11;
+        let bits_offset = IFD_OFFSET + 2 + u32::from(entry_count) * 12 + 4;
+        let pixel_offset = bits_offset + 12;
+        let tile_bytes = tile_width * tile_height * 6;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"II");
+        bytes.extend_from_slice(&42u16.to_le_bytes());
+        bytes.extend_from_slice(&IFD_OFFSET.to_le_bytes());
+        bytes.extend_from_slice(&entry_count.to_le_bytes());
+        push_entry(&mut bytes, 256, LONG, 1, width);
+        push_entry(&mut bytes, 257, LONG, 1, height);
+        push_entry(&mut bytes, 258, LONG, 3, bits_offset);
+        push_entry(&mut bytes, 259, SHORT, 1, 1);
+        push_entry(&mut bytes, 262, SHORT, 1, 2);
+        push_entry(&mut bytes, 277, SHORT, 1, 3);
+        push_entry(&mut bytes, 284, SHORT, 1, 1);
+        push_entry(&mut bytes, 322, LONG, 1, tile_width);
+        push_entry(&mut bytes, 323, LONG, 1, tile_height);
+        push_entry(&mut bytes, 324, LONG, 1, pixel_offset);
+        push_entry(&mut bytes, 325, LONG, 1, tile_bytes);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&16u32.to_le_bytes());
+        }
+        for y in 0..tile_height {
+            for x in 0..tile_width {
+                let pixel = if x < width && y < height {
+                    [
+                        (1_000 + x * 400 + y * 70) as u16,
+                        (2_000 + x * 130 + y * 300) as u16,
+                        (3_000 + x * 90 + y * 210) as u16,
+                    ]
+                } else {
+                    [0, 0, 0]
+                };
+                for value in pixel {
+                    bytes.extend_from_slice(&value.to_le_bytes());
+                }
+            }
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn write_linear_raw_dng_with_subifd(
+        path: &std::path::Path,
+        source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+        icc: &[u8],
+    ) {
+        fn push_entry(bytes: &mut Vec<u8>, tag: u16, type_code: u16, count: u32, value: u32) {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&type_code.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+
+        const IFD_OFFSET: u32 = 8;
+        const SHORT: u16 = 3;
+        const LONG: u16 = 4;
+        const UNDEFINED: u16 = 7;
+        let root_entries: u16 = 12;
+        let root_bits_offset = IFD_OFFSET + 2 + u32::from(root_entries) * 12 + 4;
+        let root_preview_offset = root_bits_offset + 12;
+        let root_preview_bytes = source.width() * source.height() * 3;
+        let root_icc_offset = root_preview_offset + root_preview_bytes;
+        let sub_ifd_offset = root_icc_offset + icc.len() as u32;
+        let sub_entries: u16 = 10;
+        let sub_bits_offset = sub_ifd_offset + 2 + u32::from(sub_entries) * 12 + 4;
+        let sub_pixel_offset = sub_bits_offset + 12;
+        let sub_pixel_bytes = source.width() * source.height() * 6;
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"II");
+        bytes.extend_from_slice(&42u16.to_le_bytes());
+        bytes.extend_from_slice(&IFD_OFFSET.to_le_bytes());
+        bytes.extend_from_slice(&root_entries.to_le_bytes());
+        push_entry(&mut bytes, 256, LONG, 1, source.width());
+        push_entry(&mut bytes, 257, LONG, 1, source.height());
+        push_entry(&mut bytes, 258, LONG, 3, root_bits_offset);
+        push_entry(&mut bytes, 259, SHORT, 1, 1);
+        push_entry(&mut bytes, 262, SHORT, 1, 2);
+        push_entry(&mut bytes, 273, LONG, 1, root_preview_offset);
+        push_entry(&mut bytes, 277, SHORT, 1, 3);
+        push_entry(&mut bytes, 278, LONG, 1, source.height());
+        push_entry(&mut bytes, 279, LONG, 1, root_preview_bytes);
+        push_entry(&mut bytes, 284, SHORT, 1, 1);
+        push_entry(&mut bytes, 330, LONG, 1, sub_ifd_offset);
+        push_entry(
+            &mut bytes,
+            34675,
+            UNDEFINED,
+            icc.len() as u32,
+            root_icc_offset,
+        );
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&8u32.to_le_bytes());
+        }
+        bytes.resize(
+            usize::try_from(root_preview_offset).unwrap()
+                + usize::try_from(root_preview_bytes).unwrap(),
+            0,
+        );
+        bytes.extend_from_slice(icc);
+
+        bytes.resize(usize::try_from(sub_ifd_offset).unwrap(), 0);
+        bytes.extend_from_slice(&sub_entries.to_le_bytes());
+        push_entry(&mut bytes, 256, LONG, 1, source.width());
+        push_entry(&mut bytes, 257, LONG, 1, source.height());
+        push_entry(&mut bytes, 258, LONG, 3, sub_bits_offset);
+        push_entry(&mut bytes, 259, SHORT, 1, 1);
+        push_entry(&mut bytes, 262, SHORT, 1, 34892);
+        push_entry(&mut bytes, 273, LONG, 1, sub_pixel_offset);
+        push_entry(&mut bytes, 277, SHORT, 1, 3);
+        push_entry(&mut bytes, 278, LONG, 1, source.height());
+        push_entry(&mut bytes, 279, LONG, 1, sub_pixel_bytes);
+        push_entry(&mut bytes, 284, SHORT, 1, 1);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&16u32.to_le_bytes());
+        }
+        for value in source.as_raw() {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn test_map_polynomial_opcode_list(
+        width: u32,
+        height: u32,
+        polynomials: &[Vec<f64>],
+    ) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(polynomials.len() as u32).to_be_bytes());
+        for (plane, coefficients) in polynomials.iter().enumerate() {
+            let params_len = 36 + (coefficients.len() * 8);
+            bytes.extend_from_slice(&8u32.to_be_bytes());
+            bytes.extend_from_slice(&0x0001_0300u32.to_be_bytes());
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+            bytes.extend_from_slice(&(params_len as u32).to_be_bytes());
+            for value in [0, 0, height, width, plane as u32, 1, 1, 1] {
+                bytes.extend_from_slice(&value.to_be_bytes());
+            }
+            bytes.extend_from_slice(&((coefficients.len() - 1) as u32).to_be_bytes());
+            for coefficient in coefficients {
+                bytes.extend_from_slice(&coefficient.to_be_bytes());
+            }
+        }
+        bytes
+    }
+
+    fn solve_test_polynomial(coefficients: &[f64], target: f64) -> f64 {
+        let evaluate = |x: f64| {
+            coefficients
+                .iter()
+                .rev()
+                .fold(0.0, |value, coefficient| value * x + coefficient)
+        };
+        let (mut low, mut high) = (0.0f64, 1.0f64);
+        for _ in 0..64 {
+            let middle = (low + high) * 0.5;
+            if evaluate(middle) < target {
+                low = middle;
+            } else {
+                high = middle;
+            }
+        }
+        (low + high) * 0.5
+    }
+
+    /// IFD0 is a 1x1 RGB8 preview; the requested LinearRaw page is a SubIFD
+    /// carrying the supplied compressed strip. Root orientation is 6 and the
+    /// SubIFD orientation is 1, so a decoder that reads IFD0 either returns the
+    /// wrong dimensions or rotates the real page.
+    fn write_linear_raw_dng_with_compressed_subifd(
+        path: &std::path::Path,
+        source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+        icc: Option<&[u8]>,
+        compression: u16,
+        compressed_pixels: &[u8],
+        opcode_list2: Option<&[u8]>,
+    ) {
+        fn push_entry(bytes: &mut Vec<u8>, tag: u16, type_code: u16, count: u32, value: u32) {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&type_code.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        fn align4(value: usize) -> usize {
+            (value + 3) & !3
+        }
+
+        const IFD_OFFSET: u32 = 8;
+        const SHORT: u16 = 3;
+        const LONG: u16 = 4;
+        const UNDEFINED: u16 = 7;
+
+        let root_entries: u16 = 11;
+        let root_ifd_size = 2 + u32::from(root_entries) * 12 + 4;
+        let root_bits_offset = IFD_OFFSET + root_ifd_size;
+        let root_pixel_offset = root_bits_offset + 6;
+        let sub_ifd_offset = align4(usize::try_from(root_pixel_offset + 3).unwrap()) as u32;
+        let sub_entries: u16 = 11 + u16::from(icc.is_some()) + u16::from(opcode_list2.is_some());
+        let sub_ifd_size = 2 + u32::from(sub_entries) * 12 + 4;
+        let sub_bits_offset = sub_ifd_offset + sub_ifd_size;
+        let sub_pixel_offset = align4(usize::try_from(sub_bits_offset + 6).unwrap()) as u32;
+        let sub_icc_offset = sub_pixel_offset + compressed_pixels.len() as u32;
+        let sub_opcode_offset = sub_icc_offset + icc.map_or(0, |profile| profile.len() as u32);
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"II");
+        bytes.extend_from_slice(&42u16.to_le_bytes());
+        bytes.extend_from_slice(&IFD_OFFSET.to_le_bytes());
+        bytes.extend_from_slice(&root_entries.to_le_bytes());
+        push_entry(&mut bytes, 256, LONG, 1, 1);
+        push_entry(&mut bytes, 257, LONG, 1, 1);
+        push_entry(&mut bytes, 258, SHORT, 3, root_bits_offset);
+        push_entry(&mut bytes, 259, SHORT, 1, 1);
+        push_entry(&mut bytes, 262, SHORT, 1, 2);
+        push_entry(&mut bytes, 273, LONG, 1, root_pixel_offset);
+        push_entry(&mut bytes, 274, SHORT, 1, 6);
+        push_entry(&mut bytes, 277, SHORT, 1, 3);
+        push_entry(&mut bytes, 278, LONG, 1, 1);
+        push_entry(&mut bytes, 279, LONG, 1, 3);
+        push_entry(&mut bytes, 330, LONG, 1, sub_ifd_offset);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&8u16.to_le_bytes());
+        }
+        bytes.extend_from_slice(&[255, 0, 0]);
+        bytes.resize(usize::try_from(sub_ifd_offset).unwrap(), 0);
+
+        bytes.extend_from_slice(&sub_entries.to_le_bytes());
+        push_entry(&mut bytes, 256, LONG, 1, source.width());
+        push_entry(&mut bytes, 257, LONG, 1, source.height());
+        push_entry(&mut bytes, 258, SHORT, 3, sub_bits_offset);
+        push_entry(&mut bytes, 259, SHORT, 1, u32::from(compression));
+        push_entry(&mut bytes, 262, SHORT, 1, 34892);
+        push_entry(&mut bytes, 273, LONG, 1, sub_pixel_offset);
+        push_entry(&mut bytes, 274, SHORT, 1, 1);
+        push_entry(&mut bytes, 277, SHORT, 1, 3);
+        push_entry(&mut bytes, 278, LONG, 1, source.height());
+        push_entry(&mut bytes, 279, LONG, 1, compressed_pixels.len() as u32);
+        push_entry(&mut bytes, 284, SHORT, 1, 1);
+        if let Some(icc) = icc {
+            push_entry(
+                &mut bytes,
+                34675,
+                UNDEFINED,
+                icc.len() as u32,
+                sub_icc_offset,
+            );
+        }
+        if let Some(opcode_list2) = opcode_list2 {
+            push_entry(
+                &mut bytes,
+                51009,
+                UNDEFINED,
+                opcode_list2.len() as u32,
+                sub_opcode_offset,
+            );
+        }
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        for _ in 0..3 {
+            bytes.extend_from_slice(&16u16.to_le_bytes());
+        }
+        bytes.resize(usize::try_from(sub_pixel_offset).unwrap(), 0);
+        bytes.extend_from_slice(compressed_pixels);
+        if let Some(icc) = icc {
+            bytes.extend_from_slice(icc);
+        }
+        if let Some(opcode_list2) = opcode_list2 {
+            bytes.extend_from_slice(opcode_list2);
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// IFD0 carries the 1x1 preview plus all DNG colour metadata; the full
+    /// LinearRaw page is a SubIFD with none of those tags.
+    fn write_linear_raw_dng_with_root_metadata(
+        path: &std::path::Path,
+        source: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+        color_matrix1: [[f32; 3]; 3],
+        color_matrix2: Option<[[f32; 3]; 3]>,
+        calibration_illuminant1: u16,
+        calibration_illuminant2: Option<u16>,
+        as_shot_neutral: [f32; 3],
+        orientation: u16,
+    ) {
+        fn push_entry(bytes: &mut Vec<u8>, tag: u16, type_code: u16, count: u32, value: u32) {
+            bytes.extend_from_slice(&tag.to_le_bytes());
+            bytes.extend_from_slice(&type_code.to_le_bytes());
+            bytes.extend_from_slice(&count.to_le_bytes());
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        fn align4(value: usize) -> usize {
+            (value + 3) & !3
+        }
+        fn push_srational_matrix(bytes: &mut [u8], offset: usize, matrix: [[f32; 3]; 3]) {
+            for (index, value) in matrix.iter().flatten().enumerate() {
+                let numerator = (value * 10_000.0).round() as i32;
+                let start = offset + index * 8;
+                bytes[start..start + 4].copy_from_slice(&numerator.to_le_bytes());
+                bytes[start + 4..start + 8].copy_from_slice(&10_000i32.to_le_bytes());
+            }
+        }
+        fn push_rational(bytes: &mut [u8], offset: usize, value: f32) {
+            let numerator = (value * 10_000.0).round() as u32;
+            bytes[offset..offset + 4].copy_from_slice(&numerator.to_le_bytes());
+            bytes[offset + 4..offset + 8].copy_from_slice(&10_000u32.to_le_bytes());
+        }
+
+        const IFD_OFFSET: u32 = 8;
+        const SHORT: u16 = 3;
+        const LONG: u16 = 4;
+        const RATIONAL: u16 = 5;
+        const SRATIONAL: u16 = 10;
+
+        let root_entries: u16 =
+            14 + u16::from(color_matrix2.is_some()) + u16::from(calibration_illuminant2.is_some());
+        let root_size = 2 + u32::from(root_entries) * 12 + 4;
+        let sub_ifd_offset = IFD_OFFSET + root_size;
+        let sub_entries: u16 = 10;
+        let sub_size = 2 + u32::from(sub_entries) * 12 + 4;
+        let payload = sub_ifd_offset + sub_size;
+        let root_bits_offset = payload;
+        let sub_bits_offset = root_bits_offset + 6;
+        let root_pixel_offset = sub_bits_offset + 6;
+        let matrix1_offset = align4(root_pixel_offset as usize + 3) as u32;
+        let matrix2_offset = color_matrix2.map(|_| matrix1_offset + 72);
+        let neutral_offset = matrix2_offset.unwrap_or(matrix1_offset) + 72;
+        let sub_pixel_offset = neutral_offset + 24;
+        let sub_pixel_bytes = source.width() * source.height() * 6;
+        let mut bytes = vec![0u8; sub_pixel_offset as usize + sub_pixel_bytes as usize];
+
+        bytes[0..2].copy_from_slice(b"II");
+        bytes[2..4].copy_from_slice(&42u16.to_le_bytes());
+        bytes[4..8].copy_from_slice(&IFD_OFFSET.to_le_bytes());
+        let mut root_entry_bytes = Vec::new();
+        push_entry(&mut root_entry_bytes, 256, LONG, 1, 1);
+        push_entry(&mut root_entry_bytes, 257, LONG, 1, 1);
+        push_entry(&mut root_entry_bytes, 258, SHORT, 3, root_bits_offset);
+        push_entry(&mut root_entry_bytes, 259, SHORT, 1, 1);
+        push_entry(&mut root_entry_bytes, 262, SHORT, 1, 2);
+        push_entry(&mut root_entry_bytes, 273, LONG, 1, root_pixel_offset);
+        push_entry(&mut root_entry_bytes, 274, SHORT, 1, u32::from(orientation));
+        push_entry(&mut root_entry_bytes, 277, SHORT, 1, 3);
+        push_entry(&mut root_entry_bytes, 278, LONG, 1, 1);
+        push_entry(&mut root_entry_bytes, 279, LONG, 1, 3);
+        push_entry(&mut root_entry_bytes, 330, LONG, 1, sub_ifd_offset);
+        push_entry(&mut root_entry_bytes, 50721, SRATIONAL, 9, matrix1_offset);
+        if let Some(offset) = matrix2_offset {
+            push_entry(&mut root_entry_bytes, 50722, SRATIONAL, 9, offset);
+        }
+        push_entry(&mut root_entry_bytes, 50728, RATIONAL, 3, neutral_offset);
+        push_entry(
+            &mut root_entry_bytes,
+            50778,
+            SHORT,
+            1,
+            u32::from(calibration_illuminant1),
+        );
+        if let Some(illuminant) = calibration_illuminant2 {
+            push_entry(
+                &mut root_entry_bytes,
+                50779,
+                SHORT,
+                1,
+                u32::from(illuminant),
+            );
+        }
+        let root_offset = IFD_OFFSET as usize;
+        bytes[root_offset..root_offset + 2].copy_from_slice(&root_entries.to_le_bytes());
+        bytes[root_offset + 2..root_offset + 2 + root_entry_bytes.len()]
+            .copy_from_slice(&root_entry_bytes);
+        let next_offset = root_offset + 2 + root_entry_bytes.len();
+        bytes[next_offset..next_offset + 4].copy_from_slice(&0u32.to_le_bytes());
+
+        let sub_offset = sub_ifd_offset as usize;
+        let mut sub_entry_bytes = Vec::new();
+        push_entry(&mut sub_entry_bytes, 256, LONG, 1, source.width());
+        push_entry(&mut sub_entry_bytes, 257, LONG, 1, source.height());
+        push_entry(&mut sub_entry_bytes, 258, SHORT, 3, sub_bits_offset);
+        push_entry(&mut sub_entry_bytes, 259, SHORT, 1, 1);
+        push_entry(&mut sub_entry_bytes, 262, SHORT, 1, 34892);
+        push_entry(&mut sub_entry_bytes, 273, LONG, 1, sub_pixel_offset);
+        push_entry(&mut sub_entry_bytes, 277, SHORT, 1, 3);
+        push_entry(&mut sub_entry_bytes, 278, LONG, 1, source.height());
+        push_entry(&mut sub_entry_bytes, 279, LONG, 1, sub_pixel_bytes);
+        push_entry(&mut sub_entry_bytes, 284, SHORT, 1, 1);
+        bytes[sub_offset..sub_offset + 2].copy_from_slice(&sub_entries.to_le_bytes());
+        bytes[sub_offset + 2..sub_offset + 2 + sub_entry_bytes.len()]
+            .copy_from_slice(&sub_entry_bytes);
+        let sub_next = sub_offset + 2 + sub_entry_bytes.len();
+        bytes[sub_next..sub_next + 4].copy_from_slice(&0u32.to_le_bytes());
+
+        for index in 0..3 {
+            let start = root_bits_offset as usize + index * 2;
+            bytes[start..start + 2].copy_from_slice(&8u16.to_le_bytes());
+            let start = sub_bits_offset as usize + index * 2;
+            bytes[start..start + 2].copy_from_slice(&16u16.to_le_bytes());
+        }
+        bytes[root_pixel_offset as usize..root_pixel_offset as usize + 3]
+            .copy_from_slice(&[255, 0, 0]);
+        push_srational_matrix(&mut bytes, matrix1_offset as usize, color_matrix1);
+        if let (Some(offset), Some(matrix)) = (matrix2_offset, color_matrix2) {
+            push_srational_matrix(&mut bytes, offset as usize, matrix);
+        }
+        for (index, value) in as_shot_neutral.into_iter().enumerate() {
+            push_rational(&mut bytes, neutral_offset as usize + index * 8, value);
+        }
+        for (index, value) in source.as_raw().iter().enumerate() {
+            let start = sub_pixel_offset as usize + index * 2;
+            bytes[start..start + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        std::fs::write(path, bytes).unwrap();
+    }
+
     #[test]
     fn unprofiled_generic_tiff_is_read_as_an_estimated_srgb_input() {
         // Writing a plain uncompressed RGB16 TIFF keeps the regression
@@ -23015,6 +28020,65 @@ mod import_contract_tests {
         std::fs::remove_dir_all(&directory).ok();
     }
 
+    #[test]
+    fn uncompressed_tiff_without_strip_byte_counts_still_decodes_when_the_file_is_complete() {
+        let root = import_contract_root("tiff-missing-strip-counts-valid");
+        let path = root.join("missing-counts.tif");
+        write_unprofiled_rgb16_tiff(&path, 16, 8);
+        rename_little_endian_tiff_tag(&path, 279, 65_000);
+        let path_string = path.to_string_lossy().to_string();
+
+        let decoded = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap();
+        assert_eq!(decoded.dimensions(), (16, 8));
+
+        let length = std::fs::metadata(&path).unwrap().len();
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(length - 10).unwrap();
+        drop(file);
+        let error = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap_err();
+        assert!(
+            error.contains("beyond the") || error.contains("TIFF strip"),
+            "a truncated TIFF without StripByteCounts must return a readable bound error: {error}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn uncompressed_tiff_rejects_hostile_width_before_allocating_a_row() {
+        let root = import_contract_root("tiff-hostile-width");
+        let path = root.join("huge-width.tif");
+        write_unprofiled_rgb16_tiff(&path, 8, 4);
+        patch_little_endian_tiff_long_tag(&path, 256, u32::MAX);
+        let path_string = path.to_string_lossy().to_string();
+
+        let error = decode_uncompressed_tiff_reduced(&path_string, 1).unwrap_err();
+        assert!(
+            error.contains("beyond the") || error.contains("overflowed"),
+            "a hostile width must fail before allocating a scanline: {error}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn uncompressed_tiff_rejects_a_strip_offset_outside_the_file() {
+        let root = import_contract_root("tiff-strip-outside");
+        let path = root.join("strip-outside.tif");
+        write_unprofiled_rgb16_tiff(&path, 8, 4);
+        let length = std::fs::metadata(&path).unwrap().len();
+        patch_little_endian_tiff_long_tag(&path, 273, u32::try_from(length + 32).unwrap());
+        let path_string = path.to_string_lossy().to_string();
+
+        let error = decode_uncompressed_tiff_reduced(&path_string, 1).unwrap_err();
+        assert!(
+            error.contains("beyond the"),
+            "a strip offset outside the file must return a readable error: {error}"
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn expected_direct_prophoto_estimate(
         encoded: &ImageBuffer<Rgb<u16>, Vec<u16>>,
         source: ColorSpaceId,
@@ -23035,6 +28099,32 @@ mod import_contract_tests {
             };
             Rgb(clamp_positive_transmission_for_density(linear))
         })
+    }
+
+    fn expected_icc_prophoto_estimate(
+        encoded: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+        icc: &[u8],
+    ) -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+        let transform =
+            crate::color_science::IccRgbTransform::from_icc_to_linear_prophoto(icc).unwrap();
+        let mut working = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_fn(
+            encoded.width(),
+            encoded.height(),
+            |x, y| {
+                let pixel = encoded.get_pixel(x, y).0;
+                Rgb([
+                    f32::from(pixel[0]) / 65535.0,
+                    f32::from(pixel[1]) / 65535.0,
+                    f32::from(pixel[2]) / 65535.0,
+                ])
+            },
+        );
+        transform.apply_encoded_rgb(working.as_mut()).unwrap();
+        working.as_mut().par_chunks_exact_mut(3).for_each(|pixel| {
+            let clamped = clamp_positive_transmission_for_density([pixel[0], pixel[1], pixel[2]]);
+            pixel.copy_from_slice(&clamped);
+        });
+        working
     }
 
     fn assert_estimate_matches(
@@ -23153,11 +28243,17 @@ mod import_contract_tests {
             assert_estimate_matches(&direct, &expected);
 
             let base = estimate_film_base_f32(&direct, &geom);
+            assert_eq!(
+                base.state,
+                FilmBaseState::ContentFallback,
+                "an unprofiled TIFF without a confirmed Film Area has no trusted base"
+            );
             assert!(
-                base.usable,
-                "the RGB8 fixture must yield a usable film base: \
+                !base.is_trusted(),
+                "the RGB8 fixture must not promote a scene sample to a film base: \
                  source={} fallback={:?}",
-                base.source, base.fallback_reason
+                base.source,
+                base.fallback_reason
             );
             let mut limits =
                 compute_content_limits_f32_with_bounds(&direct, None, &geom, base.density, None)
@@ -23262,7 +28358,7 @@ mod import_contract_tests {
         );
 
         let encoded = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap();
-        let expected = expected_direct_prophoto_estimate(&encoded, ColorSpaceId::AdobeRgb, false);
+        let expected = expected_icc_prophoto_estimate(&encoded, &icc);
         let direct =
             decode_direct_rgb_prophoto_estimate(&path_string, u32::MAX, DecodeMode::ExportFull)
                 .unwrap();
@@ -23345,6 +28441,24 @@ mod import_contract_tests {
                 .unwrap();
         assert_estimate_matches(&tiff_estimate, &expected);
 
+        let zip_path = directory.join("deflate-rgb16.tif");
+        {
+            let file = std::fs::File::create(&zip_path).unwrap();
+            let writer = std::io::BufWriter::new(file);
+            let mut encoder = tiff::encoder::TiffEncoder::new(writer).unwrap();
+            encoder
+                .write_image_with_compression::<
+                    tiff::encoder::colortype::RGB16,
+                    tiff::encoder::compression::Deflate,
+                >(width, height, Default::default(), &pixels)
+                .unwrap();
+        }
+        let zip_string = zip_path.to_string_lossy().to_string();
+        let zip_estimate =
+            decode_direct_rgb_prophoto_estimate(&zip_string, u32::MAX, DecodeMode::ExportFull)
+                .unwrap();
+        assert_estimate_matches(&zip_estimate, &expected);
+
         let png_path = directory.join("unprofiled-rgb16.png");
         let png_encoded = ImageBuffer::<Rgb<u16>, Vec<u16>>::from_fn(4, 3, |x, y| {
             Rgb([
@@ -23385,7 +28499,8 @@ mod import_contract_tests {
             (ColorSpaceId::AdobeRgb, true)
         );
         let encoded = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap();
-        let expected = expected_direct_prophoto_estimate(&encoded, ColorSpaceId::AdobeRgb, true);
+        let icc = crate::color_science::build_linear_icc_profile(ColorSpaceId::AdobeRgb);
+        let expected = expected_icc_prophoto_estimate(&encoded, &icc);
         let direct =
             decode_direct_rgb_prophoto_estimate(&path_string, u32::MAX, DecodeMode::ExportFull)
                 .unwrap();
@@ -23401,6 +28516,300 @@ mod import_contract_tests {
                 .any(|(linear, decoded)| (*linear - decoded).abs() > 1.0e-4),
             "linear ICC samples must not receive the display curve a second time"
         );
+
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn custom_matrix_scanner_icc_is_decoded_from_its_real_profile() {
+        let directory = std::env::temp_dir().join(format!(
+            "nexfilm-real-icc-scanner-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("scanner-matrix.tif");
+        let icc = custom_icc_profile(
+            moxcms::ColorProfile::new_adobe_rgb(),
+            "SFprofT Scanner Matrix",
+            Some(1.8),
+        );
+        assert!(identify_icc_profile(&icc).is_none());
+        write_rgb16_tiff_with_icc(&path, 5, 4, &icc, |x, y| {
+            [
+                (8_000 + x * 2_700 + y * 900) as u16,
+                (16_000 + x * 1_100 + y * 2_300) as u16,
+                (30_000 + x * 700 + y * 1_300) as u16,
+            ]
+        });
+        let path_string = path.to_string_lossy().to_string();
+
+        let domain = resolve_input_domain(&path_string, None);
+        assert_eq!(domain.source, InputDomainSource::EmbeddedIcc);
+        assert_eq!(domain.primaries, InputPrimaries::AdobeRgb1998);
+        assert_eq!(
+            domain.transfer,
+            InputTransferCurve::Gamma18,
+            "the actual gamma-1.8 TRC must not be reported as the Adobe RGB default"
+        );
+        assert_ne!(domain.transfer, InputTransferCurve::Gamma22);
+        assert!(!domain.estimated);
+
+        let encoded = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap();
+        let expected = expected_icc_prophoto_estimate(&encoded, &icc);
+        let direct =
+            decode_direct_rgb_prophoto_estimate(&path_string, u32::MAX, DecodeMode::ExportFull)
+                .unwrap();
+        assert_estimate_matches(&direct, &expected);
+        let name_only = expected_direct_prophoto_estimate(&encoded, ColorSpaceId::SRgb, false);
+        assert!(
+            direct
+                .as_raw()
+                .iter()
+                .zip(name_only.as_raw())
+                .any(|(actual, guessed)| (*actual - guessed).abs() > 1.0e-3),
+            "a nonstandard scanner profile must not fall back to named sRGB"
+        );
+
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn custom_linear_icc_keeps_linear_transfer_without_a_standard_name() {
+        let directory = std::env::temp_dir().join(format!(
+            "nexfilm-real-icc-linear-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("scanner-linear.tif");
+        let icc = custom_icc_profile(
+            moxcms::ColorProfile::new_adobe_rgb(),
+            "Scanner Linear Device",
+            Some(1.0),
+        );
+        assert!(identify_icc_profile(&icc).is_none());
+        assert!(crate::color_science::icc_declares_linear_transfer(&icc));
+        write_rgb16_tiff_with_icc(&path, 4, 3, &icc, |x, y| {
+            [
+                (10_000 + x * 3_100 + y * 700) as u16,
+                (19_000 + x * 1_500 + y * 2_100) as u16,
+                (25_000 + x * 600 + y * 3_100) as u16,
+            ]
+        });
+        let path_string = path.to_string_lossy().to_string();
+
+        assert_eq!(
+            resolve_direct_encoded_space(&path_string),
+            (ColorSpaceId::AdobeRgb, true)
+        );
+        let domain = resolve_input_domain(&path_string, None);
+        assert_eq!(domain.transfer, InputTransferCurve::Linear);
+        assert_eq!(domain.reference, InputReference::LinearTransmission);
+        assert_eq!(domain.source, InputDomainSource::EmbeddedIcc);
+        assert!(!domain.estimated);
+
+        let encoded = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap();
+        let expected = expected_icc_prophoto_estimate(&encoded, &icc);
+        let direct =
+            decode_direct_rgb_prophoto_estimate(&path_string, u32::MAX, DecodeMode::ExportFull)
+                .unwrap();
+        assert_estimate_matches(&direct, &expected);
+        let double_linearized =
+            expected_direct_prophoto_estimate(&encoded, ColorSpaceId::SRgb, false);
+        assert!(
+            direct
+                .as_raw()
+                .iter()
+                .zip(double_linearized.as_raw())
+                .any(|(linear, double)| (*linear - double).abs() > 1.0e-4),
+            "an unknown-name linear ICC must not receive a display curve"
+        );
+
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn nonstandard_icc_description_with_srgb_primaries_and_trc_reports_srgb() {
+        let root = import_contract_root("icc-semantic-srgb");
+        let path = root.join("semantic-srgb.tif");
+        let icc = custom_icc_profile(
+            moxcms::ColorProfile::new_srgb(),
+            "NexFilm working display profile",
+            None,
+        );
+        write_rgb16_tiff_with_icc(&path, 4, 3, &icc, |x, y| {
+            [
+                (9_000 + x * 2_000 + y * 400) as u16,
+                (16_000 + x * 900 + y * 1_700) as u16,
+                (24_000 + x * 500 + y * 2_100) as u16,
+            ]
+        });
+        let path_string = path.to_string_lossy().to_string();
+
+        let domain = resolve_input_domain(&path_string, None);
+        assert_eq!(domain.primaries, InputPrimaries::Srgb);
+        assert_eq!(domain.transfer, InputTransferCurve::Srgb);
+        assert_eq!(domain.source, InputDomainSource::EmbeddedIcc);
+        assert!(!domain.estimated);
+
+        let encoded = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap();
+        let expected = expected_icc_prophoto_estimate(&encoded, &icc);
+        let direct =
+            decode_direct_rgb_prophoto_estimate(&path_string, u32::MAX, DecodeMode::ExportFull)
+                .unwrap();
+        assert_estimate_matches(&direct, &expected);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unknown_icc_primaries_with_a_linear_trc_report_scanner_linear() {
+        let root = import_contract_root("icc-unknown-linear");
+        let path = root.join("unknown-linear.tif");
+        let mut profile = moxcms::ColorProfile::new_srgb();
+        profile.red_colorant = moxcms::Xyzd::new(0.90, 0.20, 0.30);
+        profile.green_colorant = moxcms::Xyzd::new(0.30, 0.90, 0.20);
+        profile.blue_colorant = moxcms::Xyzd::new(0.20, 0.30, 0.90);
+        let curve = moxcms::curve_from_gamma(1.0);
+        profile.red_trc = Some(curve.clone());
+        profile.green_trc = Some(curve.clone());
+        profile.blue_trc = Some(curve);
+        let icc = custom_icc_profile(profile, "Unknown device primaries, linear samples", None);
+        assert!(crate::color_science::icc_color_space(&icc).is_none());
+        write_rgb16_tiff_with_icc(&path, 3, 2, &icc, |x, y| {
+            [
+                (10_000 + x * 2_300 + y * 500) as u16,
+                (18_000 + x * 700 + y * 2_000) as u16,
+                (26_000 + x * 400 + y * 1_600) as u16,
+            ]
+        });
+        let path_string = path.to_string_lossy().to_string();
+
+        let domain = resolve_input_domain(&path_string, None);
+        assert_eq!(domain.primaries, InputPrimaries::ScannerDevice);
+        assert_eq!(domain.transfer, InputTransferCurve::Linear);
+        assert_eq!(domain.reference, InputReference::LinearTransmission);
+        assert_eq!(domain.source, InputDomainSource::EmbeddedIcc);
+        assert!(!domain.estimated);
+
+        let encoded = decode_uncompressed_tiff_reduced(&path_string, u32::MAX).unwrap();
+        let expected = expected_icc_prophoto_estimate(&encoded, &icc);
+        let direct =
+            decode_direct_rgb_prophoto_estimate(&path_string, u32::MAX, DecodeMode::ExportFull)
+                .unwrap();
+        assert_estimate_matches(&direct, &expected);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn aces2065_primaries_are_not_reported_as_acescg() {
+        let root = import_contract_root("icc-aces2065");
+        let path = root.join("aces2065.tif");
+        let icc = custom_icc_profile(
+            moxcms::ColorProfile::new_aces_aces_2065_1_linear(),
+            "ACES2065-1 AP0 working space",
+            None,
+        );
+        assert_eq!(
+            crate::color_science::icc_color_space(&icc),
+            Some(ColorSpaceId::Aces2065),
+            "the fixture must carry AP0 primaries"
+        );
+        write_rgb16_tiff_with_icc(&path, 2, 2, &icc, |x, y| {
+            [
+                (8_000 + x * 2_000 + y * 500) as u16,
+                (19_000 + x * 1_000 + y * 1_200) as u16,
+                (31_000 + x * 600 + y * 1_800) as u16,
+            ]
+        });
+        let path_string = path.to_string_lossy().to_string();
+
+        let domain = resolve_input_domain(&path_string, None);
+        assert_eq!(domain.primaries, InputPrimaries::Aces2065);
+        assert_ne!(domain.primaries, InputPrimaries::AcesCg);
+        assert_eq!(domain.transfer, InputTransferCurve::Linear);
+        assert_eq!(domain.source, InputDomainSource::EmbeddedIcc);
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn floating_point_tiff_preserves_samples_and_reports_its_budget() {
+        let directory = std::env::temp_dir().join(format!(
+            "nexfilm-f32-tiff-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("floating-point.tif");
+        let source = [
+            0.25f32, 0.50, 0.75, 1.50, 0.20, 0.05, -0.125, 0.60, 0.90, 0.40, 0.30, 0.20,
+        ];
+        write_rgb32f_tiff(&path, 2, 2, &source);
+        let path_string = path.to_string_lossy().to_string();
+
+        let decoded = decode_tiff_direct_f32(&path_string, u32::MAX).unwrap();
+        assert_eq!(decoded.dimensions(), (2, 2));
+        for (actual, expected) in decoded.as_raw().iter().zip(source.iter()) {
+            assert!((actual - expected).abs() < 1.0e-6);
+        }
+        let domain = resolve_input_domain(&path_string, None);
+        assert_eq!(domain.source, InputDomainSource::FallbackSrgb);
+        assert_eq!(domain.transfer, InputTransferCurve::Srgb);
+        assert!(
+            domain.estimated,
+            "unprofiled f32 TIFF is not implicitly linear"
+        );
+
+        let error = decode_tiff_direct_f32_with_budget(&path_string, u32::MAX, 16).unwrap_err();
+        assert!(
+            error.contains("decode budget"),
+            "oversized TIFF must produce a readable limit error: {error}"
+        );
+
+        std::fs::remove_dir_all(&directory).ok();
+    }
+
+    #[test]
+    fn tiled_tiff_and_exif_orientation_decode_upright() {
+        let directory = std::env::temp_dir().join(format!(
+            "nexfilm-tiff-geometry-{}-{}",
+            std::process::id(),
+            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+
+        let tiled_path = directory.join("tiled.tif");
+        write_tiled_rgb16_tiff(&tiled_path, 5, 4);
+        let tiled_string = tiled_path.to_string_lossy().to_string();
+        assert!(decode_uncompressed_tiff_reduced(&tiled_string, u32::MAX).is_err());
+        let tiled = decode_tiff_direct_f32(&tiled_string, u32::MAX).unwrap();
+        assert_eq!(tiled.dimensions(), (5, 4));
+        let expected_tile_pixel = (1_000.0 + 4.0 * 400.0 + 3.0 * 70.0) / 65_535.0;
+        assert!(
+            (tiled.get_pixel(4, 3)[0] - expected_tile_pixel).abs() < 1.0e-6,
+            "tiled pixel: expected {expected_tile_pixel}, actual {:?}",
+            &tiled.as_raw()[..15]
+        );
+
+        let rotated_path = directory.join("orientation-6.tif");
+        write_unprofiled_rgb16_tiff(&rotated_path, 6, 4);
+        let rotated_string = rotated_path.to_string_lossy().to_string();
+        let upright = decode_tiff_direct_f32(&rotated_string, u32::MAX).unwrap();
+        patch_little_endian_tiff_short_tag(&rotated_path, 274, 6);
+        let rotated = decode_tiff_direct_f32(&rotated_string, u32::MAX).unwrap();
+        assert_eq!(rotated.dimensions(), (4, 6));
+        for y in 0..4 {
+            for x in 0..6 {
+                assert_eq!(
+                    rotated.get_pixel(3 - y, x),
+                    upright.get_pixel(x, y),
+                    "orientation 6 must rotate the decoded proxy"
+                );
+            }
+        }
 
         std::fs::remove_dir_all(&directory).ok();
     }
@@ -23677,9 +29086,13 @@ mod import_contract_tests {
         assert!(!pipeline_has_base(&state, &BaseColor::default()));
         assert!(!pipeline_has_base(&state, &analyzed_base));
         state.processing_report.base_source = "content_estimate".to_string();
+        // Legacy content estimates are not a trusted film-base measurement.
+        assert!(!pipeline_has_base(&state, &analyzed_base));
+        assert_eq!(pipeline_base_density(&state, &analyzed_base), [0.0; 3]);
         // A default base_color must never be considered as having a valid base
         assert!(!pipeline_has_base(&state, &BaseColor::default()));
-        // An analyzed non-default base_color has a valid base
+        state.processing_report.base_source = "detected_film_base".to_string();
+        // An analyzed non-default base_color has a valid base.
         assert!(pipeline_has_base(&state, &analyzed_base));
         assert_ne!(pipeline_base_density(&state, &analyzed_base), [0.0; 3]);
         assert!(state.density_anchors.d_min_base.is_none());
@@ -23688,6 +29101,1196 @@ mod import_contract_tests {
         assert!(!pipeline_has_base(&state, &BaseColor::default()));
         state.processing_report.base_source = "compatibility_base".to_string();
         assert!(pipeline_has_base(&state, &BaseColor::default()));
+    }
+
+    #[test]
+    fn content_fallback_is_a_completed_analysis_without_a_render_base() {
+        let geom = GeometryState::default();
+        for source in [
+            crate::pipeline::CONTENT_FALLBACK_SOURCE,
+            crate::pipeline::INVALID_FILM_BASE_SOURCE,
+        ] {
+            let mut state = PipelineState::smart_auto();
+            state.processing_report.base_source = source.to_string();
+            state.processing_report.analysis_window_rule =
+                crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+            state.processing_report.analysis_geometry_fingerprint =
+                analysis_geometry_fingerprint(&geom);
+
+            assert!(
+                !pipeline_has_base(&state, &BaseColor::default()),
+                "{source} must not become a trusted render base"
+            );
+            assert!(
+                super::pipeline_base_analysis_complete(&state, &BaseColor::default(), &geom),
+                "{source} must still be renderable through the content fallback"
+            );
+            assert_eq!(
+                pipeline_base_density(&state, &BaseColor::default()),
+                [0.0; 3],
+                "{source} must not subtract a fabricated base"
+            );
+        }
+    }
+
+    #[test]
+    fn content_fallback_geometry_change_forces_reanalysis_with_current_window() {
+        let previous = GeometryState::default();
+        let mut next = previous.clone();
+        next.calibration_points = Some([[0.10, 0.10], [0.90, 0.10], [0.90, 0.90], [0.10, 0.90]]);
+        next.calibration_confirmed = true;
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.base_source = crate::pipeline::CONTENT_FALLBACK_SOURCE.to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&previous);
+
+        assert!(super::pipeline_base_analysis_complete(
+            &state,
+            &BaseColor::default(),
+            &previous
+        ));
+        assert!(invalidate_analysis_if_geometry_changed(
+            &mut state, &previous, &next
+        ));
+        assert_eq!(state.processing_report.analysis_window_rule, 0);
+        assert!(frame_needs_analysis_geometry_reanalysis(&state, &next));
+        assert!(!super::pipeline_base_analysis_complete(
+            &state,
+            &BaseColor::default(),
+            &next
+        ));
+    }
+
+    #[test]
+    fn trusted_base_geometry_change_remeasures_and_replaces_the_old_base() {
+        let frame = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_fn(128, 96, |x, _| {
+            if x < 64 {
+                Rgb([0.72; 3])
+            } else {
+                Rgb([0.91; 3])
+            }
+        });
+        let previous = GeometryState {
+            calibration_points: Some([[0.02, 0.02], [0.48, 0.02], [0.48, 0.98], [0.02, 0.98]]),
+            calibration_confirmed: true,
+            ..GeometryState::default()
+        };
+        let next = GeometryState {
+            calibration_points: Some([[0.52, 0.02], [0.98, 0.02], [0.98, 0.98], [0.52, 0.98]]),
+            calibration_confirmed: true,
+            ..GeometryState::default()
+        };
+        let previous_estimate = estimate_film_base_f32(&frame, &previous);
+        assert_eq!(previous_estimate.state, FilmBaseState::Trusted);
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.base_source = previous_estimate.source.to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&previous);
+        let mut base_color = base_color_from_density(previous_estimate.density);
+        assert!(super::pipeline_base_analysis_complete(
+            &state,
+            &base_color,
+            &previous
+        ));
+
+        assert!(invalidate_analysis_if_geometry_changed(
+            &mut state, &previous, &next
+        ));
+        assert!(!super::pipeline_base_analysis_complete(
+            &state,
+            &base_color,
+            &next
+        ));
+
+        let next_estimate = estimate_film_base_f32(&frame, &next);
+        assert_eq!(next_estimate.state, FilmBaseState::Trusted);
+        assert_ne!(next_estimate.density, previous_estimate.density);
+        base_color = base_color_from_density(next_estimate.density);
+        state.processing_report.base_source = next_estimate.source.to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&next);
+        assert!(super::pipeline_base_analysis_complete(
+            &state,
+            &base_color,
+            &next
+        ));
+        assert!(pipeline_has_base(&state, &base_color));
+    }
+
+    #[test]
+    fn saving_the_same_geometry_never_invalidates_analysis() {
+        let geom = GeometryState {
+            calibration_points: Some([[0.05, 0.05], [0.95, 0.05], [0.95, 0.95], [0.05, 0.95]]),
+            calibration_confirmed: true,
+            ..GeometryState::default()
+        };
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.base_source = "film_edge_band".to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&geom);
+        let before = state.processing_report.clone();
+        let base = BaseColor {
+            base_r: 20_000,
+            base_g: 25_000,
+            base_b: 30_000,
+        };
+
+        assert!(!invalidate_analysis_if_geometry_changed(
+            &mut state, &geom, &geom
+        ));
+        assert_eq!(state.processing_report, before);
+        assert!(super::pipeline_base_analysis_complete(&state, &base, &geom));
+    }
+
+    #[test]
+    fn invalidated_geometry_survives_a_persistence_round_trip() {
+        let previous = GeometryState::default();
+        let mut next = previous.clone();
+        next.perspective_vertical = 12.0;
+        next.rotate_90_count = 1;
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.base_source = crate::pipeline::CONTENT_FALLBACK_SOURCE.to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&previous);
+        assert!(invalidate_analysis_if_geometry_changed(
+            &mut state, &previous, &next
+        ));
+
+        let restored: PipelineState =
+            serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap();
+        assert_eq!(restored.processing_report.analysis_window_rule, 0);
+        assert_eq!(
+            restored.processing_report.analysis_geometry_fingerprint,
+            analysis_geometry_fingerprint(&previous)
+        );
+        assert!(frame_needs_window_reanalysis(&restored));
+        assert!(frame_needs_analysis_geometry_reanalysis(&restored, &next));
+        assert!(!super::pipeline_base_analysis_complete(
+            &restored,
+            &BaseColor::default(),
+            &next
+        ));
+    }
+
+    #[test]
+    fn content_fallback_upgrades_to_trusted_base_after_film_area_measurement() {
+        let frame = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_pixel(128, 96, Rgb([0.90; 3]));
+        let previous = GeometryState::default();
+        let next = GeometryState {
+            calibration_points: Some([[0.10, 0.10], [0.90, 0.10], [0.90, 0.90], [0.10, 0.90]]),
+            calibration_confirmed: true,
+            ..GeometryState::default()
+        };
+        let fallback = estimate_film_base_f32(&frame, &previous);
+        assert_eq!(fallback.state, FilmBaseState::ContentFallback);
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.base_source = fallback.source.to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&previous);
+        assert!(invalidate_analysis_if_geometry_changed(
+            &mut state, &previous, &next
+        ));
+
+        let trusted = estimate_film_base_f32(&frame, &next);
+        assert_eq!(trusted.state, FilmBaseState::Trusted);
+        let base_color = base_color_from_density(trusted.density);
+        state.processing_report.base_source = trusted.source.to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&next);
+
+        assert!(pipeline_has_base(&state, &base_color));
+        assert_ne!(pipeline_base_density(&state, &base_color), [0.0; 3]);
+        assert!(super::pipeline_base_analysis_complete(
+            &state,
+            &base_color,
+            &next
+        ));
+    }
+
+    #[test]
+    fn invalid_base_can_retry_after_geometry_change_but_stays_untrusted_on_failure() {
+        let frame = ImageBuffer::<Rgb<f32>, Vec<f32>>::from_pixel(96, 96, Rgb([1.0; 3]));
+        let previous = GeometryState {
+            calibration_points: Some([[0.05, 0.05], [0.45, 0.05], [0.45, 0.95], [0.05, 0.95]]),
+            calibration_confirmed: true,
+            ..GeometryState::default()
+        };
+        let next = GeometryState {
+            calibration_points: Some([[0.55, 0.05], [0.95, 0.05], [0.95, 0.95], [0.55, 0.95]]),
+            calibration_confirmed: true,
+            ..GeometryState::default()
+        };
+        let failed = estimate_film_base_f32(&frame, &previous);
+        assert_eq!(failed.state, FilmBaseState::Invalid);
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.base_source = failed.source.to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&previous);
+        assert!(invalidate_analysis_if_geometry_changed(
+            &mut state, &previous, &next
+        ));
+
+        let retry = estimate_film_base_f32(&frame, &next);
+        assert_eq!(retry.state, FilmBaseState::Invalid);
+        assert!(!retry.is_trusted());
+        assert!(!pipeline_has_base(
+            &state,
+            &base_color_from_density(retry.density)
+        ));
+        assert_eq!(retry.density, [0.0; 3]);
+    }
+
+    fn complete_roll_analysis_anchors() -> DensityAnchors {
+        let provenance = DensityAnchorProvenance {
+            input_domain: DataDomain::ProPhotoEstimate,
+            raw_decode_version: Some(RAW_DECODE_VERSION),
+            algorithm_version: crate::app_state::DENSITY_ANCHOR_ALGORITHM_VERSION.to_string(),
+            legacy: false,
+            ..Default::default()
+        };
+        DensityAnchors {
+            d_min_base: Some(DensityAnchor {
+                density: [0.18, 0.24, 0.30],
+                source: DensityAnchorSource::SampledFilmBase,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll:base".to_string()),
+                provenance: provenance.clone(),
+            }),
+            d_max_full_exposure: Some(DensityAnchor {
+                density: [1.75, 1.95, 2.20],
+                source: DensityAnchorSource::SampledFullExposure,
+                scope: DensityAnchorScope::Roll,
+                confidence: DensityAnchorConfidence::UserSampled,
+                reference_id: Some("roll:full".to_string()),
+                provenance,
+            }),
+            highlight_fraction: Some(0.82),
+            ..Default::default()
+        }
+    }
+
+    fn analysis_geometry(point: f32) -> GeometryState {
+        GeometryState {
+            calibration_points: Some([
+                [point, 0.02],
+                [point + 0.46, 0.02],
+                [point + 0.46, 0.98],
+                [point, 0.98],
+            ]),
+            calibration_confirmed: true,
+            ..GeometryState::default()
+        }
+    }
+
+    fn two_half_film_frame() -> ImageBuffer<Rgb<f32>, Vec<f32>> {
+        let transmittance = |density: [f32; 3]| Rgb(density.map(|channel| 10.0f32.powf(-channel)));
+        ImageBuffer::from_fn(400, 256, |x, y| {
+            let (base, scene) = if x < 200 {
+                ([0.20, 0.25, 0.30], [1.20, 1.30, 1.40])
+            } else {
+                ([0.42, 0.47, 0.52], [1.50, 1.60, 1.70])
+            };
+            transmittance(if y < 244 { scene } else { base })
+        })
+    }
+
+    #[test]
+    fn complete_roll_geometry_change_keeps_the_fixed_mapping() {
+        let anchors = complete_roll_analysis_anchors();
+        let previous = GeometryState::default();
+        let next = analysis_geometry(0.10);
+
+        let mut roll = PipelineState::from_roll_anchors(anchors.clone());
+        let roll_mapping = fixed_roll_density_mapping(&roll).expect("complete roll mapping");
+        roll.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&previous);
+        roll.processing_report.analysis_geometry_rule =
+            super::COMPLETE_ROLL_FRAME_BASE_RULE_VERSION;
+        assert!(super::pipeline_base_analysis_complete(
+            &roll,
+            &BaseColor::default(),
+            &previous
+        ));
+
+        assert!(invalidate_analysis_if_geometry_changed(
+            &mut roll, &previous, &next
+        ));
+        assert_eq!(
+            fixed_roll_density_mapping(&roll),
+            Some(roll_mapping.clone())
+        );
+        assert_eq!(roll.processing_report.analysis_window_rule, 0);
+        assert!(!super::pipeline_base_analysis_complete(
+            &roll,
+            &BaseColor::default(),
+            &next
+        ));
+        assert_eq!(roll.density_anchors, anchors);
+        assert!(!frame_needs_window_reanalysis(&roll));
+    }
+
+    #[test]
+    fn complete_roll_geometry_change_remeasures_diagnostics_but_keeps_roll_white_point() {
+        let anchors = complete_roll_analysis_anchors();
+        let state = PipelineState::from_roll_anchors(anchors.clone());
+        let proxy = two_half_film_frame();
+        let previous = analysis_geometry(0.02);
+        let next = analysis_geometry(0.52);
+        let fixed_mapping = fixed_roll_density_mapping(&state).expect("fixed Roll mapping");
+
+        let previous_measurement =
+            super::measure_complete_roll_frame_parameters(&proxy, &state, &previous)
+                .expect("complete Roll frame measurement");
+        let next_measurement = super::measure_complete_roll_frame_parameters(&proxy, &state, &next)
+            .expect("complete Roll frame measurement");
+        assert!(previous_measurement.estimate.is_trusted());
+        assert!(next_measurement.estimate.is_trusted());
+        assert_ne!(
+            previous_measurement.estimate.density,
+            next_measurement.estimate.density
+        );
+        let previous_highlight = previous_measurement
+            .highlight
+            .expect("left Film Area highlight");
+        let next_highlight = next_measurement
+            .highlight
+            .expect("right Film Area highlight");
+        assert!(
+            (previous_highlight - next_highlight).abs() > 1.0e-4,
+            "highlight must be re-derived from the current Film Area: {previous_highlight} vs {next_highlight}"
+        );
+        let previous_mapping = roll_density_mapping_with_frame_base(
+            &state,
+            Some(previous_measurement.estimate.density),
+            previous_measurement.highlight,
+        )
+        .expect("previous mapping");
+        let next_mapping = roll_density_mapping_with_frame_base(
+            &state,
+            Some(next_measurement.estimate.density),
+            next_measurement.highlight,
+        )
+        .expect("next mapping");
+        assert_ne!(previous_mapping.density_low, next_mapping.density_low);
+        for channel in 0..3 {
+            let fixed_span =
+                fixed_mapping.density_high[channel] - fixed_mapping.density_low[channel];
+            assert!(
+                (previous_mapping.density_high[channel]
+                    - previous_mapping.density_low[channel]
+                    - fixed_span)
+                    .abs()
+                    < 1.0e-6
+            );
+            assert!(
+                (next_mapping.density_high[channel]
+                    - next_mapping.density_low[channel]
+                    - fixed_span)
+                    .abs()
+                    < 1.0e-6
+            );
+            let base_shift = next_measurement.estimate.density[channel]
+                - previous_measurement.estimate.density[channel];
+            assert!(
+                (next_mapping.density_high[channel]
+                    - previous_mapping.density_high[channel]
+                    - base_shift)
+                    .abs()
+                    < 1.0e-6
+            );
+        }
+        assert_eq!(state.density_anchors, anchors);
+    }
+
+    #[test]
+    fn complete_roll_unmeasured_film_area_uses_explicit_anchor_fallback() {
+        let anchors = complete_roll_analysis_anchors();
+        let state = PipelineState::from_roll_anchors(anchors.clone());
+        let geom = GeometryState::default();
+        let anchor_base = pipeline_base_density(&state, &BaseColor::default());
+        let proxy = ImageBuffer::from_pixel(
+            128,
+            128,
+            Rgb(anchor_base.map(|channel| 10.0f32.powf(-channel))),
+        );
+        // This is exactly the whole-frame detector the retired batch path used.
+        // It can find a base here, but a Complete Roll must not treat that as a
+        // measurement of the current Film Area.
+        assert!(detect_frame_base_density(&proxy, anchor_base).is_some());
+
+        let decision = super::complete_roll_frame_base_decision(Some(&proxy), &state, &geom)
+            .expect("complete Roll decision");
+        assert_eq!(decision.frame_base, None);
+        assert_eq!(
+            decision.base_source,
+            crate::pipeline::COMPLETE_ROLL_ANCHOR_FALLBACK_SOURCE
+        );
+        assert_eq!(
+            decision.fallback_reason,
+            Some(super::COMPLETE_ROLL_FRAME_BASE_UNMEASURED_REASON)
+        );
+        assert_eq!(decision.base_density, anchor_base);
+
+        let mapping =
+            roll_density_mapping_with_frame_base(&state, decision.frame_base, decision.highlight)
+                .expect("fixed Roll mapping");
+        assert_eq!(mapping.density_low, [0.0; 3]);
+        for channel in 0..3 {
+            let span = anchors.d_max_full_exposure.as_ref().unwrap().density[channel]
+                - anchor_base[channel];
+            assert!(
+                (mapping.density_high[channel] - span * 0.82).abs() < 1.0e-6,
+                "channel {channel}: {:?}",
+                mapping.density_high
+            );
+        }
+        assert_eq!(state.density_anchors, anchors);
+    }
+
+    #[test]
+    fn complete_roll_batch_path_does_not_promote_whole_frame_detection() {
+        let state = PipelineState::from_roll_anchors(complete_roll_analysis_anchors());
+        let geom = GeometryState::default();
+        let anchor_base = pipeline_base_density(&state, &BaseColor::default());
+        let proxy = ImageBuffer::from_pixel(
+            96,
+            96,
+            Rgb(anchor_base.map(|channel| 10.0f32.powf(-channel))),
+        );
+        assert!(detect_frame_base_density(&proxy, anchor_base).is_some());
+
+        let decision = super::complete_roll_frame_base_decision(Some(&proxy), &state, &geom)
+            .expect("batch decision");
+        assert_eq!(decision.frame_base, None);
+        assert_eq!(
+            decision.base_source,
+            crate::pipeline::COMPLETE_ROLL_ANCHOR_FALLBACK_SOURCE
+        );
+        assert_eq!(
+            decision.fallback_reason,
+            Some(super::COMPLETE_ROLL_FRAME_BASE_UNMEASURED_REASON)
+        );
+    }
+
+    #[test]
+    fn inherited_film_base_install_keeps_complete_roll_analysis_incomplete() {
+        let geom = analysis_geometry(0.10);
+        let mut state = PipelineState::from_roll_anchors(complete_roll_analysis_anchors());
+        state.processing_report.base_source = "film_edge_band".to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&geom);
+        state.processing_report.analysis_geometry_rule =
+            super::COMPLETE_ROLL_FRAME_BASE_RULE_VERSION;
+        assert!(super::pipeline_base_analysis_complete(
+            &state,
+            &BaseColor::default(),
+            &geom
+        ));
+
+        state.processing_report.base_source =
+            crate::pipeline::INHERITED_FILM_BASE_SOURCE.to_string();
+        super::mark_installed_film_base_analysis(
+            &mut state,
+            &geom,
+            crate::pipeline::INHERITED_FILM_BASE_SOURCE,
+            false,
+        );
+        assert_eq!(state.processing_report.analysis_geometry_rule, 0);
+        assert!(state
+            .processing_report
+            .analysis_geometry_fingerprint
+            .is_empty());
+        assert!(!super::pipeline_base_analysis_complete(
+            &state,
+            &BaseColor::default(),
+            &geom
+        ));
+
+        // Even a forged current fingerprint cannot make an inherited base look
+        // like a completed Film Area measurement.
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&geom);
+        state.processing_report.analysis_geometry_rule =
+            super::COMPLETE_ROLL_FRAME_BASE_RULE_VERSION;
+        assert!(!super::pipeline_base_analysis_complete(
+            &state,
+            &BaseColor::default(),
+            &geom
+        ));
+
+        state.processing_report.base_source = "film_edge_band".to_string();
+        super::mark_installed_film_base_analysis(&mut state, &geom, "film_edge_band", true);
+        assert!(super::pipeline_base_analysis_complete(
+            &state,
+            &BaseColor::default(),
+            &geom
+        ));
+
+        state.processing_report.base_source =
+            crate::pipeline::COMPLETE_ROLL_ANCHOR_FALLBACK_SOURCE.to_string();
+        super::mark_installed_film_base_analysis(
+            &mut state,
+            &geom,
+            crate::pipeline::COMPLETE_ROLL_ANCHOR_FALLBACK_SOURCE,
+            false,
+        );
+        assert!(super::pipeline_base_analysis_complete(
+            &state,
+            &BaseColor::default(),
+            &geom
+        ));
+    }
+
+    #[test]
+    fn inherited_film_base_install_keeps_smart_auto_analysis_incomplete() {
+        let geom = analysis_geometry(0.10);
+        let mut state = PipelineState::smart_auto();
+        state.density_anchors = complete_roll_analysis_anchors();
+        state.processing_report.base_source = "film_edge_band".to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&geom);
+        let measured_base = base_color_from_density([0.20, 0.28, 0.36]);
+        assert!(super::pipeline_base_analysis_complete(
+            &state,
+            &measured_base,
+            &geom
+        ));
+
+        state.processing_report.base_source =
+            crate::pipeline::INHERITED_FILM_BASE_SOURCE.to_string();
+        let inherited_base = base_color_from_density([0.31, 0.42, 0.55]);
+        // Even a matching Roll anchor cannot turn the copied base into this
+        // frame's completed measurement.
+        assert!(!super::pipeline_has_base(&state, &inherited_base));
+        assert!(!super::pipeline_base_analysis_complete(
+            &state,
+            &inherited_base,
+            &geom
+        ));
+
+        super::mark_installed_film_base_analysis(
+            &mut state,
+            &geom,
+            crate::pipeline::INHERITED_FILM_BASE_SOURCE,
+            false,
+        );
+        assert_eq!(state.processing_report.analysis_window_rule, 0);
+        assert!(state
+            .processing_report
+            .analysis_geometry_fingerprint
+            .is_empty());
+        assert_eq!(state.processing_report.analysis_geometry_rule, 0);
+        assert!(!super::pipeline_base_analysis_complete(
+            &state,
+            &inherited_base,
+            &geom
+        ));
+    }
+
+    #[test]
+    fn inherited_film_base_install_keeps_capture_corrected_analysis_incomplete() {
+        let geom = analysis_geometry(0.10);
+        let mut state = PipelineState::capture_corrected(DensityAnchors::default(), false);
+        state.processing_report.base_source = "detected_film_base".to_string();
+        state.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        state.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&geom);
+        state.processing_report.analysis_geometry_rule = super::ANALYSIS_GEOMETRY_RULE_VERSION;
+        let measured_base = base_color_from_density([0.16, 0.23, 0.31]);
+        assert!(super::pipeline_base_analysis_complete(
+            &state,
+            &measured_base,
+            &geom
+        ));
+
+        state.processing_report.base_source =
+            crate::pipeline::INHERITED_FILM_BASE_SOURCE.to_string();
+        let inherited_base = base_color_from_density([0.29, 0.41, 0.58]);
+        assert!(!super::pipeline_has_base(&state, &inherited_base));
+        assert!(!super::pipeline_base_analysis_complete(
+            &state,
+            &inherited_base,
+            &geom
+        ));
+
+        super::mark_installed_film_base_analysis(
+            &mut state,
+            &geom,
+            crate::pipeline::INHERITED_FILM_BASE_SOURCE,
+            false,
+        );
+        assert_eq!(state.processing_report.analysis_window_rule, 0);
+        assert!(state
+            .processing_report
+            .analysis_geometry_fingerprint
+            .is_empty());
+        assert_eq!(state.processing_report.analysis_geometry_rule, 0);
+        assert!(!super::pipeline_base_analysis_complete(
+            &state,
+            &inherited_base,
+            &geom
+        ));
+    }
+
+    #[test]
+    fn capture_corrected_geometry_change_replaces_content_fallback_with_measured_base() {
+        let previous = analysis_geometry(0.02);
+        let next = analysis_geometry(0.52);
+        let proxy = ImageBuffer::from_fn(200, 120, |x, _| {
+            let (start, span) = if x < 100 {
+                ([0.22, 0.26, 0.31], [0.34, 0.36, 0.38])
+            } else {
+                ([0.46, 0.50, 0.56], [0.52, 0.55, 0.58])
+            };
+            let progress = (x % 100) as f32 / 99.0;
+            let density = [
+                start[0] + span[0] * progress,
+                start[1] + span[1] * progress,
+                start[2] + span[2] * progress,
+            ];
+            Rgb(density.map(|channel| 10.0f32.powf(-channel)))
+        });
+        let quality = crate::raw_backend::QualityMask::new((200 * 120) as usize);
+        let mut capture = PipelineState::capture_corrected(DensityAnchors::default(), false);
+        capture.processing_report.base_source =
+            crate::pipeline::CONTENT_FALLBACK_SOURCE.to_string();
+        capture.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        capture.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&previous);
+        capture.processing_report.analysis_geometry_rule = super::ANALYSIS_GEOMETRY_RULE_VERSION;
+        assert!(super::pipeline_base_analysis_complete(
+            &capture,
+            &BaseColor::default(),
+            &previous
+        ));
+
+        assert!(invalidate_analysis_if_geometry_changed(
+            &mut capture,
+            &previous,
+            &next
+        ));
+        assert_eq!(capture.contract, ProcessingContract::CaptureCorrectedV11);
+        assert!(!super::pipeline_base_analysis_complete(
+            &capture,
+            &BaseColor::default(),
+            &next
+        ));
+        let previous_base = super::compute_auto_base_capture_corrected(&proxy, &quality, &previous)
+            .expect("previous base");
+        let previous_window =
+            super::compute_content_limits_f32(&proxy, Some(&quality), &previous, previous_base)
+                .expect("previous window");
+        let measured =
+            super::compute_auto_base_capture_corrected(&proxy, &quality, &next).expect("base");
+        let next_window =
+            super::compute_content_limits_f32(&proxy, Some(&quality), &next, measured)
+                .expect("next window");
+        assert_ne!(previous_window.d_min, next_window.d_min);
+        assert_ne!(previous_window.d_max, next_window.d_max);
+        let base = base_color_from_density(measured);
+        capture.processing_report.base_source = "detected_film_base".to_string();
+        capture.processing_report.base_confidence = "0.900".to_string();
+        capture.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        capture.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&next);
+        capture.processing_report.analysis_geometry_rule = super::ANALYSIS_GEOMETRY_RULE_VERSION;
+        assert!(super::pipeline_base_analysis_complete(
+            &capture, &base, &next
+        ));
+        assert_ne!(base, base_color_from_density([0.22, 0.26, 0.31]));
+    }
+
+    #[test]
+    fn capture_corrected_and_complete_roll_cache_only_follow_actual_geometry_changes() {
+        let previous = analysis_geometry(0.02);
+        let next = analysis_geometry(0.52);
+        let same = super::proxy_runtime_key("resolved", false, &previous);
+        assert_eq!(same, super::proxy_runtime_key("resolved", false, &previous));
+        assert_ne!(same, super::proxy_runtime_key("resolved", false, &next));
+
+        let capture = PipelineState::capture_corrected(DensityAnchors::default(), false);
+        let mut current = capture;
+        current.processing_report.base_source = "detected_film_base".to_string();
+        current.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        current.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&next);
+        current.processing_report.analysis_geometry_rule = super::ANALYSIS_GEOMETRY_RULE_VERSION;
+        let before = current.processing_report.clone();
+        assert!(!invalidate_analysis_if_geometry_changed(
+            &mut current,
+            &next,
+            &next
+        ));
+        assert_eq!(current.processing_report, before);
+    }
+
+    #[test]
+    fn resolver_rebuild_keeps_analysis_geometry_completion_markers() {
+        let geom = analysis_geometry(0.10);
+        let mut persisted = PipelineState::smart_auto();
+        persisted.processing_report.base_source = "detected_film_base".to_string();
+        persisted.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        persisted.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&geom);
+        persisted.processing_report.analysis_geometry_rule = super::ANALYSIS_GEOMETRY_RULE_VERSION;
+        let resolution = resolve_pipeline(&PipelineResolverInput {
+            persisted_contract: persisted.contract,
+            roll_profile_id: None,
+            profile: None,
+            image_kind: PipelineImageKind::DirectRgb,
+            density_anchors: DensityAnchors::default(),
+            raw_decode_version: RAW_DECODE_VERSION,
+            working_basis: Default::default(),
+            runtime_failure: None,
+        });
+        let rebuilt = super::state_from_resolution(&persisted, &resolution);
+        assert_eq!(
+            rebuilt.processing_report.analysis_window_rule,
+            persisted.processing_report.analysis_window_rule
+        );
+        assert_eq!(
+            rebuilt.processing_report.analysis_geometry_fingerprint,
+            persisted.processing_report.analysis_geometry_fingerprint
+        );
+        assert_eq!(
+            rebuilt.processing_report.analysis_geometry_rule,
+            persisted.processing_report.analysis_geometry_rule
+        );
+        assert!(super::pipeline_base_analysis_complete(
+            &rebuilt,
+            &base_color_from_density([0.2, 0.3, 0.4]),
+            &geom
+        ));
+    }
+
+    #[test]
+    fn unresolved_frame_keeps_decode_fallbacks_through_resolution_rebuild() {
+        let mut persisted = PipelineState::smart_auto();
+        persisted.processing_report.base_source = "unresolved".to_string();
+        persisted.processing_report.input_domain = crate::app_state::InputDomainRecord {
+            source: InputDomainSource::RawMetadata,
+            detail: "camera-native decoded before Auto Invert".to_string(),
+            ..crate::app_state::InputDomainRecord::default()
+        };
+        let decoded_fallbacks = vec![
+            "embedded_icc_parse_failed:bad profile".to_string(),
+            "camera_matrix_unresolved".to_string(),
+            "dng_sample_layout_unresolved".to_string(),
+            "linear_raw_dng_color_metadata_missing".to_string(),
+            "scanner_fff_container_unreadable".to_string(),
+            "scanner_profile_missing_or_stale".to_string(),
+            "scanner_tiff_input_space_estimated".to_string(),
+            "capture_profile_runtime_fallback".to_string(),
+            "embedded_icc_parse_failed:bad profile".to_string(),
+        ];
+        persisted.processing_report.fallback_reasons = decoded_fallbacks.clone();
+        let resolution = resolve_pipeline(&PipelineResolverInput {
+            persisted_contract: persisted.contract,
+            roll_profile_id: None,
+            profile: None,
+            image_kind: PipelineImageKind::RawBayer,
+            density_anchors: DensityAnchors::default(),
+            raw_decode_version: RAW_DECODE_VERSION,
+            working_basis: WorkingBasis::CameraNative,
+            runtime_failure: None,
+        });
+
+        let rebuilt = super::state_from_resolution(&persisted, &resolution);
+
+        assert_eq!(rebuilt.processing_report.base_source, "unresolved");
+        for expected in decoded_fallbacks {
+            assert!(
+                rebuilt
+                    .processing_report
+                    .fallback_reasons
+                    .iter()
+                    .any(|reason| reason == &expected),
+                "resolution rebuild dropped {expected}: {:?}",
+                rebuilt.processing_report.fallback_reasons
+            );
+        }
+        assert_eq!(
+            rebuilt
+                .processing_report
+                .fallback_reasons
+                .iter()
+                .filter(|reason| *reason == "embedded_icc_parse_failed:bad profile")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn switching_images_preserves_decoded_domain_camera_and_fallbacks() {
+        let mut persisted = PipelineState::smart_auto();
+        persisted.processing_report.input_domain = crate::app_state::InputDomainRecord {
+            source: InputDomainSource::Unknown,
+            detail: "database row written before decode".to_string(),
+            ..crate::app_state::InputDomainRecord::default()
+        };
+        let decoded_domain = crate::app_state::InputDomainRecord {
+            source: InputDomainSource::EmbeddedIcc,
+            detail: "embedded_icc_parse_failed:bad profile".to_string(),
+            ..crate::app_state::InputDomainRecord::default()
+        };
+        let camera = Some([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]);
+
+        super::preserve_decoded_proxy_report(
+            &mut persisted.processing_report,
+            &decoded_domain,
+            camera,
+            vec![
+                "embedded_icc_parse_failed:bad profile".to_string(),
+                "camera_matrix_unresolved".to_string(),
+                "smart_auto_no_trusted_film_base".to_string(),
+                "embedded_icc_parse_failed:bad profile".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            persisted.processing_report.input_domain.source,
+            InputDomainSource::EmbeddedIcc
+        );
+        assert_eq!(persisted.processing_report.camera_to_display, camera);
+        assert!(persisted
+            .processing_report
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason.starts_with("embedded_icc_parse_failed:")));
+        assert!(persisted
+            .processing_report
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason == "camera_matrix_unresolved"));
+        assert!(!persisted
+            .processing_report
+            .fallback_reasons
+            .iter()
+            .any(|reason| reason == "smart_auto_no_trusted_film_base"));
+        assert_eq!(
+            persisted
+                .processing_report
+                .fallback_reasons
+                .iter()
+                .filter(|reason| *reason == "embedded_icc_parse_failed:bad profile")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn prepared_proxy_result_serializes_pipeline_state_for_the_frontend() {
+        let mut state = PipelineState::smart_auto();
+        state.processing_report.fallback_reasons = vec!["camera_matrix_unresolved".to_string()];
+        let result = super::PreparedProxyResult {
+            long_edge: 2560,
+            pipeline_state: state,
+        };
+
+        let value = serde_json::to_value(result).unwrap();
+        assert_eq!(value["long_edge"], 2560);
+        assert_eq!(
+            value["pipeline_state"]["processing_report"]["fallback_reasons"][0],
+            "camera_matrix_unresolved"
+        );
+    }
+
+    #[test]
+    #[ignore = "manual real-NEF visual check for complete-Roll fixed mapping"]
+    fn phase_2_3_real_nef_complete_roll_fixed_mapping_visual_ab() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let path = root
+            .join("test_picture")
+            .join("尼康NEF 翻拍")
+            .join("_DSC7732.NEF");
+        if !path.is_file() {
+            println!("[SKIP] real NEF fixture is missing: {}", path.display());
+            return;
+        }
+        let path = path.to_string_lossy().to_string();
+        let edge = 700;
+        let legacy = report_legacy_transport(&path, edge).expect("legacy preview");
+        let estimate = report_working_estimate(&path, edge).expect("working estimate");
+        let border =
+            crate::film_border::detect_film_border(&image::DynamicImage::ImageRgb16(legacy));
+        if border.confidence != crate::film_border::DetectionConfidence::High {
+            println!("[SKIP] no high-confidence Film Area for this fixture");
+            return;
+        }
+        let first_geometry = GeometryState {
+            calibration_points: Some(border.points),
+            calibration_confirmed: true,
+            ..GeometryState::default()
+        };
+        let points = first_geometry.calibration_points.expect("checked");
+        let inset = points.map(|[x, y]| [0.5 + (x - 0.5) * 0.78, 0.5 + (y - 0.5) * 0.78]);
+        let second_geometry = GeometryState {
+            calibration_points: Some(inset),
+            ..first_geometry.clone()
+        };
+        let first_base = estimate_film_base_f32(&estimate, &first_geometry);
+        if !first_base.is_trusted() {
+            println!("[SKIP] the real frame has no trusted base in its detected Film Area");
+            return;
+        }
+        let anchors = synthesized_roll_anchors(&estimate, &first_geometry, first_base.density);
+        let state = PipelineState::from_roll_anchors(anchors.clone());
+        let first =
+            super::measure_complete_roll_frame_parameters(&estimate, &state, &first_geometry)
+                .expect("first measurement");
+        let second =
+            super::measure_complete_roll_frame_parameters(&estimate, &state, &second_geometry)
+                .expect("second measurement");
+        if !first.estimate.is_trusted() || !second.estimate.is_trusted() {
+            println!("[SKIP] one of the two real Film Areas has no trusted base");
+            return;
+        }
+        let fixed_mapping = fixed_roll_density_mapping(&state).expect("fixed Roll mapping");
+        let first_mapping = roll_density_mapping_with_frame_base(
+            &state,
+            Some(first.estimate.density),
+            first.highlight,
+        )
+        .expect("first fixed Roll mapping");
+        let second_mapping = roll_density_mapping_with_frame_base(
+            &state,
+            Some(second.estimate.density),
+            second.highlight,
+        )
+        .expect("second fixed Roll mapping");
+        for channel in 0..3 {
+            let fixed_span =
+                fixed_mapping.density_high[channel] - fixed_mapping.density_low[channel];
+            assert!(
+                (first_mapping.density_high[channel]
+                    - first_mapping.density_low[channel]
+                    - fixed_span)
+                    .abs()
+                    < 1.0e-6
+            );
+            assert!(
+                (second_mapping.density_high[channel]
+                    - second_mapping.density_low[channel]
+                    - fixed_span)
+                    .abs()
+                    < 1.0e-6
+            );
+        }
+        let render = |geom: &GeometryState, measurement: &super::CompleteRollFrameMeasurement| {
+            let mapping = roll_density_mapping_with_frame_base(
+                &state,
+                Some(measurement.estimate.density),
+                measurement.highlight,
+            )
+            .expect("fixed Roll mapping");
+            let mut render_state = state.clone();
+            render_state.render_mapping = mapping;
+            render_f32_shader_equivalent(
+                &estimate,
+                None,
+                &TuningParams::default(),
+                geom,
+                &BaseColor::default(),
+                &render_state,
+                None,
+            )
+        };
+        let output = root.join("target").join("phase2.3-real-roll-final");
+        std::fs::create_dir_all(&output).unwrap();
+        render(&first_geometry, &first)
+            .save(output.join("DSC7732-complete-roll-area-a.png"))
+            .unwrap();
+        render(&second_geometry, &second)
+            .save(output.join("DSC7732-complete-roll-area-b.png"))
+            .unwrap();
+        assert_eq!(state.density_anchors, anchors);
+        println!(
+            "[REAL AB] fixed_dmax={:?} base_a={:?} diagnostic_highlight_a={:?} base_b={:?} diagnostic_highlight_b={:?}",
+            fixed_mapping.density_high,
+            first.estimate.density, first.highlight, second.estimate.density, second.highlight
+        );
+    }
+
+    #[test]
+    fn phase_2_1_records_upgrade_only_capture_corrected_and_complete_rolls() {
+        let geom = analysis_geometry(0.10);
+        let legacy_without_rule = |state: &PipelineState| {
+            let mut value = serde_json::to_value(state).unwrap();
+            value["processing_report"]
+                .as_object_mut()
+                .unwrap()
+                .remove("analysis_geometry_rule");
+            serde_json::from_value::<PipelineState>(value).unwrap()
+        };
+
+        let mut smart = PipelineState::smart_auto();
+        smart.processing_report.base_source = "detected_film_base".to_string();
+        smart.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        smart.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&geom);
+        let smart = legacy_without_rule(&smart);
+        let smart_base = base_color_from_density([0.2, 0.3, 0.4]);
+        assert!(super::pipeline_base_analysis_complete(
+            &smart,
+            &smart_base,
+            &geom
+        ));
+
+        let mut capture = PipelineState::capture_corrected(DensityAnchors::default(), false);
+        capture.processing_report.base_source =
+            crate::pipeline::CONTENT_FALLBACK_SOURCE.to_string();
+        capture.processing_report.analysis_window_rule =
+            crate::app_state::DENSITY_WINDOW_RULE_VERSION;
+        capture.processing_report.analysis_geometry_fingerprint =
+            analysis_geometry_fingerprint(&geom);
+        let capture = legacy_without_rule(&capture);
+        assert_eq!(capture.processing_report.analysis_geometry_rule, 0);
+        assert!(!super::pipeline_base_analysis_complete(
+            &capture,
+            &BaseColor::default(),
+            &geom
+        ));
+        let mut upgraded_capture = capture;
+        upgraded_capture.processing_report.analysis_geometry_rule =
+            super::ANALYSIS_GEOMETRY_RULE_VERSION;
+        assert!(super::pipeline_base_analysis_complete(
+            &upgraded_capture,
+            &BaseColor::default(),
+            &geom
+        ));
+
+        let mut roll = PipelineState::from_roll_anchors(complete_roll_analysis_anchors());
+        roll.processing_report.analysis_geometry_fingerprint = analysis_geometry_fingerprint(&geom);
+        let roll = legacy_without_rule(&roll);
+        assert_eq!(roll.processing_report.analysis_geometry_rule, 0);
+        assert!(!super::pipeline_base_analysis_complete(
+            &roll,
+            &BaseColor::default(),
+            &geom
+        ));
+        let mut upgraded_roll = roll;
+        upgraded_roll.processing_report.analysis_geometry_rule =
+            super::COMPLETE_ROLL_FRAME_BASE_RULE_VERSION;
+        assert!(super::pipeline_base_analysis_complete(
+            &upgraded_roll,
+            &BaseColor::default(),
+            &geom
+        ));
+    }
+
+    #[test]
+    fn geometry_and_analysis_state_commit_or_roll_back_together() {
+        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+        crate::persistence::init_schema(&connection).unwrap();
+        let old_geom = GeometryState::default();
+        let mut old_pipeline = PipelineState::smart_auto();
+        old_pipeline.processing_report.base_source = "detected_film_base".to_string();
+        connection
+            .execute(
+                "INSERT INTO image_states
+                    (roll_id, file_path, params, geom, base_color, pipeline_state)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                rusqlite::params![
+                    "roll-atomic",
+                    "frame.dng",
+                    serde_json::to_string(&TuningParams::default()).unwrap(),
+                    serde_json::to_string(&old_geom).unwrap(),
+                    serde_json::to_string(&BaseColor::default()).unwrap(),
+                    serde_json::to_string(&old_pipeline).unwrap(),
+                ],
+            )
+            .unwrap();
+
+        let mut next_geom = analysis_geometry(0.10);
+        next_geom.angle = 12.0;
+        let mut next_pipeline = old_pipeline.clone();
+        next_pipeline.processing_report.base_source = "unresolved".to_string();
+        next_pipeline.processing_report.analysis_geometry_rule = 0;
+        super::persist_geometry_and_pipeline_on_connection(
+            &mut connection,
+            "roll-atomic",
+            "frame.dng",
+            &next_geom,
+            &next_pipeline,
+        )
+        .unwrap();
+        let read_pair = |connection: &rusqlite::Connection| {
+            connection
+                .query_row(
+                    "SELECT geom, pipeline_state FROM image_states
+                     WHERE roll_id = 'roll-atomic' AND file_path = 'frame.dng'",
+                    [],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )
+                .unwrap()
+        };
+        let (committed_geom, committed_pipeline) = read_pair(&connection);
+        assert_eq!(
+            serde_json::from_str::<GeometryState>(&committed_geom).unwrap(),
+            next_geom
+        );
+        assert_eq!(
+            serde_json::from_str::<PipelineState>(&committed_pipeline).unwrap(),
+            next_pipeline
+        );
+
+        connection
+            .execute_batch(
+                "CREATE TRIGGER reject_geometry_update
+                 BEFORE UPDATE ON image_states
+                 BEGIN
+                     SELECT RAISE(ABORT, 'injected geometry failure');
+                 END;",
+            )
+            .unwrap();
+        let mut failed_geom = next_geom.clone();
+        failed_geom.angle = 31.0;
+        let mut failed_pipeline = next_pipeline.clone();
+        failed_pipeline.processing_report.base_source = "content_fallback".to_string();
+        assert!(super::persist_geometry_and_pipeline_on_connection(
+            &mut connection,
+            "roll-atomic",
+            "frame.dng",
+            &failed_geom,
+            &failed_pipeline,
+        )
+        .is_err());
+        let (rolled_back_geom, rolled_back_pipeline) = read_pair(&connection);
+        assert_eq!(
+            serde_json::from_str::<GeometryState>(&rolled_back_geom).unwrap(),
+            next_geom
+        );
+        assert_eq!(
+            serde_json::from_str::<PipelineState>(&rolled_back_pipeline).unwrap(),
+            next_pipeline
+        );
     }
 
     #[test]
@@ -23786,12 +30389,16 @@ mod import_contract_tests {
             "Legacy records with default base_color must heal and report no base"
         );
 
-        // 3. Once analyzed or copied, a non-default base_color satisfies pipeline_has_base
+        // 3. The retired content estimate stays untrusted even when a
+        // non-default colour was persisted with it.
         let analyzed_color = BaseColor {
             base_r: 18000,
             base_g: 24000,
             base_b: 36000,
         };
+        assert!(!pipeline_has_base(&dirty_legacy_state, &analyzed_color));
+        dirty_legacy_state.processing_report.base_source = "detected_film_base".to_string();
+        // Once measured or copied, a non-default base_color satisfies pipeline_has_base.
         assert!(pipeline_has_base(&dirty_legacy_state, &analyzed_color));
         assert_ne!(
             pipeline_base_density(&dirty_legacy_state, &analyzed_color),
@@ -23896,8 +30503,8 @@ mod import_contract_tests {
         // 4. Base analysis for both
         let roll_base_est = estimate_film_base_f32(&estimate, &geom);
         let loose_base_est = estimate_film_base_f32(&estimate, &geom);
-        assert!(roll_base_est.usable);
-        assert!(loose_base_est.usable);
+        assert!(roll_base_est.is_trusted());
+        assert!(loose_base_est.is_trusted());
         assert!(
             matches!(
                 roll_base_est.source,
@@ -24557,6 +31164,15 @@ mod import_contract_tests {
             .join("test_picture")
             .join(name);
         let path_string = path.to_string_lossy().to_string();
+        let stem = path
+            .file_stem()
+            .map(|value| value.to_string_lossy().to_string())
+            .unwrap_or_else(|| "frame".to_string());
+        let output_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("phase2.1-visual-regression")
+            .join("neutral");
+        std::fs::create_dir_all(&output_root).unwrap();
         let edge = 1200;
         let legacy = report_legacy_transport(&path_string, edge).unwrap();
         let working = report_working_estimate(&path_string, edge).unwrap();
@@ -24588,7 +31204,7 @@ mod import_contract_tests {
             render_shader_equivalent(&legacy, &legacy_params, &geom, &legacy_base, None);
 
         let estimate = estimate_film_base_f32(&working, &geom);
-        let base_density = if estimate.usable {
+        let base_density = if estimate.is_trusted() {
             estimate.density
         } else {
             [0.0; 3]
@@ -24699,6 +31315,76 @@ mod import_contract_tests {
                 frame[2],
                 frame[0] / frame[1].max(1.0e-6),
                 frame[2] / frame[1].max(1.0e-6)
+            );
+        }
+        let tonal_stats = |image: &ImageBuffer<Rgb<u16>, Vec<u16>>,
+                           reference: &ImageBuffer<Rgb<u16>, Vec<u16>>| {
+            let mut black_sum = [0.0f64; 3];
+            let mut black_count = 0.0f64;
+            let mut highlight_sum = [0.0f64; 3];
+            let mut highlight_count = 0.0f64;
+            let mut clipped = 0.0f64;
+            for (sample, reference) in image.pixels().zip(reference.pixels()) {
+                let sample = sample.0.map(|value| f64::from(value) / 65535.0);
+                let reference = reference.0.map(|value| f64::from(value) / 65535.0);
+                let reference_luma =
+                    0.2126 * reference[0] + 0.7152 * reference[1] + 0.0722 * reference[2];
+                if sample.iter().any(|value| *value >= 0.995) {
+                    clipped += 1.0;
+                }
+                if reference_luma < 0.06 {
+                    black_count += 1.0;
+                    for channel in 0..3 {
+                        black_sum[channel] += sample[channel];
+                    }
+                }
+                if reference_luma > 0.85 {
+                    highlight_count += 1.0;
+                    for channel in 0..3 {
+                        highlight_sum[channel] += sample[channel];
+                    }
+                }
+            }
+            let black = black_sum.map(|value| value / black_count.max(1.0));
+            let highlight = highlight_sum.map(|value| value / highlight_count.max(1.0));
+            (
+                black,
+                black_count,
+                highlight,
+                highlight_count,
+                clipped / f64::from(image.width().max(1)) / f64::from(image.height().max(1)),
+            )
+        };
+        for (label, image) in [
+            ("v1.0.2", &legacy_render),
+            ("co-sited-endpoints", &current_render),
+        ] {
+            let (black, black_count, highlight, highlight_count, clipped) =
+                tonal_stats(image, &legacy_render);
+            println!(
+                "[TONAL {label}] black n={black_count:.0} means=({:.3},{:.3},{:.3}) | highlight n={highlight_count:.0} means=({:.3},{:.3},{:.3}) | clipped={:.2}%",
+                black[0],
+                black[1],
+                black[2],
+                highlight[0],
+                highlight[1],
+                highlight[2],
+                100.0 * clipped,
+            );
+        }
+        ab_save_preview(output_root.join(format!("{stem}-v102.jpg")), &legacy_render);
+        ab_save_preview(
+            output_root.join(format!("{stem}-current.jpg")),
+            &current_render,
+        );
+        if let Some(stacked) = stack_vertical(
+            &fit_long_edge(&legacy_render, 900),
+            &fit_long_edge(&current_render, 900),
+            4,
+        ) {
+            ab_save_preview(
+                output_root.join(format!("{stem}-v102-current.jpg")),
+                &stacked,
             );
         }
     }
@@ -24896,7 +31582,7 @@ mod import_contract_tests {
 
             // The current build's per-frame Smart Auto route.
             let estimate = estimate_film_base_f32(&working, &geom);
-            let base_density = if estimate.usable {
+            let base_density = if estimate.is_trusted() {
                 estimate.density
             } else {
                 [0.0; 3]
@@ -24913,7 +31599,7 @@ mod import_contract_tests {
                 base_density,
             );
             let mut state = PipelineState::smart_auto();
-            state.processing_report.base_source = if estimate.usable {
+            state.processing_report.base_source = if estimate.is_trusted() {
                 "detected_film_base"
             } else {
                 "missing_film_base_reference"
@@ -25082,8 +31768,21 @@ mod import_contract_tests {
                 super::PROXY_LONG_EDGE as u32,
             )
             .unwrap();
-            assert_eq!(working.dimensions(), camera_image.dimensions());
             assert_eq!(production_matrix, Some(camera_to_srgb));
+            // The production proxy is bounded to the Develop long edge while
+            // the camera-native reference is decoded at half-size. Compare both
+            // in the production buffer's dimensions instead of requiring the
+            // decoder's native size here.
+            let camera_image = if camera_image.dimensions() == working.dimensions() {
+                camera_image
+            } else {
+                image::imageops::resize(
+                    &camera_image,
+                    working.width(),
+                    working.height(),
+                    image::imageops::FilterType::Triangle,
+                )
+            };
             // The retired route, rebuilt from the same camera RGB.
             let srgb_to_prophoto =
                 linear_conversion_matrix(ColorSpaceId::SRgb, ColorSpaceId::ProPhotoRgb);
@@ -25134,7 +31833,7 @@ mod import_contract_tests {
             // Same analysis functions for both bases.
             let analyse = |image: &ImageBuffer<Rgb<f32>, Vec<f32>>| {
                 let estimate = estimate_film_base_f32(image, &geom);
-                let base = if estimate.usable {
+                let base = if estimate.is_trusted() {
                     estimate.density
                 } else {
                     [0.0; 3]
@@ -25143,7 +31842,7 @@ mod import_contract_tests {
                     compute_content_limits_f32_with_bounds(image, None, &geom, base, None).unwrap();
                 let (offsets, _) =
                     prepare_content_render_limits(&mut limits, &DensityAnchors::default(), base);
-                (estimate.usable, base, limits, offsets)
+                (estimate.is_trusted(), base, limits, offsets)
             };
             let (usable_a, base_a, limits_a, offsets_a) = analyse(&working);
             let (usable_r, base_r, limits_r, offsets_r) = analyse(&retired);
@@ -25568,9 +32267,9 @@ mod export_contract_tests {
     use super::{
         build_response_buffer_from_proxy, build_response_buffer_from_proxy_with_state,
         co_sited_density_extremes, compute_auto_color_limits,
-        decode_uncompressed_tiff_directory_reduced, density_histogram_extremes,
-        embedded_input_profile, encode_export_buffer, encode_export_buffer_linear,
-        export_dimensions, export_profile_for_output, gaussian_blur_rgb16_parallel,
+        decode_uncompressed_linear_dng_reduced, density_histogram_extremes, embedded_input_profile,
+        encode_export_buffer, encode_export_buffer_linear, export_dimensions,
+        export_profile_for_output, gaussian_blur_rgb16_parallel,
         normalize_persisted_geometry_for_rendered_image, point_in_film_area,
         read_classic_tiff_directory, render_f32_shader_equivalent, render_shader_equivalent,
         reserve_export_path, sanitize_export_file_stem, should_apply_sprocket_mask,
@@ -26108,12 +32807,15 @@ mod export_contract_tests {
     /// which is what a re-import would use.
     #[test]
     fn linear_dng_round_trips_through_the_tiff_reader() {
-        let root = std::env::temp_dir().join(format!(
-            "nexfilm-linear-dng-export-{}-{}",
-            std::process::id(),
-            super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-        ));
-        std::fs::create_dir(&root).unwrap();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("export-contract-tests")
+            .join(format!(
+                "linear-dng-{}-{}",
+                std::process::id(),
+                super::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            ));
+        std::fs::create_dir_all(&root).unwrap();
         let source = ImageBuffer::from_fn(4, 3, |x, y| {
             Rgb([
                 (x * 1000 + y) as u16,
@@ -26130,12 +32832,9 @@ mod export_contract_tests {
         assert_eq!(directory.bits_per_sample, vec![16, 16, 16]);
         assert_eq!(directory.compression, 1);
         assert!(directory.icc_profile.is_some());
-        let decoded = decode_uncompressed_tiff_directory_reduced(
-            path.to_string_lossy().as_ref(),
-            directory,
-            u32::MAX,
-        )
-        .unwrap();
+        let decoded =
+            decode_uncompressed_linear_dng_reduced(path.to_string_lossy().as_ref(), u32::MAX)
+                .unwrap();
         assert_eq!(decoded.dimensions(), (4, 3));
         assert_eq!(decoded.into_raw(), source.into_raw());
         std::fs::remove_dir_all(root).unwrap();
@@ -26225,6 +32924,7 @@ mod export_contract_tests {
             &proxy,
             &white_base(),
             &pipeline,
+            &GeometryState::default(),
             Some(&quality),
             true,
         );
@@ -26247,8 +32947,14 @@ mod export_contract_tests {
         let mut state = PipelineState::smart_auto();
         state.processing_report.analysis_data_domain = "legacy_linear_srgb".to_string();
         state.processing_report.base_source = "compatibility_base".to_string();
-        let response =
-            build_response_buffer_from_proxy_with_state(&proxy, &white_base(), &state, None, true);
+        let response = build_response_buffer_from_proxy_with_state(
+            &proxy,
+            &white_base(),
+            &state,
+            &GeometryState::default(),
+            None,
+            true,
+        );
         let flags = u32::from_le_bytes(response[24..28].try_into().unwrap());
         assert_eq!(flags & 2, 0, "compatibility transport must not be ProPhoto");
         assert_ne!(flags & 1, 0, "compatibility base must be marked analyzed");
@@ -26265,10 +32971,18 @@ mod export_contract_tests {
     fn loose_smart_auto_proxy_advertises_the_prophoto_transport_domain() {
         let proxy = ImageBuffer::from_pixel(1, 1, Rgb([12_000, 24_000, 36_000]));
         let mut state = PipelineState::smart_auto();
-        state.processing_report.base_source = "content_estimate".to_string();
+        state.processing_report.base_source = "detected_film_base".to_string();
         state.processing_report.base_confidence = "0.500".to_string();
-        let response =
-            build_response_buffer_from_proxy_with_state(&proxy, &white_base(), &state, None, true);
+        state.processing_report.analysis_geometry_fingerprint =
+            super::analysis_geometry_fingerprint(&GeometryState::default());
+        let response = build_response_buffer_from_proxy_with_state(
+            &proxy,
+            &white_base(),
+            &state,
+            &GeometryState::default(),
+            None,
+            true,
+        );
         let flags = u32::from_le_bytes(response[24..28].try_into().unwrap());
         assert_ne!(
             flags & 2,
@@ -26310,8 +33024,14 @@ mod export_contract_tests {
                     provenance: Default::default(),
                 });
             }
-            let response =
-                build_response_buffer_from_proxy_with_state(&proxy, &base, &state, None, true);
+            let response = build_response_buffer_from_proxy_with_state(
+                &proxy,
+                &base,
+                &state,
+                &GeometryState::default(),
+                None,
+                true,
+            );
             let flags = u32::from_le_bytes(response[24..28].try_into().unwrap());
             assert_ne!(
                 flags & 2,
@@ -26861,11 +33581,18 @@ mod roll_render_tests {
         state.density_anchors.highlight_fraction = Some(0.50);
         let mapping = roll_density_mapping_with_frame_base(&state, Some(roll_base), Some(0.80))
             .expect("complete anchors produce a mapping");
+        let alternate_frame_highlight =
+            roll_density_mapping_with_frame_base(&state, Some(roll_base), Some(0.20))
+                .expect("complete anchors produce a mapping");
         for channel in 0..3 {
             let span = roll_full[channel] - roll_base[channel];
             assert!(
                 (mapping.density_high[channel] - span * 0.5).abs() < 1.0e-6,
                 "the Roll value must win over the frame value"
+            );
+            assert_eq!(
+                mapping.density_high, alternate_frame_highlight.density_high,
+                "changing only the frame highlight must not move the Roll white point"
             );
         }
         state.density_anchors.highlight_fraction = Some(0.05);
@@ -26873,6 +33600,17 @@ mod roll_render_tests {
         for channel in 0..3 {
             let span = roll_full[channel] - roll_base[channel];
             assert!((clamped.density_high[channel] - span * 0.45).abs() < 1.0e-6);
+        }
+        state.density_anchors.highlight_fraction = None;
+        let no_roll_highlight =
+            roll_density_mapping_with_frame_base(&state, Some(roll_base), Some(0.20))
+                .expect("mapping");
+        for channel in 0..3 {
+            let span = roll_full[channel] - roll_base[channel];
+            assert!(
+                (no_roll_highlight.density_high[channel] - span).abs() < 1.0e-6,
+                "without a Roll highlight the frame value must not invent one"
+            );
         }
     }
 
@@ -26915,7 +33653,7 @@ mod roll_render_tests {
             density,
             confidence,
             source,
-            usable: true,
+            state: FilmBaseState::Trusted,
             fallback_reason: None,
         }
     }
@@ -26981,8 +33719,8 @@ mod roll_render_tests {
         let unusable = FilmBaseEstimate {
             density: [0.4; 3],
             confidence: 0.0,
-            source: "unavailable",
-            usable: false,
+            source: "invalid_film_base",
+            state: FilmBaseState::Invalid,
             fallback_reason: Some("missing_film_base_reference"),
         };
 
@@ -27011,6 +33749,10 @@ mod roll_render_tests {
         ));
         assert!(!crate::pipeline::base_is_frame_measurement(
             crate::pipeline::INHERITED_FILM_BASE_SOURCE,
+            &measured
+        ));
+        assert!(!crate::pipeline::base_is_frame_measurement(
+            crate::pipeline::COMPLETE_ROLL_ANCHOR_FALLBACK_SOURCE,
             &measured
         ));
         assert!(!crate::pipeline::base_is_frame_measurement(
@@ -27081,7 +33823,7 @@ mod roll_render_tests {
         geom.calibration_points = Some([[0.10, 0.10], [0.90, 0.10], [0.90, 0.90], [0.10, 0.90]]);
         let estimate = inherited_film_base_measurement(&state, &geom, &proxy)
             .expect("the frame's own film base is measurable");
-        assert!(estimate.usable);
+        assert!(estimate.is_trusted());
         for (channel, expected) in estimate.density.iter().zip([0.85, 0.886, 0.926]) {
             assert!(
                 (channel - expected).abs() < 0.02,
@@ -27182,6 +33924,136 @@ mod input_domain_round_trip_tests {
         assert_eq!(domain.source, InputDomainSource::EmbeddedIcc);
         assert!(!domain.estimated);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    fn corrupt_embedded_icc(path: &std::path::Path) {
+        let mut bytes = std::fs::read(path).unwrap();
+        let signature = bytes
+            .windows(4)
+            .position(|window| window == b"acsp")
+            .expect("the fixture must contain an ICC signature");
+        bytes[signature..signature + 4].copy_from_slice(b"XXXX");
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn unreadable_embedded_icc_is_reported_and_falls_back_without_crashing() {
+        let root = temp_root("unreadable-icc");
+
+        let tiff_path = root.join("frame.tiff");
+        let profile = crate::color_science::build_icc_profile(ColorSpaceId::AdobeRgb);
+        write_export_image_with_profile(
+            sample_image(),
+            &tiff_path,
+            ExportFormat::Tiff16,
+            92,
+            None,
+            Some(&profile),
+        )
+        .unwrap();
+        corrupt_embedded_icc(&tiff_path);
+        let tiff_path_string = tiff_path.to_string_lossy().to_string();
+        let tiff_domain = resolve_input_domain(&tiff_path_string, None);
+        let tiff_reasons = input_domain_fallback_reasons(&tiff_domain);
+        assert!(
+            tiff_domain.detail.contains("embedded_icc_parse_failed:"),
+            "the TIFF report must keep the parser error: {}",
+            tiff_domain.detail
+        );
+        assert!(
+            tiff_reasons
+                .iter()
+                .any(|reason| reason.starts_with("embedded_icc_parse_failed:")),
+            "the TIFF fallback reason must be copyable: {tiff_reasons:?}"
+        );
+        decode_modern_input(
+            &tiff_path_string,
+            DecodeMode::DevelopProxy,
+            None,
+            512,
+            false,
+        )
+        .expect("a corrupt ICC must fall back to the existing direct decode");
+
+        let dng_path = root.join("frame.dng");
+        write_linear_dng_export(&sample_image(), &dng_path, ColorSpaceId::SRgb, None).unwrap();
+        corrupt_embedded_icc(&dng_path);
+        let dng_path_string = dng_path.to_string_lossy().to_string();
+        let dng_domain = resolve_linear_raw_dng_domain(&dng_path_string).input_domain;
+        let dng_reasons = input_domain_fallback_reasons(&dng_domain);
+        assert!(
+            dng_domain.detail.contains("embedded_icc_parse_failed:"),
+            "the LinearRaw DNG report must keep the parser error: {}",
+            dng_domain.detail
+        );
+        assert!(
+            dng_reasons
+                .iter()
+                .any(|reason| reason.starts_with("embedded_icc_parse_failed:")),
+            "the LinearRaw DNG fallback reason must be copyable: {dng_reasons:?}"
+        );
+        decode_modern_input(&dng_path_string, DecodeMode::DevelopProxy, None, 512, false)
+            .expect("a corrupt LinearRaw ICC must keep the DNG decode fallback");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn abnormal_proxy_fallbacks_are_mapped_and_deduplicated() {
+        let domain = InputDomainRecord {
+            detail: concat!(
+                "dng_sample_layout_unresolved_libraw_camera_native; ",
+                "linear_raw_dng_without_icc_or_colormatrix_read_as_linear_srgb; ",
+                "flextight_container_record_unreadable; ",
+                "embedded_icc_parse_failed:bad profile"
+            )
+            .to_string(),
+            ..InputDomainRecord::default()
+        };
+        let reasons = proxy_additional_fallback_reasons(
+            &domain,
+            WorkingBasis::CameraNative,
+            None,
+            true,
+            false,
+            Some("capture_profile_unavailable"),
+        );
+        for expected in [
+            "dng_sample_layout_unresolved",
+            "linear_raw_dng_color_metadata_missing",
+            "scanner_fff_container_unreadable",
+            "embedded_icc_parse_failed:bad profile",
+            "camera_matrix_unresolved",
+            "scanner_profile_missing_or_stale",
+            "capture_profile_unavailable",
+        ] {
+            assert!(
+                reasons.iter().any(|reason| reason == expected),
+                "missing fallback reason {expected}: {reasons:?}"
+            );
+        }
+
+        let mut report = PipelineProcessingReport::default();
+        extend_unique_fallback_reasons(&mut report, reasons.iter().cloned());
+        extend_unique_fallback_reasons(&mut report, reasons);
+        assert_eq!(
+            report.fallback_reasons.len(),
+            7,
+            "fallback reasons must be written once: {:?}",
+            report.fallback_reasons
+        );
+    }
+
+    #[test]
+    fn modern_export_failures_keep_the_stage_and_original_error() {
+        let failure = modern_export_failure(
+            "decode",
+            "frame.dng",
+            "LibRaw decode failed: unsupported sample layout",
+        );
+        assert!(failure.contains("stage=decode"));
+        assert!(failure.contains("frame.dng"));
+        assert!(failure.contains("LibRaw decode failed: unsupported sample layout"));
     }
 }
 
@@ -27918,13 +34790,16 @@ mod camera_native_basis_tests {
     const SWAP_RED_BLUE: [f32; 9] = [0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0];
 
     #[test]
-    fn camera_raws_are_the_only_inputs_on_the_camera_native_basis() {
+    fn camera_raws_and_unresolved_dngs_use_the_camera_native_basis() {
         for path in [
             "frame.NEF",
             "frame.cr2",
             "frame.CR3",
             "frame.arw",
             "frame.raf",
+            // An unreadable DNG falls back to the camera path; a readable
+            // LinearRaw page is covered by the DNG metadata contract test.
+            "frame.dng",
         ] {
             assert_eq!(
                 smart_auto_working_basis(path),
@@ -27932,13 +34807,7 @@ mod camera_native_basis_tests {
                 "{path}"
             );
         }
-        for path in [
-            "scan.dng",
-            "scan.tif",
-            "scan.tiff",
-            "frame.jpg",
-            "frame.png",
-        ] {
+        for path in ["scan.tif", "scan.tiff", "frame.jpg", "frame.png"] {
             assert_eq!(
                 smart_auto_working_basis(path),
                 WorkingBasis::ProPhotoEstimate,
@@ -28334,6 +35203,7 @@ mod camera_native_basis_tests {
             &proxy,
             &base,
             &mapped_state(None),
+            &GeometryState::default(),
             None,
             true,
         );
@@ -28345,6 +35215,7 @@ mod camera_native_basis_tests {
             &proxy,
             &base,
             &mapped_state(Some(IDENTITY)),
+            &GeometryState::default(),
             None,
             true,
         );
@@ -28358,6 +35229,7 @@ mod camera_native_basis_tests {
             &proxy,
             &base,
             &mapped_state(Some(NIKON_CAMERA_TO_SRGB)),
+            &GeometryState::default(),
             None,
             true,
         );
@@ -28375,8 +35247,14 @@ mod camera_native_basis_tests {
         // Legacy frames never decode the ProPhoto/camera transport.
         let mut legacy = PipelineState::default();
         legacy.processing_report.camera_to_display = Some(NIKON_CAMERA_TO_SRGB);
-        let legacy =
-            build_response_buffer_from_proxy_with_state(&proxy, &base, &legacy, None, true);
+        let legacy = build_response_buffer_from_proxy_with_state(
+            &proxy,
+            &base,
+            &legacy,
+            &GeometryState::default(),
+            None,
+            true,
+        );
         assert_eq!(
             u32::from_le_bytes(legacy[24..28].try_into().unwrap()) & 8,
             0
@@ -28468,7 +35346,7 @@ mod fixture_sweep_tests {
     ) -> ImageBuffer<Rgb<u16>, Vec<u16>> {
         let geom = GeometryState::default();
         let estimate = estimate_film_base_f32(image, &geom);
-        let base = if estimate.usable {
+        let base = if estimate.is_trusted() {
             estimate.density
         } else {
             [0.0; 3]
@@ -28478,7 +35356,7 @@ mod fixture_sweep_tests {
         let (offsets, _) =
             prepare_content_render_limits(&mut limits, &DensityAnchors::default(), base);
         let mut state = PipelineState::smart_auto();
-        state.processing_report.base_source = if estimate.usable {
+        state.processing_report.base_source = if estimate.is_trusted() {
             "detected_film_base"
         } else {
             "missing_film_base_reference"
@@ -28790,7 +35668,7 @@ mod fixture_sweep_tests {
                     underexposed
                 };
                 let estimate = estimate_film_base_f32(&source, &geom);
-                let new_usable = estimate.usable;
+                let new_usable = estimate.is_trusted();
                 let spread = estimate.density.iter().copied().fold(f32::MIN, f32::max)
                     - estimate.density.iter().copied().fold(f32::MAX, f32::min);
                 let old_usable = new_usable

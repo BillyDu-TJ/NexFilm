@@ -26,6 +26,7 @@ src/
 ├── raw_backend.rs               # LibRaw 0.22+ bindings with C++ mosaic shim
 ├── rawler_backend.rs            # Pure Rust fallback RAW decoding engine
 ├── calibration_fit.rs           # SVD channel separation fitting with condition guards
+├── dng_opcode.rs                # DNG Stage-2 OpcodeList2 inverse tone-mapping executor
 ├── dng_writer.rs                # Minimal single-IFD LinearRaw & CFA DNG encoder
 ├── scanner_profile.rs           # Scanner profile registry and container plist parser
 ├── io_processor.rs              # Streaming scanline strip decoders and memory managers
