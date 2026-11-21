@@ -132,3 +132,11 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+  mirror-release:
+    name: Mirror release assets
+    needs: build-and-release
+    uses: ./.github/workflows/mirror-release.yml
+    with:
+      tag: ${{ inputs.tag }}
+    secrets: inherit
