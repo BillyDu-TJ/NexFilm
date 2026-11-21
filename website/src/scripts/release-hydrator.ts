@@ -7,6 +7,12 @@
  * - Updates GitHub Star count and latest version badges.
  */
 
+import {
+  buildMirrorDownloadUrl,
+  githubAssetUrl,
+} from '../utils/download-links.js';
+import { DOWNLOAD_MIRROR_BASE } from '../utils/download-config';
+
 interface CachedData {
   timestamp: number;
   latestRelease: any;
@@ -100,17 +106,35 @@ export function detectPlatform(): 'mac-arm' | 'mac-intel' | 'win-x64' | 'other' 
   return 'other';
 }
 
-function parseAssets(assets: any[]) {
+function normalizeAsset(asset: any, tagName: string) {
+  const name = asset?.name || '';
+  const githubDownloadUrl =
+    asset?.githubDownloadUrl ||
+    asset?.browser_download_url ||
+    githubAssetUrl(tagName, name);
+  const mirrorDownloadUrl =
+    asset?.mirrorDownloadUrl ||
+    buildMirrorDownloadUrl(DOWNLOAD_MIRROR_BASE, tagName, name);
+  return {
+    ...asset,
+    name,
+    downloadUrl: mirrorDownloadUrl || githubDownloadUrl,
+    mirrorDownloadUrl,
+    githubDownloadUrl,
+  };
+}
+
+function parseAssets(assets: any[], tagName: string) {
   let macArm: any = null;
   let macIntel: any = null;
   let winX64: any = null;
 
   if (Array.isArray(assets)) {
     for (const a of assets) {
-      const name = a.name || '';
-      if (MAC_ARM_REGEX.test(name) && !macArm) macArm = a;
-      else if (MAC_INTEL_REGEX.test(name) && !macIntel) macIntel = a;
-      else if (WIN_X64_REGEX.test(name) && !winX64) winX64 = a;
+      const asset = normalizeAsset(a, tagName);
+      if (MAC_ARM_REGEX.test(asset.name) && !macArm) macArm = asset;
+      else if (MAC_INTEL_REGEX.test(asset.name) && !macIntel) macIntel = asset;
+      else if (WIN_X64_REGEX.test(asset.name) && !winX64) winX64 = asset;
     }
   }
 
@@ -259,8 +283,8 @@ function hydrateSyncLocalState() {
 }
 
 function hydrateDownloadCards(release: any) {
-  const { macArm, macIntel, winX64 } = parseAssets(release.assets || []);
   const tag = release.tag_name;
+  const { macArm, macIntel, winX64 } = parseAssets(release.assets || [], tag);
   const tagUrl = release.html_url || `https://github.com/BillyDu-TJ/NexFilm/releases/tag/${tag}`;
 
   const platformMap: Record<string, any> = {
@@ -276,8 +300,16 @@ function hydrateDownloadCards(release: any) {
     if (asset) {
       const downloadBtn = card.querySelector<HTMLAnchorElement>('[data-asset-download]');
       if (downloadBtn) {
-        downloadBtn.href = asset.browser_download_url;
+        downloadBtn.href = asset.downloadUrl || asset.githubDownloadUrl;
         downloadBtn.setAttribute('download', asset.name);
+      }
+
+      const githubDownloadBtn = card.querySelector<HTMLAnchorElement>('[data-asset-github-download]');
+      if (githubDownloadBtn) {
+        githubDownloadBtn.href = asset.githubDownloadUrl;
+        githubDownloadBtn.setAttribute('download', asset.name);
+        const githubDownloadRow = githubDownloadBtn.closest<HTMLElement>('[data-github-download-row]');
+        if (githubDownloadRow) githubDownloadRow.hidden = !asset.mirrorDownloadUrl;
       }
 
       const nameEl = card.querySelector<HTMLElement>('[data-asset-name]');
@@ -316,7 +348,7 @@ function hydrateHeroDownload(release: any) {
   const heroBtn = document.querySelector<HTMLAnchorElement>('[data-hero-download]');
   if (!heroBtn) return;
 
-  const { macArm, macIntel, winX64 } = parseAssets(release.assets || []);
+  const { macArm, macIntel, winX64 } = parseAssets(release.assets || [], release.tag_name);
   const detected = detectPlatform();
 
   let targetAsset = macArm;
@@ -472,17 +504,23 @@ function hydrateChangelogTimeline(releasesList: any[]) {
     if (assets.length > 0) {
       const assetItems = assets
         .map((a: any) => {
-          const sha = extractSha256(a.digest);
+          const asset = normalizeAsset(a, tagName);
+          const sha = extractSha256(asset.digest);
           return `
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 p-2 rounded bg-darkroom-canvas/80 border border-darkroom-line">
               <div class="flex items-center gap-2 truncate">
                 <svg class="w-3.5 h-3.5 text-text-muted flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
                 </svg>
-                <a href="${a.browser_download_url}" download="${a.name}" class="text-accent hover:underline truncate font-medium" title="Direct download this asset">
-                  ${a.name}
+                <a href="${asset.downloadUrl || asset.githubDownloadUrl}" download="${asset.name}" class="text-accent hover:underline truncate font-medium" title="${asset.mirrorDownloadUrl ? 'Download from the release mirror' : 'Direct download from GitHub'}">
+                  ${asset.name}
                 </a>
-                <span class="text-text-muted text-[10px]">(${formatBytes(a.size)})</span>
+                <span class="text-text-muted text-[10px]">(${formatBytes(asset.size)})</span>
+                ${
+                  asset.mirrorDownloadUrl && asset.githubDownloadUrl
+                    ? `<a href="${asset.githubDownloadUrl}" download="${asset.name}" class="text-text-muted hover:text-accent text-[10px]">GitHub</a>`
+                    : ''
+                }
               </div>
               ${
                 sha

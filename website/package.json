@@ -12,7 +12,9 @@
     "build": "astro build && pagefind --site dist",
     "preview": "astro preview",
     "verify:static": "node scripts/verify-static-lint.cjs",
-    "test:browser": "npm run build && node scripts/test-browser-integration.cjs"
+    "test:downloads": "node --test scripts/test-download-links.mjs",
+    "verify:downloads": "node scripts/verify-download-mirror.mjs",
+    "test:browser": "npm run build && npm run test:downloads && npm run verify:downloads && node scripts/test-browser-integration.cjs"
   },
   "dependencies": {
     "@astrojs/tailwind": "^5.1.5",

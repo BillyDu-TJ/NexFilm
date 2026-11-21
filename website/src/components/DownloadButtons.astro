@@ -1,5 +1,7 @@
 ---
 import { getLatestRelease } from '../utils/github-releases';
+import { githubAssetUrl, preferredDownloadUrl } from '../utils/download-links.js';
+import { DOWNLOAD_MIRROR_BASE } from '../utils/download-config';
 
 interface Props {
   lang: 'zh' | 'en';
@@ -12,26 +14,47 @@ const latestRelease = await getLatestRelease();
 const tagName = latestRelease.tagName;
 const tagUrl = latestRelease.htmlUrl;
 
-const winAsset = latestRelease.assets.winX64 || {
-  name: `NexFilm.Engine_${tagName.replace(/^v/, '')}_x64-setup.exe`,
-  downloadUrl: `https://github.com/BillyDu-TJ/NexFilm/releases/download/${tagName}/NexFilm.Engine_${tagName.replace(/^v/, '')}_x64-setup.exe`,
-  sizeFormatted: '5.34 MB',
-  sha256: '',
-};
+function assetWithFallback(
+  asset: typeof latestRelease.assets.winX64,
+  fallbackName: string,
+  fallbackSize: string,
+) {
+  const name = asset?.name || fallbackName;
+  const githubDownloadUrl =
+    asset?.githubDownloadUrl || githubAssetUrl(tagName, name);
+  return {
+    name,
+    downloadUrl:
+      asset?.downloadUrl ||
+      preferredDownloadUrl(
+        DOWNLOAD_MIRROR_BASE,
+        tagName,
+        name,
+        githubDownloadUrl,
+      ),
+    githubDownloadUrl,
+    sizeFormatted: asset?.sizeFormatted || fallbackSize,
+    sha256: asset?.sha256 || '',
+  };
+}
 
-const macArmAsset = latestRelease.assets.macArm || {
-  name: `NexFilm.Engine_${tagName.replace(/^v/, '')}_aarch64.dmg`,
-  downloadUrl: `https://github.com/BillyDu-TJ/NexFilm/releases/download/${tagName}/NexFilm.Engine_${tagName.replace(/^v/, '')}_aarch64.dmg`,
-  sizeFormatted: '7.31 MB',
-  sha256: '',
-};
+const winAsset = assetWithFallback(
+  latestRelease.assets.winX64,
+  `NexFilm.Engine_${tagName.replace(/^v/, '')}_x64-setup.exe`,
+  '6.87 MB',
+);
 
-const macIntelAsset = latestRelease.assets.macIntel || {
-  name: `NexFilm.Engine_${tagName.replace(/^v/, '')}_x64.dmg`,
-  downloadUrl: `https://github.com/BillyDu-TJ/NexFilm/releases/download/${tagName}/NexFilm.Engine_${tagName.replace(/^v/, '')}_x64.dmg`,
-  sizeFormatted: '7.57 MB',
-  sha256: '',
-};
+const macArmAsset = assetWithFallback(
+  latestRelease.assets.macArm,
+  `NexFilm.Engine_${tagName.replace(/^v/, '')}_aarch64.dmg`,
+  '9.78 MB',
+);
+
+const macIntelAsset = assetWithFallback(
+  latestRelease.assets.macIntel,
+  `NexFilm.Engine_${tagName.replace(/^v/, '')}_x64.dmg`,
+  '10.17 MB',
+);
 
 const items = [
   {
@@ -137,6 +160,20 @@ const fallbackAssetsJson = JSON.stringify({
             </svg>
             <span>{lang === 'zh' ? '下载正式安装包' : 'Download Installer'}</span>
           </a>
+
+          {item.asset.downloadUrl !== item.asset.githubDownloadUrl && (
+            <div data-github-download-row class="flex items-center justify-between gap-2 px-0.5 text-[11px] font-mono text-text-muted">
+              <span>{lang === 'zh' ? '镜像不可用？' : 'Mirror unavailable?'}</span>
+              <a
+                href={item.asset.githubDownloadUrl}
+                download={item.asset.name}
+                data-asset-github-download
+                class="truncate min-w-0 text-text-secondary hover:text-accent transition-colors"
+              >
+                {lang === 'zh' ? 'GitHub 直链' : 'GitHub direct'}
+              </a>
+            </div>
+          )}
 
           <!-- Official Release Tag Entrance -->
           <div class="pt-1 text-[11px] font-mono text-text-muted">

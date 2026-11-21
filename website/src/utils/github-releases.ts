@@ -1,10 +1,20 @@
 import { marked } from 'marked';
 import fallbackReleases from '../data/releases-fallback.json';
 import { RELEASE_EN_NOTES } from '../data/release-en-notes';
+import {
+  buildMirrorDownloadUrl,
+  githubAssetUrl,
+} from './download-links.js';
+import { DOWNLOAD_MIRROR_BASE } from './download-config';
 
 export interface ReleaseAssetInfo {
   name: string;
+  /** Preferred transport URL: the mirror when configured, otherwise GitHub. */
   downloadUrl: string;
+  /** Versioned release-asset mirror URL, empty when the mirror is disabled. */
+  mirrorDownloadUrl: string;
+  /** Canonical GitHub release-asset URL used as an explicit fallback. */
+  githubDownloadUrl: string;
   sizeBytes: number;
   sizeFormatted: string;
   sha256: string;
@@ -55,7 +65,10 @@ const MAC_ARM_REGEX = /(aarch64|arm64)\.dmg$/i;
 const MAC_INTEL_REGEX = /(x64|x86_64)\.dmg$/i;
 const WIN_X64_REGEX = /(x64-setup\.exe|x64_en-US\.msi|nsis.*\.exe)$/i;
 
-function parseRawAssets(rawAssets: any[]): { platformAssets: PlatformAssets; allAssets: ReleaseAssetInfo[] } {
+function parseRawAssets(
+  rawAssets: any[],
+  tagName: string,
+): { platformAssets: PlatformAssets; allAssets: ReleaseAssetInfo[] } {
   const platformAssets: PlatformAssets = {};
   const allAssets: ReleaseAssetInfo[] = [];
 
@@ -65,9 +78,18 @@ function parseRawAssets(rawAssets: any[]): { platformAssets: PlatformAssets; all
 
   for (const asset of rawAssets) {
     const assetName = asset.name || '';
+    const githubDownloadUrl =
+      asset.browser_download_url || githubAssetUrl(tagName, assetName);
+    const mirrorDownloadUrl = buildMirrorDownloadUrl(
+      DOWNLOAD_MIRROR_BASE,
+      tagName,
+      assetName,
+    );
     const info: ReleaseAssetInfo = {
       name: assetName,
-      downloadUrl: asset.browser_download_url || '',
+      downloadUrl: mirrorDownloadUrl || githubDownloadUrl,
+      mirrorDownloadUrl,
+      githubDownloadUrl,
       sizeBytes: asset.size || 0,
       sizeFormatted: formatBytes(asset.size || 0),
       sha256: extractSha256(asset.digest),
@@ -105,7 +127,7 @@ function processRelease(raw: any, index: number): CleanRelease {
     bodyEnHtml = marked.parse(cleanedBodyZh, { async: false }) as string;
   }
 
-  const { platformAssets, allAssets } = parseRawAssets(raw.assets || []);
+  const { platformAssets, allAssets } = parseRawAssets(raw.assets || [], tagName);
 
   const pubDate = raw.published_at ? raw.published_at.slice(0, 10) : '';
 

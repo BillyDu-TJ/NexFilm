@@ -156,6 +156,9 @@ async function runTests() {
     if (!heroBtnInfo.text.includes('macOS') && !heroBtnInfo.text.includes('Windows')) {
       throw new Error(`Hero button text does not identify OS: ${heroBtnInfo.text}`);
     }
+    if (heroBtnInfo.href && heroBtnInfo.href.includes('github.com')) {
+      throw new Error(`Hero button fell back to GitHub while the release mirror should be available: ${heroBtnInfo.href}`);
+    }
     console.log('✓ Test 2 PASSED: Hero button automatically customized for system without GitHub API.');
 
     // Test 3: BeforeAfter pointer drag and View Transitions persistence
